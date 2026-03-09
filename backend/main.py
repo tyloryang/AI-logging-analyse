@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from loki_client import LokiClient
 from ai_analyzer import AIAnalyzer
 from log_clusterer import LogClusterer
+from notifier import send_feishu, send_dingtalk
 
 load_dotenv()
 
@@ -33,6 +34,9 @@ LOKI_USERNAME = os.getenv("LOKI_USERNAME", "")
 LOKI_PASSWORD = os.getenv("LOKI_PASSWORD", "")
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
+
+FEISHU_WEBHOOK   = os.getenv("FEISHU_WEBHOOK", "")
+DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")
 
 loki = LokiClient(LOKI_URL, LOKI_USERNAME, LOKI_PASSWORD)
 analyzer = AIAnalyzer()
@@ -273,6 +277,38 @@ async def get_report(report_id: str):
         raise HTTPException(status_code=404, detail="报告不存在")
     data = json.loads(p.read_text(encoding="utf-8"))
     return data
+
+
+# ────────── 通知推送 ──────────
+
+class NotifyRequest(BaseModel):
+    channels: list[str]  # ["feishu", "dingtalk"]
+
+
+@app.post("/api/report/{report_id}/notify")
+async def notify_report(report_id: str, body: NotifyRequest):
+    """将指定报告推送到飞书 / 钉钉"""
+    p = REPORTS_DIR / f"{report_id}.json"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    report = json.loads(p.read_text(encoding="utf-8"))
+
+    results = {}
+    for ch in body.channels:
+        if ch == "feishu":
+            if not FEISHU_WEBHOOK:
+                results["feishu"] = {"ok": False, "msg": "未配置 FEISHU_WEBHOOK"}
+            else:
+                results["feishu"] = await send_feishu(report, FEISHU_WEBHOOK)
+        elif ch == "dingtalk":
+            if not DINGTALK_WEBHOOK:
+                results["dingtalk"] = {"ok": False, "msg": "未配置 DINGTALK_WEBHOOK"}
+            else:
+                results["dingtalk"] = await send_dingtalk(report, DINGTALK_WEBHOOK)
+        else:
+            results[ch] = {"ok": False, "msg": f"不支持的渠道: {ch}"}
+
+    return {"results": results}
 
 
 # ────────── 健康检查 ──────────

@@ -20,6 +20,7 @@ export const api = {
   // 报告
   listReports:    () => http.get('/report/list'),
   getReport:      (id) => http.get(`/report/${id}`),
+  notifyReport:   (id, channels) => http.post(`/report/${id}/notify`, { channels }),
   // 健康检查
   healthCheck:    () => http.get('/health'),
 }

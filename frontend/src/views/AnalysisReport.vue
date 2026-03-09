@@ -11,6 +11,13 @@
         <button class="toast-close" @click="errorMsg = ''">✕</button>
       </div>
     </transition>
+    <!-- 成功提示 -->
+    <transition name="fade">
+      <div v-if="successMsg" class="success-toast">
+        ✅ {{ successMsg }}
+        <button class="toast-close" @click="successMsg = ''">✕</button>
+      </div>
+    </transition>
 
     <div class="report-layout">
       <!-- 左侧报告列表 -->
@@ -80,6 +87,27 @@
                 @click="generateReport"
                 title="重新生成"
               >🔄 重新生成</button>
+              <!-- 通知按钮 -->
+              <button
+                v-if="currentReport?.id && !generating"
+                class="btn btn-notify feishu"
+                :disabled="notifying.feishu"
+                @click="sendNotify('feishu')"
+                title="发送到飞书"
+              >
+                <span v-if="notifying.feishu" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+                <span v-else>🔔</span> 飞书
+              </button>
+              <button
+                v-if="currentReport?.id && !generating"
+                class="btn btn-notify dingtalk"
+                :disabled="notifying.dingtalk"
+                @click="sendNotify('dingtalk')"
+                title="发送到钉钉"
+              >
+                <span v-if="notifying.dingtalk" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+                <span v-else>🔔</span> 钉钉
+              </button>
               <div class="health-circle" :class="healthClass(currentReport.health_score)">
                 <div class="health-num">{{ currentReport.health_score }}</div>
                 <div class="health-label">整体健康评分 /100</div>
@@ -180,6 +208,8 @@ const generating    = ref(false)
 const loadingList   = ref(false)
 const aiStreamContent = ref('')
 const errorMsg      = ref('')
+const successMsg    = ref('')
+const notifying     = ref({ feishu: false, dingtalk: false })
 
 // ── 工具函数 ──────────────────────────────
 function fmtNum(n) { return n != null ? Number(n).toLocaleString() : '0' }
@@ -287,6 +317,29 @@ function generateReport() {
       console.error('SSE error', err)
     },
   )
+}
+
+// ── 通知推送 ──────────────────────────────
+async function sendNotify(channel) {
+  if (!currentReport.value?.id) return
+  notifying.value[channel] = true
+  errorMsg.value = ''
+  successMsg.value = ''
+  try {
+    const r = await api.notifyReport(currentReport.value.id, [channel])
+    const res = r.results?.[channel]
+    if (res?.ok) {
+      const label = channel === 'feishu' ? '飞书' : '钉钉'
+      successMsg.value = `已成功发送到${label}`
+      setTimeout(() => { successMsg.value = '' }, 4000)
+    } else {
+      errorMsg.value = `发送失败：${res?.msg || '未知错误'}`
+    }
+  } catch (e) {
+    errorMsg.value = `发送失败：${e}`
+  } finally {
+    notifying.value[channel] = false
+  }
 }
 
 onMounted(loadReportList)
@@ -484,6 +537,43 @@ onMounted(loadReportList)
   display: flex; align-items: center; gap: 10px;
   color: var(--text-muted); font-size: 13px;
   padding: 8px 0;
+}
+
+/* 通知按钮 */
+.btn-notify {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 6px; border: 1px solid;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: opacity .15s;
+}
+.btn-notify:disabled { opacity: .5; cursor: not-allowed; }
+.btn-notify.feishu {
+  background: rgba(0, 195, 155, .1);
+  border-color: rgba(0, 195, 155, .4);
+  color: #00c39b;
+}
+.btn-notify.feishu:hover:not(:disabled) { background: rgba(0, 195, 155, .2); }
+.btn-notify.dingtalk {
+  background: rgba(255, 106, 0, .1);
+  border-color: rgba(255, 106, 0, .4);
+  color: #ff6a00;
+}
+.btn-notify.dingtalk:hover:not(:disabled) { background: rgba(255, 106, 0, .2); }
+
+/* 成功提示 */
+.success-toast {
+  position: absolute;
+  top: 16px; right: 16px;
+  background: rgba(34,197,94,.15);
+  border: 1px solid rgba(34,197,94,.4);
+  color: #86efac;
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 100;
 }
 
 @keyframes pulse { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
