@@ -39,6 +39,7 @@ FEISHU_WEBHOOK    = os.getenv("FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD    = os.getenv("FEISHU_KEYWORD", "")
 DINGTALK_WEBHOOK  = os.getenv("DINGTALK_WEBHOOK", "")
 DINGTALK_KEYWORD  = os.getenv("DINGTALK_KEYWORD", "")
+APP_URL           = os.getenv("APP_URL", "").rstrip("/")
 
 loki = LokiClient(LOKI_URL, LOKI_USERNAME, LOKI_PASSWORD)
 analyzer = AIAnalyzer()
@@ -295,13 +296,15 @@ async def notify_report(report_id: str, body: NotifyRequest):
         raise HTTPException(status_code=404, detail="报告不存在")
     report = json.loads(p.read_text(encoding="utf-8"))
 
+    report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
+
     results = {}
     for ch in body.channels:
         if ch == "feishu":
             if not FEISHU_WEBHOOK:
                 results["feishu"] = {"ok": False, "msg": "未配置 FEISHU_WEBHOOK"}
             else:
-                results["feishu"] = await send_feishu(report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
+                results["feishu"] = await send_feishu(report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD, report_url=report_url)
         elif ch == "dingtalk":
             if not DINGTALK_WEBHOOK:
                 results["dingtalk"] = {"ok": False, "msg": "未配置 DINGTALK_WEBHOOK"}

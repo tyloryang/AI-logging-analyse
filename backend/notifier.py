@@ -21,7 +21,7 @@ def _health_emoji(score: int) -> str:
     return "❌"
 
 
-def _build_feishu_card(report: dict, keyword: str = "") -> dict:
+def _build_feishu_card(report: dict, keyword: str = "", report_url: str = "") -> dict:
     """构造飞书交互卡片"""
     score = report.get("health_score", 0)
     title = report.get("title", "运维日报")
@@ -41,11 +41,6 @@ def _build_feishu_card(report: dict, keyword: str = "") -> dict:
     if top10:
         lines = [f"{i+1}. **{x['service']}** — {x['count']:,} 条" for i, x in enumerate(top10)]
         top_lines = "\n".join(lines)
-
-    # AI 摘要（取前 300 字）
-    ai_summary = ai[:300].strip()
-    if len(ai) > 300:
-        ai_summary += "…"
 
     # 若配置了关键词且标题中未包含，在指标行前拼入（确保通过飞书关键词安全校验）
     header_content = f"{_health_emoji(score)} **健康评分**: {score}/100\n{metrics}"
@@ -69,11 +64,23 @@ def _build_feishu_card(report: dict, keyword: str = "") -> dict:
             "text": {"tag": "lark_md", "content": f"**🔥 错误 Top 5 服务**\n{top_lines}"},
         })
 
-    if ai_summary:
+    if ai:
         elements.append({"tag": "hr"})
         elements.append({
             "tag": "div",
-            "text": {"tag": "lark_md", "content": f"**🤖 AI 分析摘要**\n{ai_summary}"},
+            "text": {"tag": "lark_md", "content": f"**🤖 AI 分析**\n{ai.strip()}"},
+        })
+
+    if report_url:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "查看完整报告"},
+                "type": "primary",
+                "url": report_url,
+            }],
         })
 
     return {
@@ -131,9 +138,9 @@ def _build_dingtalk_markdown(report: dict, keyword: str = "") -> dict:
     }
 
 
-async def send_feishu(report: dict, webhook_url: str, keyword: str = "") -> dict:
+async def send_feishu(report: dict, webhook_url: str, keyword: str = "", report_url: str = "") -> dict:
     """发送飞书消息，返回 {"ok": bool, "msg": str}"""
-    payload = _build_feishu_card(report, keyword=keyword)
+    payload = _build_feishu_card(report, keyword=keyword, report_url=report_url)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(webhook_url, json=payload)
