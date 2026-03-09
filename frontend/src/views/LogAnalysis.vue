@@ -73,6 +73,11 @@
             <span class="meta-info" v-if="templateMeta.total_logs">
               采样 {{ templateMeta.total_logs }} 条 → {{ templates.length }} 个模板
             </span>
+            <select v-model="tplLevelFilter" class="time-select" @change="loadTemplates">
+              <option value="">全量日志</option>
+              <option value="error">仅 ERROR</option>
+              <option value="warn">仅 WARN</option>
+            </select>
             <button class="btn btn-outline" @click="loadTemplates" :disabled="loadingTemplates">
               <span v-if="loadingTemplates" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
               <span v-else>🔄</span>重新聚类
@@ -120,9 +125,13 @@
         <div v-if="loadingTemplates" class="empty-state">
           <div class="spinner"></div><p>Drain3 聚类中...</p>
         </div>
+        <div v-else-if="tplError" class="empty-state">
+          <span class="icon">⚠️</span>
+          <p style="color:var(--error)">{{ tplError }}</p>
+        </div>
         <div v-else-if="!templates.length" class="empty-state">
           <span class="icon">🧩</span>
-          <p>暂无模板数据，请点击「重新聚类」</p>
+          <p>当前条件下暂无日志可聚类<br><small style="color:var(--text-muted)">尝试切换「全量日志」或扩大时间范围</small></p>
         </div>
         <div v-else class="template-list">
           <div v-for="(tpl, i) in templates" :key="tpl.cluster_id" class="tpl-card">
@@ -196,9 +205,11 @@ function logClass(line) {
 }
 
 // ── 模板聚合 ─────────────────────────────
-const templates       = ref([])
+const templates        = ref([])
 const loadingTemplates = ref(false)
-const templateMeta    = ref({ total_logs: 0, total_templates: 0 })
+const templateMeta     = ref({ total_logs: 0, total_templates: 0 })
+const tplLevelFilter   = ref('')
+const tplError         = ref('')
 
 const maxTplCount = computed(() =>
   templates.value[0]?.count || 1
@@ -246,15 +257,19 @@ async function loadLogs() {
 async function loadTemplates() {
   loadingTemplates.value = true
   templates.value = []
+  tplError.value = ''
   try {
     const r = await api.getTemplates({
       service: selectedService.value || undefined,
       hours:   hours.value,
       limit:   2000,
       top_n:   50,
+      level:   tplLevelFilter.value || undefined,
     })
     templates.value = r.data
     templateMeta.value = { total_logs: r.total_logs, total_templates: r.total_templates }
+  } catch (e) {
+    tplError.value = typeof e === 'string' ? e : (e?.message || '聚类请求失败，请检查后端连接')
   } finally {
     loadingTemplates.value = false
   }

@@ -62,22 +62,12 @@ async def get_logs(
 ):
     """查询日志"""
     try:
-        now_ns = int(time.time() * 1e9)
-        start_ns = now_ns - hours * 3600 * int(1e9)
-
-        if service:
-            base_query = f'{{app="{service}"}}'
-        else:
-            base_query = '{app=~".+"}'
-
-        if level and level.lower() in ("error", "err"):
-            query = f'{base_query} |~ "(?i)(error|exception|fatal|panic)"'
-        elif level and level.lower() in ("warn", "warning"):
-            query = f'{base_query} |~ "(?i)(warn|warning)"'
-        else:
-            query = base_query
-
-        logs = await loki.query_range(query, start_ns, now_ns, limit)
+        logs = await loki.query_logs(
+            service=service,
+            hours=hours,
+            limit=limit,
+            level=level or None,
+        )
         return {
             "data": logs,
             "total": len(logs),
@@ -122,10 +112,11 @@ async def get_log_templates(
     hours: int = Query(24, description="查询时长（小时）"),
     limit: int = Query(2000, le=5000, description="参与聚类的日志上限"),
     top_n: int = Query(50, le=200, description="返回模板数上限"),
+    level: Optional[str] = Query(None, description="日志级别过滤: error/warn，不传则聚类全量日志"),
 ):
     """Drain3 日志模板聚类：将重复日志归纳为带 <*> 占位符的模板"""
     try:
-        logs = await loki.query_error_logs(service=service, hours=hours, limit=limit)
+        logs = await loki.query_logs(service=service, hours=hours, limit=limit, level=level)
         templates = clusterer.cluster(logs, top_n=top_n)
         return {
             "data": templates,
