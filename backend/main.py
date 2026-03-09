@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from loki_client import LokiClient
 from ai_analyzer import AIAnalyzer
+from log_clusterer import LogClusterer
 
 load_dotenv()
 
@@ -35,6 +36,7 @@ REPORTS_DIR.mkdir(exist_ok=True)
 
 loki = LokiClient(LOKI_URL, LOKI_USERNAME, LOKI_PASSWORD)
 analyzer = AIAnalyzer()
+clusterer = LogClusterer()
 
 
 # ────────── 服务列表 ──────────
@@ -110,6 +112,30 @@ async def get_error_metrics(hours: int = Query(24)):
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+# ────────── 日志模板聚合 ──────────
+
+@app.get("/api/logs/templates")
+async def get_log_templates(
+    service: Optional[str] = Query(None, description="服务名称"),
+    hours: int = Query(24, description="查询时长（小时）"),
+    limit: int = Query(2000, le=5000, description="参与聚类的日志上限"),
+    top_n: int = Query(50, le=200, description="返回模板数上限"),
+):
+    """Drain3 日志模板聚类：将重复日志归纳为带 <*> 占位符的模板"""
+    try:
+        logs = await loki.query_error_logs(service=service, hours=hours, limit=limit)
+        templates = clusterer.cluster(logs, top_n=top_n)
+        return {
+            "data": templates,
+            "total_logs": len(logs),
+            "total_templates": len(templates),
+            "service": service,
+            "hours": hours,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ────────── AI 分析 ──────────

@@ -15,6 +15,8 @@ export const api = {
   getErrorLogs:   (params) => http.get('/logs/errors', { params }),
   // 指标
   getErrorMetrics: (hours = 24) => http.get('/metrics/errors', { params: { hours } }),
+  // 日志模板聚合
+  getTemplates:   (params) => http.get('/logs/templates', { params }),
   // 报告
   listReports:    () => http.get('/report/list'),
   getReport:      (id) => http.get(`/report/${id}`),
