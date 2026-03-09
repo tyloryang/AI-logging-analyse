@@ -35,8 +35,10 @@ LOKI_PASSWORD = os.getenv("LOKI_PASSWORD", "")
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
 
-FEISHU_WEBHOOK   = os.getenv("FEISHU_WEBHOOK", "")
-DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")
+FEISHU_WEBHOOK    = os.getenv("FEISHU_WEBHOOK", "")
+FEISHU_KEYWORD    = os.getenv("FEISHU_KEYWORD", "")
+DINGTALK_WEBHOOK  = os.getenv("DINGTALK_WEBHOOK", "")
+DINGTALK_KEYWORD  = os.getenv("DINGTALK_KEYWORD", "")
 
 loki = LokiClient(LOKI_URL, LOKI_USERNAME, LOKI_PASSWORD)
 analyzer = AIAnalyzer()
@@ -299,12 +301,12 @@ async def notify_report(report_id: str, body: NotifyRequest):
             if not FEISHU_WEBHOOK:
                 results["feishu"] = {"ok": False, "msg": "未配置 FEISHU_WEBHOOK"}
             else:
-                results["feishu"] = await send_feishu(report, FEISHU_WEBHOOK)
+                results["feishu"] = await send_feishu(report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
         elif ch == "dingtalk":
             if not DINGTALK_WEBHOOK:
                 results["dingtalk"] = {"ok": False, "msg": "未配置 DINGTALK_WEBHOOK"}
             else:
-                results["dingtalk"] = await send_dingtalk(report, DINGTALK_WEBHOOK)
+                results["dingtalk"] = await send_dingtalk(report, DINGTALK_WEBHOOK, keyword=DINGTALK_KEYWORD)
         else:
             results[ch] = {"ok": False, "msg": f"不支持的渠道: {ch}"}
 

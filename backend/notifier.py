@@ -21,7 +21,7 @@ def _health_emoji(score: int) -> str:
     return "❌"
 
 
-def _build_feishu_card(report: dict) -> dict:
+def _build_feishu_card(report: dict, keyword: str = "") -> dict:
     """构造飞书交互卡片"""
     score = report.get("health_score", 0)
     title = report.get("title", "运维日报")
@@ -47,12 +47,17 @@ def _build_feishu_card(report: dict) -> dict:
     if len(ai) > 300:
         ai_summary += "…"
 
+    # 若配置了关键词且标题中未包含，在指标行前拼入（确保通过飞书关键词安全校验）
+    header_content = f"{_health_emoji(score)} **健康评分**: {score}/100\n{metrics}"
+    if keyword and keyword not in header_content and keyword not in title:
+        header_content = keyword + "\n" + header_content
+
     elements = [
         {
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"{_health_emoji(score)} **健康评分**: {score}/100\n{metrics}",
+                "content": header_content,
             },
         },
     ]
@@ -83,8 +88,8 @@ def _build_feishu_card(report: dict) -> dict:
     }
 
 
-def _build_dingtalk_markdown(report: dict) -> dict:
-    """构造钉钉 Markdown 消息"""
+def _build_dingtalk_markdown(report: dict, keyword: str = "") -> dict:
+    """构造钉钉 Markdown 消息。keyword 会插入消息首行确保通过关键词安全策略。"""
     score = report.get("health_score", 0)
     title = report.get("title", "运维日报")
     top10 = report.get("top10_errors", [])[:5]
@@ -112,18 +117,23 @@ def _build_dingtalk_markdown(report: dict) -> dict:
             summary += "…"
         lines += ["", "### 🤖 AI 分析摘要", summary]
 
+    # 若配置了关键词且消息中尚未包含，插入消息顶部（不影响显示，仅用于通过安全校验）
+    text = "\n".join(lines)
+    if keyword and keyword not in text:
+        text = keyword + "\n" + text
+
     return {
         "msgtype": "markdown",
         "markdown": {
             "title": title,
-            "text": "\n".join(lines),
+            "text": text,
         },
     }
 
 
-async def send_feishu(report: dict, webhook_url: str) -> dict:
+async def send_feishu(report: dict, webhook_url: str, keyword: str = "") -> dict:
     """发送飞书消息，返回 {"ok": bool, "msg": str}"""
-    payload = _build_feishu_card(report)
+    payload = _build_feishu_card(report, keyword=keyword)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(webhook_url, json=payload)
@@ -137,9 +147,9 @@ async def send_feishu(report: dict, webhook_url: str) -> dict:
         return {"ok": False, "msg": str(e)}
 
 
-async def send_dingtalk(report: dict, webhook_url: str) -> dict:
+async def send_dingtalk(report: dict, webhook_url: str, keyword: str = "") -> dict:
     """发送钉钉消息，返回 {"ok": bool, "msg": str}"""
-    payload = _build_dingtalk_markdown(report)
+    payload = _build_dingtalk_markdown(report, keyword=keyword)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(webhook_url, json=payload)
