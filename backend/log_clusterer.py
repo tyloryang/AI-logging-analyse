@@ -36,7 +36,6 @@ def _clean(line: str) -> str:
 def _make_template_miner() -> TemplateMiner:
     """创建一个无持久化的内存 TemplateMiner 实例"""
     cfg = TemplateMinerConfig()
-    cfg.load_defaults()
 
     # ── Drain 超参数 ──────────────────────────────
     cfg.drain_sim_th = 0.4       # 相似度阈值（越低越宽松，同一模板更多）
@@ -78,11 +77,16 @@ class LogClusterer:
         for log in logs:
             clean = _clean(log["line"])
             result = tm.add_log_message(clean)
-            if result and result.cluster:
-                cid = result.cluster.cluster_id
-                cluster_meta[cid]["logs"].append(log)
-                svc = log["labels"].get("app") or log["labels"].get("job") or "unknown"
-                cluster_meta[cid]["services"][svc] += 1
+            # drain3 新版返回 dict，旧版返回对象；兼容两种格式
+            if result:
+                if isinstance(result, dict):
+                    cid = result.get("cluster_id")
+                else:
+                    cid = result.cluster.cluster_id if result.cluster else None
+                if cid is not None:
+                    cluster_meta[cid]["logs"].append(log)
+                    svc = log["labels"].get("app") or log["labels"].get("job") or "unknown"
+                    cluster_meta[cid]["services"][svc] += 1
 
         templates = []
         for cluster in sorted(
