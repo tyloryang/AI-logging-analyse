@@ -155,7 +155,7 @@ class ReportMeta(BaseModel):
     active_alerts: int
 
 
-@app.post("/api/report/generate")
+@app.get("/api/report/generate")
 async def generate_report():
     """触发生成运维日报，流式返回 AI 分析内容"""
     try:
