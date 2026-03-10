@@ -4,12 +4,24 @@
     <aside class="service-panel">
       <div class="panel-header">
         <span class="panel-title">服务列表</span>
-        <select v-model="hours" class="time-select" @change="onParamChange">
+        <!-- 时间模式切换 -->
+        <div class="time-mode-tabs">
+          <button class="tmode-btn" :class="{ active: timeMode === 'relative' }" @click="timeMode = 'relative'; onTimeModeChange()">快速</button>
+          <button class="tmode-btn" :class="{ active: timeMode === 'custom' }" @click="timeMode = 'custom'">自定义</button>
+        </div>
+        <!-- 相对时间选择 -->
+        <select v-if="timeMode === 'relative'" v-model="hours" class="time-select" @change="onParamChange">
           <option value="1">最近 1 小时</option>
           <option value="6">最近 6 小时</option>
           <option value="24">最近 24 小时</option>
           <option value="72">最近 3 天</option>
         </select>
+        <!-- 自定义时间范围 -->
+        <div v-else class="custom-time-wrap">
+          <input type="datetime-local" v-model="customStart" class="dt-input" @change="onCustomTimeChange" title="开始时间" />
+          <span class="dt-sep">→</span>
+          <input type="datetime-local" v-model="customEnd"   class="dt-input" @change="onCustomTimeChange" title="结束时间" />
+        </div>
       </div>
 
       <div class="svc-list-wrap">
@@ -52,6 +64,19 @@
           </div>
         </div>
         <div class="toolbar-right">
+          <!-- 关键字搜索（两个 tab 共用） -->
+          <div class="keyword-wrap">
+            <span class="kw-icon">🔍</span>
+            <input
+              v-model="keyword"
+              class="kw-input"
+              placeholder="关键字过滤..."
+              @input="onKeywordInput"
+              @keyup.enter="onParamChange"
+            />
+            <button v-if="keyword" class="kw-clear" @click="clearKeyword">✕</button>
+          </div>
+
           <!-- 日志流专有控件 -->
           <template v-if="activeTab === 'logs'">
             <select v-model="levelFilter" class="time-select" @change="loadLogs">
@@ -180,9 +205,26 @@ const hours          = ref('24')
 const loadingSvcs    = ref(false)
 const activeTab      = ref('logs')
 
+// 时间模式：relative（最近N小时） | custom（自定义时间段）
+const timeMode    = ref('relative')
+const customStart = ref('')
+const customEnd   = ref('')
+
+// 关键字搜索
+const keyword      = ref('')
+let   searchTimer  = null
+
 const totalErrors = computed(() =>
   services.value.reduce((s, v) => s + v.error_count, 0)
 )
+
+// 构建时间参数（relative 或 custom）
+function timeParams() {
+  if (timeMode.value === 'custom' && customStart.value && customEnd.value) {
+    return { start_time: customStart.value, end_time: customEnd.value }
+  }
+  return { hours: hours.value }
+}
 
 // ── 日志流 ───────────────────────────────
 const logs         = ref([])
@@ -243,10 +285,11 @@ async function loadLogs() {
   logs.value = []
   try {
     const r = await api.getLogs({
-      service: selectedService.value || undefined,
-      hours:   hours.value,
-      level:   levelFilter.value || undefined,
-      limit:   500,
+      service:  selectedService.value || undefined,
+      level:    levelFilter.value || undefined,
+      limit:    2000,
+      keyword:  keyword.value || undefined,
+      ...timeParams(),
     })
     logs.value = r.data
   } finally {
@@ -260,11 +303,12 @@ async function loadTemplates() {
   tplError.value = ''
   try {
     const r = await api.getTemplates({
-      service: selectedService.value || undefined,
-      hours:   hours.value,
-      limit:   2000,
-      top_n:   50,
-      level:   tplLevelFilter.value || undefined,
+      service:  selectedService.value || undefined,
+      limit:    10000,
+      top_n:    100,
+      level:    tplLevelFilter.value || undefined,
+      keyword:  keyword.value || undefined,
+      ...timeParams(),
     })
     templates.value = r.data
     templateMeta.value = { total_logs: r.total_logs, total_templates: r.total_templates }
@@ -286,6 +330,28 @@ function onParamChange() {
   else                                 loadTemplates()
 }
 
+function onTimeModeChange() {
+  if (timeMode.value === 'relative') {
+    customStart.value = ''
+    customEnd.value   = ''
+    onParamChange()
+  }
+}
+
+function onCustomTimeChange() {
+  if (customStart.value && customEnd.value) onParamChange()
+}
+
+function onKeywordInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(onParamChange, 500)
+}
+
+function clearKeyword() {
+  keyword.value = ''
+  onParamChange()
+}
+
 function switchTab(tab) {
   activeTab.value = tab
   if (tab === 'templates' && !templates.value.length) loadTemplates()
@@ -294,7 +360,8 @@ function switchTab(tab) {
 function startAIAnalysis() {
   aiContent.value = ''
   analyzingAI.value = true
-  const params = new URLSearchParams({ hours: hours.value })
+  const tp = timeParams()
+  const params = new URLSearchParams(tp)
   if (selectedService.value) params.set('service', selectedService.value)
   streamSSE(
     `/api/analyze/stream?${params}`,
@@ -331,6 +398,54 @@ onMounted(() => {
   border: 1px solid var(--border); color: var(--text-primary);
   padding: 5px 8px; border-radius: 5px; font-size: 12px; cursor: pointer;
 }
+/* 时间模式切换 */
+.time-mode-tabs {
+  display: flex; margin-bottom: 6px;
+  background: var(--bg-base); border-radius: 5px; padding: 2px;
+}
+.tmode-btn {
+  flex: 1; padding: 3px 0; font-size: 11px; border: none;
+  background: transparent; color: var(--text-muted);
+  border-radius: 4px; cursor: pointer; transition: all .12s;
+}
+.tmode-btn.active { background: var(--bg-active); color: var(--text-primary); }
+
+/* 自定义时间输入 */
+.custom-time-wrap {
+  display: flex; flex-direction: column; gap: 4px; margin-top: 2px;
+}
+.dt-input {
+  width: 100%; background: var(--bg-hover);
+  border: 1px solid var(--border); color: var(--text-primary);
+  padding: 4px 6px; border-radius: 5px; font-size: 11px;
+  color-scheme: dark;
+}
+.dt-sep {
+  text-align: center; font-size: 10px; color: var(--text-muted); line-height: 1;
+}
+
+/* 关键字搜索框 */
+.keyword-wrap {
+  display: flex; align-items: center;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px; padding: 0 8px; gap: 5px;
+  min-width: 160px; max-width: 240px;
+}
+.kw-icon { font-size: 12px; flex-shrink: 0; }
+.kw-input {
+  flex: 1; background: transparent; border: none;
+  color: var(--text-primary); font-size: 12px;
+  padding: 5px 0; outline: none;
+}
+.kw-input::placeholder { color: var(--text-muted); }
+.kw-clear {
+  background: none; border: none; color: var(--text-muted);
+  font-size: 11px; cursor: pointer; padding: 2px;
+  line-height: 1; flex-shrink: 0;
+}
+.kw-clear:hover { color: var(--text-primary); }
+
 .svc-list-wrap { flex: 1; overflow-y: auto; padding: 8px; }
 .svc-item {
   display: flex; align-items: center; gap: 8px;

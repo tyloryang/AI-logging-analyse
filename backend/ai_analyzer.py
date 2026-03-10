@@ -38,7 +38,6 @@ class AnthropicProvider(BaseAIProvider):
         async with self.client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
-            thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": prompt}],
         ) as s:
             async for text in s.text_stream:
@@ -50,29 +49,44 @@ class AnthropicProvider(BaseAIProvider):
 # ─────────────────────────────────────────
 
 class OpenAICompatProvider(BaseAIProvider):
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, wire_api: str = "chat"):
         from openai import AsyncOpenAI
         self.client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key or "EMPTY",   # 本地模型通常不需要 key，传占位符
         )
         self.model = model
+        self.wire_api = wire_api  # "chat" = /chat/completions, "responses" = /responses
 
     @property
     def name(self) -> str:
-        return f"OpenAI-compatible ({self.model})"
+        return f"OpenAI-compatible ({self.model}, {self.wire_api})"
 
     async def stream(self, prompt: str, max_tokens: int = 2048) -> AsyncIterator[str]:
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            stream=True,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        async for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        if self.wire_api == "responses":
+            # OpenAI Responses API (/v1/responses)
+            response = await self.client.responses.create(
+                model=self.model,
+                input=[{"role": "user", "content": prompt}],
+                stream=True,
+            )
+            async for event in response:
+                if event.type == "response.output_text.delta":
+                    yield event.delta
+        else:
+            # Chat Completions API (/v1/chat/completions)
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                stream=True,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            async for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
 
 
 # ─────────────────────────────────────────
@@ -90,17 +104,23 @@ def create_provider() -> BaseAIProvider:
     AI_PROVIDER=openai     →  使用 OpenAI 兼容接口（本地模型等）
       AI_BASE_URL=http://192.168.x.x:8000/v1
       AI_API_KEY=                      （本地模型可留空）
-      AI_MODEL=Qwen3-32B
+      AI_MODEL=gpt-5
     """
     provider = os.getenv("AI_PROVIDER", "anthropic").lower()
+
+    import logging
+    _log = logging.getLogger(__name__)
+    _log.info("[AI] AI_PROVIDER=%s", provider)
 
     if provider == "openai":
         base_url = os.getenv("AI_BASE_URL", "")
         api_key  = os.getenv("AI_API_KEY", "EMPTY")
-        model    = os.getenv("AI_MODEL", "Qwen3-32B")
+        model    = os.getenv("AI_MODEL", "gpt-5")
+        wire_api = os.getenv("AI_WIRE_API", "chat")  # "chat" 或 "responses"
+        _log.info("[AI] base_url=%s, model=%s, wire_api=%s", base_url, model, wire_api)
         if not base_url:
             raise ValueError("AI_PROVIDER=openai 时必须设置 AI_BASE_URL")
-        return OpenAICompatProvider(base_url, api_key, model)
+        return OpenAICompatProvider(base_url, api_key, model, wire_api)
 
     # 默认 Anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -139,7 +159,7 @@ class AIAnalyzer:
     ) -> AsyncIterator[str]:
         """流式分析日志"""
         sample = logs[:200]
-        log_text = "\n".join(f"[{l['timestamp']}] {l['line']}" for l in sample)
+        log_text = "\n".join(f"[{l['timestamp']}] {l['line'][:200]}" for l in sample)
 
         prompt = f"""你是一名资深 SRE（网站可靠性工程师），请对以下{'服务 ' + service + ' 的' if service else ''}日志进行深度分析。
 

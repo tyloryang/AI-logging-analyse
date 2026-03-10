@@ -56,7 +56,7 @@ clusterer = LogClusterer()
 async def _build_and_save_report() -> dict:
     """生成并保存运维日报（非流式），返回完整 report dict。"""
     error_counts = await loki.count_errors_by_service(hours=24)
-    error_logs   = await loki.query_error_logs(hours=24, limit=200)
+    error_logs   = await loki.query_error_logs(hours=24, limit=1000)
     services     = await loki.get_services()
 
     node_status       = {"normal": 27, "abnormal": 0}
@@ -182,12 +182,36 @@ async def get_services():
 
 # ────────── 日志查询 ──────────
 
+def _parse_time_ns(dt_str: Optional[str]) -> Optional[int]:
+    """将 ISO datetime 字符串解析为纳秒时间戳，解析失败返回 None。"""
+    if not dt_str:
+        return None
+    try:
+        # 兼容带 / 不带时区的格式
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+            try:
+                dt = datetime.strptime(dt_str, fmt).replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1e9)
+            except ValueError:
+                continue
+        # 尝试 fromisoformat（Python 3.11+ 支持更多格式）
+        dt = datetime.fromisoformat(dt_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1e9)
+    except Exception:
+        return None
+
+
 @app.get("/api/logs")
 async def get_logs(
     service: Optional[str] = Query(None, description="服务名称"),
     hours: int = Query(24, description="查询时长（小时）"),
-    limit: int = Query(500, le=2000, description="返回条数"),
+    limit: int = Query(2000, le=10000, description="返回条数"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn/info"),
+    keyword: Optional[str] = Query(None, description="关键字过滤（不区分大小写）"),
+    start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式，如 2024-01-01T00:00"),
+    end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式，如 2024-01-01T23:59"),
 ):
     """查询日志"""
     try:
@@ -196,6 +220,9 @@ async def get_logs(
             hours=hours,
             limit=limit,
             level=level or None,
+            keyword=keyword or None,
+            start_ns=_parse_time_ns(start_time),
+            end_ns=_parse_time_ns(end_time),
         )
         return {
             "data": logs,
@@ -210,7 +237,7 @@ async def get_logs(
 @app.get("/api/logs/errors")
 async def get_error_logs(
     hours: int = Query(24),
-    limit: int = Query(1000, le=2000),
+    limit: int = Query(5000, le=20000),
 ):
     """查询全量错误日志"""
     try:
@@ -239,13 +266,21 @@ async def get_error_metrics(hours: int = Query(24)):
 async def get_log_templates(
     service: Optional[str] = Query(None, description="服务名称"),
     hours: int = Query(24, description="查询时长（小时）"),
-    limit: int = Query(2000, le=5000, description="参与聚类的日志上限"),
-    top_n: int = Query(50, le=200, description="返回模板数上限"),
+    limit: int = Query(10000, le=50000, description="参与聚类的日志上限"),
+    top_n: int = Query(100, le=500, description="返回模板数上限"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn，不传则聚类全量日志"),
+    keyword: Optional[str] = Query(None, description="关键字过滤"),
+    start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
+    end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式"),
 ):
     """Drain3 日志模板聚类：将重复日志归纳为带 <*> 占位符的模板"""
     try:
-        logs = await loki.query_logs(service=service, hours=hours, limit=limit, level=level)
+        logs = await loki.query_logs(
+            service=service, hours=hours, limit=limit, level=level,
+            keyword=keyword or None,
+            start_ns=_parse_time_ns(start_time),
+            end_ns=_parse_time_ns(end_time),
+        )
         templates = clusterer.cluster(logs, top_n=top_n)
         return {
             "data": templates,
@@ -275,9 +310,14 @@ async def analyze_logs_stream(
             return StreamingResponse(empty(), media_type="text/event-stream")
 
         async def generate():
-            async for chunk in analyzer.analyze_logs_stream(logs, service or ""):
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+            try:
+                async for chunk in analyzer.analyze_logs_stream(logs, service or ""):
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as exc:
+                logger.exception("AI 分析流式输出异常")
+                yield f"data: {json.dumps('[AI分析出错] ' + str(exc), ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
 
         return StreamingResponse(
             generate(),
@@ -307,7 +347,7 @@ async def generate_report():
     try:
         # 并发获取数据
         error_counts = await loki.count_errors_by_service(hours=24)
-        error_logs = await loki.query_error_logs(hours=24, limit=200)
+        error_logs = await loki.query_error_logs(hours=24, limit=1000)
 
         # 节点状态（模拟，实际可接 Prometheus）
         node_status = {"normal": 27, "abnormal": 0}
@@ -350,17 +390,22 @@ async def generate_report():
             # 先发送报告元数据
             yield f"data: __META__{json.dumps(meta, ensure_ascii=False)}\n\n"
 
-            # 流式 AI 分析
-            async for chunk in analyzer.generate_daily_report(
-                error_counts=error_counts,
-                total_logs=total_logs,
-                service_count=len(services),
-                node_status=node_status,
-                active_alerts=active_alerts,
-                sample_errors=error_logs,
-            ):
-                ai_content_parts.append(chunk)
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            try:
+                # 流式 AI 分析
+                async for chunk in analyzer.generate_daily_report(
+                    error_counts=error_counts,
+                    total_logs=total_logs,
+                    service_count=len(services),
+                    node_status=node_status,
+                    active_alerts=active_alerts,
+                    sample_errors=error_logs,
+                ):
+                    ai_content_parts.append(chunk)
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                logger.exception("日报 AI 生成异常")
+                ai_content_parts.append(f"\n[AI生成出错] {exc}")
+                yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
 
             # 保存完整报告
             meta["ai_analysis"] = "".join(ai_content_parts)
