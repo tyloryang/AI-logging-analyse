@@ -95,33 +95,63 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.page { padding: 24px; max-width: 1200px; }
+.page { padding: 24px; height: 100%; overflow-y: auto; }
 .page-header { margin-bottom: 24px; }
-.page-header h1 { font-size: 22px; font-weight: 700; }
-.subtitle { color: var(--text-muted); font-size: 13px; }
+.page-header h1 {
+  font-size: 22px; font-weight: 800;
+  color: var(--accent); text-shadow: 0 0 12px var(--accent);
+  letter-spacing: .04em;
+}
+.subtitle { color: var(--text-muted); font-size: 13px; margin-top: 2px; }
 .mt-20 { margin-top: 20px; }
+
+/* global .card overrides for this page */
 .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-.card-header h3 { font-size: 15px; font-weight: 600; }
+.card-header h3 { font-size: 15px; font-weight: 700; color: var(--text-primary); }
 .btn-sm { padding: 4px 12px; font-size: 12px; }
 
+/* Stat cards */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 16px; }
-.stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; display: flex; align-items: center; gap: 16px; }
+.stat-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: flex; align-items: center; gap: 16px;
+  backdrop-filter: blur(12px);
+  transition: border-color .2s, box-shadow .2s;
+  position: relative; overflow: hidden;
+}
+.stat-card::after {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: .5;
+}
+.stat-card:hover { border-color: var(--accent); box-shadow: var(--accent-glow); }
 .stat-icon { font-size: 28px; }
-.stat-value { font-size: 28px; font-weight: 700; line-height: 1; }
-.stat-label { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+.stat-value { font-size: 28px; font-weight: 800; line-height: 1; }
+.stat-label { color: var(--text-muted); font-size: 11px; margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; }
 
+/* Error list */
 .error-list { display: flex; flex-direction: column; gap: 8px; }
 .error-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
 .rank { width: 22px; text-align: center; font-size: 12px; color: var(--text-muted); font-weight: 600; }
-.rank-top { color: var(--warning); }
+.rank-top { color: var(--warning); text-shadow: 0 0 6px var(--warning); }
 .svc-name { width: 200px; font-size: 13px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bar-wrap { flex: 1; height: 6px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; }
-.bar { height: 100%; background: linear-gradient(90deg, var(--error), #f97316); border-radius: 3px; transition: width .3s; }
+.bar-wrap { flex: 1; height: 5px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; }
+.bar { height: 100%; background: linear-gradient(90deg, var(--error), var(--warning)); border-radius: 3px; transition: width .3s; box-shadow: 0 0 6px var(--error); }
 
+/* Service chips */
 .service-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.svc-chip { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 20px; font-size: 12px; border: 1px solid; }
-.svc-chip.healthy  { border-color: rgba(34,197,94,.3);  background: rgba(34,197,94,.05);  color: var(--success); }
-.svc-chip.has-error{ border-color: rgba(239,68,68,.3);  background: rgba(239,68,68,.05);  color: var(--error);   }
-.svc-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.svc-chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 20px; font-size: 12px; border: 1px solid;
+  transition: all .15s;
+}
+.svc-chip.healthy   { border-color: var(--success); background: rgba(0,255,136,.06); color: var(--success); }
+.svc-chip.has-error { border-color: var(--error);   background: rgba(255,68,102,.06); color: var(--error); }
+.svc-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 8px currentColor; }
+.svc-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 4px currentColor; }
 .svc-cnt { background: currentColor; color: var(--bg-base); border-radius: 9999px; padding: 0 6px; font-size: 10px; font-weight: 700; }
 </style>

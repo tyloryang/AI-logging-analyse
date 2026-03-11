@@ -378,20 +378,22 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.log-layout { display: flex; height: 100vh; overflow: hidden; }
+.log-layout { display: flex; height: 100%; overflow: hidden; }
 
 /* 左侧服务面板 */
 .service-panel {
   width: 220px; min-width: 220px;
-  background: var(--bg-card);
-  border-right: 1px solid var(--border);
+  background: var(--glass-bg);
+  border-right: 1px solid var(--glass-border);
   display: flex; flex-direction: column; overflow: hidden;
+  backdrop-filter: blur(12px);
 }
-.panel-header { padding: 16px 14px 12px; border-bottom: 1px solid var(--border); }
+.panel-header { padding: 16px 14px 12px; border-bottom: 1px solid var(--glass-border); }
 .panel-title {
-  display: block; font-size: 12px; font-weight: 600;
-  color: var(--text-muted); text-transform: uppercase;
-  letter-spacing: .8px; margin-bottom: 8px;
+  display: block; font-size: 11px; font-weight: 700;
+  color: var(--accent); text-transform: uppercase;
+  letter-spacing: .1em; margin-bottom: 8px;
+  text-shadow: 0 0 6px var(--accent);
 }
 .time-select {
   width: 100%; background: var(--bg-hover);
@@ -418,7 +420,6 @@ onMounted(() => {
   width: 100%; background: var(--bg-hover);
   border: 1px solid var(--border); color: var(--text-primary);
   padding: 4px 6px; border-radius: 5px; font-size: 11px;
-  color-scheme: dark;
 }
 .dt-sep {
   text-align: center; font-size: 10px; color: var(--text-muted); line-height: 1;
@@ -452,8 +453,8 @@ onMounted(() => {
   padding: 7px 10px; border-radius: 6px;
   cursor: pointer; transition: background .12s;
 }
-.svc-item:hover  { background: var(--bg-hover); }
-.svc-item.active { background: var(--bg-active); }
+.svc-item:hover  { background: var(--accent-dim); color: var(--accent); }
+.svc-item.active { background: var(--accent-dim); border-left: 2px solid var(--accent); padding-left: 8px; }
 .svc-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .svc-dot.all   { background: var(--accent); }
 .svc-dot.ok    { background: var(--success); }
@@ -468,11 +469,12 @@ onMounted(() => {
 /* 工具栏 */
 .log-toolbar {
   padding: 10px 16px;
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
+  background: var(--glass-bg);
+  border-bottom: 1px solid var(--glass-border);
   display: flex; align-items: center;
   justify-content: space-between; gap: 12px;
   flex-shrink: 0;
+  backdrop-filter: blur(12px);
 }
 .toolbar-left { display: flex; align-items: center; }
 .toolbar-right { display: flex; align-items: center; gap: 8px; }
@@ -486,15 +488,15 @@ onMounted(() => {
   color: var(--text-muted); font-size: 13px;
   cursor: pointer; transition: all .15s;
 }
-.tab-btn:hover  { color: var(--text-primary); }
-.tab-btn.active { background: var(--bg-active); color: var(--text-primary); }
+.tab-btn:hover  { color: var(--accent); }
+.tab-btn.active { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
 .tab-count {
   background: var(--bg-hover);
   color: var(--text-muted);
   font-size: 11px; padding: 0 6px;
   border-radius: 9999px; font-weight: 600;
 }
-.tab-btn.active .tab-count { background: rgba(99,102,241,.2); color: var(--accent-hover); }
+.tab-btn.active .tab-count { background: var(--accent-dim); color: var(--accent); }
 .meta-info { font-size: 12px; color: var(--text-muted); }
 
 /* AI 面板 */

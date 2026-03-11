@@ -47,6 +47,10 @@
       </div>
     </div>
 
+    <!-- 内容区（左：三个 tab 内容；右：详情栏） -->
+    <div class="content-row">
+    <div class="content-main">
+
     <!-- CMDB 主机表 -->
     <div v-show="tab === 'cmdb'" class="table-wrap">
       <div v-if="loading && !hosts.length" class="empty-state">
@@ -146,37 +150,99 @@
 
     <!-- SSH 终端 -->
     <div v-show="tab === 'ssh'" class="ssh-wrap">
-      <!-- SSH 连接栏 -->
-      <div class="ssh-toolbar">
-        <select class="ssh-input" style="width:200px" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
-          <option value="">选择主机...</option>
-          <option v-for="h in hosts" :key="h.instance" :value="h.instance">
-            {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' [已保存]' : '' }}
-          </option>
-        </select>
-        <select class="ssh-input" style="width:160px" v-model="sshForm.credentialId" @change="onSelectCredential">
-          <option value="">手动输入凭证</option>
-          <option v-for="c in credentials" :key="c.id" :value="c.id">
-            {{ c.name }} ({{ c.username }})
-          </option>
-        </select>
-        <input v-model.number="sshForm.port" class="ssh-input" style="width:70px" placeholder="端口" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
-        <input v-model="sshForm.username" class="ssh-input" style="width:110px" placeholder="用户名" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
-        <input v-model="sshForm.password" class="ssh-input" style="width:130px" type="password"
-          :placeholder="sshForm.useSaved || sshForm.credentialId ? '使用已保存凭证' : '密码'" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
-        <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">已保存</span>
-        <button class="btn btn-primary" @click="connectSSH" :disabled="sshConnecting" v-if="!sshConnected">
-          {{ sshConnecting ? '连接中...' : '连接' }}
-        </button>
-        <button class="btn btn-outline" style="border-color:var(--error);color:var(--error)" @click="disconnectSSH" v-else>
-          断开
-        </button>
-        <button class="btn btn-outline" @click="showCredModal = true" title="管理凭证库" style="margin-left:auto">
-          凭证管理
-        </button>
+
+      <!-- 会话标签栏 -->
+      <div class="ssh-session-bar">
+        <div v-for="s in sshSessions" :key="s.id"
+             class="ssh-session-tab"
+             :class="{ active: activeSshId === s.id, 'tab-on': s.connected, 'tab-ing': s.connecting }"
+             @click="switchSession(s.id)">
+          <span class="tab-dot" :class="s.connected ? 'ok' : s.connecting ? 'warn' : ''"></span>
+          <span class="tab-label">{{ s.label }}</span>
+          <span class="tab-close" @click.stop="closeSession(s.id)">×</span>
+        </div>
+        <button class="ssh-tab-add" @click="showNewConnForm = !showNewConnForm">＋ 新建</button>
+        <button class="btn btn-outline" @click="showCredModal = true" style="margin-left:auto;font-size:11px;padding:3px 10px">凭证管理</button>
       </div>
-      <!-- 终端容器 -->
-      <div ref="termRef" class="term-container"></div>
+
+      <!-- 新建连接表单（有会话时显示紧凑工具栏） -->
+      <transition name="slide-down">
+        <div v-show="showNewConnForm && sshSessions.length > 0" class="ssh-toolbar">
+          <select class="ssh-input" style="width:190px" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
+            <option value="">选择主机...</option>
+            <option v-for="h in hosts" :key="h.instance" :value="h.instance">
+              {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' ✓' : '' }}
+            </option>
+          </select>
+          <select class="ssh-input" style="width:150px" v-model="sshForm.credentialId" @change="onSelectCredential">
+            <option value="">手动输入凭证</option>
+            <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }} ({{ c.username }})</option>
+          </select>
+          <input v-model.number="sshForm.port" class="ssh-input" style="width:65px" placeholder="端口" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+          <input v-model="sshForm.username" class="ssh-input" style="width:100px" placeholder="用户名" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+          <input v-model="sshForm.password" class="ssh-input" style="width:120px" type="password"
+            :placeholder="sshForm.useSaved || sshForm.credentialId ? '已保存凭证' : '密码'" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+          <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">✓ 已保存</span>
+          <button class="btn btn-primary" @click="connectSSH">连接</button>
+        </div>
+      </transition>
+
+      <!-- 终端区域 -->
+      <div class="term-area">
+        <!-- 无会话时显示宽大的居中连接表单 -->
+        <div v-if="!sshSessions.length" class="ssh-welcome-panel">
+          <div class="ssh-welcome-card">
+            <div class="ssh-welcome-title">
+              <span class="ssh-welcome-icon">⬡</span>
+              SSH 终端连接
+            </div>
+            <div class="ssh-welcome-form">
+              <div class="ssh-form-row">
+                <label>主机</label>
+                <select class="ssh-input" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
+                  <option value="">选择主机...</option>
+                  <option v-for="h in hosts" :key="h.instance" :value="h.instance">
+                    {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' ✓ 已保存' : '' }}
+                  </option>
+                </select>
+              </div>
+              <div class="ssh-form-row">
+                <label>凭证库</label>
+                <select class="ssh-input" v-model="sshForm.credentialId" @change="onSelectCredential">
+                  <option value="">手动输入</option>
+                  <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }} ({{ c.username }})</option>
+                </select>
+              </div>
+              <div class="ssh-form-row">
+                <label>端口</label>
+                <input v-model.number="sshForm.port" class="ssh-input" placeholder="22" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+              </div>
+              <div class="ssh-form-row">
+                <label>用户名</label>
+                <input v-model="sshForm.username" class="ssh-input" placeholder="root" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+              </div>
+              <div class="ssh-form-row">
+                <label>密码</label>
+                <input v-model="sshForm.password" class="ssh-input" type="password"
+                  :placeholder="sshForm.useSaved || sshForm.credentialId ? '已保存凭证' : '输入密码'" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+              </div>
+            </div>
+            <div class="ssh-welcome-actions">
+              <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">✓ 已保存凭证</span>
+              <button class="btn btn-primary ssh-connect-btn" @click="connectSSH">
+                <span>⚡</span> 建立连接
+              </button>
+            </div>
+            <div class="ssh-welcome-hint">支持同时建立多个 SSH 会话</div>
+          </div>
+        </div>
+        <div v-for="s in sshSessions" :key="s.id"
+             v-show="activeSshId === s.id"
+             :ref="el => setTermRef(s.id, el)"
+             class="term-container">
+        </div>
+      </div>
+
     </div>
 
     <!-- 凭证管理弹窗 -->
@@ -223,7 +289,9 @@
       </div>
     </transition>
 
-    <!-- 主机详情侧栏 -->
+    </div><!-- /content-main -->
+
+    <!-- 主机详情侧栏（flex 同级，向右扩展） -->
     <transition name="slide">
       <div v-if="selected" class="detail-panel">
         <div class="detail-header">
@@ -330,6 +398,8 @@
         </div>
       </div>
     </transition>
+
+    </div><!-- /content-row -->
   </div>
 </template>
 
@@ -364,15 +434,13 @@ const credForm        = reactive({ name: '', username: 'root', password: '', por
 const credEditId      = ref('')
 const credSaving      = ref(false)
 
-// SSH 相关
-const termRef        = ref(null)
-const sshForm        = reactive({ host: '', port: 22, username: 'root', password: '', instance: '', useSaved: false, credentialId: '' })
-const sshConnected   = ref(false)
-const sshConnecting  = ref(false)
-let term = null
-let fitAddon = null
-let ws = null
-let resizeObserver = null
+// SSH 多会话
+const sshSessions     = ref([])    // [{ id, label, host, port, username, password, instance, useSaved, credentialId, connected, connecting }]
+const activeSshId     = ref('')
+const showNewConnForm = ref(true)
+const sshForm         = reactive({ host: '', port: 22, username: 'root', password: '', instance: '', useSaved: false, credentialId: '' })
+const _meta           = {}         // { [id]: { term, fitAddon, ws, resizeObserver } }
+const _termEls        = {}         // { [id]: HTMLElement }
 
 // 排序取值
 function sortVal(h, key) {
@@ -527,16 +595,15 @@ function openSSH(h) {
   sshForm.credentialId = h.credential_id || ''
   if (h.credential_id) {
     const c = credentials.value.find(x => x.id === h.credential_id)
-    if (c) {
-      sshForm.port     = c.port
-      sshForm.username = c.username
-    }
+    if (c) { sshForm.port = c.port; sshForm.username = c.username }
   }
   tab.value = 'ssh'
   selected.value = null
-  // 如果有保存凭证或绑定凭证库，自动连接
+  // 有保存凭证直接新建会话并连接
   if (h.ssh_saved || h.credential_id) {
     nextTick(() => connectSSH())
+  } else {
+    showNewConnForm.value = true
   }
 }
 
@@ -665,123 +732,147 @@ async function deleteCred(id) {
   await loadCredentials()
 }
 
-// ────────── SSH 终端 ──────────
+// ────────── SSH 多会话 ──────────
 
-function initTerminal() {
-  if (term) return
-  term = new Terminal({
+function setTermRef(id, el) {
+  if (el) _termEls[id] = el
+  else delete _termEls[id]
+}
+
+function _makeTerminal() {
+  return new Terminal({
     cursorBlink: true,
     fontSize: 13,
     fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Menlo, Monaco, monospace',
     theme: {
-      background: '#0d1117',
-      foreground: '#c9d1d9',
-      cursor: '#58a6ff',
-      selectionBackground: '#264f78',
-      black: '#0d1117',
-      red: '#ff7b72',
-      green: '#7ee787',
-      yellow: '#d29922',
-      blue: '#58a6ff',
-      magenta: '#bc8cff',
-      cyan: '#76e3ea',
-      white: '#c9d1d9',
+      background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff',
+      selectionBackground: '#264f78', black: '#0d1117', red: '#ff7b72',
+      green: '#7ee787', yellow: '#d29922', blue: '#58a6ff',
+      magenta: '#bc8cff', cyan: '#76e3ea', white: '#c9d1d9',
     },
     scrollback: 5000,
   })
-  fitAddon = new FitAddon()
-  term.loadAddon(fitAddon)
-  term.open(termRef.value)
-  fitAddon.fit()
-  term.writeln('\x1b[36m欢迎使用 SSH 终端\x1b[0m')
-  term.writeln('\x1b[90m选择主机并输入凭据后点击「连接」\x1b[0m\r\n')
+}
 
-  // 监听容器大小变化
-  resizeObserver = new ResizeObserver(() => {
-    if (fitAddon) fitAddon.fit()
+async function initSessionTerm(id) {
+  const el = _termEls[id]
+  if (!el || _meta[id]?.term) return
+  const m = _meta[id]
+  m.term = _makeTerminal()
+  m.fitAddon = new FitAddon()
+  m.term.loadAddon(m.fitAddon)
+  m.term.open(el)
+  m.fitAddon.fit()
+  m.resizeObserver = new ResizeObserver(() => {
+    if (activeSshId.value === id) m.fitAddon?.fit()
   })
-  resizeObserver.observe(termRef.value)
+  m.resizeObserver.observe(el)
+}
+
+function _buildAuthMsg(s) {
+  const useSaved = (s.useSaved || s.credentialId) && s.instance
+  if (s.credentialId)
+    return { type: 'auth', credential_id: s.credentialId, instance: s.instance, host: s.host }
+  if (useSaved)
+    return { type: 'auth', use_saved: true, instance: s.instance, host: s.host, port: s.port }
+  return { type: 'auth', host: s.host, port: s.port, username: s.username, password: s.password }
+}
+
+async function _doConnect(id) {
+  const s = sshSessions.value.find(x => x.id === id)
+  if (!s) return
+  const m = _meta[id]
+  const useSaved = (s.useSaved || s.credentialId) && s.instance
+  if (!useSaved && (!s.host || !s.username || !s.password)) {
+    m.term?.writeln('\x1b[31m请填写完整连接信息\x1b[0m')
+    return
+  }
+  s.connecting = true
+  await nextTick()
+  await initSessionTerm(id)
+  m.term.clear()
+  m.term.writeln(`\x1b[36m正在连接 ${s.label} ...\x1b[0m\r\n`)
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  m.ws = new WebSocket(`${proto}://${location.host}/api/ws/ssh`)
+
+  m.ws.onopen = () => {
+    m.ws.send(JSON.stringify(_buildAuthMsg(s)))
+    s.connected = true
+    s.connecting = false
+    s.label = s.username + '@' + s.host
+    // 等 DOM 稳定后 fit，确保尺寸正确
+    nextTick(() => {
+      m.fitAddon?.fit()
+      const dims = m.fitAddon?.proposeDimensions()
+      if (dims) m.ws.send(`\x1b[RESIZE:${dims.cols},${dims.rows}]`)
+    })
+  }
+  m.ws.onmessage = (e) => m.term.write(e.data)
+  m.ws.onclose = () => {
+    s.connected = false
+    s.connecting = false
+    m.term?.writeln('\r\n\x1b[90m连接已关闭\x1b[0m')
+  }
+  m.ws.onerror = () => {
+    s.connected = false
+    s.connecting = false
+    m.term?.writeln('\r\n\x1b[31mWebSocket 连接错误\x1b[0m')
+  }
+  m.term.onData((data) => {
+    if (m.ws?.readyState === WebSocket.OPEN) m.ws.send(data)
+  })
+  m.term.onResize(({ cols, rows }) => {
+    if (m.ws?.readyState === WebSocket.OPEN) m.ws.send(`\x1b[RESIZE:${cols},${rows}]`)
+  })
+}
+
+function switchSession(id) {
+  activeSshId.value = id
+  nextTick(() => _meta[id]?.fitAddon?.fit())
+}
+
+function closeSession(id) {
+  const m = _meta[id]
+  if (m) {
+    m.ws?.close()
+    m.resizeObserver?.disconnect()
+    m.term?.dispose()
+    delete _meta[id]
+  }
+  const idx = sshSessions.value.findIndex(s => s.id === id)
+  if (idx !== -1) sshSessions.value.splice(idx, 1)
+  if (activeSshId.value === id) {
+    const next = sshSessions.value[Math.max(0, idx - 1)]
+    activeSshId.value = next?.id || ''
+    if (next) nextTick(() => _meta[next.id]?.fitAddon?.fit())
+    else showNewConnForm.value = true
+  }
 }
 
 async function connectSSH() {
   const useSaved = (sshForm.useSaved || sshForm.credentialId) && sshForm.instance
   if (!useSaved && (!sshForm.host || !sshForm.username || !sshForm.password)) {
-    term?.writeln('\x1b[31m请填写完整的连接信息（或在 CMDB 中保存凭证/绑定凭证库后使用快连）\x1b[0m')
+    alert('请填写完整连接信息（主机、用户名、密码）')
     return
   }
-
-  sshConnecting.value = true
+  const id = `sess_${Date.now()}`
+  const label = sshForm.instance
+    ? (hosts.value.find(h => h.instance === sshForm.instance)?.hostname || sshForm.host)
+    : sshForm.host
+  sshSessions.value.push({
+    id, label,
+    host: sshForm.host, port: sshForm.port,
+    username: sshForm.username, password: sshForm.password,
+    instance: sshForm.instance, useSaved: sshForm.useSaved,
+    credentialId: sshForm.credentialId,
+    connected: false, connecting: false,
+  })
+  _meta[id] = { term: null, fitAddon: null, ws: null, resizeObserver: null }
+  activeSshId.value = id
+  showNewConnForm.value = false
   await nextTick()
-  if (!term) initTerminal()
-  term.clear()
-  const label = useSaved ? `已保存凭证 → ${sshForm.host}` : `${sshForm.username}@${sshForm.host}:${sshForm.port}`
-  term.writeln(`\x1b[36m正在连接 ${label} ...\x1b[0m\r\n`)
-
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const wsUrl = `${proto}://${location.host}/api/ws/ssh`
-
-  ws = new WebSocket(wsUrl)
-
-  ws.onopen = () => {
-    // 通过 WebSocket 消息发送凭据
-    let authMsg
-    if (sshForm.credentialId) {
-      // 使用凭证库
-      authMsg = { type: 'auth', credential_id: sshForm.credentialId, instance: sshForm.instance, host: sshForm.host }
-    } else if (useSaved) {
-      // 使用主机已保存的凭证
-      authMsg = { type: 'auth', use_saved: true, instance: sshForm.instance, host: sshForm.host, port: sshForm.port }
-    } else {
-      // 手动输入
-      authMsg = { type: 'auth', host: sshForm.host, port: sshForm.port, username: sshForm.username, password: sshForm.password }
-    }
-    ws.send(JSON.stringify(authMsg))
-    sshConnected.value = true
-    sshConnecting.value = false
-    // 发送初始终端大小
-    const dims = fitAddon.proposeDimensions()
-    if (dims) {
-      ws.send(`\x1b[RESIZE:${dims.cols},${dims.rows}]`)
-    }
-  }
-
-  ws.onmessage = (e) => {
-    term.write(e.data)
-  }
-
-  ws.onclose = () => {
-    sshConnected.value = false
-    sshConnecting.value = false
-    term?.writeln('\r\n\x1b[90m连接已关闭\x1b[0m')
-  }
-
-  ws.onerror = () => {
-    sshConnected.value = false
-    sshConnecting.value = false
-    term?.writeln('\r\n\x1b[31mWebSocket 连接错误\x1b[0m')
-  }
-
-  // 终端输入 → WebSocket
-  term.onData((data) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(data)
-    }
-  })
-
-  // 终端大小变化 → 通知后端
-  term.onResize(({ cols, rows }) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(`\x1b[RESIZE:${cols},${rows}]`)
-    }
-  })
-}
-
-function disconnectSSH() {
-  if (ws) {
-    ws.close()
-    ws = null
-  }
-  sshConnected.value = false
+  await _doConnect(id)
 }
 
 onMounted(() => {
@@ -790,82 +881,97 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  disconnectSSH()
-  if (resizeObserver) resizeObserver.disconnect()
-  if (term) term.dispose()
+  for (const id of Object.keys(_meta)) closeSession(id)
 })
 
-// 切到 SSH tab 时初始化终端
+// 切到 SSH tab 时 fit 当前会话
 watch(tab, (val) => {
-  if (val === 'ssh') {
-    nextTick(() => {
-      if (!term) initTerminal()
-      else fitAddon?.fit()
-    })
-  }
+  if (val === 'ssh') nextTick(() => _meta[activeSshId.value]?.fitAddon?.fit())
+})
+
+// 连接表单收起/展开时重新 fit（高度变化）
+watch(showNewConnForm, () => {
+  nextTick(() => _meta[activeSshId.value]?.fitAddon?.fit())
 })
 </script>
 
 <style scoped>
-.cmdb-page { display: flex; flex-direction: column; height: 100vh; overflow: hidden; padding: 16px; gap: 12px; position: relative; }
+.cmdb-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; padding: 16px; gap: 12px; }
+
+/* 内容行：左侧主内容 + 右侧详情栏 */
+.content-row { flex: 1; display: flex; min-height: 0; gap: 0; }
+.content-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 /* 统计卡片 */
 .stats-row { display: flex; gap: 12px; flex-shrink: 0; }
 .stat-card {
-  flex: 1; background: var(--bg-card); border: 1px solid var(--border);
+  flex: 1;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius); padding: 14px 16px; text-align: center;
+  backdrop-filter: blur(12px);
+  position: relative; overflow: hidden;
+  transition: border-color .2s, box-shadow .2s;
 }
-.stat-val { font-size: 24px; font-weight: 700; color: var(--text-primary); }
-.stat-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
-.stat-card.ok .stat-val { color: var(--success); }
-.stat-card.warn .stat-val { color: var(--warning); }
-.stat-card.error .stat-val { color: var(--error); }
+.stat-card::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(135deg, var(--accent-dim), transparent);
+  opacity: 0; transition: opacity .2s;
+}
+.stat-card:hover::before { opacity: 1; }
+.stat-card:hover { border-color: var(--accent); box-shadow: var(--accent-glow); }
+.stat-val { font-size: 24px; font-weight: 800; color: var(--text-primary); position: relative; }
+.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; position: relative; }
+.stat-card.ok .stat-val { color: var(--success); text-shadow: 0 0 8px var(--success); }
+.stat-card.warn .stat-val { color: var(--warning); text-shadow: 0 0 8px var(--warning); }
+.stat-card.error .stat-val { color: var(--error); text-shadow: 0 0 8px var(--error); }
 
 /* 工具栏 */
 .toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  background: var(--bg-card); border: 1px solid var(--border);
+  background: var(--glass-bg); border: 1px solid var(--glass-border);
   border-radius: var(--radius); padding: 8px 14px; flex-shrink: 0;
+  backdrop-filter: blur(12px);
 }
 .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 8px; }
-.tab-group { display: flex; gap: 2px; background: var(--bg-base); padding: 3px; border-radius: 8px; }
+.tab-group { display: flex; gap: 2px; background: var(--bg-base); padding: 3px; border-radius: 8px; border: 1px solid var(--border); }
 .tab-btn {
   padding: 5px 14px; border-radius: 6px; border: none;
   background: transparent; color: var(--text-muted);
-  font-size: 13px; cursor: pointer; transition: all .15s;
+  font-size: 13px; cursor: pointer; transition: all .18s; font-weight: 500;
 }
-.tab-btn:hover { color: var(--text-primary); }
-.tab-btn.active { background: var(--bg-active); color: var(--text-primary); }
+.tab-btn:hover { color: var(--accent); }
+.tab-btn.active { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
 
 /* 表格 */
-.table-wrap { flex: 1; overflow-y: auto; }
+.table-wrap { flex: 1; overflow: auto; min-height: 0; }
 .host-table {
   width: 100%; border-collapse: collapse; font-size: 12px;
 }
 .host-table th {
-  text-align: left; padding: 8px 10px; font-weight: 600;
-  color: var(--text-muted); font-size: 11px; text-transform: uppercase;
-  letter-spacing: .5px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: var(--bg-base); z-index: 1;
+  text-align: left; padding: 8px 10px; font-weight: 700;
+  color: var(--accent); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .08em; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg-hover); z-index: 1;
   white-space: nowrap;
 }
 .th-sort { cursor: pointer; user-select: none; }
-.th-sort:hover { color: var(--text-primary); }
+.th-sort:hover { color: var(--accent-hover); background: var(--accent-dim); }
 .sort-icon { margin-left: 4px; font-size: 10px; opacity: .5; }
 .th-sort:hover .sort-icon { opacity: 1; }
 .host-table td {
-  padding: 8px 10px; border-bottom: 1px solid rgba(46,49,80,.3);
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
   color: var(--text-secondary); white-space: nowrap;
 }
-.host-table tr { cursor: pointer; transition: background .1s; }
-.host-table tr:hover { background: var(--bg-hover); }
+.host-table tr { cursor: pointer; transition: background .12s; }
+.host-table tr:hover td { background: var(--accent-dim); color: var(--text-primary); }
 .hostname { color: var(--text-primary); font-weight: 600; }
 .small-text { font-size: 11px; color: var(--text-muted); }
 .disk-mount { font-size: 10px; color: var(--text-muted); margin-left: 3px; }
 .tag.role {
   display: inline-block; font-size: 10px; padding: 1px 6px;
-  border-radius: 9999px; background: rgba(99,102,241,.15);
-  color: var(--accent-hover); margin-right: 4px;
+  border-radius: 9999px; background: var(--accent-dim);
+  color: var(--accent); margin-right: 4px;
 }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
@@ -880,11 +986,12 @@ watch(tab, (val) => {
 .text-muted { color: var(--text-muted); }
 
 /* 巡检 */
-.inspect-wrap { flex: 1; overflow-y: auto; }
+.inspect-wrap { flex: 1; overflow-y: auto; min-height: 0; }
 .inspect-list { display: flex; flex-direction: column; gap: 10px; }
 .inspect-card {
-  background: var(--bg-card); border: 1px solid var(--border);
+  background: var(--glass-bg); border: 1px solid var(--glass-border);
   border-radius: var(--radius); padding: 14px 16px;
+  backdrop-filter: blur(8px);
   transition: border-color .15s;
 }
 .inspect-card.card-warning { border-left: 3px solid var(--warning); }
@@ -935,44 +1042,139 @@ watch(tab, (val) => {
 .part-detail-info { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 
 /* SSH 终端 */
-.ssh-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.ssh-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; gap: 0; }
+
+/* 会话标签栏 */
+.ssh-session-bar {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+  padding: 6px 0 0; border-bottom: 1px solid var(--glass-border);
+  min-height: 38px;
+}
+.ssh-session-tab {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 10px 4px 8px; border-radius: 6px 6px 0 0;
+  font-size: 12px; cursor: pointer; color: var(--text-muted);
+  background: var(--bg-base); border: 1px solid var(--border);
+  border-bottom: none; transition: all .15s; white-space: nowrap;
+  position: relative; bottom: -1px;
+}
+.ssh-session-tab:hover { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
+.ssh-session-tab.active {
+  background: var(--glass-bg); color: var(--accent); border-color: var(--accent);
+  box-shadow: 0 -2px 8px var(--accent-dim);
+}
+.tab-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--text-muted);
+}
+.tab-dot.ok   { background: var(--success); box-shadow: 0 0 5px var(--success); }
+.tab-dot.warn { background: var(--warning); animation: pulse .8s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .4 } }
+.tab-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.tab-close {
+  font-size: 14px; line-height: 1; color: var(--text-muted); margin-left: 2px;
+  cursor: pointer; border-radius: 3px; padding: 0 2px;
+}
+.tab-close:hover { color: var(--error); background: rgba(239,68,68,.15); }
+.ssh-tab-add {
+  padding: 4px 12px; border-radius: 6px 6px 0 0;
+  border: 1px dashed var(--accent);
+  border-bottom: none; background: var(--accent-dim); color: var(--accent);
+  font-size: 12px; cursor: pointer; white-space: nowrap;
+  position: relative; bottom: -1px; font-weight: 600;
+  transition: all .15s;
+}
+.ssh-tab-add:hover { background: var(--accent); color: #000; box-shadow: var(--accent-glow); }
+
+/* 新建连接表单（紧凑模式，有会话时使用） */
 .ssh-toolbar {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 8px 0; flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.slide-down-enter-active, .slide-down-leave-active { transition: all .2s ease; overflow: hidden; }
+.slide-down-enter-from, .slide-down-leave-to { max-height: 0; opacity: 0; padding: 0; }
+.slide-down-enter-to, .slide-down-leave-from { max-height: 60px; opacity: 1; }
+
+/* 终端区域 & 宽大新建表单 */
+.term-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.ssh-welcome-panel {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 32px;
+}
+.ssh-welcome-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 36px 48px;
+  width: 100%; max-width: 700px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.4), var(--accent-glow);
+  display: flex; flex-direction: column; gap: 24px;
+}
+.ssh-welcome-title {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 18px; font-weight: 700; color: var(--accent);
+  text-shadow: 0 0 12px var(--accent);
+}
+.ssh-welcome-icon {
+  font-size: 28px; line-height: 1;
+}
+.ssh-welcome-form {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+}
+.ssh-form-row { display: flex; flex-direction: column; gap: 5px; }
+.ssh-form-row label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.ssh-form-row .ssh-input { width: 100%; }
+.ssh-welcome-actions {
+  display: flex; align-items: center; gap: 12px;
+}
+.ssh-connect-btn { padding: 10px 32px; font-size: 14px; font-weight: 700; letter-spacing: .05em; }
+.ssh-welcome-hint {
+  font-size: 12px; color: var(--text-muted); text-align: center;
 }
 .ssh-input {
-  background: var(--bg-hover); border: 1px solid var(--border);
-  color: var(--text-primary); padding: 5px 8px; border-radius: 5px;
-  font-size: 12px; font-family: inherit;
+  background: var(--bg-input, var(--bg-hover)); border: 1px solid var(--border);
+  color: var(--text-primary); padding: 6px 10px; border-radius: 6px;
+  font-size: 13px; font-family: inherit; outline: none;
+  transition: border-color .15s, box-shadow .15s;
 }
-.ssh-input:disabled { opacity: .5; cursor: not-allowed; }
+.ssh-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+.ssh-input:disabled { opacity: .45; cursor: not-allowed; }
 .saved-badge {
-  font-size: 10px; padding: 2px 8px; border-radius: 9999px;
-  background: rgba(34,197,94,.15); color: var(--success); font-weight: 600;
+  font-size: 11px; padding: 3px 10px; border-radius: 9999px;
+  background: rgba(0,255,136,.12); color: var(--success); font-weight: 600;
+  border: 1px solid var(--success);
 }
 .password-wrap { display: flex; gap: 4px; }
 .password-wrap input { flex: 1; }
 .pwd-toggle {
   background: var(--bg-hover); border: 1px solid var(--border); color: var(--text-muted);
   padding: 4px 8px; border-radius: 5px; font-size: 11px; cursor: pointer; white-space: nowrap;
+  transition: color .15s;
 }
+.pwd-toggle:hover { color: var(--accent); }
 .term-container {
-  flex: 1; background: #0d1117; border-radius: var(--radius);
-  border: 1px solid var(--border); overflow: hidden; padding: 4px;
+  position: absolute; inset: 0;
+  background: #050a10; border-radius: var(--radius);
+  border: 1px solid var(--glass-border); overflow: hidden; padding: 4px;
+  box-shadow: inset 0 0 40px rgba(0,0,0,0.6);
 }
 
 /* 详情侧栏 */
 .detail-panel {
-  position: absolute; top: 0; right: 0; bottom: 0;
-  width: 340px; background: var(--bg-card);
-  border-left: 1px solid var(--border);
+  width: 320px; flex-shrink: 0;
+  background: var(--glass-bg);
+  border-left: 1px solid var(--glass-border);
   display: flex; flex-direction: column;
-  box-shadow: -4px 0 20px rgba(0,0,0,.3); z-index: 10;
+  box-shadow: -4px 0 32px rgba(0,0,0,.4);
+  overflow: hidden;
+  backdrop-filter: blur(16px);
 }
 .detail-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 16px; border-bottom: 1px solid var(--border);
-  font-weight: 600; font-size: 14px; color: var(--text-primary);
+  padding: 14px 16px; border-bottom: 1px solid var(--glass-border);
+  font-weight: 600; font-size: 14px; color: var(--accent);
 }
 .btn-xs { padding: 2px 8px; font-size: 11px; }
 .detail-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
@@ -999,18 +1201,21 @@ watch(tab, (val) => {
 
 /* 凭证弹窗 */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  position: fixed; inset: 0; background: rgba(0,0,0,.65);
   display: flex; align-items: center; justify-content: center; z-index: 100;
+  backdrop-filter: blur(4px);
 }
 .modal-box {
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: 10px; width: 680px; max-width: 95vw; max-height: 80vh;
-  display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  background: var(--glass-bg); border: 1px solid var(--glass-border);
+  border-radius: 12px; width: 680px; max-width: 95vw; max-height: 80vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 8px 48px rgba(0,0,0,.6), var(--accent-glow);
+  backdrop-filter: blur(16px);
 }
 .modal-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 18px; border-bottom: 1px solid var(--border);
-  font-weight: 600; font-size: 14px; color: var(--text-primary);
+  padding: 14px 18px; border-bottom: 1px solid var(--glass-border);
+  font-weight: 700; font-size: 14px; color: var(--accent);
 }
 .modal-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
 .cred-form { margin-bottom: 16px; }
@@ -1030,9 +1235,9 @@ watch(tab, (val) => {
 .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-/* 过渡 */
-.slide-enter-active, .slide-leave-active { transition: transform .2s ease; }
-.slide-enter-from, .slide-leave-to { transform: translateX(100%); }
+/* 详情栏滑入 */
+.slide-enter-active, .slide-leave-active { transition: width .2s ease, opacity .2s ease; overflow: hidden; }
+.slide-enter-from, .slide-leave-to { width: 0 !important; opacity: 0; }
 
 /* 空状态 */
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; color: var(--text-muted); gap: 8px; }
