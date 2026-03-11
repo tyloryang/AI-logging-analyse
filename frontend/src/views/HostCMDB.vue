@@ -762,9 +762,12 @@ async function initSessionTerm(id) {
   m.fitAddon = new FitAddon()
   m.term.loadAddon(m.fitAddon)
   m.term.open(el)
+  await nextTick()
   m.fitAddon.fit()
   m.resizeObserver = new ResizeObserver(() => {
-    if (activeSshId.value === id) m.fitAddon?.fit()
+    if (activeSshId.value === id) {
+      requestAnimationFrame(() => m.fitAddon?.fit())
+    }
   })
   m.resizeObserver.observe(el)
 }
@@ -903,45 +906,35 @@ watch(showNewConnForm, () => {
 .content-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 /* 统计卡片 */
-.stats-row { display: flex; gap: 12px; flex-shrink: 0; }
+.stats-row { display: flex; gap: 10px; flex-shrink: 0; }
 .stat-card {
   flex: 1;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius); padding: 14px 16px; text-align: center;
-  backdrop-filter: blur(12px);
-  position: relative; overflow: hidden;
-  transition: border-color .2s, box-shadow .2s;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; text-align: center;
+  box-shadow: var(--shadow-sm);
 }
-.stat-card::before {
-  content: ''; position: absolute; inset: 0;
-  background: linear-gradient(135deg, var(--accent-dim), transparent);
-  opacity: 0; transition: opacity .2s;
-}
-.stat-card:hover::before { opacity: 1; }
-.stat-card:hover { border-color: var(--accent); box-shadow: var(--accent-glow); }
-.stat-val { font-size: 24px; font-weight: 800; color: var(--text-primary); position: relative; }
-.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; position: relative; }
-.stat-card.ok .stat-val { color: var(--success); text-shadow: 0 0 8px var(--success); }
-.stat-card.warn .stat-val { color: var(--warning); text-shadow: 0 0 8px var(--warning); }
-.stat-card.error .stat-val { color: var(--error); text-shadow: 0 0 8px var(--error); }
+.stat-val { font-size: 22px; font-weight: 700; color: var(--text-primary); }
+.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.stat-card.ok .stat-val { color: var(--success); }
+.stat-card.warn .stat-val { color: var(--warning); }
+.stat-card.error .stat-val { color: var(--error); }
 
 /* 工具栏 */
 .toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  background: var(--glass-bg); border: 1px solid var(--glass-border);
-  border-radius: var(--radius); padding: 8px 14px; flex-shrink: 0;
-  backdrop-filter: blur(12px);
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 7px 12px; flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
 }
 .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 8px; }
-.tab-group { display: flex; gap: 2px; background: var(--bg-base); padding: 3px; border-radius: 8px; border: 1px solid var(--border); }
+.tab-group { display: flex; gap: 2px; background: var(--bg-base); padding: 3px; border-radius: 6px; border: 1px solid var(--border); }
 .tab-btn {
-  padding: 5px 14px; border-radius: 6px; border: none;
+  padding: 4px 12px; border-radius: 4px; border: none;
   background: transparent; color: var(--text-muted);
-  font-size: 13px; cursor: pointer; transition: all .18s; font-weight: 500;
+  font-size: 13px; cursor: pointer; transition: all .12s;
 }
-.tab-btn:hover { color: var(--accent); }
-.tab-btn.active { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
+.tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.tab-btn.active { background: var(--bg-active); color: var(--text-primary); }
 
 /* 表格 */
 .table-wrap { flex: 1; overflow: auto; min-height: 0; }
@@ -949,35 +942,35 @@ watch(showNewConnForm, () => {
   width: 100%; border-collapse: collapse; font-size: 12px;
 }
 .host-table th {
-  text-align: left; padding: 8px 10px; font-weight: 700;
-  color: var(--accent); font-size: 11px; text-transform: uppercase;
-  letter-spacing: .08em; border-bottom: 1px solid var(--border);
+  text-align: left; padding: 7px 10px; font-weight: 600;
+  color: var(--text-muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .04em; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--bg-hover); z-index: 1;
   white-space: nowrap;
 }
 .th-sort { cursor: pointer; user-select: none; }
-.th-sort:hover { color: var(--accent-hover); background: var(--accent-dim); }
+.th-sort:hover { color: var(--text-primary); background: var(--bg-active); }
 .sort-icon { margin-left: 4px; font-size: 10px; opacity: .5; }
 .th-sort:hover .sort-icon { opacity: 1; }
 .host-table td {
-  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
   color: var(--text-secondary); white-space: nowrap;
 }
-.host-table tr { cursor: pointer; transition: background .12s; }
-.host-table tr:hover td { background: var(--accent-dim); color: var(--text-primary); }
-.hostname { color: var(--text-primary); font-weight: 600; }
+.host-table tr { cursor: pointer; transition: background .1s; }
+.host-table tr:hover td { background: var(--bg-hover); }
+.hostname { color: var(--text-primary); font-weight: 500; }
 .small-text { font-size: 11px; color: var(--text-muted); }
 .disk-mount { font-size: 10px; color: var(--text-muted); margin-left: 3px; }
 .tag.role {
   display: inline-block; font-size: 10px; padding: 1px 6px;
-  border-radius: 9999px; background: var(--accent-dim);
+  border-radius: 4px; background: var(--accent-dim);
   color: var(--accent); margin-right: 4px;
 }
 
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
-.dot.ok, .dot.normal { background: var(--success); box-shadow: 0 0 6px var(--success); }
-.dot.err, .dot.critical { background: var(--error); box-shadow: 0 0 6px var(--error); }
-.dot.warning { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.dot.ok, .dot.normal { background: var(--success); }
+.dot.err, .dot.critical { background: var(--error); }
+.dot.warning { background: var(--warning); }
 
 .usage-ok { color: var(--success); }
 .usage-warning { color: var(--warning); }
@@ -989,10 +982,9 @@ watch(showNewConnForm, () => {
 .inspect-wrap { flex: 1; overflow-y: auto; min-height: 0; }
 .inspect-list { display: flex; flex-direction: column; gap: 10px; }
 .inspect-card {
-  background: var(--glass-bg); border: 1px solid var(--glass-border);
+  background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 14px 16px;
-  backdrop-filter: blur(8px);
-  transition: border-color .15s;
+  box-shadow: var(--shadow-sm);
 }
 .inspect-card.card-warning { border-left: 3px solid var(--warning); }
 .inspect-card.card-critical { border-left: 3px solid var(--error); }
@@ -1047,27 +1039,24 @@ watch(showNewConnForm, () => {
 /* 会话标签栏 */
 .ssh-session-bar {
   display: flex; align-items: center; gap: 2px; flex-shrink: 0;
-  padding: 6px 0 0; border-bottom: 1px solid var(--glass-border);
-  min-height: 38px;
+  padding: 6px 0 0; border-bottom: 1px solid var(--border);
+  min-height: 36px;
 }
 .ssh-session-tab {
   display: flex; align-items: center; gap: 5px;
-  padding: 4px 10px 4px 8px; border-radius: 6px 6px 0 0;
+  padding: 4px 10px 4px 8px; border-radius: 5px 5px 0 0;
   font-size: 12px; cursor: pointer; color: var(--text-muted);
   background: var(--bg-base); border: 1px solid var(--border);
-  border-bottom: none; transition: all .15s; white-space: nowrap;
+  border-bottom: none; transition: all .12s; white-space: nowrap;
   position: relative; bottom: -1px;
 }
-.ssh-session-tab:hover { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
-.ssh-session-tab.active {
-  background: var(--glass-bg); color: var(--accent); border-color: var(--accent);
-  box-shadow: 0 -2px 8px var(--accent-dim);
-}
+.ssh-session-tab:hover { color: var(--text-primary); background: var(--bg-hover); }
+.ssh-session-tab.active { background: var(--bg-card); color: var(--text-primary); border-color: var(--border); }
 .tab-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
   background: var(--text-muted);
 }
-.tab-dot.ok   { background: var(--success); box-shadow: 0 0 5px var(--success); }
+.tab-dot.ok   { background: var(--success); }
 .tab-dot.warn { background: var(--warning); animation: pulse .8s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .4 } }
 .tab-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
@@ -1075,16 +1064,15 @@ watch(showNewConnForm, () => {
   font-size: 14px; line-height: 1; color: var(--text-muted); margin-left: 2px;
   cursor: pointer; border-radius: 3px; padding: 0 2px;
 }
-.tab-close:hover { color: var(--error); background: rgba(239,68,68,.15); }
+.tab-close:hover { color: var(--error); }
 .ssh-tab-add {
-  padding: 4px 12px; border-radius: 6px 6px 0 0;
-  border: 1px dashed var(--accent);
-  border-bottom: none; background: var(--accent-dim); color: var(--accent);
+  padding: 4px 10px; border-radius: 5px 5px 0 0;
+  border: 1px solid var(--border); border-bottom: none;
+  background: transparent; color: var(--text-muted);
   font-size: 12px; cursor: pointer; white-space: nowrap;
-  position: relative; bottom: -1px; font-weight: 600;
-  transition: all .15s;
+  position: relative; bottom: -1px; transition: all .12s;
 }
-.ssh-tab-add:hover { background: var(--accent); color: #000; box-shadow: var(--accent-glow); }
+.ssh-tab-add:hover { color: var(--text-primary); background: var(--bg-hover); }
 
 /* 新建连接表单（紧凑模式，有会话时使用） */
 .ssh-toolbar {
@@ -1097,39 +1085,37 @@ watch(showNewConnForm, () => {
 .slide-down-enter-to, .slide-down-leave-from { max-height: 60px; opacity: 1; }
 
 /* 终端区域 & 宽大新建表单 */
-.term-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.term-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
 .ssh-welcome-panel {
   flex: 1; display: flex; align-items: center; justify-content: center;
   padding: 32px;
 }
 .ssh-welcome-card {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  padding: 36px 48px;
-  width: 100%; max-width: 700px;
-  backdrop-filter: blur(16px);
-  box-shadow: 0 8px 40px rgba(0,0,0,0.4), var(--accent-glow);
-  display: flex; flex-direction: column; gap: 24px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px 40px;
+  width: 100%; max-width: 640px;
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 20px;
 }
 .ssh-welcome-title {
-  display: flex; align-items: center; gap: 12px;
-  font-size: 18px; font-weight: 700; color: var(--accent);
-  text-shadow: 0 0 12px var(--accent);
+  display: flex; align-items: center; gap: 10px;
+  font-size: 16px; font-weight: 600; color: var(--text-primary);
 }
 .ssh-welcome-icon {
-  font-size: 28px; line-height: 1;
+  font-size: 20px; line-height: 1;
 }
 .ssh-welcome-form {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
 }
 .ssh-form-row { display: flex; flex-direction: column; gap: 5px; }
-.ssh-form-row label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.ssh-form-row label { font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-bottom: 2px; }
 .ssh-form-row .ssh-input { width: 100%; }
 .ssh-welcome-actions {
   display: flex; align-items: center; gap: 12px;
 }
-.ssh-connect-btn { padding: 10px 32px; font-size: 14px; font-weight: 700; letter-spacing: .05em; }
+.ssh-connect-btn { padding: 8px 24px; font-size: 14px; }
 .ssh-welcome-hint {
   font-size: 12px; color: var(--text-muted); text-align: center;
 }
@@ -1156,25 +1142,28 @@ watch(showNewConnForm, () => {
 .pwd-toggle:hover { color: var(--accent); }
 .term-container {
   position: absolute; inset: 0;
-  background: #050a10; border-radius: var(--radius);
-  border: 1px solid var(--glass-border); overflow: hidden; padding: 4px;
-  box-shadow: inset 0 0 40px rgba(0,0,0,0.6);
+  background: #0d1117; border-radius: var(--radius);
+  border: 1px solid var(--border); overflow: hidden; padding: 4px;
+  display: flex; flex-direction: column;
 }
+/* xterm 内部元素撑满容器 */
+.term-container :deep(.xterm) { flex: 1; min-height: 0; }
+.term-container :deep(.xterm-viewport) { overflow-y: auto !important; }
+.term-container :deep(.xterm-screen) { width: 100% !important; }
 
 /* 详情侧栏 */
 .detail-panel {
   width: 320px; flex-shrink: 0;
-  background: var(--glass-bg);
-  border-left: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
   display: flex; flex-direction: column;
-  box-shadow: -4px 0 32px rgba(0,0,0,.4);
+  box-shadow: var(--shadow);
   overflow: hidden;
-  backdrop-filter: blur(16px);
 }
 .detail-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 16px; border-bottom: 1px solid var(--glass-border);
-  font-weight: 600; font-size: 14px; color: var(--accent);
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: 14px; color: var(--text-primary);
 }
 .btn-xs { padding: 2px 8px; font-size: 11px; }
 .detail-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
@@ -1201,21 +1190,19 @@ watch(showNewConnForm, () => {
 
 /* 凭证弹窗 */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.65);
+  position: fixed; inset: 0; background: rgba(0,0,0,.5);
   display: flex; align-items: center; justify-content: center; z-index: 100;
-  backdrop-filter: blur(4px);
 }
 .modal-box {
-  background: var(--glass-bg); border: 1px solid var(--glass-border);
-  border-radius: 12px; width: 680px; max-width: 95vw; max-height: 80vh;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); width: 680px; max-width: 95vw; max-height: 80vh;
   display: flex; flex-direction: column;
-  box-shadow: 0 8px 48px rgba(0,0,0,.6), var(--accent-glow);
-  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow);
 }
 .modal-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 18px; border-bottom: 1px solid var(--glass-border);
-  font-weight: 700; font-size: 14px; color: var(--accent);
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: 14px; color: var(--text-primary);
 }
 .modal-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
 .cred-form { margin-bottom: 16px; }

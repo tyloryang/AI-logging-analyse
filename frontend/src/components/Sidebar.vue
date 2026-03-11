@@ -1,8 +1,8 @@
 <template>
   <aside class="sidebar">
     <div class="logo">
-      <span class="logo-icon">⬡</span>
-      <span class="logo-text">AI <span class="logo-ops">OPS</span></span>
+      <span class="logo-icon">🤖</span>
+      <span class="logo-text">AI Ops</span>
     </div>
 
     <nav class="nav">
@@ -13,26 +13,23 @@
       >
         <span class="nav-icon">{{ item.icon }}</span>
         <span class="nav-label">{{ item.label }}</span>
-        <span v-if="route.path === item.path" class="nav-active-bar"></span>
       </RouterLink>
     </nav>
 
-    <!-- Theme switcher -->
-    <div class="theme-section">
-      <div class="theme-label">主题</div>
-      <div class="theme-dots">
+    <div class="sidebar-footer">
+      <!-- Theme toggle -->
+      <div class="theme-row">
         <button
           v-for="t in THEMES" :key="t.id"
-          class="theme-dot"
+          class="theme-btn"
           :class="{ active: currentTheme === t.id }"
           :title="t.label"
-          :style="{ '--dot-color': t.color }"
           @click="setTheme(t.id)"
-        ></button>
+        >{{ t.icon }} {{ t.label }}</button>
       </div>
-    </div>
 
-    <div class="sidebar-footer">
+      <div class="divider"></div>
+
       <div class="conn-status" :class="connected ? 'ok' : 'err'">
         <span class="dot"></span>
         <span>{{ connected ? 'Loki 已连接' : 'Loki 未连接' }}</span>
@@ -70,12 +67,12 @@ const aiShortName = computed(() => {
 })
 
 const navItems = [
-  { path: '/',        icon: '◈', label: '仪表盘'   },
-  { path: '/logs',    icon: '≡', label: '日志分析'  },
-  { path: '/metrics', icon: '△', label: '指标监控'  },
-  { path: '/alerts',  icon: '◎', label: '告警历史'  },
-  { path: '/report',  icon: '☰', label: '分析报告'  },
-  { path: '/hosts',   icon: '⬡', label: 'CMDB 巡检' },
+  { path: '/',        icon: '📊', label: '仪表盘'   },
+  { path: '/logs',    icon: '📋', label: '日志分析'  },
+  { path: '/metrics', icon: '📈', label: '指标监控'  },
+  { path: '/alerts',  icon: '🔔', label: '告警历史'  },
+  { path: '/report',  icon: '📝', label: '分析报告'  },
+  { path: '/hosts',   icon: '🖥️', label: 'CMDB 巡检' },
 ]
 
 onMounted(async () => {
@@ -93,121 +90,66 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* 侧边栏使用固定深蓝色，不受主题变量影响 */
 .sidebar {
   width: 200px; min-width: 200px;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--glass-border);
+  background: #182132;
   display: flex; flex-direction: column;
-  padding: 16px 0;
-  position: relative;
-  z-index: 10;
-}
-
-/* Subtle glow line on right edge */
-.sidebar::after {
-  content: '';
-  position: absolute;
-  top: 0; right: -1px; bottom: 0;
-  width: 1px;
-  background: linear-gradient(to bottom, transparent, var(--accent), transparent);
-  opacity: 0.4;
+  overflow: hidden;
 }
 
 .logo {
-  display: flex; align-items: center; gap: 10px;
-  padding: 4px 20px 20px;
-  border-bottom: 1px solid var(--glass-border);
-  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 9px;
+  padding: 0 16px;
+  height: 52px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  flex-shrink: 0;
 }
-.logo-icon {
-  font-size: 22px;
-  color: var(--accent);
-  text-shadow: var(--accent-glow);
-  line-height: 1;
-}
-.logo-text {
-  font-size: 15px; font-weight: 800;
-  color: var(--text-primary);
-  letter-spacing: 1.5px;
-}
-.logo-ops {
-  color: var(--accent);
-  text-shadow: 0 0 8px var(--accent);
-}
+.logo-icon { font-size: 18px; }
+.logo-text { font-size: 14px; font-weight: 600; color: #fff; letter-spacing: .02em; }
 
-.nav { flex: 1; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.nav { flex: 1; padding: 8px 0; display: flex; flex-direction: column; overflow-y: auto; }
 .nav-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 12px; border-radius: 6px;
-  color: var(--text-secondary); text-decoration: none;
-  font-size: 13px; font-weight: 500;
-  transition: all .18s;
+  display: flex; align-items: center; gap: 9px;
+  padding: 10px 20px;
+  color: #96a2b9; text-decoration: none;
+  font-size: 13px; transition: background .12s, color .12s;
   position: relative;
-  overflow: hidden;
 }
-.nav-item:hover {
-  background: var(--accent-dim);
-  color: var(--accent);
-}
+.nav-item:hover { background: rgba(255,255,255,0.06); color: #d3dce6; }
 .nav-item.active {
-  background: var(--accent-dim);
-  color: var(--accent);
-  font-weight: 600;
+  background: rgba(58,132,255,0.15);
+  color: #fff;
 }
-.nav-active-bar {
-  position: absolute;
-  right: 0; top: 20%; bottom: 20%;
-  width: 2px;
-  background: var(--accent);
-  border-radius: 2px;
-  box-shadow: 0 0 6px var(--accent);
+.nav-item.active::before {
+  content: '';
+  position: absolute; left: 0; top: 20%; bottom: 20%;
+  width: 3px; background: #3a84ff; border-radius: 0 2px 2px 0;
 }
 .nav-icon { font-size: 14px; width: 16px; text-align: center; }
 
-/* Theme switcher */
-.theme-section {
-  padding: 12px 20px;
-  border-top: 1px solid var(--glass-border);
-  border-bottom: 1px solid var(--glass-border);
-}
-.theme-label {
-  font-size: 10px; font-weight: 700;
-  letter-spacing: .1em;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  margin-bottom: 8px;
-}
-.theme-dots {
-  display: flex; gap: 8px; flex-wrap: wrap;
-}
-.theme-dot {
-  width: 18px; height: 18px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  background: var(--dot-color);
-  cursor: pointer;
-  transition: all .2s;
-  position: relative;
-  box-shadow: 0 0 6px var(--dot-color);
-}
-.theme-dot:hover {
-  transform: scale(1.25);
-  box-shadow: 0 0 12px var(--dot-color);
-}
-.theme-dot.active {
-  border-color: #fff;
-  transform: scale(1.2);
-  box-shadow: 0 0 14px var(--dot-color);
+.sidebar-footer {
+  padding: 10px 14px 14px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  display: flex; flex-direction: column; gap: 5px;
+  flex-shrink: 0;
 }
 
-/* Footer */
-.sidebar-footer {
-  padding: 12px 20px 0;
-  display: flex; flex-direction: column; gap: 6px;
+.theme-row { display: flex; gap: 4px; margin-bottom: 2px; }
+.theme-btn {
+  flex: 1; padding: 4px 6px; font-size: 11px;
+  border-radius: 2px; border: 1px solid rgba(255,255,255,0.1);
+  background: transparent; color: #96a2b9;
+  cursor: pointer; transition: all .12s; text-align: center;
 }
-.conn-status { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); }
+.theme-btn:hover { background: rgba(255,255,255,0.08); color: #d3dce6; }
+.theme-btn.active { background: #3a84ff; border-color: #3a84ff; color: #fff; }
+
+.divider { height: 1px; background: rgba(255,255,255,0.06); margin: 2px 0; }
+
+.conn-status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #6b7a99; }
 .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.conn-status.ok .dot  { background: var(--success); box-shadow: 0 0 5px var(--success); }
-.conn-status.err .dot { background: var(--error);   box-shadow: 0 0 5px var(--error);   }
+.conn-status.ok .dot  { background: #2dcb56; }
+.conn-status.err .dot { background: #ea3636; }
 .ai-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
 </style>

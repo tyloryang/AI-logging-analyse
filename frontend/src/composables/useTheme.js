@@ -1,26 +1,21 @@
 import { ref } from 'vue'
 
 export const THEMES = [
-  { id: 'deep-space', label: 'Deep Space', color: '#00d4ff' },
-  { id: 'cyber',      label: 'Cyber',      color: '#bf00ff' },
-  { id: 'matrix',     label: 'Matrix',     color: '#00ff41' },
-  { id: 'steel',      label: 'Steel',      color: '#2563eb' },
-  { id: 'arctic',     label: 'Arctic',     color: '#0ea5e9' },
+  { id: 'light', label: '日间', icon: '☀' },
+  { id: 'dark',  label: '夜间', icon: '🌙' },
 ]
 
 const STORAGE_KEY = 'aiops-theme'
 
 function applyTheme(id) {
-  if (id === 'deep-space') {
+  if (id === 'light') {
     document.documentElement.removeAttribute('data-theme')
   } else {
     document.documentElement.setAttribute('data-theme', id)
   }
 }
 
-const currentTheme = ref(localStorage.getItem(STORAGE_KEY) || 'deep-space')
-
-// Apply on load
+const currentTheme = ref(localStorage.getItem(STORAGE_KEY) || 'light')
 applyTheme(currentTheme.value)
 
 export function useTheme() {
@@ -29,6 +24,5 @@ export function useTheme() {
     localStorage.setItem(STORAGE_KEY, id)
     applyTheme(id)
   }
-
   return { currentTheme, THEMES, setTheme }
 }

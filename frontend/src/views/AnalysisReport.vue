@@ -384,16 +384,15 @@ onMounted(loadReportList)
 /* 左侧 */
 .report-list-panel {
   width: 240px; min-width: 240px;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   display: flex; flex-direction: column;
   overflow: hidden;
-  backdrop-filter: blur(12px);
 }
 .panel-top {
-  padding: 14px;
-  border-bottom: 1px solid var(--glass-border);
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
   display: flex; flex-direction: column; gap: 10px;
   flex-shrink: 0;
 }
@@ -416,8 +415,8 @@ onMounted(loadReportList)
   margin-bottom: 4px;
   transition: background .12s;
 }
-.history-item:hover { background: var(--accent-dim); }
-.history-item.active { background: var(--accent-dim); border-left: 2px solid var(--accent); padding-left: 10px; }
+.history-item:hover { background: var(--bg-hover); }
+.history-item.active { background: var(--accent-dim); color: var(--accent); }
 .history-title {
   font-size: 13px; font-weight: 500;
   color: var(--text-primary);
@@ -433,12 +432,11 @@ onMounted(loadReportList)
 /* 右侧 */
 .report-detail {
   flex: 1;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow-y: auto;
   min-height: 0;
-  backdrop-filter: blur(12px);
 }
 .report-content { padding: 24px; }
 
@@ -461,9 +459,9 @@ onMounted(loadReportList)
   min-width: 100px;
   flex-shrink: 0;
 }
-.health-circle.health-good { border-color: var(--success); color: var(--success); background: rgba(0,255,136,.08); box-shadow: 0 0 12px rgba(0,255,136,.2); }
-.health-circle.health-mid  { border-color: var(--warning); color: var(--warning); background: rgba(255,183,0,.08);  box-shadow: 0 0 12px rgba(255,183,0,.2);  }
-.health-circle.health-bad  { border-color: var(--error);   color: var(--error);   background: rgba(255,68,102,.08); box-shadow: 0 0 12px rgba(255,68,102,.2); }
+.health-circle.health-good { border-color: var(--success); color: var(--success); background: rgba(63,185,80,.08); }
+.health-circle.health-mid  { border-color: var(--warning); color: var(--warning); background: rgba(210,153,34,.08); }
+.health-circle.health-bad  { border-color: var(--error);   color: var(--error);   background: rgba(248,81,73,.08); }
 .health-num   { font-size: 30px; font-weight: 800; line-height: 1; }
 .health-label { font-size: 10px; margin-top: 4px; opacity: .8; }
 
