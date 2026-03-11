@@ -1,5 +1,7 @@
-# 环境变量（含敏感信息，禁止提交）
+# 环境变量与密钥（含敏感信息，禁止提交）
 backend/.env
+backend/.ssh_key
+backend/cmdb_hosts.json
 backend/reports/
 
 # Python

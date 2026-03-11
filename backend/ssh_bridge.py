@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from typing import Callable, Optional
 
 import asyncssh
 from fastapi import WebSocket, WebSocketDisconnect
@@ -9,21 +10,28 @@ from fastapi import WebSocket, WebSocketDisconnect
 logger = logging.getLogger(__name__)
 
 
-async def ssh_websocket_handler(ws: WebSocket):
+async def ssh_websocket_handler(
+    ws: WebSocket,
+    resolve_credential: Optional[Callable[[str], Optional[dict]]] = None,
+):
     """
     WebSocket ↔ SSH 桥接。
     连接流程：
     1. 客户端连接 WebSocket
-    2. 客户端发送 JSON 认证消息: {"type":"auth","host":"...","port":22,"username":"...","password":"..."}
+    2. 客户端发送 JSON 认证消息:
+       - 手动输入: {"type":"auth","host":"...","port":22,"username":"...","password":"..."}
+       - 使用已保存凭证: {"type":"auth","host":"...","port":22,"use_saved":true,"instance":"master"}
     3. 服务端建立 SSH 连接
     4. 后续消息直通终端
+
+    resolve_credential: 回调函数，传入 instance，返回 {host, port, username, password} 或 None
     """
     await ws.accept()
     conn = None
     process = None
 
     try:
-        # 等待认证消息（5秒超时）
+        # 等待认证消息
         try:
             raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
             auth = json.loads(raw)
@@ -41,10 +49,23 @@ async def ssh_websocket_handler(ws: WebSocket):
             await ws.close()
             return
 
-        host = auth.get("host", "")
-        port = int(auth.get("port", 22))
-        username = auth.get("username", "")
-        password = auth.get("password", "")
+        # 使用已保存的凭证
+        if auth.get("use_saved") and resolve_credential:
+            instance = auth.get("instance", "")
+            cred = resolve_credential(instance)
+            if not cred:
+                await ws.send_text(f"\x1b[31m未找到 {instance} 的已保存凭证\x1b[0m\r\n")
+                await ws.close()
+                return
+            host = cred["host"]
+            port = cred["port"]
+            username = cred["username"]
+            password = cred["password"]
+        else:
+            host = auth.get("host", "")
+            port = int(auth.get("port", 22))
+            username = auth.get("username", "")
+            password = auth.get("password", "")
 
         if not host or not username or not password:
             await ws.send_text("\x1b[31m缺少 SSH 连接参数（host/username/password）\x1b[0m\r\n")
@@ -58,7 +79,7 @@ async def ssh_websocket_handler(ws: WebSocket):
             host, port=port,
             username=username,
             password=password,
-            known_hosts=None,  # 跳过 host key 验证（内网环境）
+            known_hosts=None,
             connect_timeout=10,
         )
         process = await conn.create_process(
@@ -83,7 +104,6 @@ async def ssh_websocket_handler(ws: WebSocket):
             try:
                 while True:
                     msg = await ws.receive_text()
-                    # 处理终端大小调整
                     if msg.startswith("\x1b[RESIZE:"):
                         try:
                             parts = msg.split(":")[1].rstrip("]").split(",")
@@ -96,7 +116,6 @@ async def ssh_websocket_handler(ws: WebSocket):
             except (WebSocketDisconnect, asyncio.CancelledError):
                 pass
 
-        # 并行运行
         tasks = [
             asyncio.create_task(ssh_to_ws()),
             asyncio.create_task(ws_to_ssh()),
@@ -132,4 +151,4 @@ async def ssh_websocket_handler(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-        logger.info("[SSH] 连接关闭 %s", host if 'host' in dir() else 'unknown')
+        logger.info("[SSH] 连接关闭 %s@%s", username if 'username' in dir() else '?', host if 'host' in dir() else '?')

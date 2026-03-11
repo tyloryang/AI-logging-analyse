@@ -19,6 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from cryptography.fernet import Fernet
+
 from loki_client import LokiClient
 from ai_analyzer import AIAnalyzer
 from log_clusterer import LogClusterer
@@ -39,6 +41,15 @@ PROMETHEUS_PASSWORD = os.getenv("PROMETHEUS_PASSWORD", "")
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
 CMDB_FILE = Path(os.getenv("CMDB_FILE", "./cmdb_hosts.json"))
+# SSH 密码加密密钥（自动生成并持久化到 .ssh_key 文件）
+_SSH_KEY_FILE = Path(os.getenv("SSH_KEY_FILE", "./.ssh_key"))
+if _SSH_KEY_FILE.exists():
+    _FERNET_KEY = _SSH_KEY_FILE.read_bytes().strip()
+else:
+    _FERNET_KEY = Fernet.generate_key()
+    _SSH_KEY_FILE.write_bytes(_FERNET_KEY)
+    logger.info("[启动] 已生成 SSH 密码加密密钥: %s", _SSH_KEY_FILE)
+_fernet = Fernet(_FERNET_KEY)
 
 FEISHU_WEBHOOK    = os.getenv("FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD    = os.getenv("FEISHU_KEYWORD", "")
@@ -67,6 +78,16 @@ def _load_cmdb() -> dict:
     if CMDB_FILE.exists():
         return json.loads(CMDB_FILE.read_text(encoding="utf-8"))
     return {}
+
+
+def _encrypt_password(plain: str) -> str:
+    """加密 SSH 密码"""
+    return _fernet.encrypt(plain.encode()).decode()
+
+
+def _decrypt_password(cipher: str) -> str:
+    """解密 SSH 密码"""
+    return _fernet.decrypt(cipher.encode()).decode()
 
 
 def _save_cmdb(data: dict):
@@ -517,6 +538,7 @@ async def get_hosts():
             prom.get_all_partitions(),
         )
         cmdb = _load_cmdb()
+        _cmdb_dirty = False
 
         for host in hosts:
             inst = host["instance"]
@@ -528,10 +550,17 @@ async def get_hosts():
             host["env"] = extra.get("env", "")
             host["role"] = extra.get("role", "")
             host["notes"] = extra.get("notes", "")
-            # CMDB 中存储的 SSH 凭据
+            # CMDB 中存储的 SSH 凭据（密码不下发到前端，只告知是否已配置）
             host["ssh_port"] = extra.get("ssh_port", 22)
             host["ssh_user"] = extra.get("ssh_user", "")
+            host["ssh_saved"] = bool(extra.get("ssh_password"))
+            # 将真实 IP 写入 CMDB 缓存，供 SSH 连接时使用
+            if host["ip"] and host["ip"] != extra.get("ip"):
+                cmdb.setdefault(inst, {})["ip"] = host["ip"]
+                _cmdb_dirty = True
 
+        if _cmdb_dirty:
+            _save_cmdb(cmdb)
         return {"data": hosts, "total": len(hosts), "prometheus_url": PROMETHEUS_URL}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Prometheus 连接失败: {e}")
@@ -544,11 +573,12 @@ class HostUpdateRequest(BaseModel):
     notes: Optional[str] = None
     ssh_port: Optional[int] = None
     ssh_user: Optional[str] = None
+    ssh_password: Optional[str] = None  # 明文传入，加密存储
 
 
 @app.put("/api/hosts/{instance:path}")
 async def update_host(instance: str, body: HostUpdateRequest):
-    """更新主机 CMDB 信息（owner/env/role/notes）"""
+    """更新主机 CMDB 信息"""
     cmdb = _load_cmdb()
     if instance not in cmdb:
         cmdb[instance] = {}
@@ -556,6 +586,12 @@ async def update_host(instance: str, body: HostUpdateRequest):
         val = getattr(body, field)
         if val is not None:
             cmdb[instance][field] = val
+    # SSH 密码加密存储
+    if body.ssh_password is not None:
+        if body.ssh_password:
+            cmdb[instance]["ssh_password"] = _encrypt_password(body.ssh_password)
+        else:
+            cmdb[instance].pop("ssh_password", None)  # 空密码 = 清除
     _save_cmdb(cmdb)
     return {"ok": True, "instance": instance}
 
@@ -597,7 +633,29 @@ async def inspect_single_host(instance: str):
 @app.websocket("/api/ws/ssh")
 async def ws_ssh(ws: WebSocket):
     """WebSocket SSH 终端代理（凭据通过首条 WebSocket 消息传递，不暴露在 URL 中）"""
-    await ssh_websocket_handler(ws)
+
+    def _resolve_credential(instance: str):
+        """从 CMDB 中解密已保存的 SSH 凭证"""
+        cmdb = _load_cmdb()
+        entry = cmdb.get(instance, {})
+        cipher = entry.get("ssh_password", "")
+        if not cipher:
+            return None
+        try:
+            password = _decrypt_password(cipher)
+        except Exception:
+            return None
+        # 获取主机真实 IP（需要查 Prometheus targets 的 discoveredLabels）
+        # 这里直接用 CMDB 中可能存的 IP 或 instance 自身
+        host = entry.get("ip", instance.split(":")[0])
+        return {
+            "host": host,
+            "port": entry.get("ssh_port", 22),
+            "username": entry.get("ssh_user", "root"),
+            "password": password,
+        }
+
+    await ssh_websocket_handler(ws, resolve_credential=_resolve_credential)
 
 
 # ────────── 健康检查 ──────────

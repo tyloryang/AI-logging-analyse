@@ -145,15 +145,17 @@
     <div v-show="tab === 'ssh'" class="ssh-wrap">
       <!-- SSH 连接栏 -->
       <div class="ssh-toolbar">
-        <select v-model="sshForm.host" class="ssh-input" style="width:180px">
+        <select class="ssh-input" style="width:200px" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
           <option value="">选择主机...</option>
-          <option v-for="h in hosts" :key="h.instance" :value="h.ip">
-            {{ h.hostname || h.ip }} ({{ h.ip }})
+          <option v-for="h in hosts" :key="h.instance" :value="h.instance">
+            {{ h.hostname || h.ip }} ({{ h.ip }}){{ h.ssh_saved ? ' [已保存]' : '' }}
           </option>
         </select>
         <input v-model.number="sshForm.port" class="ssh-input" style="width:70px" placeholder="端口" />
-        <input v-model="sshForm.username" class="ssh-input" style="width:110px" placeholder="用户名" />
-        <input v-model="sshForm.password" class="ssh-input" style="width:130px" type="password" placeholder="密码" />
+        <input v-model="sshForm.username" class="ssh-input" style="width:110px" placeholder="用户名" :disabled="sshForm.useSaved" />
+        <input v-model="sshForm.password" class="ssh-input" style="width:130px" type="password"
+          :placeholder="sshForm.useSaved ? '使用已保存凭证' : '密码'" :disabled="sshForm.useSaved" />
+        <span v-if="sshForm.useSaved" class="saved-badge">已保存</span>
         <button class="btn btn-primary" @click="connectSSH" :disabled="sshConnecting" v-if="!sshConnected">
           {{ sshConnecting ? '连接中...' : '连接' }}
         </button>
@@ -230,11 +232,33 @@
             <label>备注</label>
             <textarea v-model="editForm.notes" rows="2" placeholder="补充说明"></textarea>
           </div>
+
+          <!-- SSH 凭证 -->
+          <div class="detail-section">SSH 凭证</div>
+          <div class="edit-row">
+            <label>SSH 端口</label>
+            <input v-model.number="editForm.ssh_port" type="number" placeholder="22" />
+          </div>
+          <div class="edit-row">
+            <label>SSH 用户名</label>
+            <input v-model="editForm.ssh_user" placeholder="root" />
+          </div>
+          <div class="edit-row">
+            <label>SSH 密码</label>
+            <div class="password-wrap">
+              <input v-model="editForm.ssh_password" :type="showPwd ? 'text' : 'password'"
+                :placeholder="selected.ssh_saved ? '已保存（留空不修改）' : '输入密码'" />
+              <button class="pwd-toggle" @click="showPwd = !showPwd" type="button">
+                {{ showPwd ? '隐藏' : '显示' }}
+              </button>
+            </div>
+          </div>
+
           <button class="btn btn-primary" style="width:100%;margin-top:8px" @click="saveHost" :disabled="saving">
             {{ saving ? '保存中...' : '保存' }}
           </button>
           <button class="btn btn-outline" style="width:100%;margin-top:6px" @click="openSSH(selected)">
-            >_ SSH 连接
+            {{ selected.ssh_saved ? '>_ SSH 快连（已保存凭证）' : '>_ SSH 连接' }}
           </button>
         </div>
       </div>
@@ -259,11 +283,12 @@ const inspecting      = ref(false)
 const inspectResults  = ref([])
 const inspectSummary  = ref({ normal: 0, warning: 0, critical: 0 })
 
-const editForm = reactive({ owner: '', env: '', role: '', notes: '' })
+const editForm = reactive({ owner: '', env: '', role: '', notes: '', ssh_port: 22, ssh_user: '', ssh_password: '' })
+const showPwd = ref(false)
 
 // SSH 相关
 const termRef        = ref(null)
-const sshForm        = reactive({ host: '', port: 22, username: 'root', password: '' })
+const sshForm        = reactive({ host: '', port: 22, username: 'root', password: '', instance: '', useSaved: false })
 const sshConnected   = ref(false)
 const sshConnecting  = ref(false)
 let term = null
@@ -334,6 +359,21 @@ function selectHost(h) {
   editForm.env   = h.env || ''
   editForm.role  = h.role || ''
   editForm.notes = h.notes || ''
+  editForm.ssh_port = h.ssh_port || 22
+  editForm.ssh_user = h.ssh_user || ''
+  editForm.ssh_password = ''  // 密码不从后端返回，留空表示不修改
+  showPwd.value = false
+}
+
+function onSelectSSHHost(instance) {
+  const h = hosts.value.find(x => x.instance === instance)
+  if (!h) return
+  sshForm.host     = h.ip
+  sshForm.port     = h.ssh_port || 22
+  sshForm.username = h.ssh_user || 'root'
+  sshForm.password = ''
+  sshForm.instance = h.instance
+  sshForm.useSaved = !!h.ssh_saved
 }
 
 function openSSH(h) {
@@ -341,8 +381,14 @@ function openSSH(h) {
   sshForm.port     = h.ssh_port || 22
   sshForm.username = h.ssh_user || 'root'
   sshForm.password = ''
+  sshForm.instance = h.instance
+  sshForm.useSaved = !!h.ssh_saved
   tab.value = 'ssh'
   selected.value = null
+  // 如果有保存凭证，自动连接
+  if (h.ssh_saved) {
+    nextTick(() => connectSSH())
+  }
 }
 
 async function loadHosts() {
@@ -362,16 +408,29 @@ async function saveHost() {
   if (!selected.value) return
   saving.value = true
   try {
-    await api.updateHost(selected.value.instance, {
+    const payload = {
       owner: editForm.owner,
       env:   editForm.env,
       role:  editForm.role,
       notes: editForm.notes,
-    })
+      ssh_port: editForm.ssh_port,
+      ssh_user: editForm.ssh_user,
+    }
+    // 只有填写了密码才发送（空 = 不修改）
+    if (editForm.ssh_password) {
+      payload.ssh_password = editForm.ssh_password
+    }
+    await api.updateHost(selected.value.instance, payload)
     selected.value.owner = editForm.owner
     selected.value.env   = editForm.env
     selected.value.role  = editForm.role
     selected.value.notes = editForm.notes
+    selected.value.ssh_port = editForm.ssh_port
+    selected.value.ssh_user = editForm.ssh_user
+    if (editForm.ssh_password) {
+      selected.value.ssh_saved = true
+      editForm.ssh_password = ''
+    }
   } finally {
     saving.value = false
   }
@@ -430,8 +489,9 @@ function initTerminal() {
 }
 
 async function connectSSH() {
-  if (!sshForm.host || !sshForm.username || !sshForm.password) {
-    term?.writeln('\x1b[31m请填写完整的连接信息\x1b[0m')
+  const useSaved = sshForm.useSaved && sshForm.instance
+  if (!useSaved && (!sshForm.host || !sshForm.username || !sshForm.password)) {
+    term?.writeln('\x1b[31m请填写完整的连接信息（或在 CMDB 中保存凭证后使用快连）\x1b[0m')
     return
   }
 
@@ -439,7 +499,8 @@ async function connectSSH() {
   await nextTick()
   if (!term) initTerminal()
   term.clear()
-  term.writeln(`\x1b[36m正在连接 ${sshForm.username}@${sshForm.host}:${sshForm.port} ...\x1b[0m\r\n`)
+  const label = useSaved ? `已保存凭证 → ${sshForm.host}` : `${sshForm.username}@${sshForm.host}:${sshForm.port}`
+  term.writeln(`\x1b[36m正在连接 ${label} ...\x1b[0m\r\n`)
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const wsUrl = `${proto}://${location.host}/api/ws/ssh`
@@ -447,14 +508,11 @@ async function connectSSH() {
   ws = new WebSocket(wsUrl)
 
   ws.onopen = () => {
-    // 通过 WebSocket 消息发送凭据（不暴露在 URL 中）
-    ws.send(JSON.stringify({
-      type: 'auth',
-      host: sshForm.host,
-      port: sshForm.port,
-      username: sshForm.username,
-      password: sshForm.password,
-    }))
+    // 通过 WebSocket 消息发送凭据
+    const authMsg = useSaved
+      ? { type: 'auth', use_saved: true, instance: sshForm.instance, host: sshForm.host, port: sshForm.port }
+      : { type: 'auth', host: sshForm.host, port: sshForm.port, username: sshForm.username, password: sshForm.password }
+    ws.send(JSON.stringify(authMsg))
     sshConnected.value = true
     sshConnecting.value = false
     // 发送初始终端大小
@@ -656,6 +714,17 @@ watch(tab, (val) => {
   background: var(--bg-hover); border: 1px solid var(--border);
   color: var(--text-primary); padding: 5px 8px; border-radius: 5px;
   font-size: 12px; font-family: inherit;
+}
+.ssh-input:disabled { opacity: .5; cursor: not-allowed; }
+.saved-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 9999px;
+  background: rgba(34,197,94,.15); color: var(--success); font-weight: 600;
+}
+.password-wrap { display: flex; gap: 4px; }
+.password-wrap input { flex: 1; }
+.pwd-toggle {
+  background: var(--bg-hover); border: 1px solid var(--border); color: var(--text-muted);
+  padding: 4px 8px; border-radius: 5px; font-size: 11px; cursor: pointer; white-space: nowrap;
 }
 .term-container {
   flex: 1; background: #0d1117; border-radius: var(--radius);
