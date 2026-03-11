@@ -63,28 +63,31 @@
       <table v-else class="host-table">
         <thead>
           <tr>
-            <th>状态</th>
-            <th>主机名</th>
-            <th>IP</th>
-            <th>CPU%</th>
-            <th>内存%</th>
-            <th>磁盘(/)</th>
-            <th>I/O(R/W)</th>
-            <th>网络(↓/↑)</th>
-            <th>TCP</th>
-            <th>负载</th>
-            <th>运行时长</th>
+            <th class="th-sort" @click="setSort('state')">状态<span class="sort-icon">{{ sortKey==='state' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('hostname')">主机名<span class="sort-icon">{{ sortKey==='hostname' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('ip')">IP<span class="sort-icon">{{ sortKey==='ip' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('cpu')">CPU%<span class="sort-icon">{{ sortKey==='cpu' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('mem')">内存%<span class="sort-icon">{{ sortKey==='mem' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('disk')">磁盘(/)<span class="sort-icon">{{ sortKey==='disk' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('disk_read')">I/O(R/W)<span class="sort-icon">{{ sortKey==='disk_read' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('net_recv')">网络(↓/↑)<span class="sort-icon">{{ sortKey==='net_recv' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('tcp_estab')">TCP<span class="sort-icon">{{ sortKey==='tcp_estab' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('load5')">负载<span class="sort-icon">{{ sortKey==='load5' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th class="th-sort" @click="setSort('uptime')">运行时长<span class="sort-icon">{{ sortKey==='uptime' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="h in hosts" :key="h.instance" @click="selectHost(h)">
+          <tr v-for="h in sortedHosts" :key="h.instance" @click="selectHost(h)">
             <td><span class="dot" :class="h.state === 'up' ? 'ok' : 'err'"></span></td>
             <td class="hostname">{{ h.hostname || h.instance }}</td>
             <td>{{ h.ip }}</td>
             <td :class="usageClass(h.metrics.cpu_usage)">{{ fmt(h.metrics.cpu_usage, '%') }}</td>
             <td :class="usageClass(h.metrics.mem_usage)">{{ fmt(h.metrics.mem_usage, '%') }}</td>
-            <td :class="usageClass(rootDiskUsage(h))">{{ fmt(rootDiskUsage(h), '%') }}</td>
+            <td :class="usageClass(rootDiskUsage(h))">
+              {{ fmt(rootDiskUsage(h), '%') }}
+              <span v-if="maxDiskPartition(h)" class="disk-mount">{{ maxDiskPartition(h).mountpoint }}</span>
+            </td>
             <td class="small-text">{{ fmtIO(h.metrics) }}</td>
             <td class="small-text">{{ fmtNet(h.metrics) }}</td>
             <td class="small-text">{{ fmtTcp(h.metrics) }}</td>
@@ -148,24 +151,77 @@
         <select class="ssh-input" style="width:200px" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
           <option value="">选择主机...</option>
           <option v-for="h in hosts" :key="h.instance" :value="h.instance">
-            {{ h.hostname || h.ip }} ({{ h.ip }}){{ h.ssh_saved ? ' [已保存]' : '' }}
+            {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' [已保存]' : '' }}
           </option>
         </select>
-        <input v-model.number="sshForm.port" class="ssh-input" style="width:70px" placeholder="端口" />
-        <input v-model="sshForm.username" class="ssh-input" style="width:110px" placeholder="用户名" :disabled="sshForm.useSaved" />
+        <select class="ssh-input" style="width:160px" v-model="sshForm.credentialId" @change="onSelectCredential">
+          <option value="">手动输入凭证</option>
+          <option v-for="c in credentials" :key="c.id" :value="c.id">
+            {{ c.name }} ({{ c.username }})
+          </option>
+        </select>
+        <input v-model.number="sshForm.port" class="ssh-input" style="width:70px" placeholder="端口" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+        <input v-model="sshForm.username" class="ssh-input" style="width:110px" placeholder="用户名" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
         <input v-model="sshForm.password" class="ssh-input" style="width:130px" type="password"
-          :placeholder="sshForm.useSaved ? '使用已保存凭证' : '密码'" :disabled="sshForm.useSaved" />
-        <span v-if="sshForm.useSaved" class="saved-badge">已保存</span>
+          :placeholder="sshForm.useSaved || sshForm.credentialId ? '使用已保存凭证' : '密码'" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+        <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">已保存</span>
         <button class="btn btn-primary" @click="connectSSH" :disabled="sshConnecting" v-if="!sshConnected">
           {{ sshConnecting ? '连接中...' : '连接' }}
         </button>
         <button class="btn btn-outline" style="border-color:var(--error);color:var(--error)" @click="disconnectSSH" v-else>
           断开
         </button>
+        <button class="btn btn-outline" @click="showCredModal = true" title="管理凭证库" style="margin-left:auto">
+          凭证管理
+        </button>
       </div>
       <!-- 终端容器 -->
       <div ref="termRef" class="term-container"></div>
     </div>
+
+    <!-- 凭证管理弹窗 -->
+    <transition name="fade">
+      <div v-if="showCredModal" class="modal-overlay" @click.self="showCredModal = false">
+        <div class="modal-box">
+          <div class="modal-header">
+            <span>凭证库管理</span>
+            <button class="btn btn-outline btn-xs" @click="showCredModal = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <!-- 新建/编辑凭证表单 -->
+            <div class="cred-form">
+              <div class="cred-form-title">{{ credEditId ? '编辑凭证' : '新建凭证' }}</div>
+              <div class="cred-form-row">
+                <input v-model="credForm.name" placeholder="凭证名称，如：生产环境root" class="ssh-input" style="flex:2" />
+                <input v-model="credForm.username" placeholder="用户名" class="ssh-input" style="flex:1" />
+                <input v-model="credForm.password" type="password" :placeholder="credEditId ? '留空不修改' : '密码'" class="ssh-input" style="flex:1" />
+                <input v-model.number="credForm.port" type="number" placeholder="端口" class="ssh-input" style="width:70px" />
+                <button class="btn btn-primary" @click="saveCred" :disabled="credSaving">
+                  {{ credEditId ? '更新' : '添加' }}
+                </button>
+                <button v-if="credEditId" class="btn btn-outline" @click="resetCredForm">取消</button>
+              </div>
+            </div>
+            <!-- 凭证列表 -->
+            <div class="cred-list">
+              <div v-if="!credentials.length" class="text-muted" style="text-align:center;padding:20px;font-size:13px">
+                暂无凭证，请添加
+              </div>
+              <div v-for="c in credentials" :key="c.id" class="cred-item">
+                <div class="cred-info">
+                  <span class="cred-name">{{ c.name }}</span>
+                  <span class="cred-detail">{{ c.username }}  :{{ c.port }}</span>
+                </div>
+                <div class="cred-actions">
+                  <button class="btn btn-outline btn-xs" @click="editCred(c)">编辑</button>
+                  <button class="btn btn-outline btn-xs" style="border-color:var(--error);color:var(--error)" @click="deleteCred(c.id)">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
 
     <!-- 主机详情侧栏 -->
     <transition name="slide">
@@ -236,23 +292,34 @@
           <!-- SSH 凭证 -->
           <div class="detail-section">SSH 凭证</div>
           <div class="edit-row">
-            <label>SSH 端口</label>
-            <input v-model.number="editForm.ssh_port" type="number" placeholder="22" />
+            <label>使用凭证库</label>
+            <select v-model="editForm.credential_id">
+              <option value="">不使用（手动配置）</option>
+              <option v-for="c in credentials" :key="c.id" :value="c.id">
+                {{ c.name }} ({{ c.username }}:{{ c.port }})
+              </option>
+            </select>
           </div>
-          <div class="edit-row">
-            <label>SSH 用户名</label>
-            <input v-model="editForm.ssh_user" placeholder="root" />
-          </div>
-          <div class="edit-row">
-            <label>SSH 密码</label>
-            <div class="password-wrap">
-              <input v-model="editForm.ssh_password" :type="showPwd ? 'text' : 'password'"
-                :placeholder="selected.ssh_saved ? '已保存（留空不修改）' : '输入密码'" />
-              <button class="pwd-toggle" @click="showPwd = !showPwd" type="button">
-                {{ showPwd ? '隐藏' : '显示' }}
-              </button>
+          <template v-if="!editForm.credential_id">
+            <div class="edit-row">
+              <label>SSH 端口</label>
+              <input v-model.number="editForm.ssh_port" type="number" placeholder="22" />
             </div>
-          </div>
+            <div class="edit-row">
+              <label>SSH 用户名</label>
+              <input v-model="editForm.ssh_user" placeholder="root" />
+            </div>
+            <div class="edit-row">
+              <label>SSH 密码</label>
+              <div class="password-wrap">
+                <input v-model="editForm.ssh_password" :type="showPwd ? 'text' : 'password'"
+                  :placeholder="selected.ssh_saved ? '已保存（留空不修改）' : '输入密码'" />
+                <button class="pwd-toggle" @click="showPwd = !showPwd" type="button">
+                  {{ showPwd ? '隐藏' : '显示' }}
+                </button>
+              </div>
+            </div>
+          </template>
 
           <button class="btn btn-primary" style="width:100%;margin-top:8px" @click="saveHost" :disabled="saving">
             {{ saving ? '保存中...' : '保存' }}
@@ -267,7 +334,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { api } from '../api/index.js'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
@@ -283,18 +350,67 @@ const inspecting      = ref(false)
 const inspectResults  = ref([])
 const inspectSummary  = ref({ normal: 0, warning: 0, critical: 0 })
 
-const editForm = reactive({ owner: '', env: '', role: '', notes: '', ssh_port: 22, ssh_user: '', ssh_password: '' })
+const editForm = reactive({ owner: '', env: '', role: '', notes: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
+
+// 排序
+const sortKey = ref('')   // 当前排序字段
+const sortAsc = ref(true) // true=升序 false=降序
 const showPwd = ref(false)
+
+// 凭证库
+const credentials     = ref([])
+const showCredModal   = ref(false)
+const credForm        = reactive({ name: '', username: 'root', password: '', port: 22 })
+const credEditId      = ref('')
+const credSaving      = ref(false)
 
 // SSH 相关
 const termRef        = ref(null)
-const sshForm        = reactive({ host: '', port: 22, username: 'root', password: '', instance: '', useSaved: false })
+const sshForm        = reactive({ host: '', port: 22, username: 'root', password: '', instance: '', useSaved: false, credentialId: '' })
 const sshConnected   = ref(false)
 const sshConnecting  = ref(false)
 let term = null
 let fitAddon = null
 let ws = null
 let resizeObserver = null
+
+// 排序取值
+function sortVal(h, key) {
+  switch (key) {
+    case 'state':    return h.state === 'up' ? 0 : 1
+    case 'hostname': return (h.hostname || h.instance || '').toLowerCase()
+    case 'ip':       return h.ip || ''
+    case 'cpu':      return h.metrics.cpu_usage ?? -1
+    case 'mem':      return h.metrics.mem_usage ?? -1
+    case 'disk':     return rootDiskUsage(h) ?? -1
+    case 'disk_read':  return h.metrics.disk_read_mbps ?? -1
+    case 'net_recv':   return h.metrics.net_recv_mbps ?? -1
+    case 'tcp_estab':  return h.metrics.tcp_estab ?? -1
+    case 'load5':    return h.metrics.load5 ?? -1
+    case 'uptime':   return h.metrics.uptime_seconds ?? -1
+    default:         return ''
+  }
+}
+
+function setSort(key) {
+  if (sortKey.value === key) {
+    sortAsc.value = !sortAsc.value
+  } else {
+    sortKey.value = key
+    sortAsc.value = true
+  }
+}
+
+const sortedHosts = computed(() => {
+  if (!sortKey.value) return hosts.value
+  return [...hosts.value].sort((a, b) => {
+    const va = sortVal(a, sortKey.value)
+    const vb = sortVal(b, sortKey.value)
+    if (va < vb) return sortAsc.value ? -1 : 1
+    if (va > vb) return sortAsc.value ? 1 : -1
+    return 0
+  })
+})
 
 function countByState(state) {
   return hosts.value.filter(h => h.state === state).length
@@ -326,14 +442,17 @@ function fmtTcp(m) {
   return `${m.tcp_estab}/${m.tcp_tw ?? 0}`
 }
 
-function rootDiskUsage(h) {
-  // 取根分区使用率
+function maxDiskPartition(h) {
+  // 返回占用率最高的分区，无分区数据时回退到 metrics
   if (h.partitions && h.partitions.length) {
-    const root = h.partitions.find(p => p.mountpoint === '/')
-    if (root) return root.usage_pct
-    return h.partitions[0].usage_pct
+    return h.partitions.reduce((a, b) => (a.usage_pct >= b.usage_pct ? a : b))
   }
-  return h.metrics.disk_usage
+  return null
+}
+
+function rootDiskUsage(h) {
+  const p = maxDiskPartition(h)
+  return p ? p.usage_pct : h.metrics.disk_usage
 }
 
 function usageClass(val) {
@@ -362,6 +481,7 @@ function selectHost(h) {
   editForm.ssh_port = h.ssh_port || 22
   editForm.ssh_user = h.ssh_user || ''
   editForm.ssh_password = ''  // 密码不从后端返回，留空表示不修改
+  editForm.credential_id = h.credential_id || ''
   showPwd.value = false
 }
 
@@ -373,7 +493,28 @@ function onSelectSSHHost(instance) {
   sshForm.username = h.ssh_user || 'root'
   sshForm.password = ''
   sshForm.instance = h.instance
-  sshForm.useSaved = !!h.ssh_saved
+  sshForm.useSaved = !!(h.ssh_saved || h.credential_id)
+  sshForm.credentialId = h.credential_id || ''
+  // 如果主机绑定了凭证，填充凭证信息
+  if (h.credential_id) {
+    const c = credentials.value.find(x => x.id === h.credential_id)
+    if (c) {
+      sshForm.port     = c.port
+      sshForm.username = c.username
+    }
+  }
+}
+
+function onSelectCredential() {
+  if (sshForm.credentialId) {
+    const c = credentials.value.find(x => x.id === sshForm.credentialId)
+    if (c) {
+      sshForm.port     = c.port
+      sshForm.username = c.username
+      sshForm.password = ''
+      sshForm.useSaved = false  // 凭证库模式，不走 use_saved
+    }
+  }
 }
 
 function openSSH(h) {
@@ -382,11 +523,19 @@ function openSSH(h) {
   sshForm.username = h.ssh_user || 'root'
   sshForm.password = ''
   sshForm.instance = h.instance
-  sshForm.useSaved = !!h.ssh_saved
+  sshForm.useSaved = !!(h.ssh_saved || h.credential_id)
+  sshForm.credentialId = h.credential_id || ''
+  if (h.credential_id) {
+    const c = credentials.value.find(x => x.id === h.credential_id)
+    if (c) {
+      sshForm.port     = c.port
+      sshForm.username = c.username
+    }
+  }
   tab.value = 'ssh'
   selected.value = null
-  // 如果有保存凭证，自动连接
-  if (h.ssh_saved) {
+  // 如果有保存凭证或绑定凭证库，自动连接
+  if (h.ssh_saved || h.credential_id) {
     nextTick(() => connectSSH())
   }
 }
@@ -413,23 +562,31 @@ async function saveHost() {
       env:   editForm.env,
       role:  editForm.role,
       notes: editForm.notes,
-      ssh_port: editForm.ssh_port,
-      ssh_user: editForm.ssh_user,
+      credential_id: editForm.credential_id,
     }
-    // 只有填写了密码才发送（空 = 不修改）
-    if (editForm.ssh_password) {
-      payload.ssh_password = editForm.ssh_password
+    // 仅在未使用凭证库时发送独立 SSH 配置
+    if (!editForm.credential_id) {
+      payload.ssh_port = editForm.ssh_port
+      payload.ssh_user = editForm.ssh_user
+      if (editForm.ssh_password) {
+        payload.ssh_password = editForm.ssh_password
+      }
     }
     await api.updateHost(selected.value.instance, payload)
     selected.value.owner = editForm.owner
     selected.value.env   = editForm.env
     selected.value.role  = editForm.role
     selected.value.notes = editForm.notes
-    selected.value.ssh_port = editForm.ssh_port
-    selected.value.ssh_user = editForm.ssh_user
-    if (editForm.ssh_password) {
+    selected.value.credential_id = editForm.credential_id
+    if (editForm.credential_id) {
       selected.value.ssh_saved = true
-      editForm.ssh_password = ''
+    } else {
+      selected.value.ssh_port = editForm.ssh_port
+      selected.value.ssh_user = editForm.ssh_user
+      if (editForm.ssh_password) {
+        selected.value.ssh_saved = true
+        editForm.ssh_password = ''
+      }
     }
   } finally {
     saving.value = false
@@ -448,6 +605,64 @@ async function runInspect() {
   } finally {
     inspecting.value = false
   }
+}
+
+// ────────── 凭证库 ──────────
+
+async function loadCredentials() {
+  try {
+    const r = await api.listCredentials()
+    credentials.value = r.data
+  } catch (e) {
+    console.error('加载凭证失败', e)
+  }
+}
+
+function resetCredForm() {
+  credForm.name = ''
+  credForm.username = 'root'
+  credForm.password = ''
+  credForm.port = 22
+  credEditId.value = ''
+}
+
+function editCred(c) {
+  credEditId.value = c.id
+  credForm.name = c.name
+  credForm.username = c.username
+  credForm.password = ''
+  credForm.port = c.port
+}
+
+async function saveCred() {
+  if (!credForm.name) return alert('请输入凭证名称')
+  if (!credEditId.value && !credForm.password) return alert('请输入密码')
+  credSaving.value = true
+  try {
+    const payload = {
+      name: credForm.name,
+      username: credForm.username || 'root',
+      password: credForm.password || '',
+      port: credForm.port || 22,
+    }
+    if (credEditId.value) {
+      await api.updateCredential(credEditId.value, payload)
+    } else {
+      await api.createCredential(payload)
+    }
+    resetCredForm()
+    await loadCredentials()
+  } catch (e) {
+    alert('保存凭证失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+  } finally {
+    credSaving.value = false
+  }
+}
+
+async function deleteCred(id) {
+  if (!confirm('确定删除此凭证？已绑定该凭证的主机将需要重新配置。')) return
+  await api.deleteCredential(id)
+  await loadCredentials()
 }
 
 // ────────── SSH 终端 ──────────
@@ -489,9 +704,9 @@ function initTerminal() {
 }
 
 async function connectSSH() {
-  const useSaved = sshForm.useSaved && sshForm.instance
+  const useSaved = (sshForm.useSaved || sshForm.credentialId) && sshForm.instance
   if (!useSaved && (!sshForm.host || !sshForm.username || !sshForm.password)) {
-    term?.writeln('\x1b[31m请填写完整的连接信息（或在 CMDB 中保存凭证后使用快连）\x1b[0m')
+    term?.writeln('\x1b[31m请填写完整的连接信息（或在 CMDB 中保存凭证/绑定凭证库后使用快连）\x1b[0m')
     return
   }
 
@@ -509,9 +724,17 @@ async function connectSSH() {
 
   ws.onopen = () => {
     // 通过 WebSocket 消息发送凭据
-    const authMsg = useSaved
-      ? { type: 'auth', use_saved: true, instance: sshForm.instance, host: sshForm.host, port: sshForm.port }
-      : { type: 'auth', host: sshForm.host, port: sshForm.port, username: sshForm.username, password: sshForm.password }
+    let authMsg
+    if (sshForm.credentialId) {
+      // 使用凭证库
+      authMsg = { type: 'auth', credential_id: sshForm.credentialId, instance: sshForm.instance, host: sshForm.host }
+    } else if (useSaved) {
+      // 使用主机已保存的凭证
+      authMsg = { type: 'auth', use_saved: true, instance: sshForm.instance, host: sshForm.host, port: sshForm.port }
+    } else {
+      // 手动输入
+      authMsg = { type: 'auth', host: sshForm.host, port: sshForm.port, username: sshForm.username, password: sshForm.password }
+    }
     ws.send(JSON.stringify(authMsg))
     sshConnected.value = true
     sshConnecting.value = false
@@ -563,6 +786,7 @@ function disconnectSSH() {
 
 onMounted(() => {
   loadHosts()
+  loadCredentials()
 })
 
 onBeforeUnmount(() => {
@@ -623,7 +847,12 @@ watch(tab, (val) => {
   color: var(--text-muted); font-size: 11px; text-transform: uppercase;
   letter-spacing: .5px; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--bg-base); z-index: 1;
+  white-space: nowrap;
 }
+.th-sort { cursor: pointer; user-select: none; }
+.th-sort:hover { color: var(--text-primary); }
+.sort-icon { margin-left: 4px; font-size: 10px; opacity: .5; }
+.th-sort:hover .sort-icon { opacity: 1; }
 .host-table td {
   padding: 8px 10px; border-bottom: 1px solid rgba(46,49,80,.3);
   color: var(--text-secondary); white-space: nowrap;
@@ -632,6 +861,7 @@ watch(tab, (val) => {
 .host-table tr:hover { background: var(--bg-hover); }
 .hostname { color: var(--text-primary); font-weight: 600; }
 .small-text { font-size: 11px; color: var(--text-muted); }
+.disk-mount { font-size: 10px; color: var(--text-muted); margin-left: 3px; }
 .tag.role {
   display: inline-block; font-size: 10px; padding: 1px 6px;
   border-radius: 9999px; background: rgba(99,102,241,.15);
@@ -766,6 +996,39 @@ watch(tab, (val) => {
   padding: 5px 8px; border-radius: 5px; font-size: 12px;
   font-family: inherit; resize: vertical;
 }
+
+/* 凭证弹窗 */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.modal-box {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 10px; width: 680px; max-width: 95vw; max-height: 80vh;
+  display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+.modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: 14px; color: var(--text-primary);
+}
+.modal-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
+.cred-form { margin-bottom: 16px; }
+.cred-form-title { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
+.cred-form-row { display: flex; gap: 6px; align-items: center; }
+.cred-list { display: flex; flex-direction: column; gap: 6px; }
+.cred-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; background: var(--bg-base); border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.cred-info { display: flex; flex-direction: column; gap: 2px; }
+.cred-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.cred-detail { font-size: 11px; color: var(--text-muted); }
+.cred-actions { display: flex; gap: 6px; }
+
+.fade-enter-active, .fade-leave-active { transition: opacity .2s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 
 /* 过渡 */
 .slide-enter-active, .slide-leave-active { transition: transform .2s ease; }

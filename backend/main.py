@@ -41,6 +41,7 @@ PROMETHEUS_PASSWORD = os.getenv("PROMETHEUS_PASSWORD", "")
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
 CMDB_FILE = Path(os.getenv("CMDB_FILE", "./cmdb_hosts.json"))
+CREDENTIALS_FILE = Path(os.getenv("CREDENTIALS_FILE", "./ssh_credentials.json"))
 # SSH 密码加密密钥（自动生成并持久化到 .ssh_key 文件）
 _SSH_KEY_FILE = Path(os.getenv("SSH_KEY_FILE", "./.ssh_key"))
 if _SSH_KEY_FILE.exists():
@@ -92,6 +93,17 @@ def _decrypt_password(cipher: str) -> str:
 
 def _save_cmdb(data: dict):
     CMDB_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_credentials() -> list[dict]:
+    """加载凭证库"""
+    if CREDENTIALS_FILE.exists():
+        return json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
+    return []
+
+
+def _save_credentials(data: list[dict]):
+    CREDENTIALS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ────────── 定时任务 ──────────
@@ -554,6 +566,7 @@ async def get_hosts():
             host["ssh_port"] = extra.get("ssh_port", 22)
             host["ssh_user"] = extra.get("ssh_user", "")
             host["ssh_saved"] = bool(extra.get("ssh_password"))
+            host["credential_id"] = extra.get("credential_id", "")
             # 将真实 IP 写入 CMDB 缓存，供 SSH 连接时使用
             if host["ip"] and host["ip"] != extra.get("ip"):
                 cmdb.setdefault(inst, {})["ip"] = host["ip"]
@@ -574,6 +587,7 @@ class HostUpdateRequest(BaseModel):
     ssh_port: Optional[int] = None
     ssh_user: Optional[str] = None
     ssh_password: Optional[str] = None  # 明文传入，加密存储
+    credential_id: Optional[str] = None  # 关联凭证库中的凭证
 
 
 @app.put("/api/hosts/{instance:path}")
@@ -592,8 +606,85 @@ async def update_host(instance: str, body: HostUpdateRequest):
             cmdb[instance]["ssh_password"] = _encrypt_password(body.ssh_password)
         else:
             cmdb[instance].pop("ssh_password", None)  # 空密码 = 清除
+    # 关联凭证库
+    if body.credential_id is not None:
+        if body.credential_id:
+            cmdb[instance]["credential_id"] = body.credential_id
+            # 使用凭证库时清除独立保存的密码
+            cmdb[instance].pop("ssh_password", None)
+        else:
+            cmdb[instance].pop("credential_id", None)  # 空 = 解绑
     _save_cmdb(cmdb)
     return {"ok": True, "instance": instance}
+
+
+# ────────── SSH 凭证库 ──────────
+
+class CredentialRequest(BaseModel):
+    name: str                          # 凭证名称，如 "生产环境 root"
+    username: str = "root"
+    password: str                      # 明文传入，加密存储
+    port: int = 22
+
+
+@app.get("/api/ssh/credentials")
+async def list_credentials():
+    """列出所有凭证（不返回密码）"""
+    creds = _load_credentials()
+    return {"data": [
+        {"id": c["id"], "name": c["name"], "username": c["username"], "port": c["port"]}
+        for c in creds
+    ]}
+
+
+@app.post("/api/ssh/credentials")
+async def create_credential(body: CredentialRequest):
+    """创建凭证"""
+    creds = _load_credentials()
+    cred_id = f"cred_{int(time.time() * 1000)}"
+    creds.append({
+        "id": cred_id,
+        "name": body.name,
+        "username": body.username,
+        "password": _encrypt_password(body.password),
+        "port": body.port,
+    })
+    _save_credentials(creds)
+    return {"ok": True, "id": cred_id}
+
+
+@app.put("/api/ssh/credentials/{cred_id}")
+async def update_credential(cred_id: str, body: CredentialRequest):
+    """更新凭证"""
+    creds = _load_credentials()
+    for c in creds:
+        if c["id"] == cred_id:
+            c["name"] = body.name
+            c["username"] = body.username
+            c["port"] = body.port
+            if body.password:
+                c["password"] = _encrypt_password(body.password)
+            _save_credentials(creds)
+            return {"ok": True}
+    raise HTTPException(status_code=404, detail="凭证不存在")
+
+
+@app.delete("/api/ssh/credentials/{cred_id}")
+async def delete_credential(cred_id: str):
+    """删除凭证"""
+    creds = _load_credentials()
+    creds = [c for c in creds if c["id"] != cred_id]
+    _save_credentials(creds)
+    # 清除引用该凭证的主机
+    cmdb = _load_cmdb()
+    changed = False
+    for inst, entry in cmdb.items():
+        if entry.get("credential_id") == cred_id:
+            entry.pop("credential_id", None)
+            changed = True
+    if changed:
+        _save_cmdb(cmdb)
+    return {"ok": True}
 
 
 # ────────── 巡检 ──────────
@@ -634,10 +725,30 @@ async def inspect_single_host(instance: str):
 async def ws_ssh(ws: WebSocket):
     """WebSocket SSH 终端代理（凭据通过首条 WebSocket 消息传递，不暴露在 URL 中）"""
 
-    def _resolve_credential(instance: str):
-        """从 CMDB 中解密已保存的 SSH 凭证"""
+    def _resolve_credential(instance: str, credential_id: str = ""):
+        """从 CMDB 或凭证库中解密已保存的 SSH 凭证"""
         cmdb = _load_cmdb()
-        entry = cmdb.get(instance, {})
+        entry = cmdb.get(instance, {}) if instance else {}
+        host = entry.get("ip", instance.split(":")[0]) if instance else ""
+
+        # 直接指定凭证 ID（SSH toolbar 直选）或 CMDB 绑定的凭证 ID
+        cred_id = credential_id or entry.get("credential_id", "")
+        if cred_id:
+            creds = _load_credentials()
+            cred = next((c for c in creds if c["id"] == cred_id), None)
+            if cred:
+                try:
+                    password = _decrypt_password(cred["password"])
+                except Exception:
+                    return None
+                return {
+                    "host": host,
+                    "port": cred.get("port", 22),
+                    "username": cred.get("username", "root"),
+                    "password": password,
+                }
+
+        # 回退到主机独立保存的密码
         cipher = entry.get("ssh_password", "")
         if not cipher:
             return None
@@ -645,9 +756,6 @@ async def ws_ssh(ws: WebSocket):
             password = _decrypt_password(cipher)
         except Exception:
             return None
-        # 获取主机真实 IP（需要查 Prometheus targets 的 discoveredLabels）
-        # 这里直接用 CMDB 中可能存的 IP 或 instance 自身
-        host = entry.get("ip", instance.split(":")[0])
         return {
             "host": host,
             "port": entry.get("ssh_port", 22),

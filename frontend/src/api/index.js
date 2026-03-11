@@ -26,6 +26,11 @@ export const api = {
   updateHost:     (instance, data) => http.put(`/hosts/${instance}`, data),
   inspectHosts:   () => http.get('/hosts/inspect'),
   inspectHost:    (instance) => http.get(`/hosts/${instance}/inspect`),
+  // SSH 凭证库
+  listCredentials:   () => http.get('/ssh/credentials'),
+  createCredential:  (data) => http.post('/ssh/credentials', data),
+  updateCredential:  (id, data) => http.put(`/ssh/credentials/${id}`, data),
+  deleteCredential:  (id) => http.delete(`/ssh/credentials/${id}`),
   // 健康检查
   healthCheck:    () => http.get('/health'),
 }

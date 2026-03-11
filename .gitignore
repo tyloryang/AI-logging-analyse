@@ -2,6 +2,7 @@
 backend/.env
 backend/.ssh_key
 backend/cmdb_hosts.json
+backend/ssh_credentials.json
 backend/reports/
 
 # Python

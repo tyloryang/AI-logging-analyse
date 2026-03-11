@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 async def ssh_websocket_handler(
     ws: WebSocket,
-    resolve_credential: Optional[Callable[[str], Optional[dict]]] = None,
+    resolve_credential: Optional[Callable] = None,
 ):
     """
     WebSocket ↔ SSH 桥接。
@@ -21,10 +21,11 @@ async def ssh_websocket_handler(
     2. 客户端发送 JSON 认证消息:
        - 手动输入: {"type":"auth","host":"...","port":22,"username":"...","password":"..."}
        - 使用已保存凭证: {"type":"auth","host":"...","port":22,"use_saved":true,"instance":"master"}
+       - 使用凭证库: {"type":"auth","host":"...","credential_id":"cred_xxx"}
     3. 服务端建立 SSH 连接
     4. 后续消息直通终端
 
-    resolve_credential: 回调函数，传入 instance，返回 {host, port, username, password} 或 None
+    resolve_credential: 回调函数，传入 instance 或 (host, credential_id)，返回 {host, port, username, password} 或 None
     """
     await ws.accept()
     conn = None
@@ -49,15 +50,17 @@ async def ssh_websocket_handler(
             await ws.close()
             return
 
-        # 使用已保存的凭证
-        if auth.get("use_saved") and resolve_credential:
+        # 使用凭证库或已保存凭证
+        if (auth.get("use_saved") or auth.get("credential_id")) and resolve_credential:
             instance = auth.get("instance", "")
-            cred = resolve_credential(instance)
+            credential_id = auth.get("credential_id", "")
+            cred = resolve_credential(instance, credential_id=credential_id)
             if not cred:
-                await ws.send_text(f"\x1b[31m未找到 {instance} 的已保存凭证\x1b[0m\r\n")
+                label = credential_id or instance
+                await ws.send_text(f"\x1b[31m未找到 {label} 的凭证\x1b[0m\r\n")
                 await ws.close()
                 return
-            host = cred["host"]
+            host = cred.get("host") or auth.get("host", "")
             port = cred["port"]
             username = cred["username"]
             password = cred["password"]
