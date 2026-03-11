@@ -21,6 +21,10 @@
         <span class="dot"></span>
         <span>{{ connected ? 'Loki 已连接' : 'Loki 未连接' }}</span>
       </div>
+      <div class="conn-status" :class="promConnected ? 'ok' : 'err'" style="margin-top:6px">
+        <span class="dot"></span>
+        <span>{{ promConnected ? 'Prometheus 已连接' : 'Prometheus 未连接' }}</span>
+      </div>
       <div class="conn-status" :class="aiReady ? 'ok' : 'err'" style="margin-top:6px" :title="aiProvider">
         <span class="dot"></span>
         <span class="ai-label">{{ aiReady ? 'AI ' + aiShortName : 'AI 未就绪' }}</span>
@@ -36,6 +40,7 @@ import { api } from '../api/index.js'
 
 const route = useRoute()
 const connected = ref(false)
+const promConnected = ref(false)
 const aiReady = ref(false)
 const aiProvider = ref('')
 const aiShortName = computed(() => {
@@ -53,12 +58,14 @@ const navItems = [
   { path: '/metrics', icon: '📈', label: '指标监控'  },
   { path: '/alerts',  icon: '🔔', label: '告警历史'  },
   { path: '/report',  icon: '📝', label: '分析报告'  },
+  { path: '/hosts',   icon: '🖥️', label: 'CMDB 巡检' },
 ]
 
 onMounted(async () => {
   try {
     const r = await api.healthCheck()
     connected.value = r.loki_connected
+    promConnected.value = r.prometheus_connected ?? false
     aiReady.value = r.ai_ready ?? false
     aiProvider.value = r.ai_provider ?? ''
   } catch {

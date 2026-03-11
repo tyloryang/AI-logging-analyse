@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import asyncio
+
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -20,6 +23,8 @@ from loki_client import LokiClient
 from ai_analyzer import AIAnalyzer
 from log_clusterer import LogClusterer
 from notifier import send_feishu, send_dingtalk
+from prom_client import PrometheusClient
+from ssh_bridge import ssh_websocket_handler
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +33,12 @@ logger = logging.getLogger(__name__)
 LOKI_URL = os.getenv("LOKI_URL", "http://localhost:3100")
 LOKI_USERNAME = os.getenv("LOKI_USERNAME", "")
 LOKI_PASSWORD = os.getenv("LOKI_PASSWORD", "")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+PROMETHEUS_USERNAME = os.getenv("PROMETHEUS_USERNAME", "")
+PROMETHEUS_PASSWORD = os.getenv("PROMETHEUS_PASSWORD", "")
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
+CMDB_FILE = Path(os.getenv("CMDB_FILE", "./cmdb_hosts.json"))
 
 FEISHU_WEBHOOK    = os.getenv("FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD    = os.getenv("FEISHU_KEYWORD", "")
@@ -47,8 +56,21 @@ SCHEDULE_CHANNELS = [
 ]
 
 loki = LokiClient(LOKI_URL, LOKI_USERNAME, LOKI_PASSWORD)
+logger.info("[启动] PROMETHEUS_URL=%s, auth=%s", PROMETHEUS_URL, "yes" if PROMETHEUS_USERNAME else "no")
+prom = PrometheusClient(PROMETHEUS_URL, PROMETHEUS_USERNAME, PROMETHEUS_PASSWORD)
 analyzer = AIAnalyzer()
 clusterer = LogClusterer()
+
+
+def _load_cmdb() -> dict:
+    """加载 CMDB 数据（手动补充的字段：owner/env/role/notes）"""
+    if CMDB_FILE.exists():
+        return json.loads(CMDB_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def _save_cmdb(data: dict):
+    CMDB_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ────────── 定时任务 ──────────
@@ -483,25 +505,141 @@ async def notify_report(report_id: str, body: NotifyRequest):
     return {"results": results}
 
 
+# ────────── CMDB 主机管理 ──────────
+
+@app.get("/api/hosts")
+async def get_hosts():
+    """获取所有主机列表（Prometheus 发现 + CMDB 补充字段 + 实时指标 + 分区）"""
+    try:
+        hosts, all_metrics, all_partitions = await asyncio.gather(
+            prom.discover_hosts(),
+            prom.get_all_host_metrics(),
+            prom.get_all_partitions(),
+        )
+        cmdb = _load_cmdb()
+
+        for host in hosts:
+            inst = host["instance"]
+            host["metrics"] = all_metrics.get(inst, {})
+            host["partitions"] = all_partitions.get(inst, [])
+            # 合并 CMDB 手动字段
+            extra = cmdb.get(inst, {})
+            host["owner"] = extra.get("owner", "")
+            host["env"] = extra.get("env", "")
+            host["role"] = extra.get("role", "")
+            host["notes"] = extra.get("notes", "")
+            # CMDB 中存储的 SSH 凭据
+            host["ssh_port"] = extra.get("ssh_port", 22)
+            host["ssh_user"] = extra.get("ssh_user", "")
+
+        return {"data": hosts, "total": len(hosts), "prometheus_url": PROMETHEUS_URL}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Prometheus 连接失败: {e}")
+
+
+class HostUpdateRequest(BaseModel):
+    owner: Optional[str] = None
+    env: Optional[str] = None
+    role: Optional[str] = None
+    notes: Optional[str] = None
+    ssh_port: Optional[int] = None
+    ssh_user: Optional[str] = None
+
+
+@app.put("/api/hosts/{instance:path}")
+async def update_host(instance: str, body: HostUpdateRequest):
+    """更新主机 CMDB 信息（owner/env/role/notes）"""
+    cmdb = _load_cmdb()
+    if instance not in cmdb:
+        cmdb[instance] = {}
+    for field in ("owner", "env", "role", "notes", "ssh_port", "ssh_user"):
+        val = getattr(body, field)
+        if val is not None:
+            cmdb[instance][field] = val
+    _save_cmdb(cmdb)
+    return {"ok": True, "instance": instance}
+
+
+# ────────── 巡检 ──────────
+
+@app.get("/api/hosts/inspect")
+async def inspect_all_hosts():
+    """对所有主机执行巡检"""
+    try:
+        results = await prom.inspect_hosts()
+        summary = {
+            "total": len(results),
+            "normal": sum(1 for r in results if r["overall"] == "normal"),
+            "warning": sum(1 for r in results if r["overall"] == "warning"),
+            "critical": sum(1 for r in results if r["overall"] == "critical"),
+        }
+        return {"data": results, "summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"巡检失败: {e}")
+
+
+@app.get("/api/hosts/{instance:path}/inspect")
+async def inspect_single_host(instance: str):
+    """巡检单台主机"""
+    try:
+        results = await prom.inspect_hosts(instances=[instance])
+        if not results:
+            raise HTTPException(status_code=404, detail="主机未找到")
+        return results[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ────────── SSH WebSocket ──────────
+
+@app.websocket("/api/ws/ssh")
+async def ws_ssh(ws: WebSocket):
+    """WebSocket SSH 终端代理（凭据通过首条 WebSocket 消息传递，不暴露在 URL 中）"""
+    await ssh_websocket_handler(ws)
+
+
 # ────────── 健康检查 ──────────
 
 @app.get("/api/health")
 async def health():
-    try:
-        await loki.get_all_labels()
-        loki_ok = True
-    except Exception:
-        loki_ok = False
+    async def _check_loki():
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as c:
+                kw = {"url": f"{LOKI_URL}/loki/api/v1/labels"}
+                if LOKI_USERNAME:
+                    kw["auth"] = (LOKI_USERNAME, LOKI_PASSWORD)
+                resp = await c.get(**kw)
+                return resp.status_code == 200
+        except Exception as e:
+            logger.warning("[health] Loki 连接失败: %s", e)
+            return False
+
+    async def _check_prom():
+        try:
+            await prom.query("up", timeout=5)
+            return True
+        except Exception as e:
+            logger.warning("[health] Prometheus 连接失败: %s", e)
+            return False
+
+    # 并行检测，总耗时 ≤ 5 秒
+    loki_ok, prom_ok = await asyncio.gather(_check_loki(), _check_prom())
+
     try:
         ai_name = analyzer.provider_name
         ai_ok = True
     except Exception as e:
         ai_name = str(e)
         ai_ok = False
+
     return {
         "status": "ok",
         "loki_connected": loki_ok,
         "loki_url": LOKI_URL,
+        "prometheus_connected": prom_ok,
+        "prometheus_url": PROMETHEUS_URL,
         "ai_provider": ai_name,
         "ai_ready": ai_ok,
         "timestamp": datetime.now(timezone.utc).isoformat(),

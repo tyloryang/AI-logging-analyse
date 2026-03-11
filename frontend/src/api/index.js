@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const http = axios.create({ baseURL: '/api', timeout: 30000 })
+const http = axios.create({ baseURL: '/api', timeout: 120000 })
 
 http.interceptors.response.use(
   r => r.data,
@@ -21,6 +21,11 @@ export const api = {
   listReports:    () => http.get('/report/list'),
   getReport:      (id) => http.get(`/report/${id}`),
   notifyReport:   (id, channels) => http.post(`/report/${id}/notify`, { channels }),
+  // CMDB / 主机
+  getHosts:       () => http.get('/hosts'),
+  updateHost:     (instance, data) => http.put(`/hosts/${instance}`, data),
+  inspectHosts:   () => http.get('/hosts/inspect'),
+  inspectHost:    (instance) => http.get(`/hosts/${instance}/inspect`),
   // 健康检查
   healthCheck:    () => http.get('/health'),
 }
