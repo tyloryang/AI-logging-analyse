@@ -9,6 +9,10 @@ services:
       - ./backend/reports:/app/reports
       - ./backend/cmdb_hosts.json:/app/cmdb_hosts.json
       - ./backend/ssh_credentials.json:/app/ssh_credentials.json
+      - aiops_data:/app/data          # SQLite 数据库目录
+    depends_on:
+      redis:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -17,3 +21,54 @@ services:
       - "80:80"
     depends_on:
       - backend
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── 可选：MySQL 8（docker compose --profile mysql up）──
+  mysql:
+    image: mysql:8
+    profiles: [mysql]
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: aiops
+      MYSQL_USER: aiops
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-aiops123}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      retries: 5
+
+  # ── 可选：PostgreSQL 16（docker compose --profile postgres up）──
+  postgres:
+    image: postgres:16-alpine
+    profiles: [postgres]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aiops
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiops123}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiops"]
+      interval: 10s
+      retries: 5
+
+volumes:
+  redis_data:
+  aiops_data:
+  mysql_data:
+  pg_data:

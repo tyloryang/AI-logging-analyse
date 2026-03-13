@@ -4,7 +4,12 @@ const http = axios.create({ baseURL: '/api', timeout: 120000 })
 
 http.interceptors.response.use(
   r => r.data,
-  e => Promise.reject(e?.response?.data?.detail || e.message || '请求失败'),
+  e => {
+    if (e?.response?.status === 401 && !window.location.hash.includes('/login')) {
+      window.location.href = '/#/login'
+    }
+    return Promise.reject(e?.response?.data?.detail || e.message || '请求失败')
+  },
 )
 
 export const api = {
@@ -33,6 +38,23 @@ export const api = {
   deleteCredential:  (id) => http.delete(`/ssh/credentials/${id}`),
   // 健康检查
   healthCheck:    () => http.get('/health'),
+  // 认证
+  getMe:        () => http.get('/auth/me'),
+  login:        (data) => http.post('/auth/login', data),
+  logout:       () => http.post('/auth/logout'),
+  changePassword: (data) => http.put('/auth/password', data),
+  register:     (data) => http.post('/auth/register', data),
+  // 管理员
+  adminListUsers:   (params) => http.get('/admin/users', { params }),
+  adminCreateUser:  (data) => http.post('/admin/users', data),
+  adminUpdateUser:  (id, data) => http.put(`/admin/users/${id}`, data),
+  adminApproveUser: (id) => http.post(`/admin/users/${id}/approve`),
+  adminUnlockUser:  (id) => http.post(`/admin/users/${id}/unlock`),
+  adminDisableUser: (id) => http.delete(`/admin/users/${id}`),
+  adminGetPermissions: (id) => http.get(`/admin/users/${id}/permissions`),
+  adminSetPermissions: (id, data) => http.put(`/admin/users/${id}/permissions`, data),
+  adminListModules: () => http.get('/admin/modules'),
+  adminAuditLogs:  (params) => http.get('/admin/audit-logs', { params }),
 }
 
 /** 流式 SSE 工具 */

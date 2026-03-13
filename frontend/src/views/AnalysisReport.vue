@@ -24,12 +24,13 @@
       <aside class="report-list-panel">
         <div class="panel-top">
           <select v-model="reportType" class="time-select">
-            <option value="daily">每日日报</option>
+            <option value="daily">运维日报</option>
+            <option value="inspect">主机巡检日报</option>
           </select>
           <button class="btn btn-primary btn-full" @click="generateReport" :disabled="generating">
             <span v-if="generating" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>▶</span>
-            {{ generating ? 'AI 分析中...' : '立即生成日报' }}
+            {{ generating ? 'AI 分析中...' : reportType === 'inspect' ? '立即生成巡检日报' : '立即生成日报' }}
           </button>
         </div>
 
@@ -115,55 +116,112 @@
             </div>
           </div>
 
-          <!-- 基础指标 -->
-          <div class="metrics-row">
-            <div class="metric-card">
-              <div class="metric-icon">📋</div>
-              <div class="metric-val">{{ fmtNum(currentReport.total_logs) }}</div>
-              <div class="metric-label">总日志条数</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-icon">❌</div>
-              <div class="metric-val" style="color:var(--error)">{{ fmtNum(currentReport.total_errors) }}</div>
-              <div class="metric-label">错误总数</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-icon">🔧</div>
-              <div class="metric-val">{{ currentReport.service_count }}</div>
-              <div class="metric-label">涉及服务数</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-icon">🖥️</div>
-              <div class="metric-val" style="font-size:15px">
-                <span style="color:var(--success)">{{ currentReport.node_status?.normal ?? 0 }} 正常</span>
-                <span style="color:var(--text-muted);font-size:11px;margin:0 4px">/</span>
-                <span style="color:var(--error)">{{ currentReport.node_status?.abnormal ?? 0 }} 异常</span>
+          <!-- 运维日报指标 -->
+          <template v-if="currentReport.type !== 'inspect'">
+            <div class="metrics-row">
+              <div class="metric-card">
+                <div class="metric-icon">📋</div>
+                <div class="metric-val">{{ fmtNum(currentReport.total_logs) }}</div>
+                <div class="metric-label">总日志条数</div>
               </div>
-              <div class="metric-label">节点状态</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-icon">🔔</div>
-              <div class="metric-val" :style="{ color: currentReport.active_alerts > 0 ? 'var(--error)' : 'var(--success)' }">
-                {{ currentReport.active_alerts }}
+              <div class="metric-card">
+                <div class="metric-icon">❌</div>
+                <div class="metric-val" style="color:var(--error)">{{ fmtNum(currentReport.total_errors) }}</div>
+                <div class="metric-label">错误总数</div>
               </div>
-              <div class="metric-label">活跃告警</div>
-            </div>
-          </div>
-
-          <!-- 错误 Top10 -->
-          <div class="section" v-if="currentReport.top10_errors?.length">
-            <h3 class="section-title">🔥 错误 Top 10 服务</h3>
-            <div class="top10-list">
-              <div v-for="(item, i) in currentReport.top10_errors" :key="item.service" class="top10-row">
-                <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
-                <span class="top10-svc" :title="item.service">{{ item.service }}</span>
-                <div class="bar-wrap">
-                  <div class="bar" :style="{ width: topBarWidth(item.count) + '%' }"></div>
+              <div class="metric-card">
+                <div class="metric-icon">🔧</div>
+                <div class="metric-val">{{ currentReport.service_count }}</div>
+                <div class="metric-label">涉及服务数</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-icon">🖥️</div>
+                <div class="metric-val" style="font-size:15px">
+                  <span style="color:var(--success)">{{ currentReport.node_status?.normal ?? 0 }} 正常</span>
+                  <span style="color:var(--text-muted);font-size:11px;margin:0 4px">/</span>
+                  <span style="color:var(--error)">{{ currentReport.node_status?.abnormal ?? 0 }} 异常</span>
                 </div>
-                <span class="badge badge-error" style="white-space:nowrap">{{ fmtNum(item.count) }} 条</span>
+                <div class="metric-label">节点状态</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-icon">🔔</div>
+                <div class="metric-val" :style="{ color: currentReport.active_alerts > 0 ? 'var(--error)' : 'var(--success)' }">
+                  {{ currentReport.active_alerts }}
+                </div>
+                <div class="metric-label">活跃告警</div>
               </div>
             </div>
-          </div>
+            <div class="section" v-if="currentReport.top10_errors?.length">
+              <h3 class="section-title">🔥 错误 Top 10 服务</h3>
+              <div class="top10-list">
+                <div v-for="(item, i) in currentReport.top10_errors" :key="item.service" class="top10-row">
+                  <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
+                  <span class="top10-svc" :title="item.service">{{ item.service }}</span>
+                  <div class="bar-wrap">
+                    <div class="bar" :style="{ width: topBarWidth(item.count) + '%' }"></div>
+                  </div>
+                  <span class="badge badge-error" style="white-space:nowrap">{{ fmtNum(item.count) }} 条</span>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 主机巡检日报指标 -->
+          <template v-else>
+            <div class="metrics-row">
+              <div class="metric-card">
+                <div class="metric-icon">🖥️</div>
+                <div class="metric-val">{{ currentReport.host_summary?.total ?? 0 }}</div>
+                <div class="metric-label">巡检主机总数</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-icon">✅</div>
+                <div class="metric-val" style="color:var(--success)">{{ currentReport.host_summary?.normal ?? 0 }}</div>
+                <div class="metric-label">正常主机</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-icon">⚠️</div>
+                <div class="metric-val" style="color:var(--warning)">{{ currentReport.host_summary?.warning ?? 0 }}</div>
+                <div class="metric-label">警告主机</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-icon">🔴</div>
+                <div class="metric-val" style="color:var(--error)">{{ currentReport.host_summary?.critical ?? 0 }}</div>
+                <div class="metric-label">严重主机</div>
+              </div>
+            </div>
+            <!-- 高频异常项 -->
+            <div class="section" v-if="currentReport.top_issues?.length">
+              <h3 class="section-title">🔥 高频异常项 Top 10</h3>
+              <div class="top10-list">
+                <div v-for="(item, i) in currentReport.top_issues" :key="item.item" class="top10-row">
+                  <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
+                  <span class="top10-svc" :title="item.item">{{ item.item }}</span>
+                  <div class="bar-wrap">
+                    <div class="bar" :style="{ width: issueBarWidth(item.count) + '%' }"></div>
+                  </div>
+                  <span class="badge badge-error" style="white-space:nowrap">{{ item.count }} 台</span>
+                </div>
+              </div>
+            </div>
+            <!-- 异常主机列表 -->
+            <div class="section" v-if="currentReport.abnormal_hosts?.length">
+              <h3 class="section-title">⚠️ 异常主机列表</h3>
+              <div class="abnormal-list">
+                <div v-for="h in currentReport.abnormal_hosts" :key="h.instance" class="abnormal-row" :class="'row-' + h.overall">
+                  <span class="abnormal-dot" :class="h.overall"></span>
+                  <span class="abnormal-host">{{ h.hostname || h.instance }}</span>
+                  <span class="abnormal-ip">{{ h.ip }}</span>
+                  <div class="abnormal-checks">
+                    <span v-for="c in h.checks.filter(c => c.status !== 'normal').slice(0, 3)" :key="c.item" class="check-tag" :class="c.status">
+                      {{ c.item }}: {{ c.value }}
+                    </span>
+                  </div>
+                  <span class="badge" :class="h.overall === 'critical' ? 'badge-error' : 'badge-warn'">{{ h.overall }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
 
           <!-- AI 分析 -->
           <div class="section">
@@ -247,6 +305,13 @@ function topBarWidth(cnt) {
   return Math.round((cnt / maxTop.value) * 100)
 }
 
+const maxIssue = computed(() =>
+  currentReport.value?.top_issues?.[0]?.count || 1
+)
+function issueBarWidth(cnt) {
+  return Math.round((cnt / maxIssue.value) * 100)
+}
+
 // ── 加载历史列表 ──────────────────────────
 async function loadReportList() {
   loadingList.value = true
@@ -277,12 +342,15 @@ function generateReport() {
   generating.value = true
   aiStreamContent.value = ''
   errorMsg.value = ''
-  // 保留旧报告展示，等新 META 到来再替换
   const prevReport = currentReport.value
-  currentReport.value = prevReport  // 维持旧内容显示
+  currentReport.value = prevReport
+
+  const url = reportType.value === 'inspect'
+    ? '/api/report/inspect/generate'
+    : '/api/report/generate'
 
   const stop = streamSSE(
-    '/api/report/generate',
+    url,
     (raw) => {
       // __META__ 前缀判断必须在 JSON.parse 前
       if (raw.startsWith('__META__')) {
@@ -559,7 +627,6 @@ onMounted(loadReportList)
   color: #ff6a00;
 }
 .btn-notify.dingtalk:hover:not(:disabled) { background: rgba(255, 106, 0, .2); }
-
 /* 成功提示 */
 .success-toast {
   position: absolute;
@@ -577,4 +644,27 @@ onMounted(loadReportList)
 }
 
 @keyframes pulse { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
+
+/* 异常主机列表 */
+.abnormal-list { display: flex; flex-direction: column; gap: 6px; }
+.abnormal-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg-card);
+  font-size: 12px;
+}
+.abnormal-row.row-critical { border-left: 3px solid var(--error); }
+.abnormal-row.row-warning  { border-left: 3px solid var(--warning); }
+.abnormal-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.abnormal-dot.critical { background: var(--error); }
+.abnormal-dot.warning  { background: var(--warning); }
+.abnormal-host { font-weight: 600; color: var(--text-primary); min-width: 120px; }
+.abnormal-ip   { color: var(--text-muted); min-width: 110px; }
+.abnormal-checks { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; }
+.check-tag {
+  padding: 1px 7px; border-radius: 2px; font-size: 11px;
+  background: var(--bg-hover); color: var(--text-secondary); border: 1px solid var(--border);
+}
+.check-tag.warning  { background: rgba(255,156,1,.1);  color: var(--warning); border-color: rgba(255,156,1,.3); }
+.check-tag.critical { background: rgba(234,54,54,.1);  color: var(--error);   border-color: rgba(234,54,54,.3); }
 </style>

@@ -42,18 +42,34 @@
         <span class="dot"></span>
         <span class="ai-label">{{ aiReady ? 'AI ' + aiShortName : 'AI 未就绪' }}</span>
       </div>
+      <div class="divider"></div>
+      <div class="user-row">
+        <RouterLink to="/profile" class="user-info">
+          <span class="user-avatar">{{ auth.user?.username?.charAt(0)?.toUpperCase() }}</span>
+          <span class="user-name">{{ auth.user?.displayName || auth.user?.username }}</span>
+        </RouterLink>
+        <button class="logout-btn" @click="handleLogout" title="退出登录">⏻</button>
+      </div>
+      <RouterLink v-if="auth.isAdmin" to="/admin/users" class="admin-link">⚙ 用户管理</RouterLink>
     </div>
   </aside>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute, RouterLink } from 'vue-router'
+import { useRoute, RouterLink, useRouter } from 'vue-router'
 import { api } from '../api/index.js'
 import { useTheme, THEMES } from '../composables/useTheme.js'
+import { useAuthStore } from '../stores/auth.js'
 
 const route = useRoute()
 const { currentTheme, setTheme } = useTheme()
+const auth = useAuthStore()
+const router = useRouter()
+async function handleLogout() {
+  await auth.logout()
+  router.push('/login')
+}
 
 const connected = ref(false)
 const promConnected = ref(false)
@@ -66,14 +82,17 @@ const aiShortName = computed(() => {
   return m ? m[1] : aiProvider.value
 })
 
-const navItems = [
-  { path: '/',        icon: '📊', label: '仪表盘'   },
-  { path: '/logs',    icon: '📋', label: '日志分析'  },
-  { path: '/metrics', icon: '📈', label: '指标监控'  },
-  { path: '/alerts',  icon: '🔔', label: '告警历史'  },
-  { path: '/report',  icon: '📝', label: '分析报告'  },
-  { path: '/hosts',   icon: '🖥️', label: 'CMDB 巡检' },
+const allNavItems = [
+  { path: '/',        icon: '📊', label: '仪表盘',   module: 'dashboard' },
+  { path: '/logs',    icon: '📋', label: '日志分析',  module: 'log'       },
+  { path: '/metrics', icon: '📈', label: '指标监控',  module: 'metrics'   },
+  { path: '/alerts',  icon: '🔔', label: '告警历史',  module: 'alert'     },
+  { path: '/report',  icon: '📝', label: '分析报告',  module: 'report'    },
+  { path: '/hosts',   icon: '🖥️', label: 'CMDB 巡检', module: 'cmdb'      },
 ]
+const navItems = computed(() =>
+  allNavItems.filter(item => auth.can(item.module, 'view'))
+)
 
 onMounted(async () => {
   try {
@@ -152,4 +171,12 @@ onMounted(async () => {
 .conn-status.ok .dot  { background: #2dcb56; }
 .conn-status.err .dot { background: #ea3636; }
 .ai-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+.user-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
+.user-info { display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text-base); }
+.user-avatar { width: 26px; height: 26px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff; font-weight: 700; flex-shrink: 0; }
+.user-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
+.logout-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; padding: 2px 4px; transition: color .2s; }
+.logout-btn:hover { color: var(--error); }
+.admin-link { display: block; font-size: 12px; color: var(--accent); text-decoration: none; padding: 4px 0; }
+.admin-link:hover { text-decoration: underline; }
 </style>

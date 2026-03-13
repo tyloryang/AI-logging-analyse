@@ -28,6 +28,11 @@ from log_clusterer import LogClusterer
 from notifier import send_feishu, send_dingtalk
 from prom_client import PrometheusClient
 from ssh_bridge import ssh_websocket_handler
+from db import engine, Base
+from auth.router import router as auth_router
+from auth.admin_router import router as admin_router
+from auth import service as auth_service
+from db import AsyncSessionLocal
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -209,12 +214,24 @@ async def lifespan(app: FastAPI):
         "[scheduler] 定时推送已启动，cron='%s'，渠道=%s",
         SCHEDULE_CRON, SCHEDULE_CHANNELS or "（未配置，仅生成报告不推送）",
     )
+    # 初始化数据库
+    from pathlib import Path
+    Path("./data").mkdir(exist_ok=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with AsyncSessionLocal() as db:
+        await auth_service.sync_modules(db)
+        created = await auth_service.ensure_admin(db)
+        if created:
+            logger.info("[AUTH] 初始管理员账号已创建")
     yield
     scheduler.shutdown(wait=False)
     logger.info("[scheduler] 定时推送已停止")
 
 
 app = FastAPI(title="AI Ops Log Analysis", version="1.0.0", lifespan=lifespan)
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -17,5 +17,5 @@ import Sidebar from './components/Sidebar.vue'
 
 <style scoped>
 .layout { display: flex; height: 100vh; overflow: hidden; }
-.main-content { flex: 1; overflow-y: auto; background: var(--bg-base); }
+.main-content { flex: 1; min-width: 0; overflow: hidden; background: var(--bg-base); }
 </style>
