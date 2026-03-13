@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 @router.get("/users")
 async def list_users(
     status: Optional[str] = None,
-    _: User = require_admin,
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     q = select(User).order_by(desc(User.created_at))
@@ -43,7 +43,7 @@ async def list_users(
 async def create_user(
     body: CreateUserRequest,
     request: Request,
-    admin: User = require_admin,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -63,7 +63,7 @@ async def update_user(
     user_id: str,
     body: UpdateUserRequest,
     request: Request,
-    admin: User = require_admin,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.id == user_id))
@@ -88,7 +88,7 @@ async def update_user(
 async def approve_user(
     user_id: str,
     request: Request,
-    admin: User = require_admin,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.id == user_id))
@@ -108,7 +108,7 @@ async def approve_user(
 async def unlock_user(
     user_id: str,
     request: Request,
-    admin: User = require_admin,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.id == user_id))
@@ -128,7 +128,7 @@ async def unlock_user(
 async def disable_user(
     user_id: str,
     request: Request,
-    admin: User = require_admin,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.id == user_id))
@@ -147,7 +147,7 @@ async def disable_user(
 @router.get("/users/{user_id}/permissions")
 async def get_permissions(
     user_id: str,
-    _: User = require_admin,
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     perms = await service.get_user_permissions(db, user_id)
@@ -162,7 +162,7 @@ async def set_permissions(
     user_id: str,
     body: UpdatePermissionsRequest,
     request: Request,
-    admin: User = require_admin,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     await service.update_permissions(db, user_id, [p.model_dump() for p in body.permissions])
@@ -173,7 +173,7 @@ async def set_permissions(
 
 @router.get("/modules")
 async def list_modules(
-    _: User = require_admin,
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Module))
@@ -186,7 +186,7 @@ async def get_audit_logs(
     page_size: int = Query(50, ge=1, le=200),
     action: Optional[str] = None,
     username: Optional[str] = None,
-    _: User = require_admin,
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     q = select(AuditLog).order_by(desc(AuditLog.created_at))
