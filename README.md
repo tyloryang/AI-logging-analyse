@@ -106,8 +106,14 @@
 
 ### 环境要求
 
+**直接启动**
 - Python 3.11+
 - Node.js 18+
+
+**Docker 启动**
+- Docker 24+ & Docker Compose v2
+
+**外部依赖**
 - 可访问的 Loki 服务
 - 可访问的 Prometheus 服务（需部署 node_exporter）
 - AI Provider 之一（见下方配置）
@@ -160,35 +166,44 @@ SCHEDULE_CHANNELS=feishu,dingtalk
 
 ### 3. 启动服务
 
-**Windows（推荐）**
-
-```bat
-# 一键启动后端（自动清理端口占用）
-start.bat
-
-# 开发模式（热重载）
-start.bat --dev
-
-# 停止后端
-stop.bat
-```
-
-**Linux / macOS**
+#### 方式一：Linux 直接启动（开发 / 测试）
 
 ```bash
+# 一键启动前后端
+chmod +x start.sh
+./start.sh
+```
+
+或分别启动：
+
+```bash
+# 后端（:8000）
 cd backend
 pip install -r requirements.txt
-python main.py
-```
+python3 main.py
 
-### 4. 启动前端
-
-```bash
+# 前端（:5173，新开终端）
 cd frontend
 npm install
 npm run dev
-# → http://localhost:5173
 ```
+
+访问 http://localhost:5173
+
+#### 方式二：Docker Compose（推荐生产）
+
+```bash
+# 构建并启动（前端 :80，后端 :8000）
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f
+
+# 停止
+docker compose down
+```
+
+访问 http://localhost
 
 ---
 
@@ -291,25 +306,27 @@ AI-logging-analyse/
 │   ├── ai_analyzer.py       # AI 分析器（Provider 抽象层）
 │   ├── log_clusterer.py     # Drain3 日志模板聚类
 │   ├── notifier.py          # 飞书 / 钉钉 Webhook 推送
-│   ├── start.py             # 启动脚本（自动清理端口占用）
+│   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── .env.example         # 配置模板
 │   ├── cmdb_hosts.json      # CMDB 手动字段存储（不提交）
 │   └── reports/             # 历史报告（不提交）
 ├── frontend/
-│   └── src/
-│       ├── views/
-│       │   ├── Dashboard.vue        # 仪表盘
-│       │   ├── LogAnalysis.vue      # 日志分析 + AI 分析 + 模板聚类
-│       │   ├── MetricsMonitor.vue   # 指标监控
-│       │   ├── AlertHistory.vue     # 告警历史
-│       │   ├── AnalysisReport.vue   # 运维日报
-│       │   └── HostCMDB.vue         # 主机 CMDB + 巡检 + SSH 终端
-│       ├── components/
-│       │   └── Sidebar.vue          # 侧边导航（含 AI/服务状态指示）
-│       └── api/index.js             # HTTP + SSE 封装
-├── start.bat                # Windows 一键启动脚本
-├── stop.bat                 # Windows 一键停止脚本
+│   ├── src/
+│   │   ├── views/
+│   │   │   ├── Dashboard.vue        # 仪表盘
+│   │   │   ├── LogAnalysis.vue      # 日志分析 + AI 分析 + 模板聚类
+│   │   │   ├── MetricsMonitor.vue   # 指标监控
+│   │   │   ├── AlertHistory.vue     # 告警历史
+│   │   │   ├── AnalysisReport.vue   # 运维日报
+│   │   │   └── HostCMDB.vue         # 主机 CMDB + 巡检 + SSH 终端
+│   │   ├── components/
+│   │   │   └── Sidebar.vue          # 侧边导航（含 AI/服务状态指示）
+│   │   └── api/index.js             # HTTP + SSE 封装
+│   ├── nginx.conf           # Docker 生产环境 Nginx 配置
+│   └── Dockerfile
+├── docker-compose.yml       # Docker Compose 一键部署
+├── start.sh                 # Linux 直接启动脚本
 └── README.md
 ```
 

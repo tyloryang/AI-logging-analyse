@@ -1,5 +1,5 @@
 <template>
-  <div class="cmdb-page">
+  <div class="cmdb-page" :class="{ 'ssh-mode': tab === 'ssh', 'ssh-fullscreen': sshFullscreen }">
     <!-- 顶部统计 -->
     <div class="stats-row">
       <div class="stat-card">
@@ -27,7 +27,7 @@
           <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">
             主机 CMDB
           </button>
-          <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="tab = 'inspect'; runInspect()">
+          <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">
             巡检报告
           </button>
           <button class="tab-btn" :class="{ active: tab === 'ssh' }" @click="tab = 'ssh'">
@@ -40,10 +40,41 @@
           <span v-if="loading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
           <span v-else>🔄</span> 刷新
         </button>
-        <button v-if="tab === 'inspect'" class="btn btn-primary" @click="runInspect" :disabled="inspecting">
-          <span v-if="inspecting" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-          <span v-else>🔍</span> 执行巡检
-        </button>
+        <!-- 列设置 -->
+        <div v-if="tab === 'cmdb'" class="col-picker-wrap">
+          <button class="btn btn-outline" @click.stop="showColPicker = !showColPicker">⚙ 列设置</button>
+          <div v-if="showColPicker" class="col-picker-dropdown" @click.stop>
+            <div class="col-picker-title">显示列</div>
+            <label v-for="col in optionalColumns" :key="col.key" class="col-picker-item">
+              <input type="checkbox" :checked="visibleCols.has(col.key)" @change="toggleCol(col.key)" />
+              {{ col.label }}
+            </label>
+          </div>
+        </div>
+        <template v-if="tab === 'inspect'">
+          <button class="btn btn-primary" @click="runInspect" :disabled="inspecting || inspectAiStreaming">
+            <span v-if="inspecting" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+            <span v-else>🔍</span> 执行巡检
+          </button>
+          <button
+            v-if="inspectResults.length && !inspecting"
+            class="btn btn-ai"
+            :disabled="inspectAiStreaming"
+            @click="runInspectAI"
+          >
+            <span v-if="inspectAiStreaming" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+            <span v-else>🤖</span> AI分析
+          </button>
+          <button
+            v-if="inspectResults.length && !inspecting"
+            class="btn btn-excel"
+            :disabled="excelDownloading"
+            @click="downloadInspectExcel"
+          >
+            <span v-if="excelDownloading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+            <span v-else>📥</span> 下载 Excel
+          </button>
+        </template>
       </div>
     </div>
 
@@ -70,14 +101,15 @@
             <th class="th-sort" @click="setSort('state')">状态<span class="sort-icon">{{ sortKey==='state' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th class="th-sort" @click="setSort('hostname')">主机名<span class="sort-icon">{{ sortKey==='hostname' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th class="th-sort" @click="setSort('ip')">IP<span class="sort-icon">{{ sortKey==='ip' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('cpu')">CPU%<span class="sort-icon">{{ sortKey==='cpu' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('mem')">内存%<span class="sort-icon">{{ sortKey==='mem' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('disk')">磁盘(/)<span class="sort-icon">{{ sortKey==='disk' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('disk_read')">I/O(R/W)<span class="sort-icon">{{ sortKey==='disk_read' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('net_recv')">网络(↓/↑)<span class="sort-icon">{{ sortKey==='net_recv' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('tcp_estab')">TCP<span class="sort-icon">{{ sortKey==='tcp_estab' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('load5')">负载<span class="sort-icon">{{ sortKey==='load5' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('uptime')">运行时长<span class="sort-icon">{{ sortKey==='uptime' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('job')" class="th-sort" @click="setSort('job')">Job<span class="sort-icon">{{ sortKey==='job' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('cpu')" class="th-sort" @click="setSort('cpu')">CPU%<span class="sort-icon">{{ sortKey==='cpu' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('mem')" class="th-sort" @click="setSort('mem')">内存%<span class="sort-icon">{{ sortKey==='mem' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('disk')" class="th-sort" @click="setSort('disk')">磁盘(/)<span class="sort-icon">{{ sortKey==='disk' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('disk_read')" class="th-sort" @click="setSort('disk_read')">I/O(R/W)<span class="sort-icon">{{ sortKey==='disk_read' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('net_recv')" class="th-sort" @click="setSort('net_recv')">网络(↓/↑)<span class="sort-icon">{{ sortKey==='net_recv' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('tcp_estab')" class="th-sort" @click="setSort('tcp_estab')">TCP<span class="sort-icon">{{ sortKey==='tcp_estab' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('load5')" class="th-sort" @click="setSort('load5')">负载<span class="sort-icon">{{ sortKey==='load5' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('uptime')" class="th-sort" @click="setSort('uptime')">运行时长<span class="sort-icon">{{ sortKey==='uptime' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th>操作</th>
           </tr>
         </thead>
@@ -86,17 +118,18 @@
             <td><span class="dot" :class="h.state === 'up' ? 'ok' : 'err'"></span></td>
             <td class="hostname">{{ h.hostname || h.instance }}</td>
             <td>{{ h.ip }}</td>
-            <td :class="usageClass(h.metrics.cpu_usage)">{{ fmt(h.metrics.cpu_usage, '%') }}</td>
-            <td :class="usageClass(h.metrics.mem_usage)">{{ fmt(h.metrics.mem_usage, '%') }}</td>
-            <td :class="usageClass(rootDiskUsage(h))">
+            <td v-if="visibleCols.has('job')" class="small-text">{{ h.job || '-' }}</td>
+            <td v-if="visibleCols.has('cpu')" :class="usageClass(h.metrics.cpu_usage)">{{ fmt(h.metrics.cpu_usage, '%') }}</td>
+            <td v-if="visibleCols.has('mem')" :class="usageClass(h.metrics.mem_usage)">{{ fmt(h.metrics.mem_usage, '%') }}</td>
+            <td v-if="visibleCols.has('disk')" :class="usageClass(rootDiskUsage(h))">
               {{ fmt(rootDiskUsage(h), '%') }}
               <span v-if="maxDiskPartition(h)" class="disk-mount">{{ maxDiskPartition(h).mountpoint }}</span>
             </td>
-            <td class="small-text">{{ fmtIO(h.metrics) }}</td>
-            <td class="small-text">{{ fmtNet(h.metrics) }}</td>
-            <td class="small-text">{{ fmtTcp(h.metrics) }}</td>
-            <td>{{ h.metrics.load5 != null ? h.metrics.load5.toFixed(2) : '-' }}</td>
-            <td>{{ fmtUptime(h.metrics.uptime_seconds) }}</td>
+            <td v-if="visibleCols.has('disk_read')" class="small-text">{{ fmtIO(h.metrics) }}</td>
+            <td v-if="visibleCols.has('net_recv')" class="small-text">{{ fmtNet(h.metrics) }}</td>
+            <td v-if="visibleCols.has('tcp_estab')" class="small-text">{{ fmtTcp(h.metrics) }}</td>
+            <td v-if="visibleCols.has('load5')">{{ h.metrics.load5 != null ? h.metrics.load5.toFixed(2) : '-' }}</td>
+            <td v-if="visibleCols.has('uptime')">{{ fmtUptime(h.metrics.uptime_seconds) }}</td>
             <td>
               <button class="btn btn-outline btn-xs" @click.stop="openSSH(h)" title="SSH 连接">
                 >_
@@ -112,35 +145,77 @@
       <div v-if="inspecting" class="empty-state">
         <div class="spinner"></div><p>巡检中，请稍候...</p>
       </div>
-      <div v-else-if="!inspectResults.length" class="empty-state">
+      <div v-else-if="inspectError" class="empty-state">
+        <span class="icon">⚠️</span>
+        <p style="color:var(--error)">{{ inspectError }}</p>
+        <button class="btn btn-outline" style="margin-top:10px" @click="runInspect">重试</button>
+      </div>
+      <div v-else-if="!inspectResults.length && !inspectAiStreaming" class="empty-state">
         <span class="icon">🔍</span><p>点击「执行巡检」开始</p>
       </div>
-      <div v-else class="inspect-list">
-        <div v-for="r in inspectResults" :key="r.instance" class="inspect-card" :class="'card-' + r.overall">
-          <div class="inspect-header">
-            <span class="dot" :class="r.overall"></span>
-            <span class="inspect-host">{{ r.hostname || r.instance }}</span>
-            <span class="inspect-ip">{{ r.ip }}</span>
-            <span class="inspect-os">{{ r.os }}</span>
-            <span class="inspect-badge" :class="r.overall">{{ statusLabel(r.overall) }}</span>
-          </div>
-          <div class="check-grid">
-            <div v-for="c in r.checks" :key="c.item" class="check-item" :class="c.status">
-              <span class="check-name">{{ c.item }}</span>
-              <span class="check-value">{{ c.value }}</span>
-              <span class="check-status-dot" :class="c.status"></span>
+      <div v-else>
+        <!-- AI 分析总结卡片（流式显示） -->
+        <div v-if="inspectAiSummary || inspectAiStreaming" class="inspect-ai-card" :class="{ streaming: inspectAiStreaming }">
+          <div class="inspect-ai-header">
+            <div>
+              <div class="inspect-ai-title">
+                <span v-if="inspectAiStreaming" class="ai-thinking-dot"></span>
+                AI 分析总结
+              </div>
+              <div v-if="inspectAiProvider" class="inspect-ai-provider">模型：{{ inspectAiProvider }}</div>
             </div>
+            <span class="inspect-ai-badge" :class="{ fallback: inspectAiFallback, streaming: inspectAiStreaming }">
+              {{ inspectAiStreaming ? '生成中...' : inspectAiFallback ? '规则兜底' : 'AI生成' }}
+            </span>
           </div>
-          <!-- 分区详情 -->
-          <div v-if="r.partitions && r.partitions.length" class="partitions-section">
-            <div class="part-title">分区详情</div>
-            <div class="part-grid">
-              <div v-for="p in r.partitions" :key="p.mountpoint" class="part-item">
-                <div class="part-mount">{{ p.mountpoint }}</div>
-                <div class="part-bar-wrap">
-                  <div class="part-bar" :style="{ width: p.usage_pct + '%' }" :class="usageBarClass(p.usage_pct)"></div>
+          <div class="inspect-ai-content">
+            <span v-if="inspectAiSummary">{{ inspectAiSummary }}</span>
+            <span v-else-if="inspectAiStreaming" class="ai-placeholder">AI 正在分析巡检数据...</span>
+            <span v-else class="ai-placeholder">暂无分析结果</span>
+            <span v-if="inspectAiStreaming" class="ai-cursor"></span>
+          </div>
+          <div v-if="inspectAiFallback && !inspectAiStreaming" class="inspect-ai-note">
+            AI 服务暂不可用，当前显示规则摘要。
+          </div>
+        </div>
+        <div class="inspect-sortbar">
+          <span class="inspect-sort-label">排序：</span>
+          <button class="inspect-sort-btn" :class="{ active: inspectSortKey === 'overall' }" @click="setInspectSort('overall')">
+            报警级别
+            <span class="inspect-sort-icon">{{ inspectSortKey === 'overall' ? (inspectSortAsc ? '↑' : '↓') : '↕' }}</span>
+          </button>
+          <button class="inspect-sort-btn" :class="{ active: inspectSortKey === 'ip' }" @click="setInspectSort('ip')">
+            IP
+            <span class="inspect-sort-icon">{{ inspectSortKey === 'ip' ? (inspectSortAsc ? '↑' : '↓') : '↕' }}</span>
+          </button>
+        </div>
+        <div class="inspect-list">
+          <div v-for="r in sortedInspectResults" :key="r.instance" class="inspect-card" :class="'card-' + r.overall">
+            <div class="inspect-header">
+              <span class="dot" :class="r.overall"></span>
+              <span class="inspect-host">{{ r.hostname || r.instance }}</span>
+              <span class="inspect-ip">{{ r.ip }}</span>
+              <span class="inspect-os">{{ r.os }}</span>
+              <span class="inspect-badge" :class="r.overall">{{ statusLabel(r.overall) }}</span>
+            </div>
+            <div class="check-grid">
+              <div v-for="c in r.checks" :key="c.item" class="check-item" :class="c.status">
+                <span class="check-name">{{ c.item }}</span>
+                <span class="check-value">{{ c.value }}</span>
+                <span class="check-status-dot" :class="c.status"></span>
+              </div>
+            </div>
+            <!-- 分区详情 -->
+            <div v-if="r.partitions && r.partitions.length" class="partitions-section">
+              <div class="part-title">分区详情</div>
+              <div class="part-grid">
+                <div v-for="p in r.partitions" :key="p.mountpoint" class="part-item">
+                  <div class="part-mount">{{ p.mountpoint }}</div>
+                  <div class="part-bar-wrap">
+                    <div class="part-bar" :style="{ width: p.usage_pct + '%' }" :class="usageBarClass(p.usage_pct)"></div>
+                  </div>
+                  <div class="part-info">{{ p.used_gb }}/{{ p.total_gb }}GB ({{ p.usage_pct }}%)</div>
                 </div>
-                <div class="part-info">{{ p.used_gb }}/{{ p.total_gb }}GB ({{ p.usage_pct }}%)</div>
               </div>
             </div>
           </div>
@@ -151,7 +226,6 @@
     <!-- SSH 终端 -->
     <div v-show="tab === 'ssh'" class="ssh-wrap">
 
-      <!-- 会话标签栏 -->
       <div class="ssh-session-bar">
         <div v-for="s in sshSessions" :key="s.id"
              class="ssh-session-tab"
@@ -159,41 +233,42 @@
              @click="switchSession(s.id)">
           <span class="tab-dot" :class="s.connected ? 'ok' : s.connecting ? 'warn' : ''"></span>
           <span class="tab-label">{{ s.label }}</span>
-          <span class="tab-close" @click.stop="closeSession(s.id)">×</span>
+          <span class="tab-close" @click.stop="closeSession(s.id)">x</span>
         </div>
-        <button class="ssh-tab-add" @click="showNewConnForm = !showNewConnForm">＋ 新建</button>
-        <button class="btn btn-outline" @click="showCredModal = true" style="margin-left:auto;font-size:11px;padding:3px 10px">凭证管理</button>
+        <button class="ssh-tab-add" @click="showNewConnForm = !showNewConnForm">+ 新建</button>
+        <div class="ssh-bar-actions">
+          <button class="btn btn-outline" @click="showCredModal = true" style="font-size:11px;padding:3px 10px">凭证管理</button>
+          <button class="btn btn-outline ssh-fullscreen-btn" @click="toggleSSHFullscreen()" style="font-size:11px;padding:3px 10px">
+            {{ sshFullscreen ? '退出全屏' : '全屏' }}
+          </button>
+        </div>
       </div>
 
-      <!-- 新建连接表单（有会话时显示紧凑工具栏） -->
       <transition name="slide-down">
         <div v-show="showNewConnForm && sshSessions.length > 0" class="ssh-toolbar">
-          <select class="ssh-input" style="width:190px" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
+          <select class="ssh-input" style="width:280px" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
             <option value="">选择主机...</option>
             <option v-for="h in hosts" :key="h.instance" :value="h.instance">
-              {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' ✓' : '' }}
+              {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' 已保存' : '' }}
             </option>
           </select>
-          <select class="ssh-input" style="width:150px" v-model="sshForm.credentialId" @change="onSelectCredential">
+          <select class="ssh-input" style="width:220px" v-model="sshForm.credentialId" @change="onSelectCredential">
             <option value="">手动输入凭证</option>
             <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }} ({{ c.username }})</option>
           </select>
-          <input v-model.number="sshForm.port" class="ssh-input" style="width:65px" placeholder="端口" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
-          <input v-model="sshForm.username" class="ssh-input" style="width:100px" placeholder="用户名" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
-          <input v-model="sshForm.password" class="ssh-input" style="width:120px" type="password"
+          <input v-model.number="sshForm.port" class="ssh-input" style="width:88px" placeholder="端口" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+          <input v-model="sshForm.username" class="ssh-input" style="width:150px" placeholder="用户名" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
+          <input v-model="sshForm.password" class="ssh-input" style="width:220px" type="password"
             :placeholder="sshForm.useSaved || sshForm.credentialId ? '已保存凭证' : '密码'" :disabled="sshForm.useSaved || !!sshForm.credentialId" />
-          <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">✓ 已保存</span>
+          <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">已保存</span>
           <button class="btn btn-primary" @click="connectSSH">连接</button>
         </div>
       </transition>
 
-      <!-- 终端区域 -->
       <div class="term-area">
-        <!-- 无会话时显示宽大的居中连接表单 -->
         <div v-if="!sshSessions.length" class="ssh-welcome-panel">
           <div class="ssh-welcome-card">
             <div class="ssh-welcome-title">
-              <span class="ssh-welcome-icon">⬡</span>
               SSH 终端连接
             </div>
             <div class="ssh-welcome-form">
@@ -202,12 +277,12 @@
                 <select class="ssh-input" @change="onSelectSSHHost($event.target.value)" :value="sshForm.instance">
                   <option value="">选择主机...</option>
                   <option v-for="h in hosts" :key="h.instance" :value="h.instance">
-                    {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' ✓ 已保存' : '' }}
+                    {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' 已保存' : '' }}
                   </option>
                 </select>
               </div>
               <div class="ssh-form-row">
-                <label>凭证库</label>
+                <label>凭证</label>
                 <select class="ssh-input" v-model="sshForm.credentialId" @change="onSelectCredential">
                   <option value="">手动输入</option>
                   <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }} ({{ c.username }})</option>
@@ -228,9 +303,9 @@
               </div>
             </div>
             <div class="ssh-welcome-actions">
-              <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">✓ 已保存凭证</span>
+              <span v-if="sshForm.useSaved || sshForm.credentialId" class="saved-badge">已保存凭证</span>
               <button class="btn btn-primary ssh-connect-btn" @click="connectSSH">
-                <span>⚡</span> 建立连接
+                建立连接
               </button>
             </div>
             <div class="ssh-welcome-hint">支持同时建立多个 SSH 会话</div>
@@ -245,7 +320,6 @@
 
     </div>
 
-    <!-- 凭证管理弹窗 -->
     <transition name="fade">
       <div v-if="showCredModal" class="modal-overlay" @click.self="showCredModal = false">
         <div class="modal-box">
@@ -293,7 +367,7 @@
 
     <!-- 主机详情侧栏（flex 同级，向右扩展） -->
     <transition name="slide">
-      <div v-if="selected" class="detail-panel">
+      <div v-if="selected && tab !== 'ssh'" class="detail-panel">
         <div class="detail-header">
           <span>{{ selected.hostname || selected.instance }}</span>
           <button class="btn btn-outline btn-xs" @click="selected = null">✕</button>
@@ -419,12 +493,18 @@ const saving          = ref(false)
 const inspecting      = ref(false)
 const inspectResults  = ref([])
 const inspectSummary  = ref({ normal: 0, warning: 0, critical: 0 })
+const inspectAiSummary = ref('')
+const inspectAiProvider = ref('')
+const inspectAiFallback = ref(false)
+const inspectError = ref('')
 
 const editForm = reactive({ owner: '', env: '', role: '', notes: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
 
 // 排序
 const sortKey = ref('')   // 当前排序字段
 const sortAsc = ref(true) // true=升序 false=降序
+const inspectSortKey = ref('')
+const inspectSortAsc = ref(false)
 const showPwd = ref(false)
 
 // 凭证库
@@ -438,16 +518,54 @@ const credSaving      = ref(false)
 const sshSessions     = ref([])    // [{ id, label, host, port, username, password, instance, useSaved, credentialId, connected, connecting }]
 const activeSshId     = ref('')
 const showNewConnForm = ref(true)
+const sshFullscreen   = ref(false)
 const sshForm         = reactive({ host: '', port: 22, username: 'root', password: '', instance: '', useSaved: false, credentialId: '' })
 const _meta           = {}         // { [id]: { term, fitAddon, ws, resizeObserver } }
 const _termEls        = {}         // { [id]: HTMLElement }
 
-// 排序取值
+// ────────── 列设置 ──────────
+const STORAGE_KEY = 'cmdb_visible_cols'
+const optionalColumns = [
+  { key: 'job',      label: 'Job' },
+  { key: 'cpu',      label: 'CPU%' },
+  { key: 'mem',      label: '内存%' },
+  { key: 'disk',     label: '磁盘(/)' },
+  { key: 'disk_read',label: 'I/O(R/W)' },
+  { key: 'net_recv', label: '网络(↓/↑)' },
+  { key: 'tcp_estab',label: 'TCP' },
+  { key: 'load5',    label: '负载' },
+  { key: 'uptime',   label: '运行时长' },
+]
+const defaultVisibleCols = new Set(['job', 'cpu', 'mem', 'disk', 'disk_read', 'net_recv', 'tcp_estab', 'load5', 'uptime'])
+
+function loadVisibleCols() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) return new Set(JSON.parse(saved))
+  } catch {}
+  return new Set(defaultVisibleCols)
+}
+
+const visibleCols = ref(loadVisibleCols())
+const showColPicker = ref(false)
+
+function toggleCol(key) {
+  const s = new Set(visibleCols.value)
+  if (s.has(key)) s.delete(key)
+  else s.add(key)
+  visibleCols.value = s
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([...s]))
+}
+
+function onDocClick() { showColPicker.value = false }
+
+// ────────── 排序取值 ──────────
 function sortVal(h, key) {
   switch (key) {
     case 'state':    return h.state === 'up' ? 0 : 1
     case 'hostname': return (h.hostname || h.instance || '').toLowerCase()
     case 'ip':       return h.ip || ''
+    case 'job':      return (h.job || '').toLowerCase()
     case 'cpu':      return h.metrics.cpu_usage ?? -1
     case 'mem':      return h.metrics.mem_usage ?? -1
     case 'disk':     return rootDiskUsage(h) ?? -1
@@ -477,6 +595,46 @@ const sortedHosts = computed(() => {
     if (va < vb) return sortAsc.value ? -1 : 1
     if (va > vb) return sortAsc.value ? 1 : -1
     return 0
+  })
+})
+
+const inspectSeverityRank = { critical: 3, warning: 2, normal: 1 }
+
+function compareIp(ipA, ipB) {
+  const a = String(ipA || '').split('.').map(v => Number.parseInt(v, 10))
+  const b = String(ipB || '').split('.').map(v => Number.parseInt(v, 10))
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const av = Number.isFinite(a[i]) ? a[i] : -1
+    const bv = Number.isFinite(b[i]) ? b[i] : -1
+    if (av !== bv) return av - bv
+  }
+  return String(ipA || '').localeCompare(String(ipB || ''))
+}
+
+function setInspectSort(key) {
+  if (inspectSortKey.value === key) {
+    inspectSortAsc.value = !inspectSortAsc.value
+    return
+  }
+  inspectSortKey.value = key
+  inspectSortAsc.value = key === 'ip'
+}
+
+const sortedInspectResults = computed(() => {
+  const items = [...inspectResults.value]
+  if (!inspectSortKey.value) return items
+  return items.sort((a, b) => {
+    let diff = 0
+    if (inspectSortKey.value === 'overall') {
+      diff = (inspectSeverityRank[a.overall] || 0) - (inspectSeverityRank[b.overall] || 0)
+    } else if (inspectSortKey.value === 'ip') {
+      diff = compareIp(a.ip, b.ip)
+    }
+    if (diff === 0) {
+      diff = String(a.hostname || a.instance || '').localeCompare(String(b.hostname || b.instance || ''))
+    }
+    return inspectSortAsc.value ? diff : -diff
   })
 })
 
@@ -660,17 +818,146 @@ async function saveHost() {
   }
 }
 
+const inspectAiStreaming = ref(false)
+const excelDownloading = ref(false)
+
+function switchToInspect() {
+  tab.value = 'inspect'
+  if (!inspecting.value && !inspectResults.value.length) {
+    runInspect()
+  }
+}
+
 async function runInspect() {
   inspecting.value = true
   inspectResults.value = []
+  inspectAiSummary.value = ''
+  inspectAiProvider.value = ''
+  inspectAiFallback.value = false
+  inspectAiStreaming.value = false
+  inspectError.value = ''
+
   try {
-    const r = await api.inspectHosts()
-    inspectResults.value = r.data
-    inspectSummary.value = r.summary
+    const resp = await fetch('/api/hosts/inspect')
+    if (!resp.ok) throw new Error(`巡检请求失败: ${resp.status}`)
+
+    const ct = resp.headers.get('content-type') || ''
+
+    // ── 旧版后端：直接返回 JSON ──
+    if (ct.includes('application/json')) {
+      const data = await resp.json()
+      inspectResults.value = data.data || []
+      inspectSummary.value = data.summary || {}
+      inspecting.value = false
+      return
+    }
+
+    // ── 新版后端：SSE 流式 ──
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') break
+        try {
+          const msg = JSON.parse(raw)
+          if (msg.type === 'inspect_data') {
+            inspectResults.value = msg.data
+            inspectSummary.value = msg.summary
+            inspecting.value = false
+          } else if (msg.type === 'error') {
+            inspectError.value = msg.message || '巡检失败'
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
   } catch (e) {
-    error.value = typeof e === 'string' ? e : (e?.message || '巡检失败')
+    inspectError.value = typeof e === 'string' ? e : (e?.message || '巡检失败')
   } finally {
     inspecting.value = false
+  }
+}
+
+async function runInspectAI() {
+  if (inspectAiStreaming.value || !inspectResults.value.length) return
+  inspectAiSummary.value = ''
+  inspectAiProvider.value = ''
+  inspectAiFallback.value = false
+  inspectAiStreaming.value = true
+
+  try {
+    const resp = await fetch('/api/hosts/inspect/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: inspectResults.value, summary: inspectSummary.value }),
+    })
+    if (!resp.ok) throw new Error(`AI分析请求失败: ${resp.status}`)
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') break
+        try {
+          const msg = JSON.parse(raw)
+          if (msg.type === 'ai_meta') {
+            inspectAiProvider.value = msg.provider || ''
+            inspectAiFallback.value = !!msg.fallback
+          } else if (msg.type === 'ai_chunk') {
+            inspectAiSummary.value += msg.text
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  } catch (e) {
+    inspectAiSummary.value = `AI分析失败：${e?.message || e}`
+  } finally {
+    inspectAiStreaming.value = false
+  }
+}
+
+async function downloadInspectExcel() {
+  if (excelDownloading.value || !inspectResults.value.length) return
+  excelDownloading.value = true
+  try {
+    const resp = await fetch('/api/hosts/inspect/excel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        results: inspectResults.value,
+        summary: inspectSummary.value,
+        ai_text: inspectAiSummary.value || '',
+      }),
+    })
+    if (!resp.ok) throw new Error(`Excel导出失败: ${resp.status}`)
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `巡检报告_${new Date().toISOString().slice(0,10)}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    inspectError.value = e?.message || 'Excel导出失败'
+  } finally {
+    excelDownloading.value = false
   }
 }
 
@@ -742,8 +1029,8 @@ function setTermRef(id, el) {
 function _makeTerminal() {
   return new Terminal({
     cursorBlink: true,
-    fontSize: 13,
-    fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Menlo, Monaco, monospace',
+    fontSize: 12,
+    fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", "Microsoft YaHei UI", "PingFang SC", "Noto Sans Mono CJK SC", Menlo, Monaco, monospace',
     theme: {
       background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff',
       selectionBackground: '#264f78', black: '#0d1117', red: '#ff7b72',
@@ -752,6 +1039,37 @@ function _makeTerminal() {
     },
     scrollback: 5000,
   })
+}
+
+function _fitSession(id = activeSshId.value) {
+  if (!id) return
+  const m = _meta[id]
+  if (!m?.fitAddon) return
+  m.fitAddon.fit()
+  const dims = m.fitAddon.proposeDimensions?.()
+  if (dims && m.ws?.readyState === WebSocket.OPEN) {
+    m.ws.send(`\x1b[RESIZE:${dims.cols},${dims.rows}]`)
+  }
+}
+
+function _scheduleFit(id = activeSshId.value, delay = 0) {
+  if (!id) return
+  const run = () => requestAnimationFrame(() => _fitSession(id))
+  if (delay > 0) {
+    setTimeout(run, delay)
+    return
+  }
+  nextTick(run)
+}
+
+function toggleSSHFullscreen(force) {
+  sshFullscreen.value = typeof force === 'boolean' ? force : !sshFullscreen.value
+}
+
+function handleWindowKeydown(event) {
+  if (event.key === 'Escape' && sshFullscreen.value) {
+    toggleSSHFullscreen(false)
+  }
 }
 
 async function initSessionTerm(id) {
@@ -763,10 +1081,10 @@ async function initSessionTerm(id) {
   m.term.loadAddon(m.fitAddon)
   m.term.open(el)
   await nextTick()
-  m.fitAddon.fit()
+  _fitSession(id)
   m.resizeObserver = new ResizeObserver(() => {
     if (activeSshId.value === id) {
-      requestAnimationFrame(() => m.fitAddon?.fit())
+      requestAnimationFrame(() => _fitSession(id))
     }
   })
   m.resizeObserver.observe(el)
@@ -804,12 +1122,8 @@ async function _doConnect(id) {
     s.connected = true
     s.connecting = false
     s.label = s.username + '@' + s.host
-    // 等 DOM 稳定后 fit，确保尺寸正确
-    nextTick(() => {
-      m.fitAddon?.fit()
-      const dims = m.fitAddon?.proposeDimensions()
-      if (dims) m.ws.send(`\x1b[RESIZE:${dims.cols},${dims.rows}]`)
-    })
+    _scheduleFit(id)
+    _scheduleFit(id, 240)
   }
   m.ws.onmessage = (e) => m.term.write(e.data)
   m.ws.onclose = () => {
@@ -832,7 +1146,8 @@ async function _doConnect(id) {
 
 function switchSession(id) {
   activeSshId.value = id
-  nextTick(() => _meta[id]?.fitAddon?.fit())
+  _scheduleFit(id)
+  _scheduleFit(id, 180)
 }
 
 function closeSession(id) {
@@ -848,7 +1163,10 @@ function closeSession(id) {
   if (activeSshId.value === id) {
     const next = sshSessions.value[Math.max(0, idx - 1)]
     activeSshId.value = next?.id || ''
-    if (next) nextTick(() => _meta[next.id]?.fitAddon?.fit())
+    if (next) {
+      _scheduleFit(next.id)
+      _scheduleFit(next.id, 180)
+    }
     else showNewConnForm.value = true
   }
 }
@@ -881,25 +1199,50 @@ async function connectSSH() {
 onMounted(() => {
   loadHosts()
   loadCredentials()
+  window.addEventListener('keydown', handleWindowKeydown)
+  document.addEventListener('click', onDocClick)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleWindowKeydown)
+  document.removeEventListener('click', onDocClick)
   for (const id of Object.keys(_meta)) closeSession(id)
 })
 
 // 切到 SSH tab 时 fit 当前会话
 watch(tab, (val) => {
-  if (val === 'ssh') nextTick(() => _meta[activeSshId.value]?.fitAddon?.fit())
+  if (val !== 'ssh' && sshFullscreen.value) {
+    sshFullscreen.value = false
+  }
+  if (val === 'ssh') {
+    _scheduleFit()
+    _scheduleFit(activeSshId.value, 240)
+  }
 })
 
 // 连接表单收起/展开时重新 fit（高度变化）
 watch(showNewConnForm, () => {
-  nextTick(() => _meta[activeSshId.value]?.fitAddon?.fit())
+  _scheduleFit()
+  _scheduleFit(activeSshId.value, 240)
+})
+
+watch(sshFullscreen, () => {
+  _scheduleFit()
+  _scheduleFit(activeSshId.value, 240)
 })
 </script>
 
 <style scoped>
-.cmdb-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; padding: 16px; gap: 12px; }
+.cmdb-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; padding: 8px 12px; gap: 8px; }
+.cmdb-page.ssh-mode { padding-left: 4px; padding-right: 4px; }
+.cmdb-page.ssh-fullscreen {
+  position: fixed; inset: 0; z-index: 1200;
+  background: var(--bg-base); padding: 8px 10px;
+}
+.cmdb-page.ssh-fullscreen .stats-row,
+.cmdb-page.ssh-fullscreen .toolbar { display: none; }
+.cmdb-page.ssh-fullscreen .content-row { min-height: 100%; }
+.cmdb-page.ssh-fullscreen .ssh-session-bar { padding-top: 0; }
 
 /* 内容行：左侧主内容 + 右侧详情栏 */
 .content-row { flex: 1; display: flex; min-height: 0; gap: 0; }
@@ -927,6 +1270,26 @@ watch(showNewConnForm, () => {
   box-shadow: var(--shadow-sm);
 }
 .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 8px; }
+.btn-ai {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 6px;
+  border: 1px solid rgba(145, 109, 213, .45);
+  background: rgba(145, 109, 213, .12);
+  color: #b58bf5; font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: background .15s;
+}
+.btn-ai:hover:not(:disabled) { background: rgba(145, 109, 213, .22); }
+.btn-ai:disabled { opacity: .5; cursor: not-allowed; }
+.btn-excel {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 6px;
+  border: 1px solid rgba(82, 196, 26, .4);
+  background: rgba(82, 196, 26, .1);
+  color: #52c41a; font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: background .15s;
+}
+.btn-excel:hover:not(:disabled) { background: rgba(82, 196, 26, .2); }
+.btn-excel:disabled { opacity: .5; cursor: not-allowed; }
 .tab-group { display: flex; gap: 2px; background: var(--bg-base); padding: 3px; border-radius: 6px; border: 1px solid var(--border); }
 .tab-btn {
   padding: 4px 12px; border-radius: 4px; border: none;
@@ -980,6 +1343,83 @@ watch(showNewConnForm, () => {
 
 /* 巡检 */
 .inspect-wrap { flex: 1; overflow-y: auto; min-height: 0; }
+.inspect-ai-card {
+  background: linear-gradient(180deg, rgba(88,166,255,.08), rgba(88,166,255,.03));
+  border: 1px solid rgba(88,166,255,.28);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.inspect-ai-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px;
+}
+.inspect-ai-title {
+  font-size: 15px; font-weight: 700; color: var(--text-primary);
+}
+.inspect-ai-provider {
+  margin-top: 4px; font-size: 12px; color: var(--text-muted);
+}
+.inspect-ai-badge {
+  flex-shrink: 0;
+  font-size: 11px; font-weight: 700;
+  color: var(--accent); background: rgba(88,166,255,.12);
+  border: 1px solid rgba(88,166,255,.32);
+  border-radius: 9999px; padding: 4px 10px;
+}
+.inspect-ai-badge.fallback {
+  color: var(--warning);
+  background: rgba(234,179,8,.12);
+  border-color: rgba(234,179,8,.35);
+}
+.inspect-ai-content {
+  font-size: 13px; line-height: 1.75; color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+.inspect-ai-note {
+  margin-top: 10px; font-size: 12px; color: var(--text-muted);
+}
+/* 流式状态 */
+.inspect-ai-card.streaming {
+  border-color: rgba(58,132,255,.4);
+  background: linear-gradient(180deg, rgba(58,132,255,.06), rgba(58,132,255,.02));
+}
+.inspect-ai-badge.streaming {
+  color: var(--accent); border-color: rgba(58,132,255,.4);
+  background: rgba(58,132,255,.12); animation: badge-pulse 1.2s ease infinite;
+}
+@keyframes badge-pulse { 0%,100% { opacity: 1 } 50% { opacity: .5 } }
+.ai-thinking-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); margin-right: 6px;
+  animation: badge-pulse 1s ease infinite;
+}
+.ai-cursor {
+  display: inline-block; width: 2px; height: 1em; background: var(--accent);
+  margin-left: 2px; vertical-align: text-bottom;
+  animation: blink .7s step-start infinite;
+}
+@keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0 } }
+.ai-placeholder { color: var(--text-muted); font-style: italic; }
+.inspect-sortbar {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 10px; flex-wrap: wrap;
+}
+.inspect-sort-label { font-size: 12px; color: var(--text-muted); }
+.inspect-sort-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: var(--bg-card);
+  color: var(--text-secondary); border-radius: 9999px;
+  padding: 5px 12px; font-size: 12px; cursor: pointer;
+  transition: all .15s ease;
+}
+.inspect-sort-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+.inspect-sort-btn.active {
+  color: var(--accent); border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.inspect-sort-icon { font-size: 11px; line-height: 1; }
 .inspect-list { display: flex; flex-direction: column; gap: 10px; }
 .inspect-card {
   background: var(--bg-card); border: 1px solid var(--border);
@@ -1034,7 +1474,7 @@ watch(showNewConnForm, () => {
 .part-detail-info { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 
 /* SSH 终端 */
-.ssh-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; gap: 0; }
+.ssh-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; gap: 0; width: 100%; }
 
 /* 会话标签栏 */
 .ssh-session-bar {
@@ -1052,6 +1492,8 @@ watch(showNewConnForm, () => {
 }
 .ssh-session-tab:hover { color: var(--text-primary); background: var(--bg-hover); }
 .ssh-session-tab.active { background: var(--bg-card); color: var(--text-primary); border-color: var(--border); }
+.ssh-bar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.ssh-fullscreen-btn { min-width: 88px; justify-content: center; }
 .tab-dot {
   width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
   background: var(--text-muted);
@@ -1077,7 +1519,7 @@ watch(showNewConnForm, () => {
 /* 新建连接表单（紧凑模式，有会话时使用） */
 .ssh-toolbar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 8px 0; flex-shrink: 0;
+  padding: 8px 0; flex-shrink: 0; width: 100%;
   border-bottom: 1px solid var(--border);
 }
 .slide-down-enter-active, .slide-down-leave-active { transition: all .2s ease; overflow: hidden; }
@@ -1085,17 +1527,17 @@ watch(showNewConnForm, () => {
 .slide-down-enter-to, .slide-down-leave-from { max-height: 60px; opacity: 1; }
 
 /* 终端区域 & 宽大新建表单 */
-.term-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
+.term-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; width: 100%; }
 .ssh-welcome-panel {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  padding: 32px;
+  flex: 1; display: flex; align-items: stretch; justify-content: flex-start;
+  padding: 12px 0 0;
 }
 .ssh-welcome-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 32px 40px;
-  width: 100%; max-width: 640px;
+  width: 100%; max-width: none; min-height: 100%;
   box-shadow: var(--shadow);
   display: flex; flex-direction: column; gap: 20px;
 }
@@ -1107,7 +1549,7 @@ watch(showNewConnForm, () => {
   font-size: 20px; line-height: 1;
 }
 .ssh-welcome-form {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 16px;
 }
 .ssh-form-row { display: flex; flex-direction: column; gap: 5px; }
 .ssh-form-row label { font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-bottom: 2px; }
@@ -1143,11 +1585,11 @@ watch(showNewConnForm, () => {
 .term-container {
   position: absolute; inset: 0;
   background: #0d1117; border-radius: var(--radius);
-  border: 1px solid var(--border); overflow: hidden; padding: 4px;
+  border: 1px solid var(--border); overflow: hidden; padding: 0;
   display: flex; flex-direction: column;
 }
 /* xterm 内部元素撑满容器 */
-.term-container :deep(.xterm) { flex: 1; min-height: 0; }
+.term-container :deep(.xterm) { flex: 1; min-height: 0; width: 100%; padding: 8px 10px; }
 .term-container :deep(.xterm-viewport) { overflow-y: auto !important; }
 .term-container :deep(.xterm-screen) { width: 100% !important; }
 
@@ -1231,4 +1673,16 @@ watch(showNewConnForm, () => {
 .empty-state .icon { font-size: 36px; }
 .spinner { width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* 列设置 */
+.col-picker-wrap { position: relative; }
+.col-picker-dropdown {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 200;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px; min-width: 150px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+.col-picker-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+.col-picker-item { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 0; cursor: pointer; white-space: nowrap; color: var(--text-base); }
+.col-picker-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
 </style>
