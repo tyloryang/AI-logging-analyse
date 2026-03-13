@@ -1,4 +1,9 @@
 """AI Ops 日志分析系统 - FastAPI 后端"""
+# load_dotenv 必须在所有本地模块 import 之前执行
+# 否则 session.py / ai_analyzer.py 等模块级 os.getenv() 会取到默认值
+from dotenv import load_dotenv
+load_dotenv()
+
 import json
 import logging
 import os
@@ -14,7 +19,6 @@ import asyncio
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from dotenv import load_dotenv
 from fastapi import FastAPI, Query, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
@@ -34,7 +38,6 @@ from auth.admin_router import router as admin_router
 from auth import service as auth_service
 from db import AsyncSessionLocal
 
-load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
