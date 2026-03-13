@@ -1,191 +1,115 @@
-# 🤖 AI-Logging-Analyse
+# AI-Logging-Analyse
 
-> 基于 **Loki + Claude / 本地大模型** 的智能运维日志分析平台
+> 基于 **Loki + Prometheus + Claude / 本地大模型** 的智能运维日志分析平台
 >
-> An intelligent DevOps log analysis platform powered by Loki + AI (Claude / OpenAI-compatible local models)
+> An intelligent DevOps platform powered by Loki + Prometheus + AI (Claude / OpenAI-compatible local models)
 
 ---
 
-## ✨ 功能特性
+## 功能特性
 
 | 模块 | 功能 |
 |------|------|
-| 📊 **仪表盘** | 系统总览、错误 Top10 服务、服务健康状态矩阵 |
-| 📋 **日志分析** | 按服务过滤、实时查询 Loki、🤖 AI 流式分析日志 |
-| 🧩 **日志模板聚类** | Drain3 算法将海量日志归纳为带 `<*>` 占位符的模板，自动识别重复模式 |
-| 📈 **指标监控** | 各服务错误数趋势条形图、汇总统计 |
-| 🔔 **告警历史** | 基于错误日志自动生成告警，按严重程度分级 |
-| 📝 **分析报告** | 一键生成运维日报，AI 流式输出分析内容，历史报告持久化 |
-| 🔔 **通知推送** | 报告一键推送飞书 / 钉钉，支持关键词安全策略 |
-| ⏰ **定时推送** | 按 cron 表达式自动生成日报并推送，无需人工触发 |
+| **仪表盘** | 系统总览、错误 Top10 服务、服务健康状态矩阵 |
+| **日志分析** | 按服务/级别过滤、实时查询 Loki、AI 流式分析、Drain3 模板聚类 |
+| **指标监控** | 各服务错误数趋势条形图、汇总统计 |
+| **告警历史** | 基于错误日志自动生成告警，按严重程度分级 |
+| **分析报告** | 一键生成运维日报，AI 流式输出，历史报告持久化，飞书/钉钉推送 |
+| **定时推送** | APScheduler 按 cron 表达式自动生成并推送日报 |
+| **主机 CMDB** | Prometheus 自动发现主机，采集 CPU/内存/磁盘/负载指标，可编辑责任人/环境/角色/备注 |
+| **主机巡检** | 阈值巡检（CPU/内存/磁盘告警），AI 流式巡检分析，一键导出 Excel 报告 |
+| **SSH 终端** | 浏览器内 Web Terminal，统一凭证库（AES 加密存储），一键连接主机 |
 
 ---
 
-## 🖥️ 界面预览
+## 界面预览
 
 ### 仪表盘
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ 🤖 AI Ops                                                            │
+│  AI Ops                                                              │
 │ ┌──────────┐ ┌──────────────────────────────────────────────────┐   │
-│ │📊 仪表盘 │ │  仪表盘                  系统总览 · 最近 24 小时 │   │
-│ │📋 日志分析│ │                                                  │   │
-│ │📈 指标监控│ │  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌────────┐ │   │
-│ │🔔 告警历史│ │  │📋        │ │❌        │ │🖥️    │ │🏥      │ │   │
-│ │📝 分析报告│ │  │ 17,888   │ │  2,236   │ │  14  │ │   3    │ │   │
-│ │          │ │  │总日志条数 │ │ 错误总数 │ │涉及服│ │健康服务│ │   │
-│ │          │ └──────────────────────────────────────────────────┘   │
+│ │ 仪表盘   │ │  仪表盘                  系统总览 · 最近 24 小时 │   │
+│ │ 日志分析 │ │                                                  │   │
+│ │ 指标监控 │ │  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌────────┐ │   │
+│ │ 告警历史 │ │  │ 17,888   │ │  2,236   │ │  14  │ │   3    │ │   │
+│ │ 分析报告 │ │  │总日志条数 │ │ 错误总数 │ │涉及服│ │健康服务│ │   │
+│ │ 主机CMDB │ └──────────────────────────────────────────────────┘   │
 │ │          │ ┌──────────────────────────────────────────────────┐   │
-│ │● Loki已连│ │ 🔥 错误 Top 10 服务                              │   │
-│ │● Qwen3已 │ │  1  cloud-monitor  ████████████████░░░░  1152    │   │
-│ └──────────┘ │  2  cloud-gateway  █████████████░░░░░░░   957    │   │
-│              │  3  cloud-cvm-api  ██░░░░░░░░░░░░░░░░░░    49    │   │
+│ │● Loki已连│ │  错误 Top 10 服务                                │   │
+│ │● Qwen3已 │ │  1  cloud-monitor  ████████████  1152            │   │
+│ └──────────┘ │  2  cloud-gateway  ██████████     957            │   │
 │              └──────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 日志分析页
+### 主机 CMDB + 巡检
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ 服务列表  最近24小时▼ │  管道日志总条数  [500]   [🔄实时查询] [🤖AI分析]│
-│ ─────────────────── │ ─────────────────────────────────────────────│
-│ ● 全部服务     2236  │ ┌─ 🤖 AI 分析结果 ────────────────── [关闭] ┐ │
-│ ● cloud-monitor 1152│ │ **错误模式识别**: cloud-monitor 存在大量      │ │
-│ ● cloud-gateway  957│ │ 连接超时异常，高峰期达 1152 条/天...          │ │
-│ ● cloud-cvm-api   49│ │ **根因分析**: 推测为下游依赖响应慢...▌        │ │
-│ ● sslcert-rpc     43│ └────────────────────────────────────────────┘ │
-│ ● xyz-cj-tx1      12│                                                │
-│ ● xyz-cj-yk-2      6│ 2026-03-09 06:17:23  cloud-monitor             │
-│ ● dataops-dl       6│   ERROR Connection timeout to downstream...    │
-│                     │ 2026-03-09 06:17:21  cloud-gateway             │
-│ ● Loki 已连接       │   ERROR Failed to forward request: timeout     │
-│ ● Qwen3-32B        │ 2026-03-09 06:17:20  cloud-monitor             │
-│                     │   FATAL Panic: nil pointer dereference ...     │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-### 运维日报页
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ 分析报告                                                              │
-│ ┌────────────────┐  ┌────────────────────────────────────────────┐  │
-│ │ 每日日报    ▼  │  │  运维日报 2026-03-09        ┌─────────┐   │  │
-│ │ [▶ 立即生成日报]│  │  2026/3/9 06:25:48          │   55    │   │  │
-│ │                │  │                             │ /100    │   │  │
-│ │ ● 运维日报     │  │  📋 2236   🔧 14   🖥️ 27/0  └─────────┘   │  │
-│ │   2026-03-09   │  │     条        个      节点    整体健康评分 │  │
-│ │   55/100  [59] │  │                                            │  │
-│ │                │  │  🔥 错误 Top 10 服务                       │  │
-│ │                │  │   1  cloud-monitor  ██████████  1152       │  │
-│ │                │  │   2  cloud-gateway  ████████     957       │  │
-│ │                │  │                                            │  │
-│ │                │  │  🤖 AI 分析                                │  │
-│ │                │  │  当前系统整体处于亚健康状态，cloud-monitor  │  │
-│ │                │  │  服务异常为主要风险源...                    │  │
-│ │                │  │  ⚠️ cloud-monitor 连接超时率超过阈值        │  │
-│ │                │  │  ✅ 建议扩容 cloud-monitor 实例数量         │  │
-│ └────────────────┘  └────────────────────────────────────────────┘  │
+│  主机 CMDB                          [全量巡检] [AI分析] [下载Excel]  │
+│ ┌────────────────────────────────────────────────────────────────┐   │
+│ │ 主机名         IP           CPU   内存   磁盘   状态   操作    │   │
+│ │ node-prod-01  192.168.1.10  23%   61%    45%    正常   SSH     │   │
+│ │ node-prod-02  192.168.1.11  78%   85%    92%   ⚠警告   SSH     │   │
+│ │ node-prod-03  192.168.1.12  91%   92%    67%   ✗严重   SSH     │   │
+│ └────────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  AI 巡检分析（流式输出）                                             │
+│  当前集群存在 2 台主机资源告警，node-prod-03 CPU 达 91%...▌          │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
----
-
-## 🧩 Drain3 日志模板聚类
-
-### 算法原理
-
-**Drain**（*An Online Log Parsing Approach with Fixed Depth Tree*）是一种基于**固定深度前缀树**的在线日志聚类算法，无需预定义正则表达式，即可自动将格式相似的日志归纳为统一模板。
+## 技术架构
 
 ```
-原始日志（两条独立日志）：
-  "Connection timeout to 10.0.1.5 after 30002ms"
-  "Connection timeout to 10.0.2.3 after 15443ms"
-
-Drain 输出（同一模板）：
-  "Connection timeout to <*> after <*>"
-              ↑ IP 地址          ↑ 耗时（动态参数替换为 <*>）
-```
-
-### 处理流程
-
-```
-原始日志行
-    │
-    ▼  预处理（_clean）
-    │  ① 剥离时间戳（2024-01-01T00:00:00Z 等）
-    │  ② 剥离日志级别（ERROR / WARN / INFO 等）
-    │  ③ 剥离调用位置（main.go:42 等）
-    │
-    ▼  Drain 前缀树匹配
-    │
-    ├─→ ① 按 token 数量路由到对应子树
-    ├─→ ② 按前 N 个 token（前缀）进一步路由
-    └─→ ③ 与候选模板计算相似度
-            │
-            ├─ 相似度 ≥ sim_th (0.4) → 归入已有模板，更新 <*> 占位符
-            └─ 相似度 < sim_th       → 创建新模板
-```
-
-### 关键超参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `drain_sim_th` | `0.4` | 相似度阈值，越低越宽松（更多日志归入同一模板） |
-| `drain_depth` | `4` | 前缀树深度，越深区分越精细 |
-| `drain_max_clusters` | `500` | 最多保留的模板数量 |
-| `parametrize_numeric_tokens` | `True` | 纯数字 token 自动替换为 `<*>` |
-
-### 输出示例
-
-| 模板 | 出现次数 | 主要服务 |
-|------|----------|----------|
-| `Connection timeout to <*> after <*>ms` | 523 | cloud-monitor |
-| `Failed to forward request: <*>` | 312 | cloud-gateway |
-| `panic: runtime error: <*>` | 48 | xyz-cj-tx1 |
-
-> **使用场景**：在「日志分析」页切换到「模板聚类」标签，可快速掌握系统中最频繁出现的日志模式，比逐行阅读日志效率高数十倍，也为 AI 分析提供结构化的输入。
-
----
-
-## 🏗️ 技术架构
-
-```
-┌─────────────────────────────────────────────────────┐
-│                   前端 Vue 3 + Vite                  │
-│  Dashboard │ LogAnalysis │ Metrics │ Alerts │ Report │
-│                  Axios + SSE 流式                    │
-└──────────────────────┬──────────────────────────────┘
-                       │ HTTP / SSE
-┌──────────────────────▼──────────────────────────────┐
-│              后端 FastAPI (Python 3.11+)             │
-│  ┌────────────┐  ┌──────────────┐  ┌─────────────┐  │
-│  │ LokiClient │  │  AIAnalyzer  │  │   Reports   │  │
-│  │  HTTP API  │  │  Provider层  │  │  JSON存储   │  │
-│  └─────┬──────┘  └──────┬───────┘  └─────────────┘  │
-└────────┼────────────────┼────────────────────────────┘
-         │                │
-┌────────▼──────┐  ┌──────▼──────────────────────┐
-│  Loki Server  │  │      AI Provider             │
-│  (日志存储)   │  │  Anthropic Claude            │
-│               │  │  OpenAI 兼容接口             │
-└───────────────┘  │  (Qwen3/vLLM/Ollama 等)      │
-                   └──────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                   前端 Vue 3 + Vite                       │
+│  Dashboard │ LogAnalysis │ Metrics │ Alerts │ Report      │
+│  HostCMDB (主机列表 + 巡检 + SSH 终端)                    │
+│                  Axios + SSE 流式                         │
+└────────────────────────┬─────────────────────────────────┘
+                         │ HTTP / SSE
+┌────────────────────────▼─────────────────────────────────┐
+│             后端 FastAPI (Python 3.11+)                   │
+│  ┌────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │ LokiClient │  │  AIAnalyzer  │  │  Reports / CMDB  │  │
+│  │  HTTP API  │  │  Provider层  │  │  JSON 文件存储   │  │
+│  └─────┬──────┘  └──────┬───────┘  └──────────────────┘  │
+│  ┌─────▼──────┐  ┌──────▼───────┐  ┌──────────────────┐  │
+│  │ PromClient │  │  asyncssh    │  │  APScheduler     │  │
+│  │  HTTP API  │  │  SSH 终端    │  │  定时推送        │  │
+│  └─────┬──────┘  └──────────────┘  └──────────────────┘  │
+└────────┼─────────────────────────────────────────────────┘
+         │
+┌────────▼──────────┐  ┌─────────────────────────────────┐
+│  Loki Server      │  │  Prometheus Server               │
+│  日志存储         │  │  指标采集 (node_exporter)        │
+└───────────────────┘  └─────────────────────────────────┘
+         │                          │
+         └──────────────────────────┘
+                      │
+              ┌───────▼──────────────────────────┐
+              │         AI Provider               │
+              │  Anthropic Claude                 │
+              │  OpenAI 兼容接口                  │
+              │  (Qwen3 / vLLM / Ollama / 等)    │
+              └──────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 环境要求
 
 - Python 3.11+
 - Node.js 18+
 - 可访问的 Loki 服务
+- 可访问的 Prometheus 服务（需部署 node_exporter）
 - AI Provider 之一（见下方配置）
 
 ### 1. 克隆项目
@@ -202,11 +126,14 @@ cd backend
 cp .env.example .env
 ```
 
-编辑 `.env`，选择 AI Provider：
+编辑 `.env`：
 
 ```env
 # Loki 地址
 LOKI_URL=http://your-loki-host:3100
+
+# Prometheus 地址（CMDB 主机发现）
+PROMETHEUS_URL=http://your-prometheus-host:9090
 
 # ── 选项 A：Anthropic Claude ──────────────
 AI_PROVIDER=anthropic
@@ -218,21 +145,46 @@ AI_PROVIDER=openai
 AI_BASE_URL=http://192.168.x.x:8000/v1   # vLLM / Ollama / LM Studio
 AI_API_KEY=                               # 本地模型可留空
 AI_MODEL=Qwen3-32B
+
+# ── 通知推送（选填）──────────────────────
+FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+FEISHU_KEYWORD=运维
+DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxx
+DINGTALK_KEYWORD=运维
+APP_URL=http://192.168.1.100:5173
+
+# ── 定时推送（选填）──────────────────────
+SCHEDULE_CRON=0 9 * * *          # 每天 09:00
+SCHEDULE_CHANNELS=feishu,dingtalk
 ```
 
-### 3. 启动后端
+### 3. 启动服务
+
+**Windows（推荐）**
+
+```bat
+# 一键启动后端（自动清理端口占用）
+start.bat
+
+# 开发模式（热重载）
+start.bat --dev
+
+# 停止后端
+stop.bat
+```
+
+**Linux / macOS**
 
 ```bash
+cd backend
 pip install -r requirements.txt
 python main.py
-# → http://localhost:8000
-# → API 文档: http://localhost:8000/docs
 ```
 
 ### 4. 启动前端
 
 ```bash
-cd ../frontend
+cd frontend
 npm install
 npm run dev
 # → http://localhost:5173
@@ -240,41 +192,23 @@ npm run dev
 
 ---
 
-## 🔔 通知推送配置
+## 通知推送
 
-在 `.env` 中填写 Webhook 地址，即可在报告页点击按钮一键推送。
+在 `.env` 中填写 Webhook 地址，在报告页点击按钮一键推送到飞书或钉钉。
 
-```env
-# 飞书自定义机器人（群设置 → 机器人 → 添加机器人 → 自定义机器人）
-FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-FEISHU_KEYWORD=运维              # 机器人安全策略关键词（选填）
-
-# 钉钉自定义机器人（群设置 → 智能群助手 → 添加机器人 → 自定义）
-DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxx
-DINGTALK_KEYWORD=运维            # 机器人安全策略关键词（选填）
-
-# 飞书「查看完整报告」按钮跳转地址（填写前端访问地址）
-APP_URL=http://192.168.1.100:5173
-```
+| 平台 | 配置项 |
+|------|--------|
+| 飞书 | `FEISHU_WEBHOOK` + `FEISHU_KEYWORD` |
+| 钉钉 | `DINGTALK_WEBHOOK` + `DINGTALK_KEYWORD` |
 
 ---
 
-## ⏰ 定时推送配置
+## 定时推送
 
 后端内置 APScheduler，启动后自动按 cron 表达式生成日报并推送，无需外部 cron 服务。
 
-```env
-# cron 表达式（分 时 日 月 周），使用服务器本地时间
-SCHEDULE_CRON=0 9 * * *          # 每天 09:00
-
-# 推送渠道，逗号分隔；留空则只生成报告，不推送
-SCHEDULE_CHANNELS=feishu,dingtalk
-```
-
-常用 cron 参考：
-
-| 表达式 | 含义 |
-|--------|------|
+| cron 表达式 | 含义 |
+|-------------|------|
 | `0 9 * * *` | 每天 09:00 |
 | `0 18 * * *` | 每天 18:00 |
 | `30 8 * * 1-5` | 工作日 08:30 |
@@ -282,7 +216,7 @@ SCHEDULE_CHANNELS=feishu,dingtalk
 
 ---
 
-## ⚙️ AI Provider 支持
+## AI Provider 支持
 
 | Provider | 配置方式 | 适用场景 |
 |----------|---------|---------|
@@ -296,53 +230,91 @@ SCHEDULE_CHANNELS=feishu,dingtalk
 
 ---
 
-## 📡 API 接口
+## Drain3 日志模板聚类
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 健康检查（Loki + AI 状态） |
-| GET | `/api/services` | 服务列表及错误数 |
-| GET | `/api/logs` | 查询日志（支持服务/时间/级别过滤） |
-| GET | `/api/logs/errors` | 全量错误日志 |
-| GET | `/api/logs/templates` | **Drain3** 日志模板聚类 |
-| GET | `/api/metrics/errors` | 各服务错误数统计 |
-| GET | `/api/analyze/stream` | **流式** AI 日志分析（SSE） |
-| GET | `/api/report/generate` | **流式** 生成运维日报（SSE） |
-| GET | `/api/report/list` | 历史报告列表 |
-| GET | `/api/report/{id}` | 报告详情 |
-| POST | `/api/report/{id}/notify` | 推送报告到飞书 / 钉钉 |
+**Drain** 是一种基于固定深度前缀树的在线日志聚类算法，无需预定义正则表达式，自动将格式相似的日志归纳为统一模板。
+
+```
+原始日志：
+  "Connection timeout to 10.0.1.5 after 30002ms"
+  "Connection timeout to 10.0.2.3 after 15443ms"
+
+Drain 输出：
+  "Connection timeout to <*> after <*>"
+```
+
+在「日志分析」页切换到「模板聚类」标签，可快速掌握系统中最频繁出现的日志模式。
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `drain_sim_th` | `0.4` | 相似度阈值，越低越宽松 |
+| `drain_depth` | `4` | 前缀树深度，越深越精细 |
+| `drain_max_clusters` | `500` | 最多保留的模板数量 |
 
 ---
 
-## 📁 项目结构
+## API 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/health` | 健康检查（Loki + Prometheus + AI 状态） |
+| GET | `/api/services` | 服务列表及错误数 |
+| GET | `/api/logs` | 查询日志（服务/时间/级别过滤） |
+| GET | `/api/logs/errors` | 全量错误日志 |
+| GET | `/api/logs/templates` | Drain3 日志模板聚类 |
+| GET | `/api/metrics/errors` | 各服务错误数统计 |
+| GET | `/api/analyze/stream` | **流式** AI 日志分析（SSE） |
+| POST | `/api/report/generate` | **流式** 生成运维日报（SSE） |
+| GET | `/api/report/list` | 历史报告列表 |
+| GET | `/api/report/{id}` | 报告详情 |
+| POST | `/api/report/{id}/notify` | 推送报告到飞书 / 钉钉 |
+| GET | `/api/hosts` | 主机列表（Prometheus 发现 + CMDB + 实时指标） |
+| PUT | `/api/hosts/{instance}` | 更新主机 CMDB 信息 |
+| GET | `/api/hosts/inspect` | 全量主机巡检 |
+| GET | `/api/hosts/{instance}/inspect` | 单台主机巡检 |
+| POST | `/api/hosts/inspect/ai` | **流式** AI 巡检分析（SSE） |
+| POST | `/api/hosts/inspect/excel` | 导出巡检报告 Excel |
+| POST | `/api/ssh/connect` | 建立 SSH 连接 |
+| GET | `/api/ssh/credentials` | 凭证列表 |
+| POST | `/api/ssh/credentials` | 添加凭证（AES 加密存储） |
+
+---
+
+## 项目结构
 
 ```
 AI-logging-analyse/
 ├── backend/
-│   ├── main.py           # FastAPI 主应用 + APScheduler 定时任务
-│   ├── loki_client.py    # Loki HTTP API v1 客户端
-│   ├── ai_analyzer.py    # AI 分析器（Provider 抽象层）
-│   ├── log_clusterer.py  # Drain3 日志模板聚类
-│   ├── notifier.py       # 飞书 / 钉钉 Webhook 推送
+│   ├── main.py              # FastAPI 主应用 + APScheduler 定时任务
+│   ├── loki_client.py       # Loki HTTP API v1 客户端
+│   ├── prom_client.py       # Prometheus HTTP API 客户端
+│   ├── ai_analyzer.py       # AI 分析器（Provider 抽象层）
+│   ├── log_clusterer.py     # Drain3 日志模板聚类
+│   ├── notifier.py          # 飞书 / 钉钉 Webhook 推送
+│   ├── start.py             # 启动脚本（自动清理端口占用）
 │   ├── requirements.txt
-│   └── .env.example      # 配置模板
+│   ├── .env.example         # 配置模板
+│   ├── cmdb_hosts.json      # CMDB 手动字段存储（不提交）
+│   └── reports/             # 历史报告（不提交）
 ├── frontend/
 │   └── src/
 │       ├── views/
-│       │   ├── Dashboard.vue       # 仪表盘
-│       │   ├── LogAnalysis.vue     # 日志分析 + AI 分析
-│       │   ├── MetricsMonitor.vue  # 指标监控
-│       │   ├── AlertHistory.vue    # 告警历史
-│       │   └── AnalysisReport.vue  # 运维日报
+│       │   ├── Dashboard.vue        # 仪表盘
+│       │   ├── LogAnalysis.vue      # 日志分析 + AI 分析 + 模板聚类
+│       │   ├── MetricsMonitor.vue   # 指标监控
+│       │   ├── AlertHistory.vue     # 告警历史
+│       │   ├── AnalysisReport.vue   # 运维日报
+│       │   └── HostCMDB.vue         # 主机 CMDB + 巡检 + SSH 终端
 │       ├── components/
-│       │   └── Sidebar.vue         # 侧边导航
-│       └── api/index.js            # HTTP + SSE 封装
-├── start.sh              # 一键启动脚本
+│       │   └── Sidebar.vue          # 侧边导航（含 AI/服务状态指示）
+│       └── api/index.js             # HTTP + SSE 封装
+├── start.bat                # Windows 一键启动脚本
+├── stop.bat                 # Windows 一键停止脚本
 └── README.md
 ```
 
 ---
 
-## 📄 License
+## License
 
 MIT
