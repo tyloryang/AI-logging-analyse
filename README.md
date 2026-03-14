@@ -192,7 +192,7 @@ cd frontend && npm install && npm run dev
 |----------|------|------|
 | Anthropic Claude | `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` | 云端，推理能力强 |
 | Qwen3 / vLLM | `AI_PROVIDER=openai` + `AI_BASE_URL` | 本地部署，数据不出内网 |
-| Ollama | `AI_PROVIDER=openai` + `http://host:11434/v1` | 本地一键部署 |
+| Ollama | `AI_PROVIDER=openai` + `http://host:11434/v1` | 本地一键部署（Docker 内需填宿主机 IP，不能用 localhost） |
 | DeepSeek | `AI_PROVIDER=openai` + DeepSeek API URL | 低成本云端 |
 
 > 任何支持 OpenAI Chat Completions API 格式的服务均可接入。
@@ -208,13 +208,13 @@ cd frontend && npm install && npm run dev
 ### 定时推送
 
 ```env
-SCHEDULE_CRON=0 9 * * *          # 每天 09:00（cron 格式：分 时 日 月 周）
-SCHEDULE_CHANNELS=feishu,dingtalk # 推送渠道
+SCHEDULE_CRON=0 9 * * *          # 每天 09:00，使用服务器本地时间（中国服务器无需换算）
+SCHEDULE_CHANNELS=feishu          # 推送渠道，多个用逗号分隔：feishu / dingtalk / feishu,dingtalk
 
 FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-FEISHU_KEYWORD=运维               # 飞书机器人关键词安全策略
+FEISHU_KEYWORD=运维               # 飞书自定义机器人关键词安全策略（消息中必须包含该词）
 DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxx
-DINGTALK_KEYWORD=运维
+DINGTALK_KEYWORD=运维             # 钉钉关键词安全策略（与飞书同理）
 ```
 
 | cron 表达式 | 含义 |
@@ -416,7 +416,7 @@ aioredis.exceptions.ConnectionError: ...
 
 ### 登录提示 401
 
-- 确认 `.env` 中 `ADMIN_PASSWORD` 已在**首次启动前**设置
+- 确认 `.env` 中 `ADMIN_PASSWORD` 已在**首次启动前**设置（`ADMIN_PASSWORD=` 留空或字段不存在时触发随机密码生成）
 - 若首次启动时未配置密码，系统会随机生成密码并打印到启动日志中：
   ```bash
   docker compose logs backend | grep "初始管理员"
