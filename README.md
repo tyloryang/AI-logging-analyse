@@ -1,8 +1,33 @@
-# AI-Logging-Analyse
+# AI Ops · 智能运维平台
 
-> 基于 **Loki + Prometheus + Claude / 本地大模型** 的智能运维日志分析平台
+> 基于 **Loki + Prometheus + AI 大模型** 的一站式智能运维平台
 >
-> An intelligent DevOps platform powered by Loki + Prometheus + AI (Claude / OpenAI-compatible local models)
+> 日志分析 · 主机巡检 · SSH 终端 · 运维日报 · 飞书/钉钉推送 · 用户权限管理
+
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Python](https://img.shields.io/badge/python-3.11+-green)
+![Vue](https://img.shields.io/badge/vue-3.x-brightgreen)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)
+
+---
+
+## 界面预览
+
+### 仪表盘
+![仪表盘](HomePage.png)
+*系统总览：总日志数、错误数、服务健康状态矩阵，24 小时内一览无余*
+
+### AI 分析报告
+![AI 分析报告](AIanalyse.png)
+*一键生成运维日报，AI 流式输出健康评分、Top 错误服务和处置建议*
+
+### 飞书推送
+![飞书推送](FeishuReport.png)
+*AI 分析结果自动推送飞书/钉钉，支持定时推送和手动触发*
+
+### SSH 终端
+![SSH 终端](ssh界面.png)
+*浏览器内直连主机 Web Terminal，凭证统一管理，支持多标签*
 
 ---
 
@@ -11,93 +36,50 @@
 | 模块 | 功能 |
 |------|------|
 | **仪表盘** | 系统总览、错误 Top10 服务、服务健康状态矩阵 |
-| **日志分析** | 按服务/级别过滤、实时查询 Loki、AI 流式分析、Drain3 模板聚类 |
-| **指标监控** | 各服务错误数趋势条形图、汇总统计 |
+| **日志分析** | 按服务/级别/关键字过滤、Loki 实时查询、AI 流式分析、Drain3 模板聚类 |
+| **指标监控** | 各服务错误数趋势、汇总统计 |
 | **告警历史** | 基于错误日志自动生成告警，按严重程度分级 |
-| **分析报告** | 一键生成运维日报，AI 流式输出，历史报告持久化，飞书/钉钉推送 |
-| **定时推送** | APScheduler 按 cron 表达式自动生成并推送日报 |
-| **主机 CMDB** | Prometheus 自动发现主机，采集 CPU/内存/磁盘/负载指标，可编辑责任人/环境/角色/备注 |
-| **主机巡检** | 阈值巡检（CPU/内存/磁盘告警），AI 流式巡检分析，一键导出 Excel 报告 |
-| **SSH 终端** | 浏览器内 Web Terminal，统一凭证库（AES 加密存储），一键连接主机 |
-
----
-
-## 界面预览
-
-### 仪表盘
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  AI Ops                                                              │
-│ ┌──────────┐ ┌──────────────────────────────────────────────────┐   │
-│ │ 仪表盘   │ │  仪表盘                  系统总览 · 最近 24 小时 │   │
-│ │ 日志分析 │ │                                                  │   │
-│ │ 指标监控 │ │  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌────────┐ │   │
-│ │ 告警历史 │ │  │ 17,888   │ │  2,236   │ │  14  │ │   3    │ │   │
-│ │ 分析报告 │ │  │总日志条数 │ │ 错误总数 │ │涉及服│ │健康服务│ │   │
-│ │ 主机CMDB │ └──────────────────────────────────────────────────┘   │
-│ │          │ ┌──────────────────────────────────────────────────┐   │
-│ │● Loki已连│ │  错误 Top 10 服务                                │   │
-│ │● Qwen3已 │ │  1  cloud-monitor  ████████████  1152            │   │
-│ └──────────┘ │  2  cloud-gateway  ██████████     957            │   │
-│              └──────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-### 主机 CMDB + 巡检
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  主机 CMDB                          [全量巡检] [AI分析] [下载Excel]  │
-│ ┌────────────────────────────────────────────────────────────────┐   │
-│ │ 主机名         IP           CPU   内存   磁盘   状态   操作    │   │
-│ │ node-prod-01  192.168.1.10  23%   61%    45%    正常   SSH     │   │
-│ │ node-prod-02  192.168.1.11  78%   85%    92%   ⚠警告   SSH     │   │
-│ │ node-prod-03  192.168.1.12  91%   92%    67%   ✗严重   SSH     │   │
-│ └────────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-│  AI 巡检分析（流式输出）                                             │
-│  当前集群存在 2 台主机资源告警，node-prod-03 CPU 达 91%...▌          │
-└──────────────────────────────────────────────────────────────────────┘
-```
+| **分析报告** | 一键生成运维日报，AI 流式输出，历史持久化，飞书/钉钉推送 |
+| **定时推送** | APScheduler 按 cron 自动生成运维日报 + 主机巡检日报并推送，无需外部 cron |
+| **主机 CMDB** | Prometheus 自动发现主机，采集 CPU/内存/磁盘/网络/负载指标，可编辑责任人/环境/角色 |
+| **主机巡检** | 阈值巡检（CPU/内存/磁盘/负载），AI 逐台列出异常 IP 和问题，一键导出 Excel |
+| **SSH 终端** | 浏览器内 Web Terminal，凭证库 AES 加密存储，多标签，一键连接 |
+| **用户权限** | 注册审批、模块级权限（view/operate）、登录失败锁定、操作审计日志 |
 
 ---
 
 ## 技术架构
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                   前端 Vue 3 + Vite                       │
-│  Dashboard │ LogAnalysis │ Metrics │ Alerts │ Report      │
-│  HostCMDB (主机列表 + 巡检 + SSH 终端)                    │
-│                  Axios + SSE 流式                         │
-└────────────────────────┬─────────────────────────────────┘
-                         │ HTTP / SSE
-┌────────────────────────▼─────────────────────────────────┐
-│             后端 FastAPI (Python 3.11+)                   │
-│  ┌────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │ LokiClient │  │  AIAnalyzer  │  │  Reports / CMDB  │  │
-│  │  HTTP API  │  │  Provider层  │  │  JSON 文件存储   │  │
-│  └─────┬──────┘  └──────┬───────┘  └──────────────────┘  │
-│  ┌─────▼──────┐  ┌──────▼───────┐  ┌──────────────────┐  │
-│  │ PromClient │  │  asyncssh    │  │  APScheduler     │  │
-│  │  HTTP API  │  │  SSH 终端    │  │  定时推送        │  │
-│  └─────┬──────┘  └──────────────┘  └──────────────────┘  │
-└────────┼─────────────────────────────────────────────────┘
-         │
-┌────────▼──────────┐  ┌─────────────────────────────────┐
-│  Loki Server      │  │  Prometheus Server               │
-│  日志存储         │  │  指标采集 (node_exporter)        │
-└───────────────────┘  └─────────────────────────────────┘
-         │                          │
-         └──────────────────────────┘
-                      │
-              ┌───────▼──────────────────────────┐
-              │         AI Provider               │
-              │  Anthropic Claude                 │
-              │  OpenAI 兼容接口                  │
-              │  (Qwen3 / vLLM / Ollama / 等)    │
-              └──────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                    浏览器  Vue 3 + Vite                        │
+│  Dashboard · LogAnalysis · Metrics · Alerts · Report          │
+│  HostCMDB (CMDB + 巡检 + SSH 终端)                            │
+│  Login / Register / AdminUsers (用户权限管理)                  │
+│                  Pinia · Axios · SSE                           │
+└──────────────────────────┬────────────────────────────────────┘
+                           │ HTTP / SSE / WebSocket
+┌──────────────────────────▼────────────────────────────────────┐
+│                FastAPI  Python 3.11+                           │
+│  routers/                  auth/                               │
+│  ├── logs.py               ├── router.py   /api/auth/*        │
+│  ├── reports.py            ├── admin_router.py                │
+│  ├── hosts.py              ├── service.py  (注册/审批/权限)    │
+│  ├── ssh.py                └── session.py  (Redis Session)    │
+│  └── health.py                                                 │
+│  state.py (共享单例)   scheduler.py (定时任务)                  │
+└───────┬──────────────────────────────┬────────────────────────┘
+        │                              │
+┌───────▼──────────┐   ┌──────────────▼───────────────────────┐
+│  外部服务         │   │  本地存储                              │
+│  Loki  (日志)    │   │  SQLite / MySQL 8 / PostgreSQL 16      │
+│  Prometheus      │   │  (用户/权限/审计日志)                   │
+│  (指标+主机发现) │   │                                        │
+│  AI Provider     │   │  Redis  (Session + 登录失败计数)       │
+│  (Claude/OpenAI) │   │                                        │
+│  飞书 / 钉钉     │   │  ./reports/  (日报 JSON)               │
+└──────────────────┘   │  ./data/     (SQLite 数据库)           │
+                       └──────────────────────────────────────┘
 ```
 
 ---
@@ -106,121 +88,134 @@
 
 ### 环境要求
 
-**直接启动**
+**Docker 部署（推荐）**
+- Docker 24+ 和 Docker Compose v2
+
+**直接启动（开发/测试）**
 - Python 3.11+
 - Node.js 18+
 
-**Docker 启动**
-- Docker 24+ & Docker Compose v2
-
 **外部依赖**
 - 可访问的 Loki 服务
-- 可访问的 Prometheus 服务（需部署 node_exporter）
-- AI Provider 之一（见下方配置）
+- 可访问的 Prometheus 服务（主机需部署 `node_exporter`）
+- AI Provider 之一（见配置说明）
+
+---
 
 ### 1. 克隆项目
 
 ```bash
-git clone git@github.com:tyloryang/AI-logging-analyse.git
-cd AI-logging-analyse
+git clone https://github.com/your-org/aiops.git
+cd aiops
 ```
 
-### 2. 后端配置
+### 2. 配置 .env
 
 ```bash
 cd backend
 cp .env.example .env
 ```
 
-编辑 `.env`：
+编辑 `.env`，至少填写以下必填项：
 
 ```env
-# Loki 地址
+# ── 必填 ─────────────────────────────────────────────
 LOKI_URL=http://your-loki-host:3100
-
-# Prometheus 地址（CMDB 主机发现）
 PROMETHEUS_URL=http://your-prometheus-host:9090
 
-# ── 选项 A：Anthropic Claude ──────────────
+# ── AI Provider（二选一）────────────────────────────
+# 选项 A：Anthropic Claude
 AI_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
 AI_MODEL=claude-opus-4-6
 
-# ── 选项 B：本地 / 第三方 OpenAI 兼容接口 ──
+# 选项 B：本地 / 第三方 OpenAI 兼容接口
 AI_PROVIDER=openai
-AI_BASE_URL=http://192.168.x.x:8000/v1   # vLLM / Ollama / LM Studio
-AI_API_KEY=                               # 本地模型可留空
+AI_BASE_URL=http://192.168.x.x:8000/v1
+AI_API_KEY=
 AI_MODEL=Qwen3-32B
 
-# ── 通知推送（选填）──────────────────────
-FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-FEISHU_KEYWORD=运维
-DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxx
-DINGTALK_KEYWORD=运维
-APP_URL=http://192.168.1.100:5173
+# ── 初始管理员（首次启动自动创建）───────────────────
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=Admin@123456
 
-# ── 定时推送（选填）──────────────────────
-SCHEDULE_CRON=0 9 * * *          # 每天 09:00
-SCHEDULE_CHANNELS=feishu,dingtalk
+# ── Redis（Docker 部署时默认已包含）─────────────────
+REDIS_URL=redis://redis:6379/0
 ```
 
-### 3. 启动服务
+其余可选配置见 [.env.example](backend/.env.example)。
 
-#### 方式一：Linux 直接启动（开发 / 测试）
+### 3. 启动
+
+#### 方式一：Docker Compose（推荐生产）
 
 ```bash
-# 一键启动前后端
-chmod +x start.sh
-./start.sh
+# 默认 SQLite
+docker compose up -d --build
+
+# 使用 MySQL 8
+docker compose --profile mysql up -d --build
+
+# 使用 PostgreSQL 16
+docker compose --profile postgres up -d --build
+```
+
+访问 http://localhost，使用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录。
+
+#### 方式二：Linux 直接启动（开发/测试）
+
+```bash
+chmod +x start.sh && ./start.sh
 ```
 
 或分别启动：
 
 ```bash
 # 后端（:8000）
-cd backend
-pip install -r requirements.txt
-python3 main.py
+cd backend && pip install -r requirements.txt && python3 main.py
 
 # 前端（:5173，新开终端）
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install && npm run dev
 ```
 
 访问 http://localhost:5173
 
-#### 方式二：Docker Compose（推荐生产）
+---
 
-```bash
-# 构建并启动（前端 :80，后端 :8000）
-docker compose up -d --build
+## 配置说明
 
-# 查看日志
-docker compose logs -f
+完整配置项见 [`backend/.env.example`](backend/.env.example)，以下列出常用项：
 
-# 停止
-docker compose down
+### AI Provider
+
+| Provider | 配置 | 场景 |
+|----------|------|------|
+| Anthropic Claude | `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` | 云端，推理能力强 |
+| Qwen3 / vLLM | `AI_PROVIDER=openai` + `AI_BASE_URL` | 本地部署，数据不出内网 |
+| Ollama | `AI_PROVIDER=openai` + `http://host:11434/v1` | 本地一键部署 |
+| DeepSeek | `AI_PROVIDER=openai` + DeepSeek API URL | 低成本云端 |
+
+> 任何支持 OpenAI Chat Completions API 格式的服务均可接入。
+
+### 数据库
+
+| 数据库 | DATABASE_URL |
+|--------|-------------|
+| SQLite（默认） | `sqlite+aiosqlite:///./data/aiops.db` |
+| MySQL 8 | `mysql+aiomysql://user:pass@host:3306/aiops` |
+| PostgreSQL 16 | `postgresql+asyncpg://user:pass@host:5432/aiops` |
+
+### 定时推送
+
+```env
+SCHEDULE_CRON=0 9 * * *          # 每天 09:00（cron 格式：分 时 日 月 周）
+SCHEDULE_CHANNELS=feishu,dingtalk # 推送渠道
+
+FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+FEISHU_KEYWORD=运维               # 飞书机器人关键词安全策略
+DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxx
+DINGTALK_KEYWORD=运维
 ```
-
-访问 http://localhost
-
----
-
-## 通知推送
-
-在 `.env` 中填写 Webhook 地址，在报告页点击按钮一键推送到飞书或钉钉。
-
-| 平台 | 配置项 |
-|------|--------|
-| 飞书 | `FEISHU_WEBHOOK` + `FEISHU_KEYWORD` |
-| 钉钉 | `DINGTALK_WEBHOOK` + `DINGTALK_KEYWORD` |
-
----
-
-## 定时推送
-
-后端内置 APScheduler，启动后自动按 cron 表达式生成日报并推送，无需外部 cron 服务。
 
 | cron 表达式 | 含义 |
 |-------------|------|
@@ -231,86 +226,81 @@ docker compose down
 
 ---
 
-## AI Provider 支持
+## 功能使用指南
 
-| Provider | 配置方式 | 适用场景 |
-|----------|---------|---------|
-| **Anthropic Claude** | `AI_PROVIDER=anthropic` + API Key | 云端，推理能力强 |
-| **Qwen3-32B (vLLM)** | `AI_PROVIDER=openai` + `AI_BASE_URL` | 本地部署，数据不出内网 |
-| **Ollama** | `AI_PROVIDER=openai` + `http://host:11434/v1` | 本地一键部署 |
-| **DeepSeek** | `AI_PROVIDER=openai` + DeepSeek API URL | 低成本云端 |
-| **OpenRouter** | `AI_PROVIDER=openai` + OpenRouter URL | 多模型聚合 |
+### 日志分析
 
-> 任何支持 OpenAI Chat Completions API 格式的服务均可接入。
+1. 从顶部下拉选择服务，选择时间范围（最近 N 小时或自定义区间）
+2. 可按日志级别（error / warn / info）和关键字过滤
+3. 点击 **AI 分析** 触发流式 AI 分析，AI 会列出根因和处置建议
+4. 切换 **模板聚类** 标签，查看 Drain3 自动归纳的日志模板（高频模式一目了然）
 
----
+### 运维日报 + 定时推送
 
-## Drain3 日志模板聚类
+- **手动生成**：进入「分析报告」→ 点击「立即生成日报」，AI 流式输出健康评分和分析
+- **手动推送**：报告生成后点击「飞书推送」或「钉钉推送」
+- **定时自动推送**：配置 `SCHEDULE_CRON` 和 `SCHEDULE_CHANNELS`，后端自动在指定时间推送运维日报 + 主机巡检日报，无需手动操作
 
-**Drain** 是一种基于固定深度前缀树的在线日志聚类算法，无需预定义正则表达式，自动将格式相似的日志归纳为统一模板。
+### 主机巡检
 
-```
-原始日志：
-  "Connection timeout to 10.0.1.5 after 30002ms"
-  "Connection timeout to 10.0.2.3 after 15443ms"
+1. 进入「CMDB 巡检」→ 切换「巡检报告」标签
+2. 点击「全量巡检」，系统从 Prometheus 拉取最新指标并对每台主机执行阈值检查
+3. 点击「AI 分析」，AI 会逐台列出每个异常主机的 IP 和具体问题（如 `192.168.1.10：CPU 使用率 91%`）
+4. 点击「下载 Excel」导出三页式报告（巡检概况 / 全部主机明细 / 异常项明细）
 
-Drain 输出：
-  "Connection timeout to <*> after <*>"
-```
+### SSH 终端
 
-在「日志分析」页切换到「模板聚类」标签，可快速掌握系统中最频繁出现的日志模式。
+1. 进入「CMDB 巡检」→ 切换「SSH 终端」标签
+2. 点击主机旁的「SSH」按钮，或在终端顶部手动输入 IP 新建连接
+3. 首次连接需要凭证：点击「凭证管理」添加用户名/密码，凭证以 AES 加密存储
+4. 也可在「主机 CMDB」页为每台主机绑定指定凭证，下次一键直连
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `drain_sim_th` | `0.4` | 相似度阈值，越低越宽松 |
-| `drain_depth` | `4` | 前缀树深度，越深越精细 |
-| `drain_max_clusters` | `500` | 最多保留的模板数量 |
+### 用户权限管理
 
----
+**注册流程**：用户自行注册 → 状态为 `pending` → 管理员审批后激活
 
-## API 接口
+**管理员操作**：进入「用户管理」页面：
+- 审批待注册用户
+- 为每位用户按模块分配权限（`none` / `view` / `operate`）
+- 解锁因登录失败超限而锁定的账号
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 健康检查（Loki + Prometheus + AI 状态） |
-| GET | `/api/services` | 服务列表及错误数 |
-| GET | `/api/logs` | 查询日志（服务/时间/级别过滤） |
-| GET | `/api/logs/errors` | 全量错误日志 |
-| GET | `/api/logs/templates` | Drain3 日志模板聚类 |
-| GET | `/api/metrics/errors` | 各服务错误数统计 |
-| GET | `/api/analyze/stream` | **流式** AI 日志分析（SSE） |
-| POST | `/api/report/generate` | **流式** 生成运维日报（SSE） |
-| GET | `/api/report/list` | 历史报告列表 |
-| GET | `/api/report/{id}` | 报告详情 |
-| POST | `/api/report/{id}/notify` | 推送报告到飞书 / 钉钉 |
-| GET | `/api/hosts` | 主机列表（Prometheus 发现 + CMDB + 实时指标） |
-| PUT | `/api/hosts/{instance}` | 更新主机 CMDB 信息 |
-| GET | `/api/hosts/inspect` | 全量主机巡检 |
-| GET | `/api/hosts/{instance}/inspect` | 单台主机巡检 |
-| POST | `/api/hosts/inspect/ai` | **流式** AI 巡检分析（SSE） |
-| POST | `/api/hosts/inspect/excel` | 导出巡检报告 Excel |
-| POST | `/api/ssh/connect` | 建立 SSH 连接 |
-| GET | `/api/ssh/credentials` | 凭证列表 |
-| POST | `/api/ssh/credentials` | 添加凭证（AES 加密存储） |
+**权限模块**：`dashboard` · `log` · `metrics` · `alert` · `report` · `cmdb` · `inspect` · `ssh` · `admin`
 
 ---
 
 ## 项目结构
 
 ```
-AI-logging-analyse/
+aiops/
 ├── backend/
-│   ├── main.py              # FastAPI 主应用 + APScheduler 定时任务
+│   ├── main.py              # FastAPI 应用入口 + lifespan（~100 行）
+│   ├── state.py             # 共享单例（loki/prom/analyzer）和配置常量
+│   ├── scheduler.py         # APScheduler 定时任务（日报 + 巡检日报推送）
+│   ├── db.py                # SQLAlchemy 异步引擎（多数据库支持）
+│   ├── routers/
+│   │   ├── logs.py          # /api/logs /api/services /api/analyze /api/metrics
+│   │   ├── reports.py       # /api/report/* （日报 + 巡检日报 + Excel + 推送）
+│   │   ├── hosts.py         # /api/hosts/* （CMDB + 巡检）
+│   │   ├── ssh.py           # /api/ssh/* + WebSocket /api/ws/ssh
+│   │   └── health.py        # /api/health
+│   ├── auth/
+│   │   ├── models.py        # User / Permission / Module / AuditLog ORM 模型
+│   │   ├── router.py        # /api/auth/* （登录/注册/登出/改密）
+│   │   ├── admin_router.py  # /api/admin/* （用户管理/权限分配/审计日志）
+│   │   ├── service.py       # 注册/登录/权限业务逻辑
+│   │   ├── deps.py          # current_user / require_permission FastAPI 依赖
+│   │   ├── session.py       # Redis Session 封装（滑动 TTL）
+│   │   ├── audit.py         # 操作审计日志工具
+│   │   └── password.py      # bcrypt 哈希 + 密码复杂度校验
 │   ├── loki_client.py       # Loki HTTP API v1 客户端
-│   ├── prom_client.py       # Prometheus HTTP API 客户端
-│   ├── ai_analyzer.py       # AI 分析器（Provider 抽象层）
+│   ├── prom_client.py       # Prometheus HTTP API 客户端（主机发现 + 指标采集）
+│   ├── ai_analyzer.py       # AI 分析器（Provider 抽象层，支持 Anthropic / OpenAI）
+│   ├── ssh_bridge.py        # WebSocket ↔ asyncssh 桥接（SSH 终端后端）
 │   ├── log_clusterer.py     # Drain3 日志模板聚类
 │   ├── notifier.py          # 飞书 / 钉钉 Webhook 推送
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── .env.example         # 配置模板
-│   ├── cmdb_hosts.json      # CMDB 手动字段存储（不提交）
-│   └── reports/             # 历史报告（不提交）
+│   └── .env.example
 ├── frontend/
 │   ├── src/
 │   │   ├── views/
@@ -319,19 +309,151 @@ AI-logging-analyse/
 │   │   │   ├── MetricsMonitor.vue   # 指标监控
 │   │   │   ├── AlertHistory.vue     # 告警历史
 │   │   │   ├── AnalysisReport.vue   # 运维日报
-│   │   │   └── HostCMDB.vue         # 主机 CMDB + 巡检 + SSH 终端
-│   │   ├── components/
-│   │   │   └── Sidebar.vue          # 侧边导航（含 AI/服务状态指示）
-│   │   └── api/index.js             # HTTP + SSE 封装
-│   ├── nginx.conf           # Docker 生产环境 Nginx 配置
+│   │   │   ├── HostCMDB.vue         # 主机 CMDB + 巡检 + SSH 终端
+│   │   │   ├── LoginView.vue        # 登录页
+│   │   │   ├── RegisterView.vue     # 注册页
+│   │   │   ├── AdminUsers.vue       # 用户管理（管理员）
+│   │   │   └── ProfileView.vue      # 个人中心（改密码 + 查权限）
+│   │   ├── stores/
+│   │   │   └── auth.js              # Pinia 认证 Store（user / permissions / can()）
+│   │   ├── router/index.js          # 路由守卫（未登录跳登录页，无权限显示 403）
+│   │   ├── api/index.js             # HTTP + SSE 封装，401 自动跳转登录
+│   │   └── components/
+│   │       └── Sidebar.vue          # 侧边栏（按权限动态显示菜单）
+│   ├── nginx.conf           # 生产环境 Nginx（SSE + WebSocket 支持）
 │   └── Dockerfile
-├── docker-compose.yml       # Docker Compose 一键部署
+├── docker-compose.yml       # 一键部署（含 Redis，可选 MySQL / PostgreSQL）
 ├── start.sh                 # Linux 直接启动脚本
 └── README.md
 ```
 
 ---
 
+## API 接口
+
+### 认证
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/auth/register` | 用户注册（status=pending，等待审批） |
+| POST | `/api/auth/login` | 登录（Set-Cookie: session_id） |
+| POST | `/api/auth/logout` | 登出 |
+| GET  | `/api/auth/me` | 当前用户信息 + 权限列表 |
+| PUT  | `/api/auth/password` | 修改密码 |
+
+### 日志
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/services` | 服务列表及错误数 |
+| GET | `/api/logs` | 查询日志（服务/级别/关键字/时间范围） |
+| GET | `/api/logs/errors` | 全量错误日志 |
+| GET | `/api/logs/templates` | Drain3 模板聚类 |
+| GET | `/api/metrics/errors` | 各服务错误数统计 |
+| GET | `/api/analyze/stream` | **流式** AI 日志分析（SSE） |
+
+### 报告
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/report/generate` | **流式** 生成运维日报（SSE） |
+| GET  | `/api/report/list` | 历史报告列表 |
+| GET  | `/api/report/{id}` | 报告详情 |
+| POST | `/api/report/{id}/notify` | 推送到飞书 / 钉钉 |
+| GET  | `/api/report/inspect/generate` | **流式** 生成主机巡检日报（SSE） |
+| GET  | `/api/report/inspect/{id}/excel` | 下载巡检日报 Excel |
+
+### 主机
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/hosts` | 主机列表（Prometheus 发现 + CMDB + 实时指标） |
+| PUT  | `/api/hosts/{instance}` | 更新 CMDB 信息（责任人/环境/SSH 凭证） |
+| GET  | `/api/hosts/inspect` | **流式** 全量巡检（SSE） |
+| POST | `/api/hosts/inspect/ai` | **流式** AI 巡检分析（SSE） |
+| POST | `/api/hosts/inspect/excel` | 导出巡检 Excel |
+| GET  | `/api/hosts/{instance}/inspect` | 单台主机巡检 |
+
+### SSH
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET    | `/api/ssh/credentials` | 凭证列表 |
+| POST   | `/api/ssh/credentials` | 添加凭证（AES 加密存储） |
+| PUT    | `/api/ssh/credentials/{id}` | 更新凭证 |
+| DELETE | `/api/ssh/credentials/{id}` | 删除凭证 |
+| WS     | `/api/ws/ssh` | WebSocket SSH 终端 |
+
+### 其他
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/health` | 健康检查（Loki / Prometheus / AI 状态） |
+
+---
+
+## 故障排查
+
+### 启动后无法访问
+
+```bash
+# 检查后端是否启动
+curl http://localhost:8000/api/health
+
+# 查看 Docker 日志
+docker compose logs backend
+docker compose logs frontend
+```
+
+### Redis 连接失败
+
+```
+aioredis.exceptions.ConnectionError: ...
+```
+
+- Docker 部署：Redis 已内置，检查 `docker compose ps redis` 是否运行
+- 直接启动：确保本地 Redis 运行，并在 `.env` 中设置 `REDIS_URL=redis://localhost:6379/0`
+
+### 登录提示 401
+
+- 确认 `.env` 中 `ADMIN_PASSWORD` 已在**首次启动前**设置
+- 若首次启动时未配置密码，系统会随机生成密码并打印到启动日志中：
+  ```bash
+  docker compose logs backend | grep "初始管理员"
+  ```
+- 或直接重置密码（数据库已存在时）：
+  ```bash
+  docker compose exec backend python -c "
+  import asyncio
+  from db import AsyncSessionLocal
+  from auth.models import User
+  from auth.password import hash_password
+  from sqlalchemy import select
+  async def reset():
+      async with AsyncSessionLocal() as db:
+          r = await db.execute(select(User).where(User.username=='admin'))
+          u = r.scalar_one()
+          u.password_hash = hash_password('Admin@123456')
+          await db.commit()
+          print('密码已重置')
+  asyncio.run(reset())
+  "
+  ```
+
+### AI 分析无响应
+
+- 检查 `AI_PROVIDER` 和对应的 API Key / Base URL 是否正确
+- 访问 `/api/health` 查看 `ai_ready` 字段
+- 本地模型确认服务已启动：`curl http://your-ai-host:8000/v1/models`
+
+### Loki / Prometheus 无数据
+
+- 确认服务地址可达：`curl $LOKI_URL/loki/api/v1/labels`
+- Prometheus 需要 node_exporter 部署在被监控主机上才能发现主机
+- 检查 `.env` 中的认证配置（`LOKI_USERNAME` / `PROMETHEUS_USERNAME`）
+
+---
+
 ## License
 
-MIT
+[MIT](LICENSE)
