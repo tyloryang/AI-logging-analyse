@@ -9,13 +9,13 @@ const STORAGE_KEY = 'aiops-theme'
 
 function applyTheme(id) {
   if (id === 'light') {
-    document.documentElement.removeAttribute('data-theme')
+    document.documentElement.setAttribute('data-theme', 'light')
   } else {
-    document.documentElement.setAttribute('data-theme', id)
+    document.documentElement.removeAttribute('data-theme')
   }
 }
 
-const currentTheme = ref(localStorage.getItem(STORAGE_KEY) || 'light')
+const currentTheme = ref(localStorage.getItem(STORAGE_KEY) || 'dark')
 applyTheme(currentTheme.value)
 
 export function useTheme() {

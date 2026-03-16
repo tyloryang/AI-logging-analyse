@@ -1,14 +1,18 @@
 <template>
-  <div class="layout">
-    <Sidebar />
-    <main class="main-content">
-      <router-view v-slot="{ Component }">
-        <transition name="fade" mode="out-in">
+  <router-view v-slot="{ Component, route }">
+    <!-- 公开页面（登录/注册）：全屏无侧边栏 -->
+    <component v-if="route.meta.public" :is="Component" />
+
+    <!-- 应用页面：侧边栏 + 内容区 -->
+    <div v-else class="layout">
+      <Sidebar />
+      <main class="main-content">
+        <keep-alive include="Dashboard">
           <component :is="Component" />
-        </transition>
-      </router-view>
-    </main>
-  </div>
+        </keep-alive>
+      </main>
+    </div>
+  </router-view>
 </template>
 
 <script setup>
@@ -16,6 +20,20 @@ import Sidebar from './components/Sidebar.vue'
 </script>
 
 <style scoped>
-.layout { display: flex; height: 100vh; overflow: hidden; }
-.main-content { flex: 1; min-width: 0; overflow: hidden; background: var(--bg-base); }
+.layout {
+  display: flex;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+.main-content {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-base);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
 </style>

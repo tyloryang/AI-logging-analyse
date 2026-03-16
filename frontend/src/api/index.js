@@ -38,6 +38,11 @@ export const api = {
   deleteCredential:  (id) => http.delete(`/ssh/credentials/${id}`),
   // 健康检查
   healthCheck:    () => http.get('/health'),
+  // 系统配置（管理员）
+  getSettings:    () => http.get('/settings'),
+  saveSettings:   (data) => http.put('/settings', data),
+  testPrometheus: (data) => http.post('/settings/test/prometheus', data),
+  testLoki:       (data) => http.post('/settings/test/loki', data),
   // 认证
   getMe:        () => http.get('/auth/me'),
   login:        (data) => http.post('/auth/login', data),

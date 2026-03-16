@@ -10,7 +10,7 @@ class LokiClient:
     def __init__(self, base_url: str, username: str = "", password: str = ""):
         self.base_url = base_url.rstrip("/")
         self.auth = (username, password) if username else None
-        self.timeout = httpx.Timeout(120.0)
+        self.timeout = httpx.Timeout(30.0)   # 标签/服务查询；流式分析走 stream=True 不受此限制
 
     def _headers(self) -> dict:
         return {"Content-Type": "application/json"}

@@ -6,11 +6,13 @@ import MetricsMonitor from '../views/MetricsMonitor.vue'
 import AlertHistory from '../views/AlertHistory.vue'
 import AnalysisReport from '../views/AnalysisReport.vue'
 import HostCMDB from '../views/HostCMDB.vue'
+import SSHTerminal from '../views/SSHTerminal.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import ForgotPassword from '../views/ForgotPassword.vue'
 import ProfileView from '../views/ProfileView.vue'
 import AdminUsers from '../views/AdminUsers.vue'
+import SettingsView from '../views/SettingsView.vue'
 import View403 from '../views/View403.vue'
 
 const routes = [
@@ -27,8 +29,10 @@ const routes = [
   { path: '/alerts',  component: AlertHistory,   name: 'alerts',    meta: { module: 'alert' } },
   { path: '/report',  component: AnalysisReport, name: 'report',    meta: { module: 'report' } },
   { path: '/hosts',   component: HostCMDB,       name: 'hosts',     meta: { module: 'cmdb' } },
+  { path: '/ssh',     component: SSHTerminal,    name: 'ssh',       meta: { module: 'ssh'  } },
   { path: '/profile', component: ProfileView,    name: 'profile' },
-  { path: '/admin/users', component: AdminUsers, name: 'admin-users', meta: { admin: true } },
+  { path: '/admin/users',    component: AdminUsers,   name: 'admin-users', meta: { admin: true } },
+  { path: '/settings',       component: SettingsView, name: 'settings',    meta: { admin: true } },
 ]
 
 const router = createRouter({

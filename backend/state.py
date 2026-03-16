@@ -17,14 +17,33 @@ from prom_client import PrometheusClient
 
 logger = logging.getLogger(__name__)
 
-# ── 配置常量 ──────────────────────────────────────────────────────────────────
+# ── 配置常量（settings.json 优先级高于 .env）────────────────────────────────
 
-LOKI_URL          = os.getenv("LOKI_URL", "http://localhost:3100")
-LOKI_USERNAME     = os.getenv("LOKI_USERNAME", "")
-LOKI_PASSWORD     = os.getenv("LOKI_PASSWORD", "")
-PROMETHEUS_URL    = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
-PROMETHEUS_USERNAME = os.getenv("PROMETHEUS_USERNAME", "")
-PROMETHEUS_PASSWORD = os.getenv("PROMETHEUS_PASSWORD", "")
+SETTINGS_FILE = Path("./data/settings.json")
+
+
+def _load_settings() -> dict:
+    """从 data/settings.json 读取运行时配置覆盖"""
+    if SETTINGS_FILE.exists():
+        try:
+            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _cfg(s: dict, key: str, env_key: str, default: str = "") -> str:
+    return s.get(key) or os.getenv(env_key, default)
+
+
+_s = _load_settings()
+
+LOKI_URL            = _cfg(_s, "loki_url",             "LOKI_URL",             "http://localhost:3100")
+LOKI_USERNAME       = _cfg(_s, "loki_username",         "LOKI_USERNAME",        "")
+LOKI_PASSWORD       = _cfg(_s, "loki_password",         "LOKI_PASSWORD",        "")
+PROMETHEUS_URL      = _cfg(_s, "prometheus_url",        "PROMETHEUS_URL",       "http://localhost:9090")
+PROMETHEUS_USERNAME = _cfg(_s, "prometheus_username",   "PROMETHEUS_USERNAME",  "")
+PROMETHEUS_PASSWORD = _cfg(_s, "prometheus_password",   "PROMETHEUS_PASSWORD",  "")
 
 REPORTS_DIR      = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
