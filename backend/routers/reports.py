@@ -45,11 +45,17 @@ async def generate_report():
         error_counts = await loki.count_errors_by_service(hours=24)
         error_logs   = await loki.query_error_logs(hours=24, limit=1000)
 
-        node_status       = {"normal": 27, "abnormal": 0}
-        active_alerts     = min(len(error_counts), 3)
         services          = await loki.get_services()
         total_error_count = sum(error_counts.values())
-        total_logs        = max(total_error_count * 8, total_error_count)
+        total_logs        = total_error_count * 8   # Loki 无法廉价地统计总量，以错误数估算
+        active_alerts     = len(error_counts)       # 有错误的服务数
+
+        try:
+            hosts       = await prom.discover_hosts()
+            node_normal = sum(1 for h in hosts if h.get("state") == "up")
+            node_status = {"normal": node_normal, "abnormal": len(hosts) - node_normal}
+        except Exception:
+            node_status = {"normal": 0, "abnormal": 0}
 
         health_score = await analyzer.calculate_health_score(
             total_logs, total_error_count, active_alerts, node_status["abnormal"]

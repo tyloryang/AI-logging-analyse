@@ -22,10 +22,16 @@ async def _build_and_save_report() -> dict:
     error_logs   = await loki.query_error_logs(hours=24, limit=1000)
     services     = await loki.get_services()
 
-    node_status       = {"normal": 27, "abnormal": 0}
-    active_alerts     = min(len(error_counts), 3)
     total_error_count = sum(error_counts.values())
-    total_logs        = max(total_error_count * 8, total_error_count)
+    total_logs        = total_error_count * 8
+    active_alerts     = len(error_counts)
+
+    try:
+        hosts       = await prom.discover_hosts()
+        node_normal = sum(1 for h in hosts if h.get("state") == "up")
+        node_status = {"normal": node_normal, "abnormal": len(hosts) - node_normal}
+    except Exception:
+        node_status = {"normal": 0, "abnormal": 0}
 
     health_score = await analyzer.calculate_health_score(
         total_logs, total_error_count, active_alerts, node_status["abnormal"]
@@ -197,14 +203,15 @@ async def _build_slowlog_report() -> dict | None:
         for e in sorted(all_entries, key=lambda e: e.get("query_time", 0), reverse=True)[:10]
     ]
 
-    now_str   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    report_id = "slowlog_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    now       = datetime.now(timezone.utc)
+    now_str   = now.strftime("%Y-%m-%d")
+    report_id = "slowlog_" + now.strftime("%Y%m%d%H%M%S")
 
     report: dict = {
         "id":             report_id,
         "type":           "slowlog",
         "title":          f"MySQL 慢日志报告 {now_str}",
-        "created_at":     datetime.now(timezone.utc).isoformat(),
+        "created_at":     now.isoformat(),
         "health_score":   health_score,
         "date_from":      date_from,
         "date_to":        date_to,

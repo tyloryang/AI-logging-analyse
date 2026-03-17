@@ -76,9 +76,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Ops Log Analysis", version="2.0.0", lifespan=lifespan)
 
+_cors_origins = [
+    o.strip()
+    for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

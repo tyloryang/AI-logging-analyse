@@ -77,12 +77,15 @@ class LogClusterer:
         for log in logs:
             clean = _clean(log["line"])
             result = tm.add_log_message(clean)
-            # drain3 新版返回 dict，旧版返回对象；兼容两种格式
+            # drain3 >=1.0 直接返回 LogCluster（有 .cluster_id）
+            # drain3 <1.0  返回 AddLogMessageResult（有 .cluster 字段）
             if result:
-                if isinstance(result, dict):
-                    cid = result.get("cluster_id")
+                if hasattr(result, "cluster_id"):
+                    cid = result.cluster_id          # drain3 >= 1.0
+                elif hasattr(result, "cluster") and result.cluster:
+                    cid = result.cluster.cluster_id  # drain3 < 1.0
                 else:
-                    cid = result.cluster.cluster_id if result.cluster else None
+                    cid = None
                 if cid is not None:
                     cluster_meta[cid]["logs"].append(log)
                     svc = log["labels"].get("app") or log["labels"].get("job") or "unknown"

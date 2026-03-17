@@ -181,84 +181,84 @@ class AIAnalyzer:
         async for chunk in self.provider.stream(prompt, max_tokens=2048):
             yield chunk
 
-    async def generate_inspection_summary(
-        self,
+    @staticmethod
+    def _build_inspect_prompt(
         inspect_results: list[dict],
         summary: dict,
-    ) -> AsyncIterator[str]:
-        """基于巡检结果生成 AI 总结"""
-        total = summary.get("total", len(inspect_results))
-        normal = summary.get("normal", 0)
-        warning = summary.get("warning", 0)
+        max_abnormal_hosts: int = 15,
+    ) -> str:
+        """构建主机巡检 AI 分析 prompt，供两个巡检方法共用"""
+        total    = summary.get("total", len(inspect_results))
+        normal   = summary.get("normal", 0)
+        warning  = summary.get("warning", 0)
         critical = summary.get("critical", 0)
 
-        abnormal_hosts = [r for r in inspect_results if r.get("overall") != "normal"]
-        abnormal_hosts.sort(
+        abnormal = [r for r in inspect_results if r.get("overall") != "normal"]
+        abnormal.sort(
             key=lambda r: (
                 {"critical": 2, "warning": 1, "normal": 0}.get(r.get("overall", "normal"), 0),
                 sum(1 for c in r.get("checks", []) if c.get("status") != "normal"),
             ),
             reverse=True,
         )
-
         host_lines = []
-        for r in abnormal_hosts[:12]:
-            abnormal_checks = [c for c in r.get("checks", []) if c.get("status") != "normal"][:5]
-            check_text = "；".join(
-                f"{c.get('item', '未知项')}={c.get('value', '-')}"
-                for c in abnormal_checks
+        for r in abnormal[:max_abnormal_hosts]:
+            bad_checks = [c for c in r.get("checks", []) if c.get("status") != "normal"][:5]
+            detail = "；".join(
+                f"{c.get('item', '未知项')}={c.get('value', '-')}" for c in bad_checks
             ) or "未发现明显异常"
             host_lines.append(
                 f"- {r.get('hostname') or r.get('instance')} ({r.get('ip', '-')}) "
-                f"[{r.get('overall', 'normal')}]：{check_text}"
+                f"[{r.get('overall', 'normal')}]：{detail}"
             )
         if not host_lines:
             host_lines.append("- 所有主机巡检项均为正常，未发现告警主机。")
 
-        issue_counter: dict[str, int] = {}
+        issue_cnt: dict[str, int] = {}
         for r in inspect_results:
-            for check in r.get("checks", []):
-                if check.get("status") == "normal":
-                    continue
-                issue = check.get("item", "未知项")
-                issue_counter[issue] = issue_counter.get(issue, 0) + 1
+            for c in r.get("checks", []):
+                if c.get("status") != "normal":
+                    key = c.get("item", "未知项")
+                    issue_cnt[key] = issue_cnt.get(key, 0) + 1
+        top_issues = sorted(issue_cnt.items(), key=lambda x: x[1], reverse=True)[:10]
+        issue_lines = [f"- {k}：影响 {v} 台主机" for k, v in top_issues] or ["- 当前没有统计到告警项。"]
 
-        top_issues = sorted(issue_counter.items(), key=lambda item: item[1], reverse=True)[:10]
-        issue_lines = [
-            f"- {issue}: 影响 {count} 台主机"
-            for issue, count in top_issues
-        ] or ["- 当前没有统计到告警项。"]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        return f"""你是一名资深运维/SRE 工程师，请根据以下主机巡检结果生成 AI 分析总结。
 
-        prompt = f"""你是一名资深运维/SRE 工程师，请根据以下主机巡检结果输出“AI 分析总结”。
-
-=== 巡检汇总 ===
+=== 巡检概况 ===
+报告时间: {now}
 巡检主机总数: {total}
-正常: {normal}
-警告: {warning}
-严重: {critical}
+正常: {normal} 台  警告: {warning} 台  严重: {critical} 台
 
-=== 高频问题 ===
+=== 高频异常项 ===
 {chr(10).join(issue_lines)}
 
-=== 异常主机样本 ===
+=== 异常主机详情（最多 {max_abnormal_hosts} 台）===
 {chr(10).join(host_lines)}
 
 请输出：
 1. 用 2-3 句话概括本次巡检整体健康状态
 2. 逐台列出每个异常主机的 IP 地址和具体问题，格式为：
    - IP x.x.x.x（主机名）：[严重/警告] 问题描述（如：CPU 使用率 95%、磁盘 /data 使用率 92%）
-3. 列出 3-5 条最值得关注的问题（每条以”⚠️”开头，注明受影响的 IP 列表）
-4. 给出 2-4 条最优先的处置建议（每条以”✅”开头，注明需操作的 IP）
-5. 最后补充”未来24小时风险预测”
+3. 列出 3-5 条最值得关注的问题（每条以"⚠️"开头，注明受影响的 IP 列表）
+4. 给出 2-4 条最优先的处置建议（每条以"✅"开头，注明需操作的 IP）
+5. 最后补充"未来24小时风险预测"
 
 要求：
 - 使用中文
 - 第2点必须明确列出每台异常主机的 IP，不能只写主机名
 - 结论具体，避免空话
-- 优先强调严重主机、重复性问题和可能的容量/稳定性风险
 - 不要复述原始数据表格，直接给结论和动作建议
 """
 
+    async def generate_inspection_summary(
+        self,
+        inspect_results: list[dict],
+        summary: dict,
+    ) -> AsyncIterator[str]:
+        """基于巡检结果生成 AI 总结（用于实时巡检流）"""
+        prompt = self._build_inspect_prompt(inspect_results, summary, max_abnormal_hosts=12)
         async for chunk in self.provider.stream(prompt, max_tokens=1400):
             yield chunk
 
@@ -318,56 +318,8 @@ class AIAnalyzer:
         inspect_results: list[dict],
         summary: dict,
     ) -> AsyncIterator[str]:
-        """流式生成主机巡检日报 AI 分析"""
-        total    = summary.get("total", len(inspect_results))
-        normal   = summary.get("normal", 0)
-        warning  = summary.get("warning", 0)
-        critical = summary.get("critical", 0)
-
-        # 异常主机详情
-        abnormal = [r for r in inspect_results if r.get("overall") != "normal"]
-        abnormal.sort(key=lambda r: {"critical": 2, "warning": 1}.get(r.get("overall", "normal"), 0), reverse=True)
-        host_lines = []
-        for r in abnormal[:15]:
-            bad_checks = [c for c in r.get("checks", []) if c.get("status") != "normal"][:4]
-            detail = "；".join(f"{c['item']}={c['value']}" for c in bad_checks) or "未发现明显异常"
-            host_lines.append(f"- {r.get('hostname') or r.get('instance')} ({r.get('ip','-')}) [{r.get('overall')}]：{detail}")
-        if not host_lines:
-            host_lines.append("- 所有主机均正常，未发现告警。")
-
-        # 高频问题
-        issue_cnt: dict[str, int] = {}
-        for r in inspect_results:
-            for c in r.get("checks", []):
-                if c.get("status") != "normal":
-                    issue_cnt[c.get("item", "未知")] = issue_cnt.get(c.get("item", "未知"), 0) + 1
-        top_issues = sorted(issue_cnt.items(), key=lambda x: x[1], reverse=True)[:8]
-        issue_lines = [f"- {k}：影响 {v} 台" for k, v in top_issues] or ["- 当前无高频异常项。"]
-
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        prompt = f"""你是一名资深运维/SRE工程师，请根据以下主机巡检数据生成「主机巡检日报」。
-
-=== 巡检概况 ===
-报告时间: {now}
-巡检主机总数: {total}
-正常: {normal} 台  警告: {warning} 台  严重: {critical} 台
-
-=== 高频异常项 ===
-{chr(10).join(issue_lines)}
-
-=== 异常主机详情（最多15台）===
-{chr(10).join(host_lines)}
-
-请生成「AI 分析」部分，要求：
-1. 用 2-3 句话总结当前主机集群整体健康状态
-2. 逐台列出每个异常主机的 IP 地址和具体问题，格式为：
-   - IP x.x.x.x（主机名）：[严重/警告] 问题描述（如：CPU 使用率 95%、磁盘 /data 使用率 92%）
-3. 列出 3-5 个最值得关注的问题（每条用 ⚠️ 开头，注明受影响的 IP 列表）
-4. 给出 2-3 条具体运维建议（每条用 ✅ 开头，注明需操作的 IP）
-5. 若不处理，预测未来 24 小时可能出现的风险
-
-要求：第2点必须明确列出每台异常主机的 IP，语言简洁专业，使用中文。"""
-
+        """流式生成主机巡检日报 AI 分析（用于报告存储）"""
+        prompt = self._build_inspect_prompt(inspect_results, summary, max_abnormal_hosts=15)
         async for chunk in self.provider.stream(prompt, max_tokens=1500):
             yield chunk
 

@@ -64,6 +64,13 @@ SCHEDULE_CHANNELS = [
 # ── SSH 密钥（自动生成并持久化）─────────────────────────────────────────────
 
 _SSH_KEY_FILE = Path(os.getenv("SSH_KEY_FILE", "./.ssh_key"))
+if not os.getenv("SSH_KEY_FILE"):
+    logger.warning(
+        "[安全] SSH_KEY_FILE 未配置，密钥存于工作目录 %s。"
+        "容器重启/迁移时若该文件丢失，已存 SSH 密码将无法解密。"
+        "建议通过 SSH_KEY_FILE 环境变量指向持久化路径。",
+        _SSH_KEY_FILE.resolve(),
+    )
 if _SSH_KEY_FILE.exists():
     _FERNET_KEY = _SSH_KEY_FILE.read_bytes().strip()
 else:
