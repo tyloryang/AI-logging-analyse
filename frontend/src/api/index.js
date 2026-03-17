@@ -39,6 +39,9 @@ export const api = {
   // 慢日志分析
   slowlogHosts:   () => http.get('/slowlog/hosts'),
   slowlogFetch:   (data) => http.post('/slowlog/fetch', data),
+  // 慢日志报告
+  getSlowlogTargets:  () => http.get('/report/slowlog/targets'),
+  saveSlowlogTargets: (data) => http.put('/report/slowlog/targets', data),
   // 健康检查
   healthCheck:    () => http.get('/health'),
   // 系统配置（管理员）

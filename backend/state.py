@@ -103,6 +103,33 @@ def save_credentials(data: list[dict]) -> None:
     CREDENTIALS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# ── 慢日志定时报告目标配置 ────────────────────────────────────────────────────
+
+SLOWLOG_TARGETS_FILE = Path(os.getenv("SLOWLOG_TARGETS_FILE", "./data/slowlog_targets.json"))
+
+_SLOWLOG_DEFAULTS = {
+    "enabled": False,
+    "date_days": 1,
+    "threshold_sec": 1.0,
+    "alert_sec": 10.0,
+    "targets": [],
+}
+
+
+def load_slowlog_targets() -> dict:
+    if SLOWLOG_TARGETS_FILE.exists():
+        try:
+            return json.loads(SLOWLOG_TARGETS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return dict(_SLOWLOG_DEFAULTS)
+
+
+def save_slowlog_targets(data: dict) -> None:
+    SLOWLOG_TARGETS_FILE.parent.mkdir(exist_ok=True)
+    SLOWLOG_TARGETS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def encrypt_password(plain: str) -> str:
     return _fernet.encrypt(plain.encode()).decode()
 

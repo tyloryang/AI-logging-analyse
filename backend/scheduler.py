@@ -9,6 +9,7 @@ from state import (
     FEISHU_WEBHOOK, FEISHU_KEYWORD,
     DINGTALK_WEBHOOK, DINGTALK_KEYWORD,
     APP_URL, SCHEDULE_CHANNELS,
+    load_slowlog_targets,
 )
 from notifier import send_feishu, send_dingtalk
 
@@ -103,6 +104,151 @@ async def _build_inspect_report() -> dict:
     }
 
 
+async def _build_slowlog_report() -> dict | None:
+    """生成慢日志分析报告（非流式，用于定时推送）。未配置目标则返回 None。"""
+    from datetime import date as date_cls, timedelta
+    from slow_log_parser import parse_slow_log, build_summary
+    from sql_cluster import cluster_slow_queries
+    from routers.slowlog import _read_remote_file, _resolve_credential
+
+    config  = load_slowlog_targets()
+    if not config.get("enabled") or not config.get("targets"):
+        return None
+
+    date_days     = max(1, int(config.get("date_days", 1)))
+    threshold_sec = float(config.get("threshold_sec", 1.0))
+    alert_sec     = float(config.get("alert_sec", 10.0))
+    today         = date_cls.today()
+    date_from     = (today - timedelta(days=date_days - 1)).strftime("%Y-%m-%d")
+    date_to       = today.strftime("%Y-%m-%d")
+
+    host_results: list[dict] = []
+    all_entries:  list[dict] = []
+    errors:       list[dict] = []
+
+    for t in config["targets"]:
+        host_ip  = (t.get("host_ip") or "").strip()
+        log_path = t.get("log_path") or "/mysqldata/mysql/data/3306/mysql-slow.log"
+        if not host_ip:
+            continue
+        try:
+            username, password, host, port = _resolve_credential(
+                host_ip,
+                credential_id=t.get("credential_id", ""),
+                username=t.get("ssh_user", ""),
+                password=t.get("ssh_password", ""),
+                port=int(t.get("ssh_port", 22)),
+            )
+            text    = await _read_remote_file(host, port, username, password, log_path)
+            entries = parse_slow_log(
+                text, date_from=date_from, date_to=date_to,
+                threshold_sec=threshold_sec, alert_sec=alert_sec,
+            )
+            try:
+                clusters = cluster_slow_queries(entries)
+            except Exception:
+                clusters = []
+            summary = build_summary(entries)
+            for e in entries:
+                all_entries.append({**e, "_host_ip": host_ip})
+            host_results.append({
+                "host_ip":        host_ip,
+                "total":          summary.get("total", 0),
+                "alert_count":    summary.get("alert_count", 0),
+                "avg_query_time": summary.get("avg_query_time", 0),
+                "max_query_time": summary.get("max_query_time", 0),
+                "top_clusters": [
+                    {k: c[k] for k in ("rank", "template", "count", "total_time", "avg_time", "max_time", "alert_count")}
+                    for c in clusters[:5]
+                ],
+            })
+        except Exception as e:
+            logger.warning("[scheduler][slowlog] %s 失败: %s", host_ip, e)
+            errors.append({"host_ip": host_ip, "error": str(e)})
+
+    total_queries = sum(r["total"] for r in host_results)
+    alert_queries = sum(r["alert_count"] for r in host_results)
+    avg_qt = (
+        sum(r["avg_query_time"] * r["total"] for r in host_results) / total_queries
+        if total_queries else 0.0
+    )
+    max_qt = max((r["max_query_time"] for r in host_results), default=0.0)
+
+    if total_queries == 0:
+        health_score = 50
+    else:
+        deduct = 0
+        ratio = alert_queries / total_queries
+        if ratio > 0.3:   deduct += 40
+        elif ratio > 0.1: deduct += 20
+        if max_qt > 60:   deduct += 20
+        elif max_qt > 30: deduct += 10
+        if avg_qt > 10:   deduct += 15
+        elif avg_qt > 5:  deduct += 8
+        health_score = max(0, 100 - deduct)
+
+    top_slow_brief = [
+        {
+            "host_ip":       e.get("_host_ip", ""),
+            "query_time":    e.get("query_time", 0),
+            "rows_examined": e.get("rows_examined", 0),
+            "sql_brief":     e.get("sql", "")[:200],
+        }
+        for e in sorted(all_entries, key=lambda e: e.get("query_time", 0), reverse=True)[:10]
+    ]
+
+    now_str   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    report_id = "slowlog_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    report: dict = {
+        "id":             report_id,
+        "type":           "slowlog",
+        "title":          f"MySQL 慢日志报告 {now_str}",
+        "created_at":     datetime.now(timezone.utc).isoformat(),
+        "health_score":   health_score,
+        "date_from":      date_from,
+        "date_to":        date_to,
+        "total_queries":  total_queries,
+        "alert_queries":  alert_queries,
+        "avg_query_time": round(avg_qt, 2),
+        "max_query_time": round(max_qt, 3),
+        "hosts_count":    len(host_results),
+        "host_results":   host_results,
+        "top_slow":       top_slow_brief,
+        "errors":         errors,
+    }
+
+    # AI 分析
+    if all_entries:
+        prompt = (
+            f"你是 MySQL 数据库性能专家，请简要分析以下慢查询汇总并给出优化建议。\n"
+            f"时间段：{date_from} ~ {date_to}，主机 {len(host_results)} 台，"
+            f"慢查询 {total_queries} 条，告警 {alert_queries} 条，最大耗时 {round(max_qt, 1)}s。\n"
+        )
+        for hr in host_results:
+            prompt += f"- {hr['host_ip']}：{hr['total']} 条，{hr['alert_count']} 告警\n"
+        if top_slow_brief:
+            prompt += "\nTOP 5：\n"
+            for i, s in enumerate(top_slow_brief[:5], 1):
+                prompt += f"[{i}] {s['host_ip']} {s['query_time']}s  SQL: {s['sql_brief'][:150]}\n"
+        prompt += "\n请给出整体评估和关键优化建议（200字以内）。使用中文。"
+
+        ai_parts: list[str] = []
+        try:
+            async for chunk in analyzer.provider.stream(prompt, max_tokens=600):
+                ai_parts.append(chunk)
+        except Exception as e:
+            ai_parts.append(f"AI 分析失败: {e}")
+        report["ai_analysis"] = "".join(ai_parts)
+    else:
+        report["ai_analysis"] = f"分析时段 {date_from}~{date_to} 内未找到满足条件的慢查询。"
+
+    (REPORTS_DIR / f"{report_id}.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return report
+
+
 async def scheduled_report_job() -> None:
     """定时任务入口：生成运维日报 + 主机巡检日报，推送到已配置的渠道。"""
     if not SCHEDULE_CHANNELS:
@@ -116,6 +262,13 @@ async def scheduled_report_job() -> None:
         logger.info("[scheduler] 开始生成主机巡检日报 ...")
         inspect_report = await _build_inspect_report()
 
+        logger.info("[scheduler] 开始生成慢日志报告 ...")
+        try:
+            slowlog_report = await _build_slowlog_report()
+        except Exception as e:
+            logger.warning("[scheduler] 慢日志报告生成失败: %s", e)
+            slowlog_report = None
+
         for ch in SCHEDULE_CHANNELS:
             if ch == "feishu":
                 if not FEISHU_WEBHOOK:
@@ -125,6 +278,9 @@ async def scheduled_report_job() -> None:
                 logger.info("[scheduler] 飞书日报推送结果: %s", result)
                 result2 = await send_feishu(inspect_report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
                 logger.info("[scheduler] 飞书巡检日报推送结果: %s", result2)
+                if slowlog_report:
+                    result3 = await send_feishu(slowlog_report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
+                    logger.info("[scheduler] 飞书慢日志报告推送结果: %s", result3)
             elif ch == "dingtalk":
                 if not DINGTALK_WEBHOOK:
                     logger.warning("[scheduler] DINGTALK_WEBHOOK 未配置，跳过钉钉推送")
@@ -133,6 +289,9 @@ async def scheduled_report_job() -> None:
                 logger.info("[scheduler] 钉钉日报推送结果: %s", result)
                 result2 = await send_dingtalk(inspect_report, DINGTALK_WEBHOOK, keyword=DINGTALK_KEYWORD)
                 logger.info("[scheduler] 钉钉巡检日报推送结果: %s", result2)
+                if slowlog_report:
+                    result3 = await send_dingtalk(slowlog_report, DINGTALK_WEBHOOK, keyword=DINGTALK_KEYWORD)
+                    logger.info("[scheduler] 钉钉慢日志报告推送结果: %s", result3)
             else:
                 logger.warning("[scheduler] 不支持的推送渠道: %s", ch)
         logger.info("[scheduler] 定时任务完成，report_id=%s", report["id"])
