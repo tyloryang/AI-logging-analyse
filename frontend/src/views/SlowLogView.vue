@@ -167,35 +167,78 @@
       </div>
 
       <!-- 目标行 -->
-      <div class="target-row" v-for="(t, i) in targets" :key="t.id">
-        <div class="target-index">{{ i + 1 }}</div>
-        <div class="target-fields">
-          <!-- IP 选择：CMDB 下拉 + 手动输入 -->
-          <div class="ip-wrap">
-            <input v-model="t.host_ip" placeholder="IP 或从主机库选择" class="inp-ip"
-              @focus="t._suggest = true" @blur="hideSuggest(t)"
-              @input="t._suggest = true" @keyup.enter="fetchAll" />
-            <div v-if="t._suggest && suggestHosts(t).length" class="suggest-list">
-              <div v-for="h in suggestHosts(t)" :key="h.instance"
-                class="suggest-item" @mousedown.prevent="pickHost(t, h)">
-                <span class="mono suggest-ip">{{ h.ip }}</span>
-                <span class="suggest-name">{{ h.hostname || h.instance }}</span>
-                <span v-if="h.has_credential" class="suggest-cred">{{ h.credential_name || '已绑定' }}</span>
+      <div class="target-row-wrap" v-for="(t, i) in targets" :key="t.id">
+        <div class="target-row">
+          <div class="target-index">{{ i + 1 }}</div>
+          <div class="target-fields">
+            <!-- IP 选择：CMDB 下拉 + 手动输入 -->
+            <div class="ip-wrap">
+              <input v-model="t.host_ip" placeholder="IP 或从主机库选择" class="inp-ip"
+                @focus="t._suggest = true" @blur="hideSuggest(t)"
+                @input="t._suggest = true" @keyup.enter="fetchAll" />
+              <div v-if="t._suggest && suggestHosts(t).length" class="suggest-list">
+                <div v-for="h in suggestHosts(t)" :key="h.instance"
+                  class="suggest-item" @mousedown.prevent="pickHost(t, h)">
+                  <span class="mono suggest-ip">{{ h.ip }}</span>
+                  <span class="suggest-name">{{ h.hostname || h.instance }}</span>
+                  <span v-if="h.has_credential" class="suggest-cred">{{ h.credential_name || '已绑定' }}</span>
+                </div>
               </div>
             </div>
+            <!-- 显示绑定的主机名 -->
+            <span v-if="t._hostname" class="target-hostname">{{ t._hostname }}</span>
+            <input v-model="t.log_path" placeholder="/mysqldata/mysql/data/3306/mysql-slow.log" class="inp-path" />
+            <!-- 行级凭证 badge：有覆盖时显示，点击展开/收起 -->
+            <button class="target-cred-btn"
+              :class="{ 'has-override': !!t._credMode, open: t._credOpen }"
+              :title="t._credMode ? '已设置独立凭证（点击编辑）' : '点击为此主机单独配置凭证'"
+              @click="t._credOpen = !t._credOpen">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              <span v-if="t._credMode">{{ targetCredLabel(t) }}</span>
+              <span v-else class="muted-text">独立凭证</span>
+            </button>
+            <span class="target-status" :class="statusClass(t)">
+              <span v-if="t.loading" class="spinner-xs2"></span>
+              <template v-else>{{ statusLabel(t) }}</template>
+            </span>
+            <span v-if="t.error" class="target-error" :title="t.error">{{ t.error.slice(0, 60) }}</span>
           </div>
-          <!-- 显示绑定的主机名 -->
-          <span v-if="t._hostname" class="target-hostname">{{ t._hostname }}</span>
-          <input v-model="t.log_path" placeholder="/mysqldata/mysql/data/3306/mysql-slow.log" class="inp-path" />
-          <span class="target-status" :class="statusClass(t)">
-            <span v-if="t.loading" class="spinner-xs2"></span>
-            <template v-else>{{ statusLabel(t) }}</template>
-          </span>
-          <span v-if="t.error" class="target-error" :title="t.error">{{ t.error.slice(0, 60) }}</span>
+          <button class="btn-remove" :disabled="targets.length <= 1" @click="removeTarget(i)" title="删除">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
-        <button class="btn-remove" :disabled="targets.length <= 1" @click="removeTarget(i)" title="删除">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+
+        <!-- 行内凭证面板（展开时显示） -->
+        <div v-if="t._credOpen" class="target-cred-panel">
+          <div class="tcp-head">
+            <span>此主机独立 SSH 凭证</span>
+            <button v-if="t._credMode" class="tcp-clear" @click="t._credMode = null; t._credOpen = false">
+              清除（恢复全局）
+            </button>
+          </div>
+          <div class="mode-tabs tcp-tabs">
+            <button class="mode-tab" :class="{ active: (t._credMode||'auto')==='auto' }"
+              @click="t._credMode = 'auto'">CMDB 自动</button>
+            <button class="mode-tab" :class="{ active: t._credMode==='lib' }"
+              @click="t._credMode = 'lib'">凭证库</button>
+            <button class="mode-tab" :class="{ active: t._credMode==='manual' }"
+              @click="t._credMode = 'manual'">手动输入</button>
+          </div>
+          <div v-if="t._credMode === 'auto'" class="tcp-hint">
+            使用 CMDB 中该主机绑定的凭证（与全局"CMDB 自动"相同）
+          </div>
+          <div v-else-if="t._credMode === 'lib'" class="tcp-row">
+            <select v-model="t._cred.credential_id" class="inp-sel">
+              <option value="">-- 选择凭证 --</option>
+              <option v-for="c in credList" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+          </div>
+          <div v-else-if="t._credMode === 'manual'" class="tcp-row tcp-manual">
+            <input v-model="t._cred.ssh_user"     placeholder="用户名" class="inp-s" />
+            <input v-model="t._cred.ssh_password" placeholder="密码" type="password" class="inp-s" />
+            <input v-model.number="t._cred.ssh_port" placeholder="22" type="number" class="inp-port" />
+          </div>
+        </div>
       </div>
 
       <!-- 无 CMDB 主机提示 -->
@@ -479,6 +522,9 @@ function makeTarget() {
   return reactive({
     id: ++_id, host_ip: '', log_path: '/mysqldata/mysql/data/3306/mysql-slow.log',
     _hostname: '', _suggest: false,
+    // 行级凭证覆盖：null = 继承全局；'auto'|'lib'|'manual' = 独立凭证
+    _credMode: null, _credOpen: false,
+    _cred: reactive({ credential_id: '', ssh_user: '', ssh_password: '', ssh_port: 22 }),
     loading: false, error: '',
     entries: [], clusters: [],
     summary: { total: 0, alert_count: 0, avg_query_time: 0, max_query_time: 0 },
@@ -521,10 +567,33 @@ function statusLabel(t) {
 }
 
 // ── 并行获取 ─────────────────────────────────────────────────────────────
-function buildCredPayload() {
-  if (credMode.value === 'lib')    return { credential_id: cred.credential_id, ssh_user: '', ssh_password: '' }
-  if (credMode.value === 'manual') return { credential_id: '', ssh_user: cred.ssh_user, ssh_password: cred.ssh_password }
-  return { credential_id: '', ssh_user: '', ssh_password: '' }  // auto: CMDB lookup
+// 构建单台主机的凭证参数：优先行级覆盖，否则回退全局配置
+function buildPayloadForTarget(t) {
+  const mode = t._credMode ?? credMode.value
+  if (mode === 'lib') {
+    const id   = t._credMode ? t._cred.credential_id : cred.credential_id
+    const port = t._credMode ? (t._cred.ssh_port || 22) : cred.ssh_port
+    return { credential_id: id, ssh_user: '', ssh_password: '', ssh_port: port }
+  }
+  if (mode === 'manual') {
+    const u    = t._credMode ? t._cred.ssh_user     : cred.ssh_user
+    const p    = t._credMode ? t._cred.ssh_password : cred.ssh_password
+    const port = t._credMode ? (t._cred.ssh_port || 22) : cred.ssh_port
+    return { credential_id: '', ssh_user: u, ssh_password: p, ssh_port: port }
+  }
+  // auto：发送空凭证，由后端从 CMDB 查找
+  return { credential_id: '', ssh_user: '', ssh_password: '', ssh_port: t._cred?.ssh_port || cred.ssh_port }
+}
+
+// 行级凭证摘要文字（用于 badge 显示）
+function targetCredLabel(t) {
+  if (!t._credMode) return null  // 继承全局，不显示额外 badge
+  if (t._credMode === 'auto')   return 'CMDB'
+  if (t._credMode === 'lib')    return t._cred.credential_id
+    ? credList.value.find(c => c.id === t._cred.credential_id)?.name || '凭证库'
+    : '凭证库?'
+  if (t._credMode === 'manual') return t._cred.ssh_user ? `手动·${t._cred.ssh_user}` : '手动?'
+  return null
 }
 
 async function fetchAll() {
@@ -532,7 +601,6 @@ async function fetchAll() {
   if (!list.length) return
   fetching.value = true
   aiText.value   = ''
-  const credPayload = buildCredPayload()
 
   await Promise.all(list.map(async t => {
     t.loading = true; t.error = ''; t.entries = []; t.clusters = []; t.page = 1
@@ -542,10 +610,9 @@ async function fetchAll() {
         log_path:      t.log_path,
         date_from:     cred.date_from || null,
         date_to:       cred.date_to   || null,
-        ssh_port:      cred.ssh_port,
         threshold_sec: cred.threshold_sec,
         alert_sec:     cred.alert_sec,
-        ...credPayload,
+        ...buildPayloadForTarget(t),
       })
       t.entries  = res.entries  ?? []
       t.clusters = (res.clusters ?? []).map(c => reactive({ ...c, _open: false }))
@@ -717,10 +784,32 @@ function fmtNum(n) {
 .batch-nocred   { font-size:10px; color:var(--text-muted); }
 .batch-footer { display:flex; gap:8px; padding:10px 12px; border-top:1px solid var(--border-light); }
 
-.target-row { display:flex; align-items:center; gap:10px; padding:9px 16px; border-bottom:1px solid var(--border-light); }
-.target-row:last-child { border-bottom:none; }
+.target-row-wrap { border-bottom:1px solid var(--border-light); }
+.target-row-wrap:last-child { border-bottom:none; }
+.target-row { display:flex; align-items:center; gap:10px; padding:9px 16px; }
 .target-index { font-size:11px; color:var(--text-muted); width:16px; text-align:center; flex-shrink:0; }
 .target-fields { display:flex; gap:8px; flex:1; align-items:center; flex-wrap:wrap; }
+
+/* 行级凭证 badge 按钮 */
+.target-cred-btn { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:3px; border:1px dashed var(--border); background:transparent; color:var(--text-muted); font-size:11px; cursor:pointer; white-space:nowrap; transition:all .12s; flex-shrink:0; }
+.target-cred-btn:hover { border-color:var(--accent); color:var(--accent); }
+.target-cred-btn.has-override { border-style:solid; border-color:var(--warning,#e3b341); color:var(--warning,#e3b341); }
+.target-cred-btn.open { border-color:var(--accent); color:var(--accent); }
+.muted-text { color:var(--text-muted); }
+
+/* 行内凭证面板 */
+.target-cred-panel { margin:0 16px 10px 42px; background:var(--bg-hover); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px; }
+.tcp-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; font-size:12px; color:var(--text-secondary); }
+.tcp-clear { font-size:11px; color:var(--danger,#f85149); background:none; border:none; cursor:pointer; padding:0; }
+.tcp-clear:hover { text-decoration:underline; }
+.tcp-tabs { margin-bottom:8px; }
+.tcp-hint { font-size:11px; color:var(--text-muted); padding:4px 0; }
+.tcp-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.tcp-manual { gap:6px; }
+.inp-s { flex:1; min-width:110px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius); padding:5px 8px; color:var(--text-primary); font-size:12px; font-family:inherit; outline:none; transition:border-color .12s; }
+.inp-s:focus { border-color:var(--accent); }
+.inp-port { width:64px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius); padding:5px 8px; color:var(--text-primary); font-size:12px; font-family:inherit; outline:none; }
+.inp-sel { flex:1; min-width:160px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius); padding:5px 8px; color:var(--text-primary); font-size:12px; outline:none; }
 
 .ip-wrap { position:relative; }
 .inp-ip  { width:150px; }
