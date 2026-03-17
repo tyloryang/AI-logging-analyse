@@ -14,6 +14,7 @@ import ProfileView from '../views/ProfileView.vue'
 import AdminUsers from '../views/AdminUsers.vue'
 import SettingsView from '../views/SettingsView.vue'
 import View403 from '../views/View403.vue'
+import SlowLogView from '../views/SlowLogView.vue'
 
 const routes = [
   // 公开路由
@@ -30,6 +31,7 @@ const routes = [
   { path: '/report',  component: AnalysisReport, name: 'report',    meta: { module: 'report' } },
   { path: '/hosts',   component: HostCMDB,       name: 'hosts',     meta: { module: 'cmdb' } },
   { path: '/ssh',     component: SSHTerminal,    name: 'ssh',       meta: { module: 'ssh'  } },
+  { path: '/slowlog', component: SlowLogView,    name: 'slowlog',   meta: { module: 'slowlog' } },
   { path: '/profile', component: ProfileView,    name: 'profile' },
   { path: '/admin/users',    component: AdminUsers,   name: 'admin-users', meta: { admin: true } },
   { path: '/settings',       component: SettingsView, name: 'settings',    meta: { admin: true } },

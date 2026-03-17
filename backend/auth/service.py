@@ -20,6 +20,7 @@ SYSTEM_MODULES = [
     {"id": "cmdb",      "name": "主机 CMDB","description": "主机管理与 CMDB 信息"},
     {"id": "inspect",   "name": "主机巡检", "description": "阈值巡检与 AI 分析"},
     {"id": "ssh",       "name": "SSH 终端", "description": "Web SSH 终端"},
+    {"id": "slowlog",   "name": "慢日志分析","description": "MySQL 慢查询日志分析"},
     {"id": "admin",     "name": "用户管理", "description": "用户、权限与审计"},
 ]
 

@@ -2,7 +2,7 @@
 
 > 基于 **Loki + Prometheus + AI 大模型** 的一站式智能运维平台
 >
-> 日志分析 · 主机巡检 · SSH 终端 · 运维日报 · 飞书/钉钉推送 · 用户权限管理
+> 日志分析 · 慢日志分析 · 主机巡检 · SSH 终端 · 运维日报 · 飞书/钉钉推送 · 用户权限管理
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
@@ -43,6 +43,7 @@
 | **定时推送** | APScheduler 按 cron 自动生成运维日报 + 主机巡检日报并推送，无需外部 cron |
 | **主机 CMDB** | Prometheus 自动发现主机，采集 CPU/内存/磁盘/网络/负载指标，可编辑责任人/环境/角色 |
 | **主机巡检** | 阈值巡检（CPU/内存/磁盘/负载），AI 逐台列出异常 IP 和问题，一键导出 Excel |
+| **慢日志分析** | SSH 读取 MySQL 8 慢查询日志，时间段过滤，drain3 SQL 模板聚合，AI 流式优化建议 |
 | **SSH 终端** | 浏览器内 Web Terminal，凭证库 AES 加密存储，多标签，一键连接 |
 | **用户权限** | 注册审批、模块级权限（view/operate）、登录失败锁定、操作审计日志 |
 
@@ -66,8 +67,11 @@
 │  ├── reports.py            ├── admin_router.py                │
 │  ├── hosts.py              ├── service.py  (注册/审批/权限)    │
 │  ├── ssh.py                └── session.py  (Redis Session)    │
+│  ├── slowlog.py            # /api/slowlog/* (慢查询分析)       │
 │  └── health.py                                                 │
 │  state.py (共享单例)   scheduler.py (定时任务)                  │
+│  slow_log_parser.py (MySQL 8 慢日志解析)                       │
+│  sql_cluster.py     (drain3 SQL 模板聚合)                      │
 └───────┬──────────────────────────────┬────────────────────────┘
         │                              │
 ┌───────▼──────────┐   ┌──────────────▼───────────────────────┐
@@ -248,6 +252,23 @@ DINGTALK_KEYWORD=运维             # 钉钉关键词安全策略（与飞书同
 3. 点击「AI 分析」，AI 会逐台列出每个异常主机的 IP 和具体问题（如 `192.168.1.10：CPU 使用率 91%`）
 4. 点击「下载 Excel」导出三页式报告（巡检概况 / 全部主机明细 / 异常项明细）
 
+### MySQL 慢日志分析
+
+1. 进入「慢日志分析」页面
+2. **配置凭证**（三种方式任选）：
+   - **CMDB 自动**：主机在 CMDB 中已绑定凭证，直接选择目标 IP 即可
+   - **凭证库**：从凭证管理库中选择已保存的凭证
+   - **手动输入**：直接填写用户名和密码（一次性使用）
+3. **添加分析目标**：在 IP 输入框中输入主机 IP（支持 CMDB 主机自动补全），可批量添加多台主机
+4. **设置时间段**：选择 `起始日期` 和 `结束日期`，或使用快捷按钮（今天 / 昨天 / 近7天 / 近30天 / 不限）
+5. 点击「**获取并解析**」，系统并行 SSH 读取所有目标主机的慢日志文件并解析
+6. 结果按主机分 Tab 展示，可切换「**慢查询列表**」「**SQL 聚合**」「**AI 分析建议**」三个视图：
+   - **慢查询列表**：按耗时排序，可展开查看完整 SQL
+   - **SQL 聚合**：drain3 自动识别 SQL 模板，统计次数 / 总耗时 / 最大耗时 / 扫描行数
+   - **AI 分析建议**：流式输出 AI 对 Top 慢查询的根因分析和加索引/改写 SQL 等优化建议
+
+> **注意**：凭证信息在页面刷新后通过 sessionStorage 保留，无需重复输入。需要确保 SSH 账号有读取 MySQL 慢日志文件的权限。
+
 ### SSH 终端
 
 1. 进入「CMDB 巡检」→ 切换「SSH 终端」标签
@@ -264,7 +285,7 @@ DINGTALK_KEYWORD=运维             # 钉钉关键词安全策略（与飞书同
 - 为每位用户按模块分配权限（`none` / `view` / `operate`）
 - 解锁因登录失败超限而锁定的账号
 
-**权限模块**：`dashboard` · `log` · `metrics` · `alert` · `report` · `cmdb` · `inspect` · `ssh` · `admin`
+**权限模块**：`dashboard` · `log` · `metrics` · `alert` · `report` · `cmdb` · `inspect` · `ssh` · `slowlog` · `admin`
 
 ---
 
@@ -282,6 +303,7 @@ aiops/
 │   │   ├── reports.py       # /api/report/* （日报 + 巡检日报 + Excel + 推送）
 │   │   ├── hosts.py         # /api/hosts/* （CMDB + 巡检）
 │   │   ├── ssh.py           # /api/ssh/* + WebSocket /api/ws/ssh
+│   │   ├── slowlog.py       # /api/slowlog/* （MySQL 慢查询日志分析）
 │   │   └── health.py        # /api/health
 │   ├── auth/
 │   │   ├── models.py        # User / Permission / Module / AuditLog ORM 模型
@@ -297,6 +319,8 @@ aiops/
 │   ├── ai_analyzer.py       # AI 分析器（Provider 抽象层，支持 Anthropic / OpenAI）
 │   ├── ssh_bridge.py        # WebSocket ↔ asyncssh 桥接（SSH 终端后端）
 │   ├── log_clusterer.py     # Drain3 日志模板聚类
+│   ├── slow_log_parser.py   # MySQL 8 慢日志解析器（iter/parse/build_summary）
+│   ├── sql_cluster.py       # Drain3 SQL 模板聚合（脱敏 → 聚类 → 统计）
 │   ├── notifier.py          # 飞书 / 钉钉 Webhook 推送
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -310,6 +334,7 @@ aiops/
 │   │   │   ├── AlertHistory.vue     # 告警历史
 │   │   │   ├── AnalysisReport.vue   # 运维日报
 │   │   │   ├── HostCMDB.vue         # 主机 CMDB + 巡检 + SSH 终端
+│   │   │   ├── SlowLogView.vue      # MySQL 慢日志分析（多主机 + 聚合 + AI 建议）
 │   │   │   ├── LoginView.vue        # 登录页
 │   │   │   ├── RegisterView.vue     # 注册页
 │   │   │   ├── AdminUsers.vue       # 用户管理（管理员）
@@ -383,6 +408,31 @@ aiops/
 | PUT    | `/api/ssh/credentials/{id}` | 更新凭证 |
 | DELETE | `/api/ssh/credentials/{id}` | 删除凭证 |
 | WS     | `/api/ws/ssh` | WebSocket SSH 终端 |
+
+### 慢日志分析
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/slowlog/hosts` | 返回 CMDB 中有 SSH 凭证的主机列表 |
+| POST | `/api/slowlog/fetch` | SSH 读取远端 MySQL 慢日志并解析（含 drain3 聚合） |
+| GET  | `/api/slowlog/analyze/stream` | **流式** AI 慢查询优化建议（SSE） |
+
+`POST /api/slowlog/fetch` 请求体：
+
+```json
+{
+  "host_ip": "192.168.1.10",
+  "log_path": "/mysqldata/mysql/data/3306/mysql-slow.log",
+  "date_from": "2025-01-01",
+  "date_to": "2025-01-07",
+  "threshold_sec": 1.0,
+  "alert_sec": 10.0,
+  "credential_id": "",
+  "ssh_user": "",
+  "ssh_password": "",
+  "ssh_port": 22
+}
+```
 
 ### 其他
 

@@ -27,6 +27,7 @@ from routers.hosts import router as hosts_router
 from routers.ssh import router as ssh_router
 from routers.health import router as health_router
 from routers.settings import router as settings_router
+from routers.slowlog import router as slowlog_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ app.include_router(hosts_router)
 app.include_router(ssh_router)
 app.include_router(health_router)
 app.include_router(settings_router)
+app.include_router(slowlog_router)
 
 
 if __name__ == "__main__":

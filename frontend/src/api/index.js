@@ -36,6 +36,9 @@ export const api = {
   createCredential:  (data) => http.post('/ssh/credentials', data),
   updateCredential:  (id, data) => http.put(`/ssh/credentials/${id}`, data),
   deleteCredential:  (id) => http.delete(`/ssh/credentials/${id}`),
+  // 慢日志分析
+  slowlogHosts:   () => http.get('/slowlog/hosts'),
+  slowlogFetch:   (data) => http.post('/slowlog/fetch', data),
   // 健康检查
   healthCheck:    () => http.get('/health'),
   // 系统配置（管理员）
