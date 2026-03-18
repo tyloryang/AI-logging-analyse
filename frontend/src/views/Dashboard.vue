@@ -92,7 +92,9 @@
           </div>
           <div v-if="hosts.length" class="host-list">
             <div v-for="h in sortedHosts" :key="h.instance" class="host-row">
-              <span class="host-dot" :class="h.state === 'up' ? 'ok' : 'err'"></span>
+              <span class="host-state-badge" :class="h.state === 'up' ? 'ok' : 'err'">
+                {{ h.state === 'up' ? '在线' : '离线' }}
+              </span>
               <span class="host-name">{{ h.hostname || h.ip }}</span>
               <span class="host-ip mono">{{ h.ip }}</span>
               <div class="host-metrics">
@@ -104,6 +106,9 @@
                 </span>
                 <span class="metric-tag" :class="diskClass(maxDisk(h))">
                   DSK {{ maxDisk(h) != null ? maxDisk(h) + '%' : '-' }}
+                </span>
+                <span class="metric-tag" :class="tcpClass(h.metrics.tcp_estab)">
+                  TCP {{ h.metrics.tcp_estab != null ? h.metrics.tcp_estab : '-' }}
                 </span>
               </div>
             </div>
@@ -147,15 +152,19 @@ const barWidth = (n) => Math.round(n / maxCount.value * 100)
 const hostStats = computed(() => {
   const total    = hosts.value.length
   const online   = hosts.value.filter(h => h.state === 'up').length
+  const offline  = total - online
   const cpuWarn  = hosts.value.filter(h => (h.metrics?.cpu_usage ?? 0) > 70).length
   const memWarn  = hosts.value.filter(h => (h.metrics?.mem_usage ?? 0) > 80).length
   const diskWarn = hosts.value.filter(h => (maxDisk(h) ?? 0) > 80).length
+  const tcpWarn  = hosts.value.filter(h => (h.metrics?.tcp_estab ?? 0) > 5000).length
   return [
-    { label: '主机总数',   value: total,   color: 'var(--accent)'   },
-    { label: '在线',       value: online,  color: 'var(--success)'  },
-    { label: 'CPU > 70%',  value: cpuWarn, color: cpuWarn  ? 'var(--warning)' : 'var(--text-secondary)' },
-    { label: '内存 > 80%', value: memWarn, color: memWarn  ? 'var(--warning)' : 'var(--text-secondary)' },
-    { label: '磁盘 > 80%', value: diskWarn,color: diskWarn ? 'var(--error)'   : 'var(--text-secondary)' },
+    { label: '主机总数',      value: total,    color: 'var(--accent)'   },
+    { label: '在线',          value: online,   color: 'var(--success)'  },
+    { label: '离线',          value: offline,  color: offline  ? 'var(--error)'   : 'var(--text-secondary)' },
+    { label: 'CPU > 70%',     value: cpuWarn,  color: cpuWarn  ? 'var(--warning)' : 'var(--text-secondary)' },
+    { label: '内存 > 80%',    value: memWarn,  color: memWarn  ? 'var(--warning)' : 'var(--text-secondary)' },
+    { label: '磁盘 > 80%',    value: diskWarn, color: diskWarn ? 'var(--error)'   : 'var(--text-secondary)' },
+    { label: 'TCP > 5000',    value: tcpWarn,  color: tcpWarn  ? 'var(--warning)' : 'var(--text-secondary)' },
   ]
 })
 
@@ -170,6 +179,7 @@ const logStats = computed(() => [
 function cpuClass(v)  { if (v == null) return ''; return v > 90 ? 'crit' : v > 70 ? 'warn' : 'ok' }
 function memClass(v)  { if (v == null) return ''; return v > 90 ? 'crit' : v > 80 ? 'warn' : 'ok' }
 function diskClass(v) { if (v == null) return ''; return v > 90 ? 'crit' : v > 80 ? 'warn' : 'ok' }
+function tcpClass(v)  { if (v == null) return ''; return v > 10000 ? 'crit' : v > 5000 ? 'warn' : 'ok' }
 // 取主机所有分区中使用率最高的
 function maxDisk(h) {
   const parts = h.partitions ?? []
@@ -186,6 +196,7 @@ const sortCols = [
   { key: 'cpu',       label: 'CPU' },
   { key: 'mem',       label: 'MEM' },
   { key: 'disk',      label: '磁盘' },
+  { key: 'tcp',       label: 'TCP' },
 ]
 
 function toggleSort(key) {
@@ -203,6 +214,7 @@ const sortedHosts = computed(() => {
       case 'cpu':      return dir * ((a.metrics?.cpu_usage  ?? -1) - (b.metrics?.cpu_usage  ?? -1))
       case 'mem':      return dir * ((a.metrics?.mem_usage  ?? -1) - (b.metrics?.mem_usage  ?? -1))
       case 'disk':     return dir * ((maxDisk(a) ?? -1) - (maxDisk(b) ?? -1))
+      case 'tcp':      return dir * ((a.metrics?.tcp_estab ?? -1) - (b.metrics?.tcp_estab ?? -1))
       default:         return 0
     }
   })
@@ -341,13 +353,18 @@ onMounted(async () => {
   font-size: 12px; flex-shrink: 0;
 }
 .host-row:last-child { border-bottom: none; }
-.host-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.host-dot.ok  { background: var(--success); }
-.host-dot.err { background: var(--error); }
-.host-name { width: 110px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.host-ip   { width: 90px; color: var(--text-muted); font-size: 11px; }
-.host-metrics { display: flex; gap: 5px; margin-left: auto; }
-.metric-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 500; font-family: 'JetBrains Mono', monospace; }
+/* 状态徽章（替代原小圆点） */
+.host-state-badge {
+  flex-shrink: 0;
+  font-size: 10px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
+  padding: 1px 5px; border-radius: 3px; letter-spacing: .02em;
+}
+.host-state-badge.ok  { background: rgba(63,185,80,.12);  color: var(--success); }
+.host-state-badge.err { background: rgba(248,81,73,.12);  color: var(--error);   }
+.host-name { width: 100px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.host-ip   { width: 86px; color: var(--text-muted); font-size: 11px; }
+.host-metrics { display: flex; gap: 4px; margin-left: auto; flex-wrap: nowrap; }
+.metric-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 500; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
 .metric-tag.ok   { background: rgba(63,185,80,.1);  color: var(--success); }
 .metric-tag.warn { background: rgba(210,153,34,.12); color: var(--warning); }
 .metric-tag.crit { background: rgba(248,81,73,.12);  color: var(--error);   }
