@@ -69,24 +69,31 @@ class MilvusMemory:
             return
         from langchain_openai import OpenAIEmbeddings
 
-        # 优先使用独立 embedding 配置，回退到主 LLM 的 base_url
-        base_url = (
-            os.getenv("EMBEDDING_BASE_URL")
-            or os.getenv("AI_BASE_URL", "")
-            or None
-        )
-        api_key = (
-            os.getenv("EMBEDDING_API_KEY")
-            or os.getenv("AI_API_KEY", "EMPTY")
-            or "EMPTY"
-        )
-        model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+        provider  = os.getenv("EMBEDDING_PROVIDER", "").lower()  # "openai" | "local" | ""
+        model     = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+        if provider == "openai":
+            # 方式 B：OpenAI 官方，必须设置 EMBEDDING_API_KEY
+            api_key  = os.getenv("EMBEDDING_API_KEY", "") or ""
+            base_url = None
+        elif provider == "local":
+            # 方式 A：本地 / 第三方 OpenAI-compat 服务
+            base_url = os.getenv("EMBEDDING_BASE_URL") or os.getenv("AI_BASE_URL", "")
+            api_key  = os.getenv("EMBEDDING_API_KEY") or os.getenv("AI_API_KEY", "EMPTY") or "EMPTY"
+        else:
+            # 未设置 EMBEDDING_PROVIDER：有 EMBEDDING_BASE_URL 就走 local，否则走 openai
+            base_url = os.getenv("EMBEDDING_BASE_URL") or None
+            if base_url:
+                api_key = os.getenv("EMBEDDING_API_KEY") or os.getenv("AI_API_KEY", "EMPTY") or "EMPTY"
+            else:
+                api_key  = os.getenv("EMBEDDING_API_KEY", "") or ""
 
         kwargs: dict = {"model": model, "api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         self._embedder = OpenAIEmbeddings(**kwargs)
-        logger.info("[milvus] embedder model=%s base_url=%s", model, base_url or "openai")
+        logger.info("[milvus] embedder provider=%s model=%s base_url=%s",
+                    provider or "auto", model, base_url or "openai官方")
 
     # ── 同步核心方法（在 to_thread 中运行）────────────────────────
     def _embed(self, text: str) -> list[float]:
