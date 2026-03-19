@@ -15,19 +15,22 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 class AgentRequest(BaseModel):
     message: str = ""
+    conv_id: str = ""   # 前端生成的会话 UUID，用于多轮历史隔离
 
 
 def _sse(type_: str, **kwargs) -> str:
     return f"data: {json.dumps({'type': type_, **kwargs}, ensure_ascii=False)}\n\n"
 
 
-async def _stream_graph(mode: str, message: str):
+async def _stream_graph(mode: str, message: str, conv_id: str = ""):
     """运行 LangGraph 图并将 astream_events 转换为 SSE 事件流"""
     try:
         graph = build_graph(mode)
         input_state = {"messages": [HumanMessage(content=message)]}
+        thread_id = f"{conv_id}:{mode}" if conv_id else f"anon-{mode}"
+        config = {"configurable": {"thread_id": thread_id}}
 
-        async for event in graph.astream_events(input_state, version="v2"):
+        async for event in graph.astream_events(input_state, config=config, version="v2"):
             kind = event.get("event", "")
 
             if kind == "on_chat_model_stream":
@@ -86,19 +89,19 @@ _DEFAULT_MESSAGES = {
 @router.post("/rca")
 async def agent_rca(req: AgentRequest):
     message = req.message or _DEFAULT_MESSAGES["rca"]
-    return StreamingResponse(_stream_graph("rca", message),
+    return StreamingResponse(_stream_graph("rca", message, req.conv_id),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/inspect")
 async def agent_inspect(req: AgentRequest):
     message = req.message or _DEFAULT_MESSAGES["inspect"]
-    return StreamingResponse(_stream_graph("inspect", message),
+    return StreamingResponse(_stream_graph("inspect", message, req.conv_id),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/chat")
 async def agent_chat(req: AgentRequest):
     message = req.message or _DEFAULT_MESSAGES["chat"]
-    return StreamingResponse(_stream_graph("chat", message),
+    return StreamingResponse(_stream_graph("chat", message, req.conv_id),
                              media_type="text/event-stream", headers=_SSE_HEADERS)

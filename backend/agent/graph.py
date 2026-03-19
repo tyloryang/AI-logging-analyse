@@ -4,10 +4,14 @@ import os
 from typing import Literal
 
 from langchain_core.messages import SystemMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 
 from .tools import ALL_TOOLS
+
+# 全局 checkpointer：跨请求保持会话历史（进程内持久，重启清空）
+_checkpointer = MemorySaver()
 
 logger = logging.getLogger(__name__)
 
@@ -112,4 +116,4 @@ def build_graph(mode: str = "chat"):
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue)
     graph.add_edge("tools", "agent")
-    return graph.compile()
+    return graph.compile(checkpointer=_checkpointer)

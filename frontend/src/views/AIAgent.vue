@@ -178,6 +178,13 @@ const inputRef    = ref(null)
 let msgIdCounter = 0
 let currentAssistantMsg = null
 
+// 每种模式独立的会话 ID，用于后端多轮历史隔离
+const convIds = ref({
+  rca:     crypto.randomUUID(),
+  inspect: crypto.randomUUID(),
+  chat:    crypto.randomUUID(),
+})
+
 const currentMode = computed(() => MODES.find(m => m.key === mode.value) || MODES[2])
 
 // ── 工具函数 ──────────────────────────────────────────────────────────
@@ -213,6 +220,8 @@ function clearChat() {
   currentAssistantMsg = null
   streaming.value = false
   inputText.value = ''
+  // 重置会话 ID，后端历史同步清空
+  convIds.value[mode.value] = crypto.randomUUID()
   if (inputRef.value) inputRef.value.style.height = 'auto'
 }
 
@@ -258,7 +267,7 @@ async function sendMessage(text) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, conv_id: convIds.value[mode.value] }),
     })
 
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
