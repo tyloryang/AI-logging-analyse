@@ -4,6 +4,9 @@ backend/.ssh_key
 backend/cmdb_hosts.json
 backend/ssh_credentials.json
 backend/reports/
+backend/data/
+config/
+test_spawn.cmd
 
 # Python
 __pycache__/
