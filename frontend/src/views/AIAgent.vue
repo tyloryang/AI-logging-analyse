@@ -1,9 +1,42 @@
 <template>
   <div class="agent-page">
 
+    <!-- 左侧历史面板 -->
+    <div class="history-panel" :class="{ collapsed: !showHistory }">
+      <div class="history-panel-header">
+        <button class="new-conv-btn" @click="newConversation" :disabled="streaming">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          新建对话
+        </button>
+      </div>
+      <div class="history-list" v-if="historyList.length">
+        <div
+          v-for="item in historyList" :key="item.conv_id"
+          class="history-item" :class="{ active: item.conv_id === convIds[mode] }"
+          @click="loadConversation(item)"
+        >
+          <span class="hi-mode-icon" v-html="getModeIconSvg(item.mode)"></span>
+          <div class="hi-info">
+            <div class="hi-title">{{ item.title || '新对话' }}</div>
+            <div class="hi-date">{{ fmtHistoryDate(item.updated_at) }}</div>
+          </div>
+          <button class="hi-del" @click.stop="deleteConversation(item.conv_id)" title="删除">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="history-empty" v-else>暂无历史记录</div>
+    </div>
+
+    <!-- 右侧主体 -->
+    <div class="chat-section">
+
     <!-- 顶部标题 + 模式切换 -->
     <div class="agent-header">
       <div class="agent-title">
+        <button class="history-toggle" @click="showHistory = !showHistory" :title="showHistory ? '收起历史' : '展开历史'">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
         <span class="agent-icon-wrap" v-html="AGENT_ICON"></span>
         <div>
           <h1>AI 智能体</h1>
@@ -117,11 +150,12 @@
       </div>
     </div>
 
+    </div><!-- /chat-section -->
   </div>
 </template>
 
 <script setup>
-import { ref, computed, nextTick, reactive } from 'vue'
+import { ref, computed, nextTick, reactive, onMounted } from 'vue'
 
 // ── 图标 ──────────────────────────────────────────────────────────────
 const AGENT_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M9 11V7a3 3 0 0 1 6 0v4"/><circle cx="9" cy="16" r="1" fill="currentColor"/><circle cx="15" cy="16" r="1" fill="currentColor"/><path d="M12 3v2"/></svg>`
@@ -185,7 +219,90 @@ const convIds = ref({
   chat:    crypto.randomUUID(),
 })
 
+// ── 历史面板状态 ──────────────────────────────────────────────────────
+const showHistory  = ref(true)
+const historyList  = ref([])   // [{conv_id, mode, title, updated_at}]
+
 const currentMode = computed(() => MODES.find(m => m.key === mode.value) || MODES[2])
+
+// ── 历史面板工具函数 ──────────────────────────────────────────────────
+function getModeIconSvg(modeKey) {
+  return MODES.find(m => m.key === modeKey)?.icon || ''
+}
+
+function fmtHistoryDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const now = new Date()
+  const diffMs = now - d
+  const diffDays = Math.floor(diffMs / 86400000)
+  if (diffDays === 0) return d.toLocaleTimeString('zh', { hour: '2-digit', minute: '2-digit' })
+  if (diffDays < 7)  return `${diffDays}天前`
+  return d.toLocaleDateString('zh', { month: 'numeric', day: 'numeric' })
+}
+
+// ── 历史 API ──────────────────────────────────────────────────────────
+async function loadHistoryList() {
+  try {
+    const resp = await fetch('/api/agent/conversations', { credentials: 'include' })
+    if (resp.ok) historyList.value = await resp.json()
+  } catch { /* 静默失败 */ }
+}
+
+async function saveConversation() {
+  if (!messages.value.length || streaming.value) return
+  const title = messages.value.find(m => m.role === 'user')?.content?.slice(0, 60) || '新对话'
+  const convId = convIds.value[mode.value]
+  const plain = messages.value.map(m => ({
+    id:        m.id,
+    role:      m.role,
+    content:   m.content,
+    toolCalls: m.role === 'assistant'
+      ? (m.toolCalls || []).map(tc => ({ id: tc.id, tool: tc.tool, input: tc.input, output: tc.output, pending: false, expanded: false }))
+      : [],
+    streaming: false,
+    done:      true,
+  }))
+  try {
+    await fetch(`/api/agent/conversations/${convId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ mode: mode.value, title, messages: plain }),
+    })
+    await loadHistoryList()
+  } catch { /* 静默失败 */ }
+}
+
+async function loadConversation(item) {
+  if (streaming.value) return
+  try {
+    const resp = await fetch(`/api/agent/conversations/${item.conv_id}`, { credentials: 'include' })
+    if (!resp.ok) return
+    const data = await resp.json()
+    mode.value = data.mode || item.mode
+    convIds.value[mode.value] = item.conv_id
+    messages.value = (data.messages || []).map(m => reactive({
+      ...m,
+      toolCalls: (m.toolCalls || []).map(tc => reactive({ ...tc })),
+    }))
+    nextTick(() => bottomRef.value?.scrollIntoView())
+  } catch { /* 静默失败 */ }
+}
+
+async function deleteConversation(convId) {
+  try {
+    await fetch(`/api/agent/conversations/${convId}`, { method: 'DELETE', credentials: 'include' })
+    historyList.value = historyList.value.filter(h => h.conv_id !== convId)
+    if (convIds.value[mode.value] === convId) clearChat()
+  } catch { /* 静默失败 */ }
+}
+
+function newConversation() {
+  clearChat()
+}
+
+onMounted(loadHistoryList)
 
 // ── 工具函数 ──────────────────────────────────────────────────────────
 function formatInput(input) {
@@ -344,6 +461,7 @@ function handleEvent(data, msg) {
       streaming.value = false
       currentAssistantMsg = null
       scrollToBottom()
+      saveConversation()
       break
 
     case 'error':
@@ -364,10 +482,118 @@ function handleEvent(data, msg) {
   flex: 1;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   padding: 0;
   overflow: hidden;
 }
+
+/* ── 历史面板 ──────────────────────────────────────────────── */
+.history-panel {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg-surface, var(--bg-card));
+  overflow: hidden;
+  transition: width .2s ease;
+}
+.history-panel.collapsed { width: 0; border-right: none; }
+
+.history-panel-header {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.new-conv-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all .15s;
+}
+.new-conv-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.new-conv-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 4px;
+}
+.history-empty {
+  padding: 20px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .12s;
+  min-width: 0;
+}
+.history-item:hover { background: var(--bg-hover, rgba(255,255,255,.04)); }
+.history-item.active { background: var(--accent-dim, rgba(99,102,241,.12)); }
+.hi-mode-icon { flex-shrink: 0; color: var(--text-muted); display: flex; align-items: center; }
+.hi-info { flex: 1; min-width: 0; }
+.hi-title {
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hi-date { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.hi-del {
+  flex-shrink: 0;
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.history-item:hover .hi-del { opacity: 1; }
+.hi-del:hover { background: var(--error-dim, rgba(220,38,38,.1)); color: var(--error, #dc2626); }
+
+/* ── 右侧聊天区域包裹 ─────────────────────────────────────── */
+.chat-section {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── 历史切换按钮 ─────────────────────────────────────────── */
+.history-toggle {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all .15s;
+}
+.history-toggle:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── 顶部 ──────────────────────────────────────────────────── */
 .agent-header {

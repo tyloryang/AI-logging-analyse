@@ -5,12 +5,16 @@ import logging
 import os
 import re
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
+from sqlalchemy import select, delete as sa_delete
 
 from agent.graph import build_graph
+from auth.deps import current_user
+from auth.models import AgentConversation, User
+from db import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -199,3 +203,94 @@ async def agent_chat(req: AgentRequest):
     message = req.message or _DEFAULT_MESSAGES["chat"]
     return StreamingResponse(_stream_graph("chat", message, req.conv_id),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+# ── 历史会话 CRUD ──────────────────────────────────────────────────────
+
+class SaveConversationRequest(BaseModel):
+    mode: str = "chat"
+    title: str = ""
+    messages: list = []
+
+
+@router.get("/conversations")
+async def list_conversations(user: User = Depends(current_user)):
+    """返回当前用户所有历史会话（按更新时间倒序，最多 100 条）。"""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AgentConversation)
+            .where(AgentConversation.user_id == user.id)
+            .order_by(AgentConversation.updated_at.desc())
+            .limit(100)
+        )
+        rows = result.scalars().all()
+    return [
+        {
+            "id":         r.id,
+            "conv_id":    r.conv_id,
+            "mode":       r.mode,
+            "title":      r.title,
+            "updated_at": r.updated_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/conversations/{conv_id}")
+async def get_conversation(conv_id: str, user: User = Depends(current_user)):
+    """获取单条历史会话的完整消息列表。"""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AgentConversation)
+            .where(AgentConversation.conv_id == conv_id,
+                   AgentConversation.user_id == user.id)
+        )
+        row = result.scalar_one_or_none()
+    if not row:
+        return {"conv_id": conv_id, "mode": "chat", "title": "", "messages": []}
+    return {
+        "conv_id":  row.conv_id,
+        "mode":     row.mode,
+        "title":    row.title,
+        "messages": json.loads(row.messages),
+    }
+
+
+@router.put("/conversations/{conv_id}")
+async def save_conversation(conv_id: str, req: SaveConversationRequest,
+                            user: User = Depends(current_user)):
+    """新建或更新一条历史会话（upsert）。"""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AgentConversation)
+            .where(AgentConversation.conv_id == conv_id,
+                   AgentConversation.user_id == user.id)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            row.mode     = req.mode
+            row.title    = req.title[:200]
+            row.messages = json.dumps(req.messages, ensure_ascii=False)
+        else:
+            db.add(AgentConversation(
+                user_id  = user.id,
+                conv_id  = conv_id,
+                mode     = req.mode,
+                title    = req.title[:200],
+                messages = json.dumps(req.messages, ensure_ascii=False),
+            ))
+        await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/conversations/{conv_id}")
+async def delete_conversation(conv_id: str, user: User = Depends(current_user)):
+    """删除一条历史会话。"""
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            sa_delete(AgentConversation)
+            .where(AgentConversation.conv_id == conv_id,
+                   AgentConversation.user_id == user.id)
+        )
+        await db.commit()
+    return {"ok": True}
