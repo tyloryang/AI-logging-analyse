@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -63,11 +64,35 @@ def _sse(type_: str, **kwargs) -> str:
     return f"data: {json.dumps({'type': type_, **kwargs}, ensure_ascii=False)}\n\n"
 
 
-async def _save_incident(mode: str, user_query: str, summary: str) -> None:
+def _extract_structured(text: str) -> tuple[str, dict]:
+    """
+    从 AI 输出末尾提取结构化 JSON 摘要，返回 (干净文本, 结构化数据)。
+    JSON 格式：{"affected_services":"...","root_cause":"...","resolution":"..."}
+    """
+    last_brace = text.rfind("{")
+    if last_brace == -1:
+        return text, {}
+    end_brace = text.find("}", last_brace)
+    if end_brace == -1:
+        return text, {}
+    candidate = text[last_brace: end_brace + 1]
+    try:
+        data = json.loads(candidate)
+        if "root_cause" in data:
+            return text[:last_brace].rstrip(), data
+    except json.JSONDecodeError:
+        pass
+    return text, {}
+
+
+async def _save_incident(mode: str, user_query: str, full_summary: str,
+                         affected_services: str = "", root_cause: str = "",
+                         resolution: str = "") -> None:
     """后台将 AI 分析结论保存到 Milvus（不阻塞主流程）。"""
     try:
         from agent.milvus_memory import get_memory
-        await get_memory().save(mode, user_query, summary)
+        await get_memory().save(mode, user_query, full_summary,
+                                affected_services, root_cause, resolution)
     except Exception as exc:
         logger.warning("[agent] 保存到 Milvus 失败（不影响使用）: %s", exc)
 
@@ -128,12 +153,22 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
             logger.exception("[agent] 流式处理异常")
             yield _sse("error", message=err)
 
+    # 提取末尾 JSON，将干净文本推给前端替换
+    full_text = "".join(response_parts)
+    clean_text, structured = _extract_structured(full_text)
+    if structured:
+        yield _sse("replace_content", text=clean_text)
+
     yield _sse("done")
 
-    # 后台保存到 Milvus（不阻塞响应，仅在有实质内容时保存）
-    if len(response_parts) > 5:
-        summary = "".join(response_parts)
-        asyncio.create_task(_save_incident(mode, message, summary))
+    # 后台保存到 Milvus
+    if len(clean_text) > 10:
+        asyncio.create_task(_save_incident(
+            mode, message, clean_text,
+            affected_services=structured.get("affected_services", ""),
+            root_cause=structured.get("root_cause", ""),
+            resolution=structured.get("resolution", ""),
+        ))
 
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}

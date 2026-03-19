@@ -333,6 +333,11 @@ function handleEvent(data, msg) {
       break
     }
 
+    case 'replace_content':
+      msg.content = data.text || ''
+      scrollToBottom()
+      break
+
     case 'done':
       msg.streaming = false
       msg.done = true

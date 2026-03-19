@@ -174,8 +174,15 @@ async def recall_similar_incidents(query: str, top_k: int = 3) -> str:
             mode_label = {"rca": "根因分析", "inspect": "巡检", "chat": "对话"}.get(h["mode"], h["mode"])
             lines.append(f"【案例 {i}】相似度={h['score']} | {mode_label} | {ts}")
             lines.append(f"  问题：{h['user_query']}")
-            summary_excerpt = h["summary"][:600] + ("..." if len(h["summary"]) > 600 else "")
-            lines.append(f"  结论：{summary_excerpt}")
+            if h.get("affected_services"):
+                lines.append(f"  涉及：{h['affected_services']}")
+            if h.get("root_cause"):
+                lines.append(f"  根因：{h['root_cause']}")
+            if h.get("resolution"):
+                lines.append(f"  处置：{h['resolution']}")
+            elif h.get("full_summary"):
+                excerpt = h["full_summary"][:400] + ("..." if len(h["full_summary"]) > 400 else "")
+                lines.append(f"  详情：{excerpt}")
             lines.append("")
         return "\n".join(lines)
     except Exception as e:
