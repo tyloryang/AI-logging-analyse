@@ -1,8 +1,8 @@
 # AI Ops · 智能运维平台
 
-> 基于 **Loki + Prometheus + AI 大模型** 的一站式智能运维平台
+> 基于 **Loki + Prometheus + LangGraph + AI 大模型** 的一站式智能运维平台
 >
-> 日志分析 · MySQL 慢日志 · 主机巡检 · SSH 终端 · 运维日报 · 飞书/钉钉推送 · 用户权限管理
+> 日志分析 · MySQL 慢日志 · 主机巡检 · SSH 终端 · 运维日报 · AI 智能体 · 飞书/钉钉推送 · 用户权限管理
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
@@ -61,6 +61,7 @@
 | **主机巡检** | 阈值巡检（CPU/内存/磁盘/负载），AI 逐台分析异常，一键导出 Excel |
 | **MySQL 慢日志** | SSH 读取远端慢日志，时间段过滤，drain3 SQL 模板聚合，多主机并行，AI 优化建议 |
 | **SSH 终端** | 浏览器内 Web Terminal，凭证库 AES 加密存储，多标签，一键连接 |
+| **AI 智能体** | LangGraph ReAct Agent：自动根因分析（RCA）、自主全量巡检、智能运维对话，工具调用可视化 |
 | **用户权限** | 注册审批、模块级权限（view/operate）、登录失败锁定、操作审计日志 |
 
 ---
@@ -72,7 +73,7 @@
 │                    浏览器  Vue 3 + Vite                        │
 │  Dashboard · LogAnalysis · MetricsMonitor · AlertHistory       │
 │  AnalysisReport · HostCMDB · SSHTerminal · SlowLogView        │
-│  Login / Register / AdminUsers / Settings (权限管理)           │
+│  AIAgent · Login / Register / AdminUsers / Settings (权限管理) │
 │                  Pinia · Axios · SSE · WebSocket               │
 └──────────────────────────┬────────────────────────────────────┘
                            │ HTTP / SSE / WebSocket
@@ -84,7 +85,9 @@
 │  ├── hosts.py              ├── service.py  (注册/审批/权限)    │
 │  ├── ssh.py                └── session.py  (Redis Session)    │
 │  ├── slowlog.py            # /api/slowlog/* (慢查询分析)       │
+│  ├── agent.py              # /api/agent/* (LangGraph Agent)   │
 │  └── health.py                                                 │
+│  agent/  (tools · graph · llm_responses)                      │
 │  state.py · scheduler.py · slow_log_parser.py · sql_cluster.py│
 └───────┬──────────────────────────┬────────────────────────────┘
         │                          │
@@ -213,6 +216,16 @@ cd frontend && npm install && npm run dev
 | DeepSeek | `AI_PROVIDER=openai` + DeepSeek API URL | 低成本云端 |
 
 > 任何支持 OpenAI Chat Completions API 格式的服务均可接入。
+>
+> **vLLM 工具调用（Qwen3 等）需加启动参数：**
+> ```
+> --enable-auto-tool-choice --tool-call-parser hermes
+> ```
+>
+> 若代理仅支持 `/v1/responses`（OpenAI Responses API），设置 `AI_WIRE_API=responses`：
+> ```env
+> AI_WIRE_API=responses
+> ```
 
 ### 数据库
 
@@ -289,6 +302,23 @@ DINGTALK_KEYWORD=运维
 3. 首次连接需要凭证：点击「凭证管理」添加用户名/密码，凭证以 AES 加密存储
 4. 也可在「主机 CMDB」页为每台主机绑定指定凭证，下次一键直连
 
+### AI 智能体
+
+AI 智能体基于 LangGraph ReAct 框架，具备自主规划和多轮工具调用能力，支持三种模式：
+
+| 模式 | 入口 | 功能 |
+|------|------|------|
+| **根因分析** | 点击「根因分析」标签 | 自动查询错误日志、统计错误分布、拉取主机指标，输出结构化根因报告 |
+| **自主巡检** | 点击「自主巡检」标签 | 自动遍历所有服务和主机，发现异常并给出优先级建议 |
+| **智能对话** | 点击「智能对话」标签 | 自由提问，Agent 按需调用工具（查日志 / 查指标 / 执行巡检） |
+
+**操作步骤：**
+1. 进入「AI 智能体」页面，选择模式
+2. 输入问题（可使用底部快捷提示），或点击「一键巡检」直接启动
+3. 观察工具调用卡片（实时展示 Agent 正在调用哪些工具及输入参数）
+4. 工具执行完成后点击卡片可展开查看详细输出
+5. AI 综合所有工具结果后输出最终分析报告
+
 ### 用户权限管理
 
 **注册流程**：用户自行注册 → 状态为 `pending` → 管理员审批后激活
@@ -298,7 +328,7 @@ DINGTALK_KEYWORD=运维
 - 为每位用户按模块分配权限（`none` / `view` / `operate`）
 - 解锁因登录失败超限而锁定的账号
 
-**权限模块**：`dashboard` · `log` · `metrics` · `alert` · `report` · `cmdb` · `inspect` · `ssh` · `slowlog` · `admin`
+**权限模块**：`dashboard` · `log` · `metrics` · `alert` · `report` · `cmdb` · `inspect` · `ssh` · `slowlog` · `agent` · `admin`
 
 ---
 
@@ -317,7 +347,13 @@ aiops/
 │   │   ├── hosts.py         # /api/hosts/* （CMDB + 巡检）
 │   │   ├── ssh.py           # /api/ssh/* + WebSocket /api/ws/ssh
 │   │   ├── slowlog.py       # /api/slowlog/* （MySQL 慢查询日志分析）
+│   │   ├── agent.py         # /api/agent/* （LangGraph Agent SSE 流式）
 │   │   └── health.py        # /api/health
+│   ├── agent/
+│   │   ├── __init__.py
+│   │   ├── tools.py         # LangChain @tool 工具（日志/指标/巡检）
+│   │   ├── graph.py         # LangGraph ReAct 图（rca/inspect/chat 三种模式）
+│   │   └── llm_responses.py # OpenAI Responses API 自定义 ChatModel
 │   ├── auth/
 │   │   ├── models.py        # User / Permission / Module / AuditLog ORM 模型
 │   │   ├── router.py        # /api/auth/* （登录/注册/登出/改密）
@@ -349,6 +385,7 @@ aiops/
 │   │   │   ├── HostCMDB.vue         # 主机 CMDB + 巡检
 │   │   │   ├── SSHTerminal.vue      # SSH 终端（多标签 Web Terminal）
 │   │   │   ├── SlowLogView.vue      # MySQL 慢日志分析（多主机 + 聚合 + AI 建议）
+│   │   │   ├── AIAgent.vue          # AI 智能体（LangGraph Agent，工具调用可视化）
 │   │   │   ├── LoginView.vue        # 登录页
 │   │   │   ├── RegisterView.vue     # 注册页
 │   │   │   ├── ForgotPassword.vue   # 忘记密码
@@ -458,6 +495,30 @@ aiops/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/health` | 健康检查（Loki / Prometheus / AI 状态） |
+
+### AI 智能体
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/agent/rca` | **流式** 根因分析（SSE），自动调用工具查日志+指标 |
+| POST | `/api/agent/inspect` | **流式** 自主巡检（SSE），遍历全量主机并生成巡检报告 |
+| POST | `/api/agent/chat` | **流式** 智能运维对话（SSE），按需调用工具回答问题 |
+
+请求体（三个接口一致）：
+
+```json
+{ "message": "可选的自定义指令，留空则使用默认提示" }
+```
+
+SSE 事件类型：
+
+| 事件 | 字段 | 说明 |
+|------|------|------|
+| `token` | `text` | AI 输出文本片段 |
+| `tool_start` | `tool`, `input` | 工具调用开始 |
+| `tool_end` | `tool`, `output` | 工具调用结束（截取前 800 字符） |
+| `error` | `message` | 错误信息（含配置提示） |
+| `done` | — | 流结束标志 |
 
 ---
 
