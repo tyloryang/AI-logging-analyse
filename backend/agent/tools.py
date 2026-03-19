@@ -1,4 +1,6 @@
 """LangGraph Agent 工具集 — 封装 Loki / Prometheus 客户端"""
+from datetime import datetime
+
 from langchain_core.tools import tool
 from state import loki, prom
 
@@ -155,7 +157,33 @@ async def query_recent_logs(service: str = "", hours: int = 1, level: str = "", 
         return f"查询日志失败：{e}"
 
 
+@tool
+async def recall_similar_incidents(query: str, top_k: int = 3) -> str:
+    """从历史运维事件库中检索与当前问题语义相似的历史案例（根因分析报告、巡检结论等）。
+    分析新问题前优先调用，查看是否有类似历史事件和已知解决方案。
+    query=描述当前问题的关键词或问句, top_k=返回最相似的案例数。
+    """
+    try:
+        from agent.milvus_memory import get_memory
+        hits = await get_memory().search(query, top_k)
+        if not hits:
+            return "历史事件库中未找到相似案例。"
+        lines = [f"找到 {len(hits)} 条相似历史案例：\n"]
+        for i, h in enumerate(hits, 1):
+            ts = datetime.fromtimestamp(h["created_at"]).strftime("%Y-%m-%d %H:%M")
+            mode_label = {"rca": "根因分析", "inspect": "巡检", "chat": "对话"}.get(h["mode"], h["mode"])
+            lines.append(f"【案例 {i}】相似度={h['score']} | {mode_label} | {ts}")
+            lines.append(f"  问题：{h['user_query']}")
+            summary_excerpt = h["summary"][:600] + ("..." if len(h["summary"]) > 600 else "")
+            lines.append(f"  结论：{summary_excerpt}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"检索历史案例失败（Milvus 不可用）：{e}"
+
+
 ALL_TOOLS = [
+    recall_similar_incidents,
     query_error_logs,
     count_errors_by_service,
     get_services_list,

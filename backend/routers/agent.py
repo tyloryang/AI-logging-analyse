@@ -63,8 +63,19 @@ def _sse(type_: str, **kwargs) -> str:
     return f"data: {json.dumps({'type': type_, **kwargs}, ensure_ascii=False)}\n\n"
 
 
+async def _save_incident(mode: str, user_query: str, summary: str) -> None:
+    """后台将 AI 分析结论保存到 Milvus（不阻塞主流程）。"""
+    try:
+        from agent.milvus_memory import get_memory
+        await get_memory().save(mode, user_query, summary)
+    except Exception as exc:
+        logger.warning("[agent] 保存到 Milvus 失败（不影响使用）: %s", exc)
+
+
 async def _stream_graph(mode: str, message: str, conv_id: str = ""):
     """运行 LangGraph 图并将 astream_events 转换为 SSE 事件流"""
+    response_parts: list[str] = []   # 累积 AI 文本，用于事后写入 Milvus
+
     try:
         checkpointer = await _get_checkpointer()
         graph = build_graph(mode, checkpointer=checkpointer)
@@ -82,8 +93,10 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
                     if isinstance(content, list):
                         for c in content:
                             if isinstance(c, dict) and c.get("type") == "text" and c.get("text"):
+                                response_parts.append(c["text"])
                                 yield _sse("token", text=c["text"])
                     elif isinstance(content, str):
+                        response_parts.append(content)
                         yield _sse("token", text=content)
 
             elif kind == "on_tool_start":
@@ -98,7 +111,6 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
 
     except Exception as e:
         err = str(e)
-        # 提示常见配置问题
         if "404" in err:
             hint = (
                 f"{err}\n\n"
@@ -117,6 +129,11 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
             yield _sse("error", message=err)
 
     yield _sse("done")
+
+    # 后台保存到 Milvus（不阻塞响应，仅在有实质内容时保存）
+    if len(response_parts) > 5:
+        summary = "".join(response_parts)
+        asyncio.create_task(_save_incident(mode, message, summary))
 
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
