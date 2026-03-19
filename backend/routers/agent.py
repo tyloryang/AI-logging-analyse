@@ -1,6 +1,8 @@
 """AI 智能体路由 — LangGraph ReAct Agent SSE 流式输出"""
+import asyncio
 import json
 import logging
+import os
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -11,6 +13,45 @@ from agent.graph import build_graph
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+# ── Checkpointer 懒初始化 ──────────────────────────────────────────────
+_checkpointer = None
+_init_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
+
+
+async def _get_checkpointer():
+    """首次调用时初始化 SQLite checkpointer，失败则降级为 MemorySaver。"""
+    global _checkpointer
+    if _checkpointer is not None:
+        return _checkpointer
+    async with _get_lock():
+        if _checkpointer is not None:
+            return _checkpointer
+        try:
+            import aiosqlite
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+            os.makedirs(data_dir, exist_ok=True)
+            db_path = os.path.join(data_dir, "agent_checkpoints.db")
+
+            conn = await aiosqlite.connect(db_path)
+            saver = AsyncSqliteSaver(conn)
+            await saver.setup()
+            _checkpointer = saver
+            logger.info("[agent] checkpointer → SQLite: %s", os.path.abspath(db_path))
+        except Exception as exc:
+            logger.warning("[agent] SQLite checkpointer 不可用，降级为 MemorySaver: %s", exc)
+            from langgraph.checkpoint.memory import MemorySaver
+            _checkpointer = MemorySaver()
+    return _checkpointer
 
 
 class AgentRequest(BaseModel):
@@ -25,7 +66,8 @@ def _sse(type_: str, **kwargs) -> str:
 async def _stream_graph(mode: str, message: str, conv_id: str = ""):
     """运行 LangGraph 图并将 astream_events 转换为 SSE 事件流"""
     try:
-        graph = build_graph(mode)
+        checkpointer = await _get_checkpointer()
+        graph = build_graph(mode, checkpointer=checkpointer)
         input_state = {"messages": [HumanMessage(content=message)]}
         thread_id = f"{conv_id}:{mode}" if conv_id else f"anon-{mode}"
         config = {"configurable": {"thread_id": thread_id}}
