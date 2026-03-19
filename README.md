@@ -68,6 +68,128 @@
 
 ## 技术架构
 
+## 代码流程图
+
+### 整体系统请求流程
+
+```mermaid
+flowchart TD
+    Browser["🖥️ 浏览器 Vue 3 + Vite\nDashboard · 日志 · CMDB · SSH\n慢日志 · AI智能体 · 运维日报"]
+
+    subgraph API["⚙️ FastAPI 后端"]
+        Auth["认证中间件\ncurrent_user · session_id Cookie"]
+
+        subgraph Routes["功能路由"]
+            RLog["📋 日志分析\n/api/logs · /api/analyze/stream"]
+            RHost["🖥 主机 CMDB\n/api/hosts · /api/hosts/inspect"]
+            RReport["📄 运维日报\n/api/report/*"]
+            RSlow["🐢 慢日志分析\n/api/slowlog/*"]
+            RSSH["💻 SSH 终端\n/api/ws/ssh (WebSocket)"]
+            RAgent["🤖 AI 智能体\n/api/agent/rca · inspect · chat"]
+        end
+
+        Scheduler["⏰ 定时调度\nAPScheduler cron"]
+    end
+
+    subgraph Store["💾 本地存储"]
+        DB["SQLite / MySQL / PostgreSQL\n用户 · 权限 · 审计 · 对话历史"]
+        Redis["Redis\nSession · 登录失败计数"]
+        Files["JSON 文件\nCMDB · SSH凭证"]
+        CheckpointDB["SQLite\nLangGraph 对话状态"]
+    end
+
+    subgraph External["🌐 外部服务"]
+        Loki["Loki\n日志存储 + 查询"]
+        Prom["Prometheus\n指标采集 + 主机发现"]
+        AIProvider["AI Provider\nAnthropic Claude\nOpenAI 兼容接口"]
+        Milvus["Milvus 向量库\n历史事件语义检索"]
+        SSHTarget["远端主机\nSSH"]
+        Notify["飞书 / 钉钉\nWebhook 推送"]
+    end
+
+    Browser -->|"HTTP / SSE"| Auth
+    Browser -->|"WebSocket"| RSSH
+    Auth <-->|"验证 session"| Redis
+    Auth --> Routes
+
+    RLog --> Loki
+    RLog -->|"AI 流式分析"| AIProvider
+    RHost --> Prom
+    RHost -->|"AI 巡检分析"| AIProvider
+    RReport --> Loki
+    RReport --> Prom
+    RReport -->|"AI 生成日报"| AIProvider
+    RReport -->|"推送报告"| Notify
+    RSlow -->|"SSH 读取慢日志"| SSHTarget
+    RSlow -->|"AI 优化建议"| AIProvider
+    RSSH <-->|"双向 Shell"| SSHTarget
+    RAgent -->|"LangGraph 调用"| AIProvider
+    RAgent --> Milvus
+    RAgent --> Loki
+    RAgent --> Prom
+    RAgent <-->|"对话历史"| CheckpointDB
+
+    Scheduler -->|"cron 触发"| RReport
+    Scheduler -->|"定时推送"| Notify
+
+    Routes <--> DB
+    Routes --> Files
+```
+
+### AI 智能体执行流程（LangGraph ReAct）
+
+```mermaid
+flowchart TD
+    Req["POST /api/agent/{mode}\n{ message, conv_id }"]
+    Build["build_graph(mode)\n加载 checkpointer + 绑定工具"]
+
+    subgraph Graph["🔄 LangGraph ReAct 图"]
+        S([START])
+        AN["agent_node\nSystemPrompt + 历史消息\n→ LLM.ainvoke"]
+        SC{有 tool_calls?}
+        TN["ToolNode\n并行执行工具"]
+        E([END])
+    end
+
+    subgraph Tools["🔧 运维工具集"]
+        T1["recall_similar_incidents\n→ Milvus 语义检索历史案例"]
+        T2["count_errors_by_service\n→ Loki 统计各服务错误数"]
+        T3["query_error_logs\n→ Loki 查询错误日志详情"]
+        T4["get_host_metrics\n→ Prometheus 主机指标"]
+        T5["inspect_all_hosts\n→ Prometheus 全量巡检"]
+        T6["query_recent_logs\n→ Loki 查询最近日志"]
+    end
+
+    subgraph SSE["📡 SSE 流式输出"]
+        EToken["token — AI 文本片段"]
+        EToolS["tool_start — 工具开始执行"]
+        EToolE["tool_end — 工具执行结果"]
+        EReplace["replace_content — 去除末尾JSON后的干净文本"]
+        EDone["done — 流结束"]
+    end
+
+    subgraph Post["📦 后处理（不阻塞响应）"]
+        Extract["提取结构化摘要\naffected_services\nroot_cause · resolution"]
+        EmbedSave["embed(问题+根因+处置)\n→ 保存到 Milvus\n供下次 recall 召回"]
+        SaveHistory["保存对话消息\n→ agent_conversations 表\n前端历史面板展示"]
+    end
+
+    Req --> Build --> S --> AN --> SC
+    SC -->|"是"| TN
+    TN --> T1 & T2 & T3 & T4 & T5 & T6
+    T1 & T2 & T3 & T4 & T5 & T6 --> TN
+    TN -->|"ToolMessage 写回"| AN
+    SC -->|"否"| E
+
+    E --> EToken & EToolS & EToolE
+    E --> EReplace --> EDone
+
+    EDone --> Extract --> EmbedSave
+    EDone --> SaveHistory
+```
+
+---
+
 ```
 ┌───────────────────────────────────────────────────────────────┐
 │                    浏览器  Vue 3 + Vite                        │
