@@ -110,6 +110,18 @@
                 <span class="metric-tag" :class="tcpClass(h.metrics.tcp_estab)">
                   TCP {{ h.metrics.tcp_estab != null ? h.metrics.tcp_estab : '-' }}
                 </span>
+                <span class="metric-tag" :class="loadClass(h.metrics.load5)">
+                  LD {{ h.metrics.load5 != null ? h.metrics.load5.toFixed(2) : '-' }}
+                </span>
+                <span v-if="fmtIO(h.metrics)" class="metric-tag ok">
+                  IO {{ fmtIO(h.metrics) }}
+                </span>
+                <span v-if="fmtNet(h.metrics)" class="metric-tag ok">
+                  NET {{ fmtNet(h.metrics) }}
+                </span>
+                <span v-if="fmtUptime(h.metrics.uptime_seconds)" class="metric-tag ok">
+                  UP {{ fmtUptime(h.metrics.uptime_seconds) }}
+                </span>
               </div>
             </div>
           </div>
@@ -176,15 +188,30 @@ const logStats = computed(() => [
   { label: '异常服务数',  value: services.value.filter(s => s.error_count > 0).length,           color: 'var(--warning)'  },
 ])
 
-function cpuClass(v)  { if (v == null) return ''; return v > 90 ? 'crit' : v > 70 ? 'warn' : 'ok' }
-function memClass(v)  { if (v == null) return ''; return v > 90 ? 'crit' : v > 80 ? 'warn' : 'ok' }
-function diskClass(v) { if (v == null) return ''; return v > 90 ? 'crit' : v > 80 ? 'warn' : 'ok' }
-function tcpClass(v)  { if (v == null) return ''; return v > 10000 ? 'crit' : v > 5000 ? 'warn' : 'ok' }
+function cpuClass(v)   { if (v == null) return ''; return v > 90 ? 'crit' : v > 70 ? 'warn' : 'ok' }
+function memClass(v)   { if (v == null) return ''; return v > 90 ? 'crit' : v > 80 ? 'warn' : 'ok' }
+function diskClass(v)  { if (v == null) return ''; return v > 90 ? 'crit' : v > 80 ? 'warn' : 'ok' }
+function tcpClass(v)   { if (v == null) return ''; return v > 10000 ? 'crit' : v > 5000 ? 'warn' : 'ok' }
+function loadClass(v)  { if (v == null) return ''; return v > 8 ? 'crit' : v > 4 ? 'warn' : 'ok' }
 // 取主机所有分区中使用率最高的
 function maxDisk(h) {
   const parts = h.partitions ?? []
   if (!parts.length) return null
   return Math.max(...parts.map(p => p.usage_pct ?? 0))
+}
+function fmtIO(m) {
+  if (m.disk_read_mbps == null) return null
+  return `${m.disk_read_mbps}/${m.disk_write_mbps}`
+}
+function fmtNet(m) {
+  if (m.net_recv_mbps == null) return null
+  return `${m.net_recv_mbps}/${m.net_send_mbps}`
+}
+function fmtUptime(sec) {
+  if (sec == null) return null
+  const d = Math.floor(sec / 86400)
+  const h = Math.floor((sec % 86400) / 3600)
+  return d > 0 ? `${d}天${h}时` : `${h}时`
 }
 
 // ── 主机列表排序 ─────────────────────────────────────────────────────────
@@ -197,6 +224,8 @@ const sortCols = [
   { key: 'mem',       label: 'MEM' },
   { key: 'disk',      label: '磁盘' },
   { key: 'tcp',       label: 'TCP' },
+  { key: 'load',      label: '负载' },
+  { key: 'uptime',    label: '运行时长' },
 ]
 
 function toggleSort(key) {
@@ -215,6 +244,8 @@ const sortedHosts = computed(() => {
       case 'mem':      return dir * ((a.metrics?.mem_usage  ?? -1) - (b.metrics?.mem_usage  ?? -1))
       case 'disk':     return dir * ((maxDisk(a) ?? -1) - (maxDisk(b) ?? -1))
       case 'tcp':      return dir * ((a.metrics?.tcp_estab ?? -1) - (b.metrics?.tcp_estab ?? -1))
+      case 'load':     return dir * ((a.metrics?.load5 ?? -1) - (b.metrics?.load5 ?? -1))
+      case 'uptime':   return dir * ((a.metrics?.uptime_seconds ?? -1) - (b.metrics?.uptime_seconds ?? -1))
       default:         return 0
     }
   })
@@ -348,9 +379,9 @@ onMounted(async () => {
 /* Host list */
 .host-list { display: flex; flex-direction: column; }
 .host-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 0; border-bottom: 1px solid var(--border-light);
-  font-size: 12px; flex-shrink: 0;
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 7px 0; border-bottom: 1px solid var(--border-light);
+  font-size: 12px; flex-shrink: 0; flex-wrap: wrap;
 }
 .host-row:last-child { border-bottom: none; }
 /* 状态徽章（替代原小圆点） */
@@ -363,7 +394,7 @@ onMounted(async () => {
 .host-state-badge.err { background: rgba(248,81,73,.12);  color: var(--error);   }
 .host-name { width: 100px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .host-ip   { width: 86px; color: var(--text-muted); font-size: 11px; }
-.host-metrics { display: flex; gap: 4px; margin-left: auto; flex-wrap: nowrap; }
+.host-metrics { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; max-width: 380px; }
 .metric-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 500; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
 .metric-tag.ok   { background: rgba(63,185,80,.1);  color: var(--success); }
 .metric-tag.warn { background: rgba(210,153,34,.12); color: var(--warning); }
