@@ -2,6 +2,7 @@
 
 路由前缀：/api/report/*
 """
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -102,6 +103,12 @@ async def generate_report():
                 yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
             meta["ai_analysis"] = "".join(ai_content_parts)
             report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 后台写入 Milvus（不阻塞 SSE 流）
+            try:
+                from agent.report_memory import get_report_memory
+                asyncio.create_task(get_report_memory().save(meta))
+            except Exception:
+                pass
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(
@@ -211,6 +218,12 @@ async def generate_inspect_report():
                 yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
             meta["ai_analysis"] = "".join(ai_parts)
             report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 后台写入 Milvus
+            try:
+                from agent.report_memory import get_report_memory
+                asyncio.create_task(get_report_memory().save(meta))
+            except Exception:
+                pass
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(
@@ -685,6 +698,12 @@ async def generate_slowlog_report():
         (REPORTS_DIR / f"{report_id}.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        # 后台写入 Milvus
+        try:
+            from agent.report_memory import get_report_memory
+            asyncio.create_task(get_report_memory().save(meta))
+        except Exception:
+            pass
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

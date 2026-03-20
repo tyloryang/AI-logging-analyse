@@ -6,6 +6,7 @@ load_dotenv() 必须在所有本地模块 import 之前执行，
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -66,6 +67,19 @@ async def lifespan(app: FastAPI):
         created = await auth_service.ensure_admin(db)
         if created:
             logger.info("[AUTH] 初始管理员账号已创建")
+
+    # ── 历史日报批量导入 Milvus（后台，不阻塞启动）────────────────
+    async def _import_reports():
+        try:
+            from agent.report_memory import get_report_memory
+            from state import REPORTS_DIR
+            ok, skipped = await get_report_memory().batch_import(str(REPORTS_DIR))
+            if ok:
+                logger.info("[report_memory] 历史日报批量导入完成: 入库 %d 条，跳过 %d 条", ok, skipped)
+        except Exception as exc:
+            logger.warning("[report_memory] 批量导入失败（不影响启动）: %s", exc)
+
+    asyncio.create_task(_import_reports())
 
     yield
 

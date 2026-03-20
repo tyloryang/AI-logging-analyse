@@ -110,7 +110,10 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
         graph = build_graph(mode, checkpointer=checkpointer)
         input_state = {"messages": [HumanMessage(content=message)]}
         thread_id = f"{conv_id}:{mode}" if conv_id else f"anon-{mode}"
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": 40,
+        }
 
         async for event in graph.astream_events(input_state, config=config, version="v2"):
             kind = event.get("event", "")
@@ -153,6 +156,14 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
             yield _sse("error", message=f"API 认证失败，请检查 ANTHROPIC_API_KEY 或 AI_API_KEY。\n{err}")
         elif "AI_BASE_URL" in err or "ANTHROPIC_API_KEY" in err:
             yield _sse("error", message=f"配置缺失：{err}")
+        elif "recursion_limit" in err.lower() or "recursion limit" in err.lower():
+            yield _sse("error", message=(
+                "Agent 调用工具次数过多，已自动终止。\n\n"
+                "可能原因：您的问题需要的功能超出了 Agent 工具范围。\n"
+                "• 查看历史运维日报 → 请前往「运维日报」页面\n"
+                "• 查看慢日志报告 → 请前往「慢日志分析」页面\n"
+                "请换一种方式提问，或直接告诉 Agent 您想查什么数据。"
+            ))
         else:
             logger.exception("[agent] 流式处理异常")
             yield _sse("error", message=err)
