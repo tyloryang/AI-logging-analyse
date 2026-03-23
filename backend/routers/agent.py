@@ -189,6 +189,7 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 _DEFAULT_MESSAGES = {
+    "guided":  "我想排查一个问题，请你一步一步引导我。",
     "rca":     "请分析当前系统中存在的问题和异常，给出根因分析报告。",
     "inspect": "请执行全面系统巡检，检查所有主机状态和日志异常，生成巡检报告。",
     "chat":    "你好，请介绍一下你能做什么。",
@@ -213,6 +214,13 @@ async def agent_inspect(req: AgentRequest):
 async def agent_chat(req: AgentRequest):
     message = req.message or _DEFAULT_MESSAGES["chat"]
     return StreamingResponse(_stream_graph("chat", message, req.conv_id),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@router.post("/guided")
+async def agent_guided(req: AgentRequest):
+    message = req.message or _DEFAULT_MESSAGES["guided"]
+    return StreamingResponse(_stream_graph("guided", message, req.conv_id),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
