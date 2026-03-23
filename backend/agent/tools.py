@@ -11,14 +11,16 @@ _REPORTS_DIR = os.path.join(os.path.dirname(__file__), "..", "reports")
 
 
 @tool
-async def query_error_logs(service: str = "", hours: int = 24, keyword: str = "", limit: int = 50) -> str:
-    """查询错误日志。service=服务名(空=全部), hours=最近N小时, keyword=关键词过滤, limit=返回条数上限。适合排查具体服务的错误信息。"""
+async def query_error_logs(service: str = "", hours: int = 24, minutes: int = 0, keyword: str = "", limit: int = 50) -> str:
+    """查询错误日志。service=服务名(空=全部), hours=最近N小时, minutes=最近N分钟(优先于hours，如5分钟传minutes=5), keyword=关键词过滤, limit=返回条数上限。"""
+    actual_hours = minutes / 60.0 if minutes > 0 else hours
+    time_label = f"{minutes}分钟" if minutes > 0 else f"{hours}小时"
     try:
         logs = await loki.query_logs(
-            service=service, hours=hours, limit=limit, level="error", keyword=keyword
+            service=service, hours=actual_hours, limit=limit, level="error", keyword=keyword
         )
         if not logs:
-            return f"最近 {hours}h 内未发现错误日志" + (f"（服务：{service}）" if service else "")
+            return f"最近 {time_label} 内未发现错误日志" + (f"（服务：{service}）" if service else "")
         lines = []
         for log in logs[:limit]:
             ts = str(log.get("timestamp", ""))[:19]
@@ -31,15 +33,17 @@ async def query_error_logs(service: str = "", hours: int = 24, keyword: str = ""
 
 
 @tool
-async def count_errors_by_service(hours: int = 24) -> str:
-    """统计各服务错误数量排名，用于快速定位问题服务。hours=统计时间范围（小时）。"""
+async def count_errors_by_service(hours: int = 24, minutes: int = 0) -> str:
+    """统计各服务错误数量排名，用于快速定位问题服务。hours=统计时间范围（小时），minutes=统计时间范围（分钟，优先于hours，如最近5分钟传minutes=5）。"""
+    actual_hours = minutes / 60.0 if minutes > 0 else hours
+    time_label = f"{minutes}分钟" if minutes > 0 else f"{hours}小时"
     try:
-        errors = await loki.count_errors_by_service(hours)
+        errors = await loki.count_errors_by_service(actual_hours)
         if not errors:
-            return f"最近 {hours}h 无错误日志"
+            return f"最近 {time_label} 无错误日志"
         sorted_errors = sorted(errors.items(), key=lambda x: x[1], reverse=True)
         total = sum(errors.values())
-        lines = [f"最近 {hours}h 错误汇总（共 {total} 条，{len(errors)} 个服务）："]
+        lines = [f"最近 {time_label} 错误汇总（共 {total} 条，{len(errors)} 个服务）："]
         for svc, cnt in sorted_errors[:20]:
             lines.append(f"  {svc}: {cnt} 条")
         return "\n".join(lines)
@@ -142,14 +146,16 @@ async def inspect_all_hosts() -> str:
 
 
 @tool
-async def query_recent_logs(service: str = "", hours: int = 1, level: str = "", keyword: str = "", limit: int = 30) -> str:
-    """查询最近的日志（可指定级别）。level=error/warn/info（空=全部级别）。适合查看服务最近运行情况。"""
+async def query_recent_logs(service: str = "", hours: int = 1, minutes: int = 0, level: str = "", keyword: str = "", limit: int = 30) -> str:
+    """查询最近的日志（可指定级别）。level=error/warn/info（空=全部级别）。minutes=最近N分钟（优先于hours，如最近10分钟传minutes=10）。适合查看服务最近运行情况。"""
+    actual_hours = minutes / 60.0 if minutes > 0 else hours
+    time_label = f"{minutes}分钟" if minutes > 0 else f"{hours}小时"
     try:
         logs = await loki.query_logs(
-            service=service, hours=hours, limit=limit, level=level, keyword=keyword
+            service=service, hours=actual_hours, limit=limit, level=level, keyword=keyword
         )
         if not logs:
-            return "未找到符合条件的日志"
+            return f"最近 {time_label} 内未找到符合条件的日志"
         lines = []
         for log in logs[:limit]:
             ts = str(log.get("timestamp", ""))[:19]

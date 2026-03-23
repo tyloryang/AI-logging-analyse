@@ -145,7 +145,7 @@ class LokiClient:
     async def query_logs(
         self,
         service: Optional[str] = None,
-        hours: int = 24,
+        hours: float = 24,
         limit: int = 5000,
         level: Optional[str] = None,
         keyword: Optional[str] = None,
@@ -159,7 +159,7 @@ class LokiClient:
         start_ns / end_ns: 自定义时间范围（纳秒时间戳），优先于 hours
         """
         now_ns = int(time.time() * 1e9)
-        s_ns = start_ns if start_ns is not None else (now_ns - hours * 3600 * int(1e9))
+        s_ns = start_ns if start_ns is not None else int(now_ns - hours * 3600 * 1e9)
         e_ns = end_ns if end_ns is not None else now_ns
 
         svc_label = await self._detect_service_label()
@@ -185,13 +185,13 @@ class LokiClient:
     async def query_error_logs(
         self,
         service: Optional[str] = None,
-        hours: int = 24,
+        hours: float = 24,
         limit: int = 5000,
     ) -> list[dict]:
         """查询错误日志（兼容旧调用）"""
         return await self.query_logs(service=service, hours=hours, limit=limit, level="error")
 
-    async def count_errors_by_service(self, hours: int = 24) -> dict[str, int]:
+    async def count_errors_by_service(self, hours: float = 24) -> dict[str, int]:
         """统计各服务错误数"""
         logs = await self.query_error_logs(hours=hours, limit=10000)
         counts: dict[str, int] = {}

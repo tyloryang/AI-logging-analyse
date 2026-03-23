@@ -201,7 +201,7 @@ import { api, streamSSE } from '../api/index.js'
 // ── 公共状态 ─────────────────────────────
 const services       = ref([])
 const selectedService = ref('')
-const hours          = ref('24')
+const hours          = ref('1')
 const loadingSvcs    = ref(false)
 const activeTab      = ref('logs')
 

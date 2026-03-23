@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-config
+  namespace: aiops
+data:
+  LOKI_URL: "http://192.168.9.221:27478"
+  LOKI_USERNAME: ""
+  LOKI_PASSWORD: ""
+
+  PROMETHEUS_URL: "http://192.168.9.221:24404"
+
+  AI_PROVIDER: "openai"
+  AI_BASE_URL: "https://api.codexzh.com/v1"
+  AI_MODEL: "gpt-5"
+  AI_WIRE_API: "responses"
+
+  MILVUS_HOST: "192.168.9.227"
+  MILVUS_PORT: "19530"
+
+  EMBEDDING_PROVIDER: "local"
+  EMBEDDING_BASE_URL: "http://192.168.9.227:10009/v1"
+  EMBEDDING_MODEL: "qwen3-embedding-4b"
+  EMBEDDING_DIM: "2560"
+
+  DATABASE_URL: "sqlite+aiosqlite:///./data/aiops.db"
+  REDIS_URL: "redis://redis:6379"
+
+  APP_HOST: "0.0.0.0"
+  APP_PORT: "8000"
+  APP_URL: "http://localhost"
+
+  REPORTS_DIR: "./reports"
+
+  SCHEDULE_CRON: "0 7 * * *"
+  SCHEDULE_CHANNELS: "feishu"
+  FEISHU_KEYWORD: "运维"
+
+  SESSION_TTL_SECONDS: "28800"
+  LOGIN_FAIL_MAX: "5"
+  LOGIN_FAIL_WINDOW: "600"

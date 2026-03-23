@@ -47,7 +47,8 @@ SYSTEM_PROMPTS = {
         "【工具选择指引】\n"
         "- 用户问'历史日报/过去发生了什么/某服务的历史问题' → 调用 search_daily_reports\n"
         "- 用户问'上次类似故障怎么处理' → 调用 recall_similar_incidents\n"
-        "- 用户问'现在有什么错误/当前状态' → 调用 query_error_logs / get_host_metrics\n\n"
+        "- 用户问'现在有什么错误/当前状态' → 调用 query_error_logs / get_host_metrics\n"
+        "- 用户指定时间范围时：'最近N分钟' → 传 minutes=N；'最近N小时' → 传 hours=N；minutes 参数优先于 hours\n\n"
         "【限制】慢查询 SQL 报告、告警规则配置不在工具范围，遇到此类请求直接告知用户。\n\n"
         "根据用户问题按需调用工具，用简洁中文回答，工具调用结束后直接给出结论。"
     ),

@@ -64,7 +64,7 @@ async function handleRegister() {
 </script>
 
 <style scoped>
-.auth-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg-base, #0f1117); }
+.auth-page { min-height: 100vh; width: 100%; display: flex; align-items: center; justify-content: center; background: var(--bg-base, #0f1117); }
 .auth-card { width: 400px; background: var(--bg-card, #1a1d2e); border: 1px solid var(--border, #2a2d3e); border-radius: 12px; padding: 36px 32px; }
 .auth-logo { font-size: 22px; font-weight: 700; color: var(--accent, #7c83ff); margin-bottom: 8px; }
 .auth-title { font-size: 20px; color: var(--text-base, #e2e8f0); margin: 0 0 24px; }

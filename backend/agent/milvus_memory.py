@@ -31,9 +31,12 @@ class MilvusMemory:
         self._client = None
         self._embedder = None
         self._dim: int = int(os.getenv("EMBEDDING_DIM", str(_DEFAULT_DIM)))
+        self._unavailable = False   # 连接失败后置 True，后续跳过不再重试
 
     # ── Milvus 客户端懒初始化 ─────────────────────────────────────
     def _init_client(self):
+        if self._unavailable:
+            raise RuntimeError("Milvus 不可用（已跳过）")
         if self._client is not None:
             return
         from pymilvus import DataType, MilvusClient
@@ -41,8 +44,13 @@ class MilvusMemory:
         host = os.getenv("MILVUS_HOST", "192.168.9.227")
         port = os.getenv("MILVUS_PORT", "19530")
         uri  = f"http://{host}:{port}"
-        self._client = MilvusClient(uri=uri, timeout=5.0)
-        logger.info("[milvus] 连接 %s", uri)
+        try:
+            self._client = MilvusClient(uri=uri, timeout=5.0)
+            logger.info("[milvus] 连接 %s", uri)
+        except Exception as e:
+            self._unavailable = True
+            logger.warning("[milvus] 连接失败，向量库功能已禁用，仅使用本地存储: %s", e)
+            raise
 
         # 检测 schema 版本和向量维度，不匹配自动重建
         if self._client.has_collection(COLLECTION):
@@ -189,6 +197,8 @@ class MilvusMemory:
     async def save(self, mode: str, user_query: str, full_summary: str,
                    affected_services: str = "", root_cause: str = "",
                    resolution: str = "") -> None:
+        if self._unavailable:
+            return
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(
@@ -198,19 +208,23 @@ class MilvusMemory:
                 timeout=15.0,
             )
         except asyncio.TimeoutError:
-            logger.warning("[milvus] save 超时（15s），已跳过")
+            self._unavailable = True
+            logger.warning("[milvus] save 超时，向量库已标记不可用")
         except Exception as exc:
             logger.warning("[milvus] save 失败（不影响使用）: %s", exc)
 
     async def search(self, query: str, top_k: int = 3,
                      mode_filter: Optional[str] = None) -> list[dict]:
+        if self._unavailable:
+            return []
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(self._search_sync, query, top_k, mode_filter),
                 timeout=10.0,
             )
         except asyncio.TimeoutError:
-            logger.warning("[milvus] search 超时（10s），返回空结果")
+            self._unavailable = True
+            logger.warning("[milvus] search 超时，向量库已标记不可用")
             return []
         except Exception as exc:
             logger.warning("[milvus] search 失败，返回空结果: %s", exc)

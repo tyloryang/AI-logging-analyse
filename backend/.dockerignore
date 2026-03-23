@@ -1,0 +1,11 @@
+.env
+.env.*
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+data/
+reports/
+ssh_credentials.json
+.ssh_key
+*.log
