@@ -52,6 +52,8 @@ async def get_hosts():
             host["role"]          = extra.get("role", "")
             host["notes"]         = extra.get("notes", "")
             host["group"]         = extra.get("group", "")
+            # custom_labels 由 Prometheus 采集，不存 CMDB（只读展示）
+            host.setdefault("custom_labels", {})
             host["ssh_port"]      = extra.get("ssh_port", 22)
             host["ssh_user"]      = extra.get("ssh_user", "")
             host["ssh_saved"]     = bool(extra.get("ssh_password"))

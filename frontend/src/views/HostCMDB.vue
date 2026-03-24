@@ -98,7 +98,26 @@
       <div v-else-if="!hosts.length" class="empty-state">
         <span class="icon">🖥️</span><p>未发现主机<br><small style="color:var(--text-muted)">请确认 Prometheus 已配置 node_exporter targets</small></p>
       </div>
-      <table v-else class="host-table">
+      <!-- 标签筛选栏 -->
+      <div v-if="allLabelKeys.length" class="label-filter-bar">
+        <span class="label-filter-title">标签筛选：</span>
+        <div class="label-filter-tags">
+          <template v-for="key in allLabelKeys" :key="key">
+            <div class="label-filter-group">
+              <span class="label-key-name">{{ key }}</span>
+              <button
+                v-for="val in labelValuesByKey(key)" :key="val"
+                class="label-filter-chip"
+                :class="{ active: isLabelFilterActive(key, val) }"
+                @click="toggleLabelFilter(key, val)"
+              >{{ val }}</button>
+            </div>
+          </template>
+          <button v-if="labelFilters.size" class="label-filter-clear" @click="labelFilters.clear(); labelFilters = new Map(labelFilters)">✕ 清除</button>
+        </div>
+      </div>
+
+      <table v-if="hosts.length" class="host-table">
         <thead>
           <tr>
             <th class="th-sort" @click="setSort('state')">状态<span class="sort-icon">{{ sortKey==='state' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
@@ -113,6 +132,7 @@
             <th v-if="visibleCols.has('tcp_estab')" class="th-sort" @click="setSort('tcp_estab')">TCP<span class="sort-icon">{{ sortKey==='tcp_estab' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th v-if="visibleCols.has('load5')" class="th-sort" @click="setSort('load5')">负载<span class="sort-icon">{{ sortKey==='load5' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th v-if="visibleCols.has('uptime')" class="th-sort" @click="setSort('uptime')">运行时长<span class="sort-icon">{{ sortKey==='uptime' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
+            <th v-if="visibleCols.has('labels') && allLabelKeys.length">标签</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -133,6 +153,14 @@
             <td v-if="visibleCols.has('tcp_estab')" class="small-text">{{ fmtTcp(h.metrics) }}</td>
             <td v-if="visibleCols.has('load5')">{{ h.metrics.load5 != null ? h.metrics.load5.toFixed(2) : '-' }}</td>
             <td v-if="visibleCols.has('uptime')">{{ fmtUptime(h.metrics.uptime_seconds) }}</td>
+            <td v-if="visibleCols.has('labels') && allLabelKeys.length" class="label-cell">
+              <span
+                v-for="(val, key) in h.custom_labels" :key="key"
+                class="label-chip"
+                :style="{ '--label-hue': labelHue(key) }"
+                @click.stop="toggleLabelFilter(key, val)"
+              >{{ key }}=<b>{{ val }}</b></span>
+            </td>
             <td>
               <button class="btn btn-outline btn-xs" @click.stop="openSSH(h)" title="SSH 连接">
                 >_
@@ -334,6 +362,18 @@
           <div class="detail-row"><span>CPU 核数</span><span>{{ selected.cpu_cores || '-' }}</span></div>
           <div class="detail-row"><span>内存</span><span>{{ selected.metrics.mem_total_gb ? selected.metrics.mem_total_gb + ' GB' : '-' }}</span></div>
 
+          <!-- Prometheus 自定义标签 -->
+          <template v-if="selected.custom_labels && Object.keys(selected.custom_labels).length">
+            <div class="detail-section">Prometheus 标签</div>
+            <div class="detail-label-list">
+              <span
+                v-for="(val, key) in selected.custom_labels" :key="key"
+                class="label-chip"
+                :style="{ '--label-hue': labelHue(key) }"
+              >{{ key }}=<b>{{ val }}</b></span>
+            </div>
+          </template>
+
           <!-- 网络 & I/O -->
           <div class="detail-section">实时指标</div>
           <div class="detail-row"><span>磁盘读</span><span>{{ selected.metrics.disk_read_mbps != null ? selected.metrics.disk_read_mbps + ' MB/s' : '-' }}</span></div>
@@ -459,6 +499,49 @@ const inspectError = ref('')
 
 const editForm = reactive({ owner: '', env: '', role: '', notes: '', group: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
 
+// ────────── 自定义标签筛选 ──────────
+// labelFilters: Map<key, Set<val>>  — 同 key 多值 OR，不同 key AND
+const labelFilters = ref(new Map())
+
+const allLabelKeys = computed(() => {
+  const keys = new Set()
+  for (const h of hosts.value) {
+    for (const k of Object.keys(h.custom_labels || {})) keys.add(k)
+  }
+  return [...keys].sort()
+})
+
+function labelValuesByKey(key) {
+  const vals = new Set()
+  for (const h of hosts.value) {
+    const v = (h.custom_labels || {})[key]
+    if (v !== undefined) vals.add(v)
+  }
+  return [...vals].sort()
+}
+
+function isLabelFilterActive(key, val) {
+  return labelFilters.value.get(key)?.has(val) ?? false
+}
+
+function toggleLabelFilter(key, val) {
+  const m = new Map(labelFilters.value)
+  if (!m.has(key)) m.set(key, new Set())
+  const s = new Set(m.get(key))
+  if (s.has(val)) s.delete(val)
+  else s.add(val)
+  if (s.size === 0) m.delete(key)
+  else m.set(key, s)
+  labelFilters.value = m
+}
+
+// 为每个 label key 生成稳定的色相（基于字符串 hash）
+function labelHue(key) {
+  let h = 0
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) & 0xffff
+  return h % 360
+}
+
 // ────────── 分组 ──────────
 const groups         = ref([])
 const selectedGroup  = ref(null)
@@ -564,8 +647,9 @@ const optionalColumns = [
   { key: 'tcp_estab',label: 'TCP' },
   { key: 'load5',    label: '负载' },
   { key: 'uptime',   label: '运行时长' },
+  { key: 'labels',   label: 'Prom 标签' },
 ]
-const defaultVisibleCols = new Set(['job', 'cpu', 'mem', 'disk', 'disk_read', 'net_recv', 'tcp_estab', 'load5', 'uptime'])
+const defaultVisibleCols = new Set(['job', 'cpu', 'mem', 'disk', 'disk_read', 'net_recv', 'tcp_estab', 'load5', 'uptime', 'labels'])
 
 function loadVisibleCols() {
   try {
@@ -616,9 +700,21 @@ function setSort(key) {
   }
 }
 
+const filteredHosts = computed(() => {
+  if (!labelFilters.value.size) return hosts.value
+  return hosts.value.filter(h => {
+    for (const [key, vals] of labelFilters.value) {
+      const hv = (h.custom_labels || {})[key]
+      if (!vals.has(hv)) return false
+    }
+    return true
+  })
+})
+
 const sortedHosts = computed(() => {
-  if (!sortKey.value) return hosts.value
-  return [...hosts.value].sort((a, b) => {
+  const base = filteredHosts.value
+  if (!sortKey.value) return base
+  return [...base].sort((a, b) => {
     const va = sortVal(a, sortKey.value)
     const vb = sortVal(b, sortKey.value)
     if (va < vb) return sortAsc.value ? -1 : 1
@@ -1317,6 +1413,44 @@ onBeforeUnmount(() => {
 .col-picker-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
 .col-picker-item { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 0; cursor: pointer; white-space: nowrap; color: var(--text-base); }
 .col-picker-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
+/* ── Prometheus 自定义标签 ── */
+.label-filter-bar {
+  display: flex; align-items: flex-start; gap: 8px; padding: 6px 0 4px;
+  border-bottom: 1px solid var(--border); margin-bottom: 4px; flex-wrap: wrap;
+}
+.label-filter-title { font-size: 11px; color: var(--text-muted); padding-top: 4px; white-space: nowrap; }
+.label-filter-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1; }
+.label-filter-group { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.label-key-name { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
+.label-filter-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-hover);
+  color: var(--text-secondary); transition: all .15s; white-space: nowrap;
+}
+.label-filter-chip.active {
+  background: rgba(82,130,255,.18); border-color: #5282ff; color: #7aa6ff; font-weight: 500;
+}
+.label-filter-chip:hover { border-color: #5282ff; }
+.label-filter-clear {
+  font-size: 11px; padding: 2px 8px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent;
+  color: var(--text-muted); transition: all .15s;
+}
+.label-filter-clear:hover { color: var(--error); border-color: var(--error); }
+.label-cell { max-width: 240px; }
+.label-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 10px; padding: 1px 6px; border-radius: 10px; cursor: pointer;
+  margin: 1px 2px; white-space: nowrap;
+  background: hsl(var(--label-hue, 210), 40%, 18%);
+  border: 1px solid hsl(var(--label-hue, 210), 50%, 30%);
+  color: hsl(var(--label-hue, 210), 80%, 75%);
+  transition: opacity .15s;
+}
+.label-chip:hover { opacity: .8; }
+.label-chip b { font-weight: 600; }
+.detail-label-list { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0 8px; }
+
 /* ── 分组管理 ── */
 .groups-wrap { flex: 1; overflow-y: auto; padding: 4px 0; }
 .groups-layout { display: flex; gap: 16px; height: 100%; }

@@ -53,6 +53,9 @@ class PrometheusClient:
 
         # 去重，提取 instance；优先用 discoveredLabels.__address__ 获取真实 IP
         # （无论 K8s 还是 VM，__address__ 始终是 Prometheus 实际抓取的 IP:port）
+        # 保留的系统标签，不计入自定义标签
+        _SYSTEM_LABELS = {"instance", "job", "__name__"}
+
         hosts_map: dict[str, dict] = {}
         for t in targets:
             labels = t.get("labels", {})
@@ -67,11 +70,18 @@ class PrometheusClient:
             else:
                 ip = instance.split(":")[0]
 
+            # 提取自定义标签：排除系统标签和以 __ 开头的内部标签
+            custom_labels = {
+                k: v for k, v in labels.items()
+                if k not in _SYSTEM_LABELS and not k.startswith("__")
+            }
+
             hosts_map[instance] = {
                 "instance": instance,
                 "ip": ip,
                 "job": labels.get("job", ""),
                 "state": t.get("health", "unknown"),
+                "custom_labels": custom_labels,
             }
 
         # 并行查询主机元数据 + CPU 核数
