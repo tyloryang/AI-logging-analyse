@@ -51,6 +51,7 @@ async def get_hosts():
             host["env"]           = extra.get("env", "")
             host["role"]          = extra.get("role", "")
             host["notes"]         = extra.get("notes", "")
+            host["group"]         = extra.get("group", "")
             host["ssh_port"]      = extra.get("ssh_port", 22)
             host["ssh_user"]      = extra.get("ssh_user", "")
             host["ssh_saved"]     = bool(extra.get("ssh_password"))
@@ -71,6 +72,7 @@ class HostUpdateRequest(BaseModel):
     env:           Optional[str] = None
     role:          Optional[str] = None
     notes:         Optional[str] = None
+    group:         Optional[str] = None  # 分组 ID
     ssh_port:      Optional[int] = None
     ssh_user:      Optional[str] = None
     ssh_password:  Optional[str] = None  # 明文传入，加密存储
@@ -83,7 +85,7 @@ async def update_host(instance: str, body: HostUpdateRequest):
     cmdb = load_cmdb()
     if instance not in cmdb:
         cmdb[instance] = {}
-    for field in ("owner", "env", "role", "notes", "ssh_port", "ssh_user"):
+    for field in ("owner", "env", "role", "notes", "group", "ssh_port", "ssh_user"):
         val = getattr(body, field)
         if val is not None:
             cmdb[instance][field] = val

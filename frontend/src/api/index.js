@@ -66,6 +66,11 @@ export const api = {
   adminSetPermissions: (id, data) => http.put(`/admin/users/${id}/permissions`, data),
   adminListModules: () => http.get('/admin/modules'),
   adminAuditLogs:  (params) => http.get('/admin/audit-logs', { params }),
+  // 主机分组
+  listGroups:    ()         => http.get('/groups'),
+  createGroup:   (data)     => http.post('/groups', data),
+  updateGroup:   (id, data) => http.put(`/groups/${id}`, data),
+  deleteGroup:   (id)       => http.delete(`/groups/${id}`),
 }
 
 /** 流式 SSE 工具 */

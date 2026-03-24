@@ -30,6 +30,9 @@
           <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">
             巡检报告
           </button>
+          <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
+            分组管理
+          </button>
           <RouterLink to="/ssh" class="tab-btn ssh-link">
             SSH 终端 →
           </RouterLink>
@@ -225,6 +228,94 @@
 
 
 
+    <!-- 分组管理 -->
+    <div v-show="tab === 'groups'" class="groups-wrap">
+      <div class="groups-layout">
+        <!-- 左：分组列表 -->
+        <div class="groups-list-panel">
+          <div class="groups-panel-title">主机分组</div>
+          <div v-if="!groups.length" class="empty-state" style="min-height:120px">
+            <span class="icon">📂</span><p>暂无分组</p>
+          </div>
+          <div
+            v-for="g in groups" :key="g.id"
+            class="group-item"
+            :class="{ active: selectedGroup && selectedGroup.id === g.id }"
+            @click="selectGroup(g)"
+          >
+            <div class="group-item-name">{{ g.name }}</div>
+            <div class="group-item-meta">
+              <span class="group-host-count">{{ g.host_count || 0 }} 台主机</span>
+              <span v-if="g.feishu_webhook" class="group-badge feishu">飞书</span>
+              <span v-if="g.dingtalk_webhook" class="group-badge dingtalk">钉钉</span>
+            </div>
+          </div>
+          <button class="btn btn-primary" style="width:100%;margin-top:12px" @click="startCreateGroup">
+            + 新建分组
+          </button>
+        </div>
+
+        <!-- 右：分组编辑 -->
+        <div class="groups-edit-panel">
+          <template v-if="groupForm.visible">
+            <div class="groups-panel-title">{{ groupForm.id ? '编辑分组' : '新建分组' }}</div>
+            <div class="edit-row">
+              <label>分组名称</label>
+              <input v-model="groupForm.name" placeholder="如：生产环境、DBA组" />
+            </div>
+            <div class="edit-row">
+              <label>飞书 Webhook</label>
+              <input v-model="groupForm.feishu_webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+            </div>
+            <div class="edit-row">
+              <label>飞书关键词</label>
+              <input v-model="groupForm.feishu_keyword" placeholder="如：运维（飞书机器人安全关键词）" />
+            </div>
+            <div class="edit-row">
+              <label>钉钉 Webhook</label>
+              <input v-model="groupForm.dingtalk_webhook" placeholder="https://oapi.dingtalk.com/robot/send?..." />
+            </div>
+            <div class="edit-row">
+              <label>钉钉关键词</label>
+              <input v-model="groupForm.dingtalk_keyword" placeholder="如：运维" />
+            </div>
+            <div class="group-form-note">
+              💡 主机巡检日报执行时，有告警的主机将按分组推送到各自的飞书/钉钉群
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button class="btn btn-primary" style="flex:1" @click="saveGroup" :disabled="groupSaving">
+                {{ groupSaving ? '保存中...' : '保存' }}
+              </button>
+              <button v-if="groupForm.id" class="btn btn-danger" @click="deleteGroup(groupForm.id)">删除</button>
+              <button class="btn btn-outline" @click="groupForm.visible = false">取消</button>
+            </div>
+          </template>
+          <template v-else>
+            <div class="empty-state" style="min-height:200px">
+              <span class="icon">👈</span>
+              <p>选择左侧分组查看详情<br>或点击「新建分组」</p>
+            </div>
+          </template>
+
+          <!-- 该分组下的主机 -->
+          <template v-if="selectedGroup">
+            <div class="groups-panel-title" style="margin-top:20px">
+              「{{ selectedGroup.name }}」的主机（{{ groupHosts.length }} 台）
+            </div>
+            <div v-if="!groupHosts.length" class="text-muted" style="font-size:12px;padding:8px 0">
+              暂无主机关联到此分组，在左侧主机列表点击主机，在 CMDB 信息中设置「所属分组」
+            </div>
+            <div v-else class="group-hosts-list">
+              <div v-for="h in groupHosts" :key="h.instance" class="group-host-chip">
+                <span class="dot" :class="h.state === 'up' ? 'ok' : 'err'"></span>
+                {{ h.hostname || h.ip }}
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
     </div><!-- /content-main -->
 
     <!-- 主机详情侧栏（flex 同级，向右扩展） -->
@@ -286,6 +377,13 @@
               <option value="staging">预发布</option>
               <option value="development">开发</option>
               <option value="testing">测试</option>
+            </select>
+          </div>
+          <div class="edit-row">
+            <label>所属分组</label>
+            <select v-model="editForm.group">
+              <option value="">不分组</option>
+              <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
             </select>
           </div>
           <div class="edit-row">
@@ -359,7 +457,86 @@ const inspectAiProvider = ref('')
 const inspectAiFallback = ref(false)
 const inspectError = ref('')
 
-const editForm = reactive({ owner: '', env: '', role: '', notes: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
+const editForm = reactive({ owner: '', env: '', role: '', notes: '', group: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
+
+// ────────── 分组 ──────────
+const groups         = ref([])
+const selectedGroup  = ref(null)
+const groupSaving    = ref(false)
+const groupForm      = reactive({ visible: false, id: '', name: '', feishu_webhook: '', feishu_keyword: '', dingtalk_webhook: '', dingtalk_keyword: '' })
+
+const groupHosts = computed(() => {
+  if (!selectedGroup.value) return []
+  return hosts.value.filter(h => h.group === selectedGroup.value.id)
+})
+
+function selectGroup(g) {
+  selectedGroup.value = g
+  groupForm.id              = g.id
+  groupForm.name            = g.name
+  groupForm.feishu_webhook  = g.feishu_webhook || ''
+  groupForm.feishu_keyword  = g.feishu_keyword || ''
+  groupForm.dingtalk_webhook = g.dingtalk_webhook || ''
+  groupForm.dingtalk_keyword = g.dingtalk_keyword || ''
+  groupForm.visible         = true
+}
+
+function startCreateGroup() {
+  selectedGroup.value       = null
+  groupForm.id              = ''
+  groupForm.name            = ''
+  groupForm.feishu_webhook  = ''
+  groupForm.feishu_keyword  = ''
+  groupForm.dingtalk_webhook = ''
+  groupForm.dingtalk_keyword = ''
+  groupForm.visible         = true
+}
+
+async function loadGroups() {
+  try {
+    const r = await api.listGroups()
+    groups.value = r.data || []
+  } catch (e) { console.error('加载分组失败', e) }
+}
+
+async function saveGroup() {
+  if (!groupForm.name.trim()) return alert('请输入分组名称')
+  groupSaving.value = true
+  try {
+    const payload = {
+      name: groupForm.name,
+      feishu_webhook: groupForm.feishu_webhook,
+      feishu_keyword: groupForm.feishu_keyword,
+      dingtalk_webhook: groupForm.dingtalk_webhook,
+      dingtalk_keyword: groupForm.dingtalk_keyword,
+    }
+    if (groupForm.id) {
+      await api.updateGroup(groupForm.id, payload)
+    } else {
+      await api.createGroup(payload)
+    }
+    await loadGroups()
+    groupForm.visible = false
+    selectedGroup.value = null
+  } catch (e) {
+    alert('保存分组失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+  } finally {
+    groupSaving.value = false
+  }
+}
+
+async function deleteGroup(id) {
+  if (!confirm('确定删除该分组？已关联该分组的主机将取消关联。')) return
+  try {
+    await api.deleteGroup(id)
+    await loadGroups()
+    await loadHosts()
+    groupForm.visible = false
+    selectedGroup.value = null
+  } catch (e) {
+    alert('删除失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+  }
+}
 
 // 排序
 const sortKey = ref('')   // 当前排序字段
@@ -556,6 +733,7 @@ function selectHost(h) {
   editForm.env   = h.env || ''
   editForm.role  = h.role || ''
   editForm.notes = h.notes || ''
+  editForm.group = h.group || ''
   editForm.ssh_port = h.ssh_port || 22
   editForm.ssh_user = h.ssh_user || ''
   editForm.ssh_password = ''  // 密码不从后端返回，留空表示不修改
@@ -592,6 +770,7 @@ async function saveHost() {
       env:   editForm.env,
       role:  editForm.role,
       notes: editForm.notes,
+      group: editForm.group,
       credential_id: editForm.credential_id,
     }
     // 仅在未使用凭证库时发送独立 SSH 配置
@@ -607,6 +786,7 @@ async function saveHost() {
     selected.value.env   = editForm.env
     selected.value.role  = editForm.role
     selected.value.notes = editForm.notes
+    selected.value.group = editForm.group
     selected.value.credential_id = editForm.credential_id
     if (editForm.credential_id) {
       selected.value.ssh_saved = true
@@ -828,6 +1008,7 @@ async function deleteCred(id) {
 onMounted(() => {
   loadHosts()
   loadCredentials()
+  loadGroups()
   document.addEventListener('click', onDocClick)
 })
 
@@ -1136,4 +1317,45 @@ onBeforeUnmount(() => {
 .col-picker-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
 .col-picker-item { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 0; cursor: pointer; white-space: nowrap; color: var(--text-base); }
 .col-picker-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
+/* ── 分组管理 ── */
+.groups-wrap { flex: 1; overflow-y: auto; padding: 4px 0; }
+.groups-layout { display: flex; gap: 16px; height: 100%; }
+.groups-list-panel {
+  width: 220px; flex-shrink: 0;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.groups-edit-panel {
+  flex: 1; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; overflow-y: auto;
+}
+.groups-panel-title { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
+.group-item {
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent; transition: all .15s;
+}
+.group-item:hover { background: var(--bg-hover); }
+.group-item.active { background: var(--accent-muted, rgba(82,130,255,.12)); border-color: var(--accent, #5282ff); }
+.group-item-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.group-item-meta { display: flex; align-items: center; gap: 4px; margin-top: 3px; }
+.group-host-count { font-size: 11px; color: var(--text-muted); flex: 1; }
+.group-badge { font-size: 10px; padding: 1px 5px; border-radius: 10px; font-weight: 500; }
+.group-badge.feishu { background: rgba(50,195,120,.15); color: #32c378; }
+.group-badge.dingtalk { background: rgba(82,130,255,.15); color: #5282ff; }
+.group-form-note {
+  font-size: 11px; color: var(--text-muted); background: var(--bg-hover);
+  border-radius: 6px; padding: 8px 10px; margin-top: 8px; line-height: 1.5;
+}
+.group-hosts-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.group-host-chip {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--bg-hover); border: 1px solid var(--border);
+  border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-secondary);
+}
+.btn-danger {
+  background: rgba(255,70,70,.12); color: var(--error);
+  border: 1px solid rgba(255,70,70,.3); border-radius: var(--radius);
+  padding: 6px 14px; cursor: pointer; font-size: 13px; transition: all .15s;
+}
+.btn-danger:hover { background: rgba(255,70,70,.2); }
 </style>

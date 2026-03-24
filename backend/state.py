@@ -112,6 +112,23 @@ def save_credentials(data: list[dict]) -> None:
 
 # ── 慢日志定时报告目标配置 ────────────────────────────────────────────────────
 
+GROUPS_FILE = Path(os.getenv("GROUPS_FILE", "./data/groups.json"))
+
+
+def load_groups() -> list[dict]:
+    if GROUPS_FILE.exists():
+        try:
+            return json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def save_groups(data: list[dict]) -> None:
+    GROUPS_FILE.parent.mkdir(exist_ok=True)
+    GROUPS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 SLOWLOG_TARGETS_FILE = Path(os.getenv("SLOWLOG_TARGETS_FILE", "./data/slowlog_targets.json"))
 
 _SLOWLOG_DEFAULTS = {

@@ -10,8 +10,9 @@ from state import (
     DINGTALK_WEBHOOK, DINGTALK_KEYWORD,
     APP_URL, SCHEDULE_CHANNELS,
     load_slowlog_targets,
+    load_groups, load_cmdb,
 )
-from notifier import send_feishu, send_dingtalk
+from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,49 @@ async def _build_slowlog_report() -> dict | None:
     return report
 
 
+async def _send_group_inspect_notifications(inspect_results: list[dict]) -> None:
+    """按主机分组，将巡检结果分别推送到对应分组的飞书群。"""
+    groups = load_groups()
+    if not groups:
+        return
+    cmdb = load_cmdb()
+
+    # 建立 instance -> group_id 映射
+    inst_to_group: dict[str, str] = {
+        inst: meta.get("group", "")
+        for inst, meta in cmdb.items()
+        if meta.get("group")
+    }
+
+    # 按 group_id 聚合巡检结果
+    group_results: dict[str, list[dict]] = {}
+    for r in inspect_results:
+        gid = inst_to_group.get(r.get("instance", ""), "")
+        if gid:
+            group_results.setdefault(gid, []).append(r)
+
+    # 逐组推送
+    for group in groups:
+        gid = group["id"]
+        results = group_results.get(gid, [])
+        if not results:
+            continue
+        # 只在有告警主机时推送（正常则静默）
+        has_alert = any(r.get("overall") != "normal" for r in results)
+        if not has_alert:
+            logger.info("[scheduler] 分组 '%s' 全部主机正常，跳过推送", group["name"])
+            continue
+
+        if group.get("feishu_webhook"):
+            res = await send_feishu_group_inspect(
+                group_name=group["name"],
+                results=results,
+                webhook_url=group["feishu_webhook"],
+                keyword=group.get("feishu_keyword", ""),
+            )
+            logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group["name"], res)
+
+
 async def scheduled_report_job() -> None:
     """定时任务入口：生成运维日报 + 主机巡检日报，推送到已配置的渠道。"""
     if not SCHEDULE_CHANNELS:
@@ -268,6 +312,13 @@ async def scheduled_report_job() -> None:
 
         logger.info("[scheduler] 开始生成主机巡检日报 ...")
         inspect_report = await _build_inspect_report()
+
+        # 获取巡检原始结果，用于按分组推送
+        try:
+            raw_inspect_results = await prom.inspect_hosts()
+        except Exception as e:
+            logger.warning("[scheduler] 获取巡检原始结果失败: %s", e)
+            raw_inspect_results = []
 
         logger.info("[scheduler] 开始生成慢日志报告 ...")
         try:
@@ -301,6 +352,10 @@ async def scheduled_report_job() -> None:
                     logger.info("[scheduler] 钉钉慢日志报告推送结果: %s", result3)
             else:
                 logger.warning("[scheduler] 不支持的推送渠道: %s", ch)
+
+        # 按分组推送巡检告警到各自的飞书群
+        await _send_group_inspect_notifications(raw_inspect_results)
+
         logger.info("[scheduler] 定时任务完成，report_id=%s", report["id"])
     except Exception:
         logger.exception("[scheduler] 定时日报任务异常")

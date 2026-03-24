@@ -30,6 +30,7 @@ from routers.health import router as health_router
 from routers.settings import router as settings_router
 from routers.slowlog import router as slowlog_router
 from routers.agent import router as agent_router
+from routers.groups import router as groups_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -114,6 +115,7 @@ app.include_router(health_router)
 app.include_router(settings_router)
 app.include_router(slowlog_router)
 app.include_router(agent_router)
+app.include_router(groups_router)
 
 
 if __name__ == "__main__":

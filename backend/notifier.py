@@ -215,6 +215,85 @@ def _build_feishu_slowlog_card(report: dict, keyword: str = "", report_url: str 
     }
 
 
+def _build_feishu_group_inspect_card(
+    group_name: str,
+    results: list[dict],
+    keyword: str = "",
+) -> dict:
+    """构造按分组的主机巡检飞书告警卡片"""
+    total    = len(results)
+    normal   = sum(1 for r in results if r.get("overall") == "normal")
+    warning  = sum(1 for r in results if r.get("overall") == "warning")
+    critical = sum(1 for r in results if r.get("overall") == "critical")
+
+    score = int(100 * normal / total) if total else 100
+    color = _health_color_feishu(score)
+    emoji = _health_emoji(score)
+
+    summary_line = (
+        f"**主机总数**: {total}  "
+        f"**正常**: {normal}  "
+        f"**警告**: {warning}  "
+        f"**严重**: {critical}"
+    )
+    header_content = f"{emoji} **健康评分**: {score}/100\n{summary_line}"
+    if keyword and keyword not in header_content:
+        header_content = keyword + "\n" + header_content
+
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": header_content}}]
+
+    # 列出告警主机（warning + critical）
+    alert_hosts = [r for r in results if r.get("overall") != "normal"]
+    if alert_hosts:
+        lines = []
+        for r in alert_hosts[:10]:
+            status_icon = "🔴" if r.get("overall") == "critical" else "🟡"
+            hostname = r.get("hostname") or r.get("ip") or r.get("instance", "?")
+            # 汇总告警项
+            issues = [
+                c["item"] for c in r.get("checks", [])
+                if c.get("status") != "normal"
+            ]
+            issue_text = "、".join(issues[:3]) + ("…" if len(issues) > 3 else "")
+            lines.append(f"{status_icon} **{hostname}** — {issue_text}")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {
+            "tag": "lark_md",
+            "content": "**⚠️ 告警主机**\n" + "\n".join(lines),
+        }})
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": f"🔍 主机巡检 · {group_name}"},
+                "template": color,
+            },
+            "elements": elements,
+        },
+    }
+
+
+async def send_feishu_group_inspect(
+    group_name: str,
+    results: list[dict],
+    webhook_url: str,
+    keyword: str = "",
+) -> dict:
+    """按分组发送主机巡检告警到飞书群"""
+    payload = _build_feishu_group_inspect_card(group_name, results, keyword=keyword)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(webhook_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code", -1) == 0:
+                return {"ok": True, "msg": "发送成功"}
+            return {"ok": False, "msg": data.get("msg", str(data))}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
 async def send_feishu(report: dict, webhook_url: str, keyword: str = "", report_url: str = "") -> dict:
     """发送飞书消息，返回 {"ok": bool, "msg": str}"""
     if report.get("type") == "slowlog":
