@@ -87,18 +87,34 @@
         <div class="card panel-card">
           <div class="card-header">
             <h3>主机状态</h3>
-            <div v-if="hosts.length" class="sort-btns">
-              <button
-                v-for="col in sortCols" :key="col.key"
-                class="sort-btn" :class="{ active: sortKey === col.key }"
-                @click="toggleSort(col.key)"
-              >
-                {{ col.label }}
-                <span class="sort-arrow">{{ sortKey === col.key ? (sortAsc ? '↑' : '↓') : '↕' }}</span>
-              </button>
-            </div>
           </div>
           <div v-if="hosts.length" class="host-list">
+            <!-- 表头行，与数据行完全相同的 flex 结构 -->
+            <div class="host-row host-list-header">
+              <span class="host-state-badge col-hd" @click="toggleSort('state')">
+                状态<em>{{ sortKey === 'state' ? (sortAsc ? ' ↑' : ' ↓') : '' }}</em>
+              </span>
+              <span class="host-name col-hd" @click="toggleSort('hostname')">
+                主机名<em>{{ sortKey === 'hostname' ? (sortAsc ? ' ↑' : ' ↓') : '' }}</em>
+              </span>
+              <span class="host-ip col-hd">IP</span>
+              <div class="host-metrics">
+                <span class="metric-tag col-hd" @click="toggleSort('cpu')">
+                  CPU<em>{{ sortKey === 'cpu' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
+                <span class="metric-tag col-hd" @click="toggleSort('mem')">
+                  MEM<em>{{ sortKey === 'mem' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
+                <span class="metric-tag col-hd" @click="toggleSort('disk')">
+                  磁盘<em>{{ sortKey === 'disk' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
+                <span class="metric-tag col-hd">TCP</span>
+                <span class="metric-tag col-hd">负载</span>
+                <span class="metric-tag col-hd">IO</span>
+                <span class="metric-tag col-hd">NET</span>
+                <span class="metric-tag col-hd">运行</span>
+              </div>
+            </div>
             <div v-for="h in sortedHosts" :key="h.instance" class="host-row">
               <span class="host-state-badge" :class="h.state === 'up' ? 'ok' : 'err'">
                 {{ h.state === 'up' ? '在线' : '离线' }}
@@ -445,48 +461,45 @@ onMounted(async () => {
 /* Host list */
 .host-list { display: flex; flex-direction: column; }
 .host-row {
-  display: flex; align-items: flex-start; gap: 8px;
-  padding: 7px 0; border-bottom: 1px solid var(--border-light);
-  font-size: 12px; flex-shrink: 0; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0; border-bottom: 1px solid var(--border-light);
+  font-size: 12px; flex-shrink: 0;
 }
 .host-row:last-child { border-bottom: none; }
-/* 状态徽章（替代原小圆点） */
+/* header row */
+.host-list-header {
+  border-bottom: 1px solid var(--border) !important;
+  padding-bottom: 5px !important;
+}
+.col-hd {
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+  font-weight: 500; letter-spacing: .3px;
+  cursor: pointer; user-select: none;
+  background: transparent !important;
+}
+.col-hd:hover { color: var(--text-primary) !important; }
+.col-hd em { font-style: normal; color: var(--accent); }
+/* badge */
 .host-state-badge {
-  flex-shrink: 0;
+  flex-shrink: 0; width: 36px; text-align: center;
   font-size: 10px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
-  padding: 1px 5px; border-radius: 3px; letter-spacing: .02em;
+  padding: 1px 4px; border-radius: 3px; letter-spacing: .02em;
 }
 .host-state-badge.ok  { background: rgba(63,185,80,.12);  color: var(--success); }
 .host-state-badge.err { background: rgba(248,81,73,.12);  color: var(--error);   }
 .host-name { flex: 1; min-width: 80px; max-width: 140px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.host-ip   { width: 100px; flex-shrink: 0; color: var(--text-muted); font-size: 11px; }
-.host-metrics { display: flex; gap: 4px; flex: 2; flex-wrap: wrap; }
-.metric-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 500; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
+.host-ip   { width: 110px; flex-shrink: 0; color: var(--text-muted); font-size: 11px; }
+.host-metrics { display: flex; gap: 4px; flex: 2; flex-wrap: nowrap; }
+/* fixed min-width aligns header with data */
+.metric-tag {
+  font-size: 10px; padding: 1px 4px; border-radius: 3px;
+  font-weight: 500; font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap; min-width: 54px; text-align: center;
+}
 .metric-tag.ok   { background: rgba(63,185,80,.1);  color: var(--success); }
 .metric-tag.warn { background: rgba(210,153,34,.12); color: var(--warning); }
 .metric-tag.crit { background: rgba(248,81,73,.12);  color: var(--error);   }
-
-/* Service chips fallback */
-.service-grid { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0; }
-.svc-chip { display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 3px; font-size: 12px; border: 1px solid; }
-.svc-chip.healthy   { border-color: var(--border); color: var(--text-secondary); }
-.svc-chip.has-error { border-color: rgba(248,81,73,.25); background: rgba(248,81,73,.06); color: var(--error); }
-.svc-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
-.svc-chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.svc-cnt { font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-
-/* 排序按钮 */
-.sort-btns { display: flex; gap: 4px; margin-left: auto; }
-.sort-btn {
-  display: flex; align-items: center; gap: 3px;
-  padding: 2px 7px; font-size: 11px; border-radius: 3px;
-  border: 1px solid var(--border); background: transparent;
-  color: var(--text-muted); cursor: pointer;
-  font-family: inherit; transition: all .12s;
-}
-.sort-btn:hover { color: var(--text-primary); border-color: var(--border-accent); }
-.sort-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
-.sort-arrow { font-size: 10px; opacity: .7; }
 
 @media (max-width: 900px) {
   .stats-row  { grid-template-columns: 1fr; }

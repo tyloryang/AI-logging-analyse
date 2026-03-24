@@ -61,11 +61,14 @@
               🧩 模板聚合
               <span class="tab-count" v-if="templates.length">{{ templates.length }}</span>
             </button>
+            <button class="tab-btn" :class="{ active: activeTab === 'trace' }" @click="switchTab('trace')">
+              ⏱ 耗时追踪
+            </button>
           </div>
         </div>
         <div class="toolbar-right">
-          <!-- 关键字搜索（两个 tab 共用） -->
-          <div class="keyword-wrap">
+          <!-- 关键字搜索（日志流 / 模板聚合 tab 共用） -->
+          <div v-if="activeTab !== 'trace'" class="keyword-wrap">
             <span class="kw-icon">🔍</span>
             <input
               v-model="keyword"
@@ -87,16 +90,6 @@
             <button class="btn btn-outline" @click="loadLogs" :disabled="loadingLogs">
               <span v-if="loadingLogs" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
               <span v-else>🔄</span>实时查询
-            </button>
-            <button
-              v-if="keyword"
-              class="btn btn-trace"
-              @click="runTrace"
-              :disabled="tracingKeyword"
-              title="计算关键字首次到末次出现的耗时"
-            >
-              <span v-if="tracingKeyword" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-              <span v-else>⏱</span>耗时分析
             </button>
             <button class="btn btn-primary" @click="startAIAnalysis" :disabled="analyzingAI">
               <span v-if="analyzingAI" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
@@ -131,49 +124,6 @@
           <div class="ai-content" v-html="renderedAI"></div>
           <div v-if="analyzingAI" class="ai-typing">
             <span class="dot1">·</span><span class="dot2">·</span><span class="dot3">·</span>
-          </div>
-        </div>
-      </transition>
-
-      <!-- ── 耗时分析结果卡片 ── -->
-      <transition name="fade">
-        <div v-if="traceResult && activeTab === 'logs'" class="trace-card">
-          <div class="trace-header">
-            <span class="trace-title">⏱ 耗时分析</span>
-            <span class="trace-keyword">关键字：<em>{{ traceResult.keyword }}</em></span>
-            <button class="btn btn-outline btn-xs" @click="traceResult = null">关闭</button>
-          </div>
-          <div v-if="!traceResult.found" class="trace-empty">
-            未找到包含该关键字的日志
-          </div>
-          <div v-else class="trace-body">
-            <!-- 核心耗时 -->
-            <div class="trace-duration-wrap">
-              <span class="trace-duration">{{ traceResult.duration_str }}</span>
-              <span class="trace-count">共 {{ traceResult.log_count }} 条匹配日志</span>
-            </div>
-            <!-- 首末时间行 -->
-            <div class="trace-timeline">
-              <div class="trace-node first">
-                <span class="trace-dot dot-first"></span>
-                <div class="trace-node-info">
-                  <span class="trace-node-label">首次出现</span>
-                  <span class="trace-node-ts">{{ traceResult.first_ts }}</span>
-                  <span v-if="traceResult.first_service" class="trace-node-svc">{{ traceResult.first_service }}</span>
-                  <span class="trace-node-log">{{ traceResult.first_log }}</span>
-                </div>
-              </div>
-              <div class="trace-line-seg"></div>
-              <div class="trace-node last">
-                <span class="trace-dot dot-last"></span>
-                <div class="trace-node-info">
-                  <span class="trace-node-label">末次出现</span>
-                  <span class="trace-node-ts">{{ traceResult.last_ts }}</span>
-                  <span v-if="traceResult.last_service" class="trace-node-svc">{{ traceResult.last_service }}</span>
-                  <span class="trace-node-log">{{ traceResult.last_log }}</span>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </transition>
@@ -243,6 +193,147 @@
           </div>
         </div>
       </div>
+      <!-- ── 耗时追踪 Tab ── -->
+      <div v-show="activeTab === 'trace'" class="trace-tab">
+        <!-- 查询表单 -->
+        <div class="trace-form-card">
+          <div class="trace-form-row">
+            <!-- 追踪值输入 -->
+            <div class="trace-form-field flex2">
+              <label class="trace-label">追踪值</label>
+              <div class="trace-input-wrap">
+                <span class="trace-input-icon">🔍</span>
+                <input
+                  v-model="traceValue"
+                  class="trace-input"
+                  placeholder="输入任意追踪值，如 traceId、requestId、关键字..."
+                  @keyup.enter="runTrace"
+                />
+                <button v-if="traceValue" class="kw-clear" @click="traceValue = ''">✕</button>
+              </div>
+            </div>
+            <!-- 服务过滤（可选） -->
+            <div class="trace-form-field">
+              <label class="trace-label">服务（可选）</label>
+              <select v-model="traceService" class="time-select">
+                <option value="">全部服务</option>
+                <option v-for="s in services" :key="s.name" :value="s.name">{{ s.name }}</option>
+              </select>
+            </div>
+          </div>
+          <!-- 时间范围 -->
+          <div class="trace-form-row">
+            <div class="trace-form-field flex2">
+              <label class="trace-label">时间范围</label>
+              <div class="trace-time-wrap">
+                <div class="time-mode-tabs" style="width:fit-content">
+                  <button class="tmode-btn" :class="{ active: traceTimeMode === 'relative' }" @click="traceTimeMode = 'relative'">快速</button>
+                  <button class="tmode-btn" :class="{ active: traceTimeMode === 'custom' }" @click="traceTimeMode = 'custom'">自定义</button>
+                </div>
+                <select v-if="traceTimeMode === 'relative'" v-model="traceHours" class="time-select" style="width:140px">
+                  <option value="1">最近 1 小时</option>
+                  <option value="6">最近 6 小时</option>
+                  <option value="24">最近 24 小时</option>
+                  <option value="72">最近 3 天</option>
+                  <option value="168">最近 7 天</option>
+                </select>
+                <template v-else>
+                  <input type="datetime-local" v-model="traceStart" class="dt-input" title="开始时间" />
+                  <span class="dt-sep">→</span>
+                  <input type="datetime-local" v-model="traceEnd" class="dt-input" title="结束时间" />
+                </template>
+              </div>
+            </div>
+            <!-- 分析按钮 -->
+            <div class="trace-form-field" style="align-self:flex-end">
+              <button
+                class="btn btn-trace-primary"
+                @click="runTrace"
+                :disabled="!traceValue || tracingKeyword"
+              >
+                <span v-if="tracingKeyword" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+                <span v-else>⏱</span>
+                开始分析
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 结果区 -->
+        <div v-if="tracingKeyword" class="empty-state">
+          <div class="spinner"></div><p>正在全量扫描匹配日志...</p>
+        </div>
+        <div v-else-if="traceResult" class="trace-result">
+          <!-- 未找到 -->
+          <div v-if="!traceResult.found" class="trace-not-found">
+            <span class="icon">🔍</span>
+            <p>在指定时间范围内未找到包含 <em>{{ traceResult.keyword }}</em> 的日志</p>
+          </div>
+          <!-- 找到了 -->
+          <template v-else>
+            <!-- 顶部统计卡 -->
+            <div class="trace-stat-card">
+              <div class="trace-stat-left">
+                <div class="trace-stat-label">全链路耗时</div>
+                <div class="trace-stat-duration">{{ traceResult.duration_str }}</div>
+                <div class="trace-stat-meta">
+                  共 <strong>{{ traceResult.log_count }}</strong> 条匹配日志
+                  <span v-if="traceResult.log_count >= 50000" class="trace-limit-hint">（已达扫描上限，结果可能不完整）</span>
+                </div>
+              </div>
+              <div class="trace-stat-right">
+                <!-- 首次 -->
+                <div class="trace-endpoint">
+                  <div class="trace-ep-dot dot-first"></div>
+                  <div class="trace-ep-body">
+                    <span class="trace-ep-label">首次出现</span>
+                    <span class="trace-ep-ts">{{ traceResult.first_ts }}</span>
+                    <span v-if="traceResult.first_service" class="trace-ep-svc">{{ traceResult.first_service }}</span>
+                    <span class="trace-ep-log">{{ traceResult.first_log }}</span>
+                  </div>
+                </div>
+                <!-- 时间轴竖线 -->
+                <div class="trace-vline">
+                  <div class="trace-vline-bar"></div>
+                  <div class="trace-vline-dur">{{ traceResult.duration_str }}</div>
+                </div>
+                <!-- 末次 -->
+                <div class="trace-endpoint">
+                  <div class="trace-ep-dot dot-last"></div>
+                  <div class="trace-ep-body">
+                    <span class="trace-ep-label">末次出现</span>
+                    <span class="trace-ep-ts">{{ traceResult.last_ts }}</span>
+                    <span v-if="traceResult.last_service" class="trace-ep-svc">{{ traceResult.last_service }}</span>
+                    <span class="trace-ep-log">{{ traceResult.last_log }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 匹配日志列表 -->
+            <div class="trace-logs-header">
+              <span>匹配日志（按时间升序）</span>
+              <span class="trace-logs-count">{{ traceLogs.length }} 条</span>
+            </div>
+            <div class="trace-log-list">
+              <div
+                v-for="(log, i) in traceLogs" :key="i"
+                class="log-line" :class="logClass(log.line)"
+              >
+                <span class="log-ts">{{ log.timestamp }}</span>
+                <span class="log-svc">{{ log.labels.app || log.labels.job || '?' }}</span>
+                <span class="log-text">{{ log.line }}</span>
+              </div>
+            </div>
+          </template>
+        </div>
+        <!-- 初始提示 -->
+        <div v-else class="empty-state" style="flex:1">
+          <span class="icon" style="font-size:36px">⏱</span>
+          <p>输入追踪值并选择时间范围，分析关键字首次到末次出现的耗时</p>
+          <small style="color:var(--text-muted)">支持 traceId、requestId、订单号等任意字符串</small>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -286,8 +377,15 @@ const loadingLogs  = ref(false)
 const analyzingAI  = ref(false)
 const aiContent    = ref('')
 
-// ── 链路耗时分析 ──────────────────────────
-const traceResult    = ref(null)
+// ── 耗时追踪 Tab ──────────────────────────
+const traceValue    = ref('')
+const traceService  = ref('')
+const traceTimeMode = ref('custom')
+const traceHours    = ref('24')
+const traceStart    = ref('')
+const traceEnd      = ref('')
+const traceResult   = ref(null)
+const traceLogs     = ref([])
 const tracingKeyword = ref(false)
 
 const renderedAI = computed(() =>
@@ -406,23 +504,40 @@ function onKeywordInput() {
 
 function clearKeyword() {
   keyword.value = ''
-  traceResult.value = null
   onParamChange()
 }
 
+function traceTimeParams() {
+  if (traceTimeMode.value === 'custom' && traceStart.value && traceEnd.value) {
+    return { start_time: traceStart.value, end_time: traceEnd.value }
+  }
+  return { hours: traceHours.value }
+}
+
 async function runTrace() {
-  if (!keyword.value) return
+  if (!traceValue.value) return
   tracingKeyword.value = true
   traceResult.value = null
+  traceLogs.value = []
   try {
     const r = await api.traceKeyword({
-      keyword: keyword.value,
-      service: selectedService.value || undefined,
-      ...timeParams(),
+      keyword: traceValue.value,
+      service: traceService.value || undefined,
+      ...traceTimeParams(),
     })
     traceResult.value = r
+    // 同步加载匹配日志（按时间升序展示）
+    if (r.found) {
+      const logsR = await api.getLogs({
+        keyword: traceValue.value,
+        service: traceService.value || undefined,
+        limit: 2000,
+        ...traceTimeParams(),
+      })
+      traceLogs.value = [...(logsR.data || [])].reverse()
+    }
   } catch (e) {
-    traceResult.value = { found: false, keyword: keyword.value, log_count: 0, _error: String(e) }
+    traceResult.value = { found: false, keyword: traceValue.value, log_count: 0 }
   } finally {
     tracingKeyword.value = false
   }
@@ -431,6 +546,7 @@ async function runTrace() {
 function switchTab(tab) {
   activeTab.value = tab
   if (tab === 'templates' && !templates.value.length) loadTemplates()
+  // trace tab 不自动加载，等用户输入后手动触发
 }
 
 function startAIAnalysis() {
@@ -685,99 +801,190 @@ onMounted(() => {
 
 @keyframes pulse { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
 
-/* ── 耗时分析按钮 ── */
-.btn-trace {
-  background: rgba(234,179,8,.12);
-  border: 1px solid rgba(234,179,8,.35);
-  color: #fbbf24;
-  padding: 5px 12px; border-radius: 6px;
-  font-size: 12px; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 5px;
-  transition: all .15s;
+/* ═══════════════════════════════════════
+   耗时追踪 Tab
+═══════════════════════════════════════ */
+.trace-tab {
+  flex: 1; display: flex; flex-direction: column;
+  overflow: hidden; padding: 14px 16px; gap: 14px;
 }
-.btn-trace:hover:not(:disabled) {
-  background: rgba(234,179,8,.22);
-  border-color: rgba(234,179,8,.6);
-}
-.btn-trace:disabled { opacity: .5; cursor: not-allowed; }
 
-/* ── 耗时分析结果卡片 ── */
-.trace-card {
-  margin: 10px 14px;
-  background: rgba(234,179,8,.06);
-  border: 1px solid rgba(234,179,8,.25);
+/* 查询表单卡片 */
+.trace-form-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 12px;
   flex-shrink: 0;
-  overflow: hidden;
 }
-.trace-header {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 16px 8px;
-  border-bottom: 1px solid rgba(234,179,8,.15);
+.trace-form-row {
+  display: flex; gap: 12px; align-items: flex-start;
 }
-.trace-title { font-size: 13px; font-weight: 600; color: #fbbf24; }
-.trace-keyword { font-size: 12px; color: var(--text-muted); flex: 1; }
-.trace-keyword em { font-style: normal; color: var(--text-primary); font-weight: 500; }
+.trace-form-field {
+  display: flex; flex-direction: column; gap: 5px; min-width: 0;
+}
+.flex2 { flex: 2; }
+.trace-label {
+  font-size: 11px; font-weight: 500;
+  color: var(--text-muted); letter-spacing: .3px;
+}
+.trace-input-wrap {
+  display: flex; align-items: center;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px; padding: 0 10px; gap: 6px;
+  transition: border-color .15s;
+}
+.trace-input-wrap:focus-within {
+  border-color: rgba(234,179,8,.5);
+  box-shadow: 0 0 0 2px rgba(234,179,8,.08);
+}
+.trace-input-icon { font-size: 13px; flex-shrink: 0; }
+.trace-input {
+  flex: 1; background: transparent; border: none;
+  color: var(--text-primary); font-size: 13px;
+  padding: 7px 0; outline: none;
+}
+.trace-input::placeholder { color: var(--text-muted); }
 
-.trace-empty { padding: 12px 16px; font-size: 13px; color: var(--text-muted); }
-
-.trace-body { padding: 12px 16px 14px; }
-
-.trace-duration-wrap {
-  display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px;
-}
-.trace-duration {
-  font-size: 28px; font-weight: 700;
-  color: #fbbf24;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.5px;
-}
-.trace-count { font-size: 12px; color: var(--text-muted); }
-
-/* 时间线 */
-.trace-timeline {
-  display: flex; align-items: flex-start; gap: 0;
-}
-.trace-node {
-  display: flex; align-items: flex-start; gap: 10px;
-  min-width: 0; flex: 1;
-}
-.trace-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  flex-shrink: 0; margin-top: 3px;
-}
-.dot-first { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.5); }
-.dot-last  { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,.5); }
-
-.trace-line-seg {
-  width: 40px; height: 1px; background: rgba(234,179,8,.3);
-  margin: 7px 8px 0; flex-shrink: 0;
-  background: repeating-linear-gradient(
-    90deg, rgba(234,179,8,.4) 0 4px, transparent 4px 8px
-  );
+.trace-time-wrap {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 
-.trace-node-info {
+/* 开始分析按钮 */
+.btn-trace-primary {
+  background: linear-gradient(135deg, rgba(234,179,8,.2), rgba(234,179,8,.1));
+  border: 1px solid rgba(234,179,8,.45);
+  color: #fbbf24; padding: 7px 20px;
+  border-radius: 6px; font-size: 13px; font-weight: 600;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  transition: all .15s; white-space: nowrap;
+}
+.btn-trace-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(234,179,8,.3), rgba(234,179,8,.18));
+  border-color: rgba(234,179,8,.7);
+}
+.btn-trace-primary:disabled { opacity: .4; cursor: not-allowed; }
+
+/* 结果区域 */
+.trace-result {
+  flex: 1; display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+}
+
+/* 未找到 */
+.trace-not-found {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 40px;
+  color: var(--text-muted); font-size: 13px; gap: 8px;
+}
+.trace-not-found em { color: var(--text-primary); font-style: normal; font-weight: 500; }
+
+/* 统计卡 */
+.trace-stat-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(234,179,8,.3);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: flex; gap: 24px; align-items: flex-start;
+  flex-shrink: 0;
+}
+.trace-stat-left {
+  display: flex; flex-direction: column; gap: 4px;
+  border-right: 1px solid var(--border);
+  padding-right: 24px; min-width: 160px;
+}
+.trace-stat-label {
+  font-size: 11px; font-weight: 500; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.trace-stat-duration {
+  font-size: 36px; font-weight: 700; color: #fbbf24;
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+  letter-spacing: -1px;
+}
+.trace-stat-meta {
+  font-size: 12px; color: var(--text-muted); margin-top: 2px;
+}
+.trace-stat-meta strong { color: var(--text-primary); }
+.trace-limit-hint {
+  font-size: 11px; color: var(--warning);
+  display: block; margin-top: 2px;
+}
+
+/* 右侧垂直时间线 */
+.trace-stat-right {
+  flex: 1; display: flex; flex-direction: column;
+}
+.trace-endpoint {
+  display: flex; align-items: flex-start; gap: 12px;
+}
+.trace-ep-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  flex-shrink: 0; margin-top: 2px;
+}
+.dot-first { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.6); }
+.dot-last  { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,.6); }
+
+.trace-ep-body {
   display: flex; flex-direction: column; gap: 2px; min-width: 0;
 }
-.trace-node-label {
-  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
-  color: var(--text-muted);
+.trace-ep-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .5px; color: var(--text-muted);
 }
-.trace-node-ts {
-  font-size: 12px; font-weight: 600; color: var(--text-primary);
+.trace-ep-ts {
+  font-size: 13px; font-weight: 600; color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
-.trace-node-svc {
-  display: inline-block; font-size: 10px; padding: 1px 6px;
+.trace-ep-svc {
+  display: inline-block; font-size: 10px; padding: 1px 7px;
   background: rgba(99,102,241,.15); border: 1px solid rgba(99,102,241,.3);
-  color: var(--accent-hover); border-radius: 9999px;
-  width: fit-content;
+  color: var(--accent-hover); border-radius: 9999px; width: fit-content;
 }
-.trace-node-log {
+.trace-ep-log {
   font-size: 11px; color: var(--text-muted);
   font-family: 'Consolas', monospace;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  max-width: 380px;
+  max-width: 500px;
+}
+
+/* 竖向连接线 + 耗时标注 */
+.trace-vline {
+  display: flex; align-items: center; gap: 8px;
+  margin: 4px 0 4px 5px; /* 左对齐圆点中心 */
+}
+.trace-vline-bar {
+  width: 2px; height: 24px;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(234,179,8,.5) 0 4px,
+    transparent 4px 8px
+  );
+  flex-shrink: 0;
+}
+.trace-vline-dur {
+  font-size: 11px; color: #fbbf24; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 匹配日志列表 */
+.trace-logs-header {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; font-weight: 500; color: var(--text-muted);
+  flex-shrink: 0;
+}
+.trace-logs-count {
+  font-size: 11px; padding: 1px 7px;
+  background: var(--bg-hover); border-radius: 9999px;
+  color: var(--text-muted);
+}
+.trace-log-list {
+  flex: 1; overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: 'Consolas', 'JetBrains Mono', monospace;
+  font-size: 12px;
 }
 </style>
