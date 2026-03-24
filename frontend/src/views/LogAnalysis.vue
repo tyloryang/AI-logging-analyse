@@ -261,7 +261,9 @@
 
         <!-- 结果区 -->
         <div v-if="tracingKeyword" class="empty-state">
-          <div class="spinner"></div><p>正在全量扫描匹配日志...</p>
+          <div class="spinner"></div>
+          <p>正在全量扫描日志，计算首末耗时...</p>
+          <small style="color:var(--text-muted)">最多扫描 50,000 条匹配日志</small>
         </div>
         <div v-else-if="traceResult" class="trace-result">
           <!-- 未找到 -->
@@ -313,9 +315,14 @@
             <!-- 匹配日志列表 -->
             <div class="trace-logs-header">
               <span>匹配日志（按时间升序）</span>
-              <span class="trace-logs-count">{{ traceLogs.length }} 条</span>
+              <span v-if="loadingTraceLogs" class="spinner" style="width:12px;height:12px;border-width:2px;flex-shrink:0"></span>
+              <span v-else class="trace-logs-count">{{ traceLogs.length }} 条</span>
+              <span v-if="traceLogs.length >= 2000" class="trace-limit-hint" style="margin-left:4px">（仅展示前 2000 条）</span>
             </div>
             <div class="trace-log-list">
+              <div v-if="loadingTraceLogs && !traceLogs.length" class="empty-state" style="padding:24px">
+                <div class="spinner"></div><p style="font-size:12px">加载日志列表...</p>
+              </div>
               <div
                 v-for="(log, i) in traceLogs" :key="i"
                 class="log-line" :class="logClass(log.line)"
@@ -378,15 +385,16 @@ const analyzingAI  = ref(false)
 const aiContent    = ref('')
 
 // ── 耗时追踪 Tab ──────────────────────────
-const traceValue    = ref('')
-const traceService  = ref('')
-const traceTimeMode = ref('custom')
-const traceHours    = ref('24')
-const traceStart    = ref('')
-const traceEnd      = ref('')
-const traceResult   = ref(null)
-const traceLogs     = ref([])
-const tracingKeyword = ref(false)
+const traceValue     = ref('')
+const traceService   = ref('')
+const traceTimeMode  = ref('relative')   // 默认快速模式，避免空 custom 字段误导
+const traceHours     = ref('24')
+const traceStart     = ref('')
+const traceEnd       = ref('')
+const traceResult    = ref(null)
+const traceLogs      = ref([])
+const tracingKeyword = ref(false)        // trace API 请求中
+const loadingTraceLogs = ref(false)      // 日志列表加载中（独立状态）
 
 const renderedAI = computed(() =>
   aiContent.value
@@ -509,6 +517,11 @@ function clearKeyword() {
 
 function traceTimeParams() {
   if (traceTimeMode.value === 'custom' && traceStart.value && traceEnd.value) {
+    // 校验结束时间不早于开始时间
+    if (traceEnd.value < traceStart.value) {
+      alert('结束时间不能早于开始时间')
+      throw new Error('invalid time range')
+    }
     return { start_time: traceStart.value, end_time: traceEnd.value }
   }
   return { hours: traceHours.value }
@@ -516,30 +529,53 @@ function traceTimeParams() {
 
 async function runTrace() {
   if (!traceValue.value) return
+
+  // 验证自定义时间范围
+  if (traceTimeMode.value === 'custom' && (!traceStart.value || !traceEnd.value)) {
+    alert('请填写完整的开始时间和结束时间')
+    return
+  }
+
   tracingKeyword.value = true
+  loadingTraceLogs.value = false
   traceResult.value = null
   traceLogs.value = []
+
+  let tp
+  try { tp = traceTimeParams() } catch { tracingKeyword.value = false; return }
+
+  // ── 第一步：计算首末耗时 ──────────────────
+  let traceData = null
   try {
-    const r = await api.traceKeyword({
+    traceData = await api.traceKeyword({
       keyword: traceValue.value,
       service: traceService.value || undefined,
-      ...traceTimeParams(),
+      ...tp,
     })
-    traceResult.value = r
-    // 同步加载匹配日志（按时间升序展示）
-    if (r.found) {
+    traceResult.value = traceData
+  } catch (e) {
+    traceResult.value = { found: false, keyword: traceValue.value, log_count: 0, _error: String(e) }
+    tracingKeyword.value = false
+    return
+  }
+  tracingKeyword.value = false   // 耗时计算完成，立即解除主加载状态
+
+  // ── 第二步：加载匹配日志列表（独立加载，不影响结果展示）──
+  if (traceData.found) {
+    loadingTraceLogs.value = true
+    try {
       const logsR = await api.getLogs({
         keyword: traceValue.value,
         service: traceService.value || undefined,
         limit: 2000,
-        ...traceTimeParams(),
+        ...tp,
       })
-      traceLogs.value = [...(logsR.data || [])].reverse()
+      traceLogs.value = [...(logsR.data || [])].reverse()  // 升序展示
+    } catch {
+      traceLogs.value = []  // 日志列表加载失败不影响耗时结果
+    } finally {
+      loadingTraceLogs.value = false
     }
-  } catch (e) {
-    traceResult.value = { found: false, keyword: traceValue.value, log_count: 0 }
-  } finally {
-    tracingKeyword.value = false
   }
 }
 
