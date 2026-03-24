@@ -392,9 +392,9 @@ onMounted(async () => {
 }
 .host-state-badge.ok  { background: rgba(63,185,80,.12);  color: var(--success); }
 .host-state-badge.err { background: rgba(248,81,73,.12);  color: var(--error);   }
-.host-name { width: 100px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.host-ip   { width: 86px; color: var(--text-muted); font-size: 11px; }
-.host-metrics { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; max-width: 380px; }
+.host-name { flex: 1; min-width: 80px; max-width: 140px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.host-ip   { width: 100px; flex-shrink: 0; color: var(--text-muted); font-size: 11px; }
+.host-metrics { display: flex; gap: 4px; flex: 2; flex-wrap: wrap; }
 .metric-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 500; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
 .metric-tag.ok   { background: rgba(63,185,80,.1);  color: var(--success); }
 .metric-tag.warn { background: rgba(210,153,34,.12); color: var(--warning); }
