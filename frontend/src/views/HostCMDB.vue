@@ -86,19 +86,8 @@
     <div class="content-main">
 
     <!-- CMDB 主机表 -->
-    <div v-show="tab === 'cmdb'" class="table-wrap">
-      <div v-if="loading && !hosts.length" class="empty-state">
-        <div class="spinner"></div><p>发现主机中...</p>
-      </div>
-      <div v-else-if="error" class="empty-state">
-        <span class="icon">⚠️</span>
-        <p style="color:var(--error)">{{ error }}</p>
-        <p style="color:var(--text-muted);font-size:12px">请检查 .env 中 PROMETHEUS_URL 配置</p>
-      </div>
-      <div v-else-if="!hosts.length" class="empty-state">
-        <span class="icon">🖥️</span><p>未发现主机<br><small style="color:var(--text-muted)">请确认 Prometheus 已配置 node_exporter targets</small></p>
-      </div>
-      <!-- 标签筛选栏 -->
+    <div v-show="tab === 'cmdb'" class="cmdb-tab-wrap">
+      <!-- 标签筛选栏（在滚动区外，不影响 sticky 表头） -->
       <div v-if="allLabelKeys.length" class="label-filter-bar">
         <span class="label-filter-title">标签筛选：</span>
         <div class="label-filter-tags">
@@ -117,6 +106,19 @@
         </div>
       </div>
 
+      <!-- 表格滚动区 -->
+      <div class="table-wrap">
+      <div v-if="loading && !hosts.length" class="empty-state">
+        <div class="spinner"></div><p>发现主机中...</p>
+      </div>
+      <div v-else-if="error" class="empty-state">
+        <span class="icon">⚠️</span>
+        <p style="color:var(--error)">{{ error }}</p>
+        <p style="color:var(--text-muted);font-size:12px">请检查 .env 中 PROMETHEUS_URL 配置</p>
+      </div>
+      <div v-else-if="!hosts.length" class="empty-state">
+        <span class="icon">🖥️</span><p>未发现主机<br><small style="color:var(--text-muted)">请确认 Prometheus 已配置 node_exporter targets</small></p>
+      </div>
       <table v-if="hosts.length" class="host-table">
         <thead>
           <tr>
@@ -169,7 +171,8 @@
           </tr>
         </tbody>
       </table>
-    </div>
+      </div><!-- /table-wrap -->
+    </div><!-- /cmdb-tab-wrap -->
 
     <!-- 巡检报告 -->
     <div v-show="tab === 'inspect'" class="inspect-wrap">
@@ -1174,6 +1177,7 @@ onBeforeUnmount(() => {
 .ssh-link:hover { background: var(--accent-dim); }
 
 /* 表格 */
+.cmdb-tab-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .table-wrap { flex: 1; overflow: auto; min-height: 0; }
 .host-table {
   width: 100%; border-collapse: collapse; font-size: 12px;
