@@ -55,22 +55,30 @@
       <!-- ── 下方面板（撑满剩余高度）──────────────────────────── -->
       <div class="lower-grid">
 
-        <!-- 错误 Top 10 -->
+        <!-- 综合不健康主机 Top 10 -->
         <div class="card panel-card">
           <div class="card-header">
-            <h3>错误 Top 10 服务</h3>
+            <h3>综合不健康主机 Top 10</h3>
+            <span class="card-header-hint">多维阈值综合评分</span>
           </div>
           <div class="error-list">
-            <div v-if="!errorMetrics.length" class="empty-state" style="padding:24px">
-              <span>暂无错误数据</span>
+            <div v-if="hostError" class="empty-state" style="padding:24px">
+              <span>Prometheus 未连接</span>
             </div>
-            <div v-for="(item, i) in errorMetrics.slice(0,10)" :key="item.service" class="error-row">
+            <div v-else-if="!unhealthyHosts.length" class="empty-state" style="padding:24px">
+              <span style="color:var(--success)">✓ 所有主机运行正常</span>
+            </div>
+            <div v-for="(item, i) in unhealthyHosts" :key="item.instance" class="error-row unhealthy-row">
               <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
-              <span class="svc-name">{{ item.service }}</span>
-              <div class="bar-wrap">
-                <div class="bar" :style="{ width: barWidth(item.count) + '%' }"></div>
+              <span class="svc-name">{{ item.hostname || item.ip }}</span>
+              <div class="unhealthy-tags">
+                <span v-for="t in item.tags" :key="t.label" class="unhealthy-tag" :class="t.level">
+                  {{ t.label }}
+                </span>
               </div>
-              <span class="badge badge-error">{{ item.count }}</span>
+              <span class="badge" :class="item.score >= 4 ? 'badge-error' : item.score >= 2 ? 'badge-warn' : 'badge-info'">
+                {{ item.score }}分
+              </span>
             </div>
           </div>
         </div>
@@ -213,6 +221,50 @@ function fmtUptime(sec) {
   const h = Math.floor((sec % 86400) / 3600)
   return d > 0 ? `${d}天${h}时` : `${h}时`
 }
+
+// ── 综合不健康主机评分 ───────────────────────────────────────────────────
+// 规则：每违反一项阈值加分；critical=2分，warning=1分；离线直接3分
+const unhealthyHosts = computed(() => {
+  const scored = hosts.value.map(h => {
+    const m = h.metrics ?? {}
+    const tags = []
+    let score = 0
+
+    if (h.state !== 'up') {
+      tags.push({ label: '离线', level: 'crit' })
+      score += 3
+    } else {
+      const cpu  = m.cpu_usage  ?? 0
+      const mem  = m.mem_usage  ?? 0
+      const disk = maxDisk(h)   ?? 0
+      const tcp  = m.tcp_estab  ?? 0
+      const load = m.load5      ?? 0
+      const cores = h.cpu_cores ?? 4
+
+      if (cpu > 90)        { tags.push({ label: `CPU ${cpu}%`,   level: 'crit' }); score += 2 }
+      else if (cpu > 70)   { tags.push({ label: `CPU ${cpu}%`,   level: 'warn' }); score += 1 }
+
+      if (mem > 90)        { tags.push({ label: `内存 ${mem}%`,  level: 'crit' }); score += 2 }
+      else if (mem > 80)   { tags.push({ label: `内存 ${mem}%`,  level: 'warn' }); score += 1 }
+
+      if (disk > 90)       { tags.push({ label: `磁盘 ${disk}%`, level: 'crit' }); score += 2 }
+      else if (disk > 80)  { tags.push({ label: `磁盘 ${disk}%`, level: 'warn' }); score += 1 }
+
+      if (tcp > 10000)     { tags.push({ label: `TCP ${tcp}`,    level: 'crit' }); score += 2 }
+      else if (tcp > 5000) { tags.push({ label: `TCP ${tcp}`,    level: 'warn' }); score += 1 }
+
+      const loadWarn = cores, loadCrit = cores * 2
+      if (load > loadCrit)      { tags.push({ label: `负载 ${load.toFixed(1)}`, level: 'crit' }); score += 2 }
+      else if (load > loadWarn) { tags.push({ label: `负载 ${load.toFixed(1)}`, level: 'warn' }); score += 1 }
+    }
+
+    return { ...h, score, tags }
+  })
+  return scored
+    .filter(h => h.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+})
 
 // ── 主机列表排序 ─────────────────────────────────────────────────────────
 const sortKey = ref('state')   // 默认：状态（离线排前面）
@@ -368,13 +420,27 @@ onMounted(async () => {
 
 /* Error list */
 .error-list { display: flex; flex-direction: column; }
-.error-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border-light); flex-shrink: 0; }
+.error-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border-light); flex-shrink: 0; }
 .error-row:last-child { border-bottom: none; }
-.rank { width: 20px; text-align: center; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; color: var(--text-muted); }
+.rank { width: 18px; text-align: center; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; color: var(--text-muted); flex-shrink: 0; }
 .rank-top { color: var(--warning); }
-.svc-name { flex: 1; font-size: 12px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc-name { width: 90px; flex-shrink: 0; font-size: 12px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar-wrap { width: 80px; height: 3px; background: var(--bg-surface); border-radius: 2px; overflow: hidden; flex-shrink: 0; }
 .bar { height: 100%; background: var(--error); border-radius: 2px; transition: width .4s ease; opacity: .8; }
+/* 综合不健康 Top10 */
+.card-header-hint { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+.unhealthy-row .svc-name { width: 80px; }
+.unhealthy-tags { flex: 1; display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.unhealthy-tag {
+  font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 500;
+  font-family: 'JetBrains Mono', monospace; white-space: nowrap;
+}
+.unhealthy-tag.warn { background: rgba(210,153,34,.12); color: var(--warning); }
+.unhealthy-tag.crit { background: rgba(248,81,73,.12);  color: var(--error);   }
+.badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+.badge-error { background: rgba(248,81,73,.12); color: var(--error); }
+.badge-warn  { background: rgba(210,153,34,.12); color: var(--warning); }
+.badge-info  { background: rgba(82,130,255,.12); color: var(--accent); }
 
 /* Host list */
 .host-list { display: flex; flex-direction: column; }
