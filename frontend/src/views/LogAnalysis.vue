@@ -88,6 +88,16 @@
               <span v-if="loadingLogs" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
               <span v-else>🔄</span>实时查询
             </button>
+            <button
+              v-if="keyword"
+              class="btn btn-trace"
+              @click="runTrace"
+              :disabled="tracingKeyword"
+              title="计算关键字首次到末次出现的耗时"
+            >
+              <span v-if="tracingKeyword" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+              <span v-else>⏱</span>耗时分析
+            </button>
             <button class="btn btn-primary" @click="startAIAnalysis" :disabled="analyzingAI">
               <span v-if="analyzingAI" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
               <span v-else>🤖</span>AI 分析
@@ -121,6 +131,49 @@
           <div class="ai-content" v-html="renderedAI"></div>
           <div v-if="analyzingAI" class="ai-typing">
             <span class="dot1">·</span><span class="dot2">·</span><span class="dot3">·</span>
+          </div>
+        </div>
+      </transition>
+
+      <!-- ── 耗时分析结果卡片 ── -->
+      <transition name="fade">
+        <div v-if="traceResult && activeTab === 'logs'" class="trace-card">
+          <div class="trace-header">
+            <span class="trace-title">⏱ 耗时分析</span>
+            <span class="trace-keyword">关键字：<em>{{ traceResult.keyword }}</em></span>
+            <button class="btn btn-outline btn-xs" @click="traceResult = null">关闭</button>
+          </div>
+          <div v-if="!traceResult.found" class="trace-empty">
+            未找到包含该关键字的日志
+          </div>
+          <div v-else class="trace-body">
+            <!-- 核心耗时 -->
+            <div class="trace-duration-wrap">
+              <span class="trace-duration">{{ traceResult.duration_str }}</span>
+              <span class="trace-count">共 {{ traceResult.log_count }} 条匹配日志</span>
+            </div>
+            <!-- 首末时间行 -->
+            <div class="trace-timeline">
+              <div class="trace-node first">
+                <span class="trace-dot dot-first"></span>
+                <div class="trace-node-info">
+                  <span class="trace-node-label">首次出现</span>
+                  <span class="trace-node-ts">{{ traceResult.first_ts }}</span>
+                  <span v-if="traceResult.first_service" class="trace-node-svc">{{ traceResult.first_service }}</span>
+                  <span class="trace-node-log">{{ traceResult.first_log }}</span>
+                </div>
+              </div>
+              <div class="trace-line-seg"></div>
+              <div class="trace-node last">
+                <span class="trace-dot dot-last"></span>
+                <div class="trace-node-info">
+                  <span class="trace-node-label">末次出现</span>
+                  <span class="trace-node-ts">{{ traceResult.last_ts }}</span>
+                  <span v-if="traceResult.last_service" class="trace-node-svc">{{ traceResult.last_service }}</span>
+                  <span class="trace-node-log">{{ traceResult.last_log }}</span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </transition>
@@ -232,6 +285,10 @@ const levelFilter  = ref('')
 const loadingLogs  = ref(false)
 const analyzingAI  = ref(false)
 const aiContent    = ref('')
+
+// ── 链路耗时分析 ──────────────────────────
+const traceResult    = ref(null)
+const tracingKeyword = ref(false)
 
 const renderedAI = computed(() =>
   aiContent.value
@@ -349,7 +406,26 @@ function onKeywordInput() {
 
 function clearKeyword() {
   keyword.value = ''
+  traceResult.value = null
   onParamChange()
+}
+
+async function runTrace() {
+  if (!keyword.value) return
+  tracingKeyword.value = true
+  traceResult.value = null
+  try {
+    const r = await api.traceKeyword({
+      keyword: keyword.value,
+      service: selectedService.value || undefined,
+      ...timeParams(),
+    })
+    traceResult.value = r
+  } catch (e) {
+    traceResult.value = { found: false, keyword: keyword.value, log_count: 0, _error: String(e) }
+  } finally {
+    tracingKeyword.value = false
+  }
 }
 
 function switchTab(tab) {
@@ -608,4 +684,100 @@ onMounted(() => {
 .tpl-example-ts { color: var(--text-muted); opacity: .6; margin-right: 6px; }
 
 @keyframes pulse { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
+
+/* ── 耗时分析按钮 ── */
+.btn-trace {
+  background: rgba(234,179,8,.12);
+  border: 1px solid rgba(234,179,8,.35);
+  color: #fbbf24;
+  padding: 5px 12px; border-radius: 6px;
+  font-size: 12px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  transition: all .15s;
+}
+.btn-trace:hover:not(:disabled) {
+  background: rgba(234,179,8,.22);
+  border-color: rgba(234,179,8,.6);
+}
+.btn-trace:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── 耗时分析结果卡片 ── */
+.trace-card {
+  margin: 10px 14px;
+  background: rgba(234,179,8,.06);
+  border: 1px solid rgba(234,179,8,.25);
+  border-radius: var(--radius);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.trace-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid rgba(234,179,8,.15);
+}
+.trace-title { font-size: 13px; font-weight: 600; color: #fbbf24; }
+.trace-keyword { font-size: 12px; color: var(--text-muted); flex: 1; }
+.trace-keyword em { font-style: normal; color: var(--text-primary); font-weight: 500; }
+
+.trace-empty { padding: 12px 16px; font-size: 13px; color: var(--text-muted); }
+
+.trace-body { padding: 12px 16px 14px; }
+
+.trace-duration-wrap {
+  display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px;
+}
+.trace-duration {
+  font-size: 28px; font-weight: 700;
+  color: #fbbf24;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+}
+.trace-count { font-size: 12px; color: var(--text-muted); }
+
+/* 时间线 */
+.trace-timeline {
+  display: flex; align-items: flex-start; gap: 0;
+}
+.trace-node {
+  display: flex; align-items: flex-start; gap: 10px;
+  min-width: 0; flex: 1;
+}
+.trace-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  flex-shrink: 0; margin-top: 3px;
+}
+.dot-first { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.5); }
+.dot-last  { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,.5); }
+
+.trace-line-seg {
+  width: 40px; height: 1px; background: rgba(234,179,8,.3);
+  margin: 7px 8px 0; flex-shrink: 0;
+  background: repeating-linear-gradient(
+    90deg, rgba(234,179,8,.4) 0 4px, transparent 4px 8px
+  );
+}
+
+.trace-node-info {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.trace-node-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--text-muted);
+}
+.trace-node-ts {
+  font-size: 12px; font-weight: 600; color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.trace-node-svc {
+  display: inline-block; font-size: 10px; padding: 1px 6px;
+  background: rgba(99,102,241,.15); border: 1px solid rgba(99,102,241,.3);
+  color: var(--accent-hover); border-radius: 9999px;
+  width: fit-content;
+}
+.trace-node-log {
+  font-size: 11px; color: var(--text-muted);
+  font-family: 'Consolas', monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 380px;
+}
 </style>

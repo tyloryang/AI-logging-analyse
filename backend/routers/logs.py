@@ -134,6 +134,71 @@ async def get_log_templates(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── 关键字链路耗时分析 ────────────────────────────────────────────────────────
+
+@router.get("/api/logs/trace")
+async def trace_keyword(
+    keyword: str = Query(..., description="追踪关键字，如 traceId 值"),
+    service: Optional[str] = Query(None, description="服务名称"),
+    hours: int = Query(24, description="查询时长（小时）"),
+    start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
+    end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式"),
+):
+    """
+    计算关键字在日志中首次与末次出现的时间差（链路耗时 / TraceID 全链路追踪）。
+    最多扫描 50000 条匹配日志，返回首尾时间戳及耗时。
+    """
+    try:
+        logs = await loki.query_logs(
+            service=service,
+            hours=hours,
+            limit=50000,
+            keyword=keyword,
+            start_ns=_parse_time_ns(start_time),
+            end_ns=_parse_time_ns(end_time),
+        )
+        if not logs:
+            return {"found": False, "keyword": keyword, "log_count": 0}
+
+        sorted_logs = sorted(logs, key=lambda x: int(x["timestamp_ns"]))
+        first = sorted_logs[0]
+        last  = sorted_logs[-1]
+
+        first_ns   = int(first["timestamp_ns"])
+        last_ns    = int(last["timestamp_ns"])
+        duration_ns = last_ns - first_ns
+        duration_ms = duration_ns / 1_000_000
+
+        if duration_ms < 1:
+            duration_str = f"{duration_ns / 1000:.1f} µs"
+        elif duration_ms < 1000:
+            duration_str = f"{duration_ms:.3f} ms"
+        elif duration_ms < 60_000:
+            duration_str = f"{duration_ms / 1000:.3f} s"
+        else:
+            minutes = int(duration_ms // 60_000)
+            seconds = (duration_ms % 60_000) / 1000
+            duration_str = f"{minutes}m {seconds:.1f}s"
+
+        return {
+            "found":        True,
+            "keyword":      keyword,
+            "log_count":    len(logs),
+            "first_ts":     first["timestamp"],
+            "first_ts_ns":  first_ns,
+            "first_log":    first["line"][:300],
+            "first_service": first["labels"].get("app") or first["labels"].get("job") or "",
+            "last_ts":      last["timestamp"],
+            "last_ts_ns":   last_ns,
+            "last_log":     last["line"][:300],
+            "last_service": last["labels"].get("app") or last["labels"].get("job") or "",
+            "duration_ms":  duration_ms,
+            "duration_str": duration_str,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 # ── AI 流式分析 ───────────────────────────────────────────────────────────────
 
 @router.get("/api/analyze/stream")

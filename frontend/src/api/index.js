@@ -22,6 +22,8 @@ export const api = {
   getErrorMetrics: (hours = 24) => http.get('/metrics/errors', { params: { hours } }),
   // 日志模板聚合
   getTemplates:   (params) => http.get('/logs/templates', { params }),
+  // 链路耗时分析
+  traceKeyword:   (params) => http.get('/logs/trace', { params }),
   // 报告
   listReports:    () => http.get('/report/list'),
   getReport:      (id) => http.get(`/report/${id}`),
