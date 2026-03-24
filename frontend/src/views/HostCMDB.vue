@@ -132,8 +132,8 @@
             <th v-if="visibleCols.has('tcp_estab')" class="th-sort" @click="setSort('tcp_estab')">TCP<span class="sort-icon">{{ sortKey==='tcp_estab' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th v-if="visibleCols.has('load5')" class="th-sort" @click="setSort('load5')">负载<span class="sort-icon">{{ sortKey==='load5' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
             <th v-if="visibleCols.has('uptime')" class="th-sort" @click="setSort('uptime')">运行时长<span class="sort-icon">{{ sortKey==='uptime' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('labels') && allLabelKeys.length">标签</th>
             <th>操作</th>
+            <th v-if="visibleCols.has('labels') && allLabelKeys.length">标签</th>
           </tr>
         </thead>
         <tbody>
@@ -153,18 +153,18 @@
             <td v-if="visibleCols.has('tcp_estab')" class="small-text">{{ fmtTcp(h.metrics) }}</td>
             <td v-if="visibleCols.has('load5')">{{ h.metrics.load5 != null ? h.metrics.load5.toFixed(2) : '-' }}</td>
             <td v-if="visibleCols.has('uptime')">{{ fmtUptime(h.metrics.uptime_seconds) }}</td>
-            <td v-if="visibleCols.has('labels') && allLabelKeys.length" class="label-cell">
-              <span
-                v-for="(val, key) in h.custom_labels" :key="key"
-                class="label-chip"
-                :style="{ '--label-hue': labelHue(key) }"
-                @click.stop="toggleLabelFilter(key, val)"
-              >{{ key }}=<b>{{ val }}</b></span>
+            <td class="action-cell" @click.stop>
+              <button class="btn btn-outline btn-xs" @click="openSSH(h)" title="SSH 连接">>_</button>
             </td>
-            <td>
-              <button class="btn btn-outline btn-xs" @click.stop="openSSH(h)" title="SSH 连接">
-                >_
-              </button>
+            <td v-if="visibleCols.has('labels') && allLabelKeys.length" class="label-cell">
+              <div class="label-chips-wrap">
+                <span
+                  v-for="(val, key) in h.custom_labels" :key="key"
+                  class="label-chip"
+                  :style="{ '--label-hue': labelHue(key) }"
+                  @click.stop="toggleLabelFilter(key, val)"
+                >{{ key }}=<b>{{ val }}</b></span>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -1437,7 +1437,9 @@ onBeforeUnmount(() => {
   color: var(--text-muted); transition: all .15s;
 }
 .label-filter-clear:hover { color: var(--error); border-color: var(--error); }
-.label-cell { max-width: 240px; }
+.action-cell { width: 40px; white-space: nowrap; }
+.label-cell { max-width: 260px; }
+.label-chips-wrap { display: flex; flex-wrap: wrap; gap: 2px; max-height: 44px; overflow: hidden; }
 .label-chip {
   display: inline-flex; align-items: center; gap: 2px;
   font-size: 10px; padding: 1px 6px; border-radius: 10px; cursor: pointer;
