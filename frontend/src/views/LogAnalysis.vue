@@ -350,6 +350,34 @@
                   </div>
                 </div>
               </div>
+
+              <!-- 每条耗时列表 -->
+              <div class="trace-spans-card">
+                <div class="trace-spans-header">
+                  <span>每次出现耗时</span>
+                  <span v-if="loadingTraceLogs" class="spinner" style="width:11px;height:11px;border-width:2px;flex-shrink:0"></span>
+                  <span v-else class="trace-logs-count">{{ traceLogs.length }} 条</span>
+                </div>
+                <div v-if="loadingTraceLogs && !traceLogs.length" class="empty-state" style="padding:20px">
+                  <div class="spinner"></div><p style="font-size:12px">加载中...</p>
+                </div>
+                <div v-else class="trace-span-list">
+                  <div
+                    v-for="(log, i) in traceLogs" :key="i"
+                    class="trace-span-row"
+                    :class="logClass(log.line)"
+                  >
+                    <div class="trace-span-idx">{{ i + 1 }}</div>
+                    <div class="trace-span-elapsed">{{ spanElapsed(log) }}</div>
+                    <div class="trace-span-bar-wrap">
+                      <div class="trace-span-bar" :style="{ width: spanBarW(log) + '%' }"></div>
+                    </div>
+                    <div class="trace-span-ts">{{ log.timestamp }}</div>
+                    <span v-if="log.labels.app || log.labels.job" class="trace-ep-svc">{{ log.labels.app || log.labels.job }}</span>
+                    <div class="trace-span-line">{{ log.line }}</div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- ── 匹配日志页签 ── -->
@@ -627,6 +655,25 @@ async function runTrace() {
       loadingTraceLogs.value = false
     }
   }
+}
+
+function spanElapsed(log) {
+  const firstNs = traceResult.value?.first_ts_ns
+  if (!firstNs) return ''
+  const ms = (parseInt(log.timestamp_ns) - firstNs) / 1_000_000
+  if (ms <= 0) return '+0'
+  if (ms < 1)       return `+${(ms * 1000).toFixed(0)} µs`
+  if (ms < 1000)    return `+${ms.toFixed(1)} ms`
+  if (ms < 60000)   return `+${(ms / 1000).toFixed(3)} s`
+  return `+${Math.floor(ms / 60000)}m ${((ms % 60000) / 1000).toFixed(1)}s`
+}
+
+function spanBarW(log) {
+  const firstNs = traceResult.value?.first_ts_ns
+  const totalMs = traceResult.value?.duration_ms
+  if (!firstNs || !totalMs) return 0
+  const ms = (parseInt(log.timestamp_ns) - firstNs) / 1_000_000
+  return Math.min(100, Math.max(0, (ms / totalMs) * 100))
 }
 
 function switchTab(tab) {
@@ -1115,5 +1162,63 @@ onMounted(() => {
   border-radius: var(--radius);
   font-family: 'Consolas', 'JetBrains Mono', monospace;
   font-size: 12px;
+}
+
+/* ── 每条耗时列表 ── */
+.trace-spans-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.trace-spans-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px;
+  font-size: 12px; font-weight: 500; color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-base);
+}
+.trace-span-list {
+  max-height: 400px; overflow-y: auto;
+  font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 11px;
+}
+.trace-span-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 14px;
+  border-bottom: 1px solid rgba(46,49,80,.35);
+  transition: background .1s;
+}
+.trace-span-row:hover { background: var(--bg-hover); }
+.trace-span-row.level-error { background: var(--log-error); }
+.trace-span-row.level-warn  { background: var(--log-warn); }
+.trace-span-idx {
+  width: 30px; text-align: right; flex-shrink: 0;
+  color: var(--text-muted); font-size: 10px;
+}
+.trace-span-elapsed {
+  width: 90px; flex-shrink: 0;
+  color: #fbbf24; font-weight: 600; font-size: 11px;
+  font-variant-numeric: tabular-nums; text-align: right;
+}
+.trace-span-bar-wrap {
+  width: 80px; flex-shrink: 0;
+  height: 4px; background: rgba(255,255,255,.07);
+  border-radius: 2px; overflow: hidden;
+}
+.trace-span-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #34d399, #fbbf24);
+  border-radius: 2px; transition: width .2s;
+  min-width: 2px;
+}
+.trace-span-ts {
+  width: 138px; flex-shrink: 0;
+  color: var(--text-muted); font-size: 10px;
+  white-space: nowrap;
+}
+.trace-span-line {
+  flex: 1; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 </style>
