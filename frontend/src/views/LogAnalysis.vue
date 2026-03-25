@@ -279,65 +279,99 @@
               请检查关键字拼写、时间范围或服务选择是否正确
             </small>
           </div>
-          <!-- 找到了 -->
+          <!-- 找到了：子页签 -->
           <template v-else>
-            <!-- 顶部统计卡 -->
-            <div class="trace-stat-card">
-              <div class="trace-stat-left">
-                <div class="trace-stat-label">全链路耗时</div>
-                <div class="trace-stat-duration">{{ traceResult.duration_str }}</div>
-                <div class="trace-stat-meta">
-                  共 <strong>{{ traceResult.log_count }}</strong> 条匹配日志
-                  <span v-if="traceResult.log_count >= 50000" class="trace-limit-hint">（已达扫描上限，结果可能不完整）</span>
+            <!-- 子页签切换栏 -->
+            <div class="trace-sub-tabs">
+              <button
+                class="trace-sub-btn"
+                :class="{ active: traceResultTab === 'overview' }"
+                @click="traceResultTab = 'overview'"
+              >
+                ⏱ 耗时概览
+              </button>
+              <button
+                class="trace-sub-btn"
+                :class="{ active: traceResultTab === 'logs' }"
+                @click="traceResultTab = 'logs'"
+              >
+                📋 匹配日志
+                <span class="trace-sub-badge">
+                  <span v-if="loadingTraceLogs" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+                  <span v-else>{{ traceLogs.length }}</span>
+                </span>
+              </button>
+            </div>
+
+            <!-- ── 耗时概览页签 ── -->
+            <div v-show="traceResultTab === 'overview'" class="trace-overview">
+              <!-- 大耗时数字区 -->
+              <div class="trace-hero">
+                <div class="trace-hero-label">全链路耗时</div>
+                <div class="trace-hero-duration">{{ traceResult.duration_str }}</div>
+                <div class="trace-hero-meta">
+                  关键字 <em>{{ traceResult.keyword }}</em>
+                  · 共匹配 <strong>{{ traceResult.log_count }}</strong> 条日志
+                  <span v-if="traceResult.log_count >= 50000" class="trace-limit-hint">（已达扫描上限）</span>
                 </div>
               </div>
-              <div class="trace-stat-right">
+              <!-- 时间线 -->
+              <div class="trace-timeline-card">
                 <!-- 首次 -->
-                <div class="trace-endpoint">
-                  <div class="trace-ep-dot dot-first"></div>
-                  <div class="trace-ep-body">
-                    <span class="trace-ep-label">首次出现</span>
-                    <span class="trace-ep-ts">{{ traceResult.first_ts }}</span>
+                <div class="trace-tl-row">
+                  <div class="trace-tl-left">
+                    <div class="trace-tl-dot dot-first"></div>
+                    <div class="trace-tl-connector"></div>
+                  </div>
+                  <div class="trace-tl-body">
+                    <div class="trace-tl-tag">首次出现</div>
+                    <div class="trace-tl-ts">{{ traceResult.first_ts }}</div>
                     <span v-if="traceResult.first_service" class="trace-ep-svc">{{ traceResult.first_service }}</span>
-                    <span class="trace-ep-log">{{ traceResult.first_log }}</span>
+                    <div class="trace-tl-log">{{ traceResult.first_log }}</div>
                   </div>
                 </div>
-                <!-- 时间轴竖线 -->
-                <div class="trace-vline">
-                  <div class="trace-vline-bar"></div>
-                  <div class="trace-vline-dur">{{ traceResult.duration_str }}</div>
+                <!-- 耗时标注 -->
+                <div class="trace-tl-row dur-row">
+                  <div class="trace-tl-left">
+                    <div class="trace-tl-line"></div>
+                  </div>
+                  <div class="trace-tl-dur-badge">{{ traceResult.duration_str }}</div>
                 </div>
                 <!-- 末次 -->
-                <div class="trace-endpoint">
-                  <div class="trace-ep-dot dot-last"></div>
-                  <div class="trace-ep-body">
-                    <span class="trace-ep-label">末次出现</span>
-                    <span class="trace-ep-ts">{{ traceResult.last_ts }}</span>
+                <div class="trace-tl-row">
+                  <div class="trace-tl-left">
+                    <div class="trace-tl-dot dot-last"></div>
+                  </div>
+                  <div class="trace-tl-body">
+                    <div class="trace-tl-tag">末次出现</div>
+                    <div class="trace-tl-ts">{{ traceResult.last_ts }}</div>
                     <span v-if="traceResult.last_service" class="trace-ep-svc">{{ traceResult.last_service }}</span>
-                    <span class="trace-ep-log">{{ traceResult.last_log }}</span>
+                    <div class="trace-tl-log">{{ traceResult.last_log }}</div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <!-- 匹配日志列表 -->
-            <div class="trace-logs-header">
-              <span>匹配日志（按时间升序）</span>
-              <span v-if="loadingTraceLogs" class="spinner" style="width:12px;height:12px;border-width:2px;flex-shrink:0"></span>
-              <span v-else class="trace-logs-count">{{ traceLogs.length }} 条</span>
-              <span v-if="traceLogs.length >= 2000" class="trace-limit-hint" style="margin-left:4px">（仅展示前 2000 条）</span>
-            </div>
-            <div class="trace-log-list">
-              <div v-if="loadingTraceLogs && !traceLogs.length" class="empty-state" style="padding:24px">
-                <div class="spinner"></div><p style="font-size:12px">加载日志列表...</p>
+            <!-- ── 匹配日志页签 ── -->
+            <div v-show="traceResultTab === 'logs'" class="trace-log-panel">
+              <div class="trace-logs-header">
+                <span>匹配日志（按时间升序）</span>
+                <span v-if="loadingTraceLogs" class="spinner" style="width:12px;height:12px;border-width:2px;flex-shrink:0"></span>
+                <span v-else class="trace-logs-count">{{ traceLogs.length }} 条</span>
+                <span v-if="traceLogs.length >= 2000" class="trace-limit-hint" style="margin-left:4px">（仅展示前 2000 条）</span>
               </div>
-              <div
-                v-for="(log, i) in traceLogs" :key="i"
-                class="log-line" :class="logClass(log.line)"
-              >
-                <span class="log-ts">{{ log.timestamp }}</span>
-                <span class="log-svc">{{ log.labels.app || log.labels.job || '?' }}</span>
-                <span class="log-text">{{ log.line }}</span>
+              <div class="trace-log-list">
+                <div v-if="loadingTraceLogs && !traceLogs.length" class="empty-state" style="padding:24px">
+                  <div class="spinner"></div><p style="font-size:12px">加载日志列表...</p>
+                </div>
+                <div
+                  v-for="(log, i) in traceLogs" :key="i"
+                  class="log-line" :class="logClass(log.line)"
+                >
+                  <span class="log-ts">{{ log.timestamp }}</span>
+                  <span class="log-svc">{{ log.labels.app || log.labels.job || '?' }}</span>
+                  <span class="log-text">{{ log.line }}</span>
+                </div>
               </div>
             </div>
           </template>
@@ -405,10 +439,11 @@ const traceTimeMode  = ref('relative')   // 默认快速模式，避免空 custo
 const traceHours     = ref('24')
 const traceStart     = ref('')
 const traceEnd       = ref('')
-const traceResult    = ref(null)
-const traceLogs      = ref([])
-const tracingKeyword = ref(false)        // trace API 请求中
-const loadingTraceLogs = ref(false)      // 日志列表加载中（独立状态）
+const traceResult      = ref(null)
+const traceLogs        = ref([])
+const tracingKeyword   = ref(false)   // trace API 请求中
+const loadingTraceLogs = ref(false)   // 日志列表加载中（独立状态）
+const traceResultTab   = ref('overview')  // 结果子页签：overview | logs
 
 const renderedAI = computed(() =>
   aiContent.value
@@ -554,6 +589,7 @@ async function runTrace() {
   loadingTraceLogs.value = false
   traceResult.value = null
   traceLogs.value = []
+  traceResultTab.value = 'overview'
 
   let tp
   try { tp = traceTimeParams() } catch { tracingKeyword.value = false; return }
@@ -919,7 +955,8 @@ onMounted(() => {
 
 /* 结果区域 */
 .trace-result {
-  flex: 1; display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  min-height: 0;
 }
 
 /* 未找到 */
@@ -930,61 +967,111 @@ onMounted(() => {
 }
 .trace-not-found em { color: var(--text-primary); font-style: normal; font-weight: 500; }
 
-/* 统计卡 */
-.trace-stat-card {
+/* ── 子页签切换栏 ── */
+.trace-sub-tabs {
+  display: flex; gap: 2px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 8px; padding: 3px;
+  flex-shrink: 0; margin-bottom: 10px;
+  width: fit-content;
+}
+.trace-sub-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 16px; border-radius: 6px;
+  border: none; background: transparent;
+  color: var(--text-muted); font-size: 13px;
+  cursor: pointer; transition: all .15s;
+}
+.trace-sub-btn:hover { color: var(--text-primary); }
+.trace-sub-btn.active {
+  background: var(--bg-active); color: var(--text-primary);
+}
+.trace-sub-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 18px; padding: 0 5px;
+  background: var(--bg-hover); border-radius: 9999px;
+  font-size: 11px; color: var(--text-muted); font-weight: 600;
+}
+.trace-sub-btn.active .trace-sub-badge {
+  background: rgba(234,179,8,.15); color: #fbbf24;
+}
+
+/* ── 耗时概览页签 ── */
+.trace-overview {
+  flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+/* 大数字英雄区 */
+.trace-hero {
   background: var(--bg-card);
   border: 1px solid rgba(234,179,8,.3);
   border-radius: var(--radius);
-  padding: 18px 20px;
-  display: flex; gap: 24px; align-items: flex-start;
+  padding: 28px 32px;
+  display: flex; flex-direction: column; gap: 6px;
+  align-items: flex-start;
+}
+.trace-hero-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .6px; color: var(--text-muted);
+}
+.trace-hero-duration {
+  font-size: 56px; font-weight: 700; color: #fbbf24;
+  font-variant-numeric: tabular-nums; line-height: 1;
+  letter-spacing: -2px;
+}
+.trace-hero-meta {
+  font-size: 13px; color: var(--text-muted); margin-top: 4px;
+}
+.trace-hero-meta em { color: var(--text-primary); font-style: normal; font-weight: 500; }
+.trace-hero-meta strong { color: var(--text-primary); }
+.trace-limit-hint { font-size: 11px; color: var(--warning); }
+
+/* 时间线卡片 */
+.trace-timeline-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+}
+.trace-tl-row {
+  display: flex; align-items: stretch; gap: 16px;
+}
+.trace-tl-left {
+  display: flex; flex-direction: column; align-items: center;
+  width: 20px; flex-shrink: 0;
+}
+.trace-tl-dot {
+  width: 14px; height: 14px; border-radius: 50%;
   flex-shrink: 0;
 }
-.trace-stat-left {
-  display: flex; flex-direction: column; gap: 4px;
-  border-right: 1px solid var(--border);
-  padding-right: 24px; min-width: 160px;
+.dot-first { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.6); }
+.dot-last  { background: #f87171; box-shadow: 0 0 8px rgba(248,113,113,.6); }
+.trace-tl-connector {
+  flex: 1; width: 2px;
+  background: repeating-linear-gradient(
+    180deg, rgba(234,179,8,.4) 0 4px, transparent 4px 8px
+  );
+  margin: 4px 0;
 }
-.trace-stat-label {
-  font-size: 11px; font-weight: 500; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: .5px;
+.trace-tl-line {
+  flex: 1; width: 2px;
+  background: repeating-linear-gradient(
+    180deg, rgba(234,179,8,.4) 0 4px, transparent 4px 8px
+  );
 }
-.trace-stat-duration {
-  font-size: 36px; font-weight: 700; color: #fbbf24;
-  font-variant-numeric: tabular-nums; line-height: 1.1;
-  letter-spacing: -1px;
+.trace-tl-body {
+  flex: 1; display: flex; flex-direction: column; gap: 4px;
+  padding: 0 0 20px;
 }
-.trace-stat-meta {
-  font-size: 12px; color: var(--text-muted); margin-top: 2px;
-}
-.trace-stat-meta strong { color: var(--text-primary); }
-.trace-limit-hint {
-  font-size: 11px; color: var(--warning);
-  display: block; margin-top: 2px;
-}
-
-/* 右侧垂直时间线 */
-.trace-stat-right {
-  flex: 1; display: flex; flex-direction: column;
-}
-.trace-endpoint {
-  display: flex; align-items: flex-start; gap: 12px;
-}
-.trace-ep-dot {
-  width: 12px; height: 12px; border-radius: 50%;
-  flex-shrink: 0; margin-top: 2px;
-}
-.dot-first { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.6); }
-.dot-last  { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,.6); }
-
-.trace-ep-body {
-  display: flex; flex-direction: column; gap: 2px; min-width: 0;
-}
-.trace-ep-label {
+.dur-row .trace-tl-body { padding: 0; justify-content: center; }
+.trace-tl-tag {
   font-size: 10px; font-weight: 600; text-transform: uppercase;
   letter-spacing: .5px; color: var(--text-muted);
 }
-.trace-ep-ts {
-  font-size: 13px; font-weight: 600; color: var(--text-primary);
+.trace-tl-ts {
+  font-size: 15px; font-weight: 600; color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
 .trace-ep-svc {
@@ -992,33 +1079,25 @@ onMounted(() => {
   background: rgba(99,102,241,.15); border: 1px solid rgba(99,102,241,.3);
   color: var(--accent-hover); border-radius: 9999px; width: fit-content;
 }
-.trace-ep-log {
-  font-size: 11px; color: var(--text-muted);
+.trace-tl-log {
+  font-size: 12px; color: var(--text-muted);
   font-family: 'Consolas', monospace;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  max-width: 500px;
+  word-break: break-all; line-height: 1.5;
 }
-
-/* 竖向连接线 + 耗时标注 */
-.trace-vline {
-  display: flex; align-items: center; gap: 8px;
-  margin: 4px 0 4px 5px; /* 左对齐圆点中心 */
-}
-.trace-vline-bar {
-  width: 2px; height: 24px;
-  background: repeating-linear-gradient(
-    180deg,
-    rgba(234,179,8,.5) 0 4px,
-    transparent 4px 8px
-  );
-  flex-shrink: 0;
-}
-.trace-vline-dur {
-  font-size: 11px; color: #fbbf24; font-weight: 600;
+.trace-tl-dur-badge {
+  font-size: 13px; font-weight: 700; color: #fbbf24;
+  background: rgba(234,179,8,.1);
+  border: 1px solid rgba(234,179,8,.3);
+  border-radius: 6px; padding: 3px 12px;
   font-variant-numeric: tabular-nums;
+  align-self: flex-start;
 }
 
-/* 匹配日志列表 */
+/* ── 匹配日志页签 ── */
+.trace-log-panel {
+  flex: 1; display: flex; flex-direction: column; gap: 8px;
+  overflow: hidden; min-height: 0;
+}
 .trace-logs-header {
   display: flex; align-items: center; gap: 10px;
   font-size: 12px; font-weight: 500; color: var(--text-muted);
