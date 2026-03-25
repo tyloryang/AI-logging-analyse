@@ -183,7 +183,9 @@ class LokiClient:
             query = base
 
         if keyword:
-            safe_kw = re.escape(keyword)
+            # re.escape() 产生的 \ 在 LogQL 双引号字符串中需再次转义为 \\
+            # 否则 Loki 的 Go 字符串解析器会因无效转义序列返回 400
+            safe_kw = re.escape(keyword).replace('\\', '\\\\')
             query += f' |~ "(?i){safe_kw}"'
 
         return await self.query_range(query, s_ns, e_ns, limit, use_scan_timeout=use_scan_timeout)
