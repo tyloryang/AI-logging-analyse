@@ -108,11 +108,21 @@
                 <span class="metric-tag col-hd" @click="toggleSort('disk')">
                   磁盘<em>{{ sortKey === 'disk' ? (sortAsc ? '↑' : '↓') : '' }}</em>
                 </span>
-                <span class="metric-tag col-hd">TCP</span>
-                <span class="metric-tag col-hd">负载</span>
-                <span class="metric-tag col-hd">IO</span>
-                <span class="metric-tag col-hd">NET</span>
-                <span class="metric-tag col-hd">运行</span>
+                <span class="metric-tag col-hd" @click="toggleSort('tcp')">
+                  TCP<em>{{ sortKey === 'tcp' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
+                <span class="metric-tag col-hd" @click="toggleSort('load')">
+                  负载<em>{{ sortKey === 'load' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
+                <span class="metric-tag col-hd" @click="toggleSort('io')">
+                  IO<em>{{ sortKey === 'io' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
+                <span class="metric-tag col-hd" @click="toggleSort('net')">
+                  NET<em>{{ sortKey === 'net' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
+                <span class="metric-tag col-hd" @click="toggleSort('uptime')">
+                  运行<em>{{ sortKey === 'uptime' ? (sortAsc ? '↑' : '↓') : '' }}</em>
+                </span>
               </div>
             </div>
             <div v-for="h in sortedHosts" :key="h.instance" class="host-row">
@@ -311,10 +321,14 @@ const sortedHosts = computed(() => {
       case 'cpu':      return dir * ((a.metrics?.cpu_usage  ?? -1) - (b.metrics?.cpu_usage  ?? -1))
       case 'mem':      return dir * ((a.metrics?.mem_usage  ?? -1) - (b.metrics?.mem_usage  ?? -1))
       case 'disk':     return dir * ((maxDisk(a) ?? -1) - (maxDisk(b) ?? -1))
-      case 'tcp':      return dir * ((a.metrics?.tcp_estab ?? -1) - (b.metrics?.tcp_estab ?? -1))
-      case 'load':     return dir * ((a.metrics?.load5 ?? -1) - (b.metrics?.load5 ?? -1))
-      case 'uptime':   return dir * ((a.metrics?.uptime_seconds ?? -1) - (b.metrics?.uptime_seconds ?? -1))
-      default:         return 0
+      case 'tcp':    return dir * ((a.metrics?.tcp_estab ?? -1) - (b.metrics?.tcp_estab ?? -1))
+      case 'load':   return dir * ((a.metrics?.load5 ?? -1) - (b.metrics?.load5 ?? -1))
+      case 'io':     return dir * (((a.metrics?.disk_read_mbps ?? 0) + (a.metrics?.disk_write_mbps ?? 0)) -
+                                   ((b.metrics?.disk_read_mbps ?? 0) + (b.metrics?.disk_write_mbps ?? 0)))
+      case 'net':    return dir * (((a.metrics?.net_recv_mbps ?? 0) + (a.metrics?.net_send_mbps ?? 0)) -
+                                   ((b.metrics?.net_recv_mbps ?? 0) + (b.metrics?.net_send_mbps ?? 0)))
+      case 'uptime': return dir * ((a.metrics?.uptime_seconds ?? -1) - (b.metrics?.uptime_seconds ?? -1))
+      default:       return 0
     }
   })
   return list
