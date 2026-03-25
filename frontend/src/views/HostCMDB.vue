@@ -217,7 +217,7 @@
       <div v-else-if="!inspectResults.length && !inspectAiStreaming" class="empty-state">
         <span class="icon">🔍</span><p>点击「执行巡检」开始</p>
       </div>
-      <div v-else>
+      <div v-else style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0">
         <!-- AI 分析总结卡片（流式显示） -->
         <div v-if="inspectAiSummary || inspectAiStreaming" class="inspect-ai-card" :class="{ streaming: inspectAiStreaming }">
           <div class="inspect-ai-header">
@@ -242,47 +242,42 @@
             AI 服务暂不可用，当前显示规则摘要。
           </div>
         </div>
-        <div class="inspect-sortbar">
-          <span class="inspect-sort-label">排序：</span>
-          <button class="inspect-sort-btn" :class="{ active: inspectSortKey === 'overall' }" @click="setInspectSort('overall')">
-            报警级别
-            <span class="inspect-sort-icon">{{ inspectSortKey === 'overall' ? (inspectSortAsc ? '↑' : '↓') : '↕' }}</span>
-          </button>
-          <button class="inspect-sort-btn" :class="{ active: inspectSortKey === 'ip' }" @click="setInspectSort('ip')">
-            IP
-            <span class="inspect-sort-icon">{{ inspectSortKey === 'ip' ? (inspectSortAsc ? '↑' : '↓') : '↕' }}</span>
-          </button>
-        </div>
-        <div class="inspect-list">
-          <div v-for="r in sortedInspectResults" :key="r.instance" class="inspect-card" :class="'card-' + r.overall">
-            <div class="inspect-header">
-              <span class="dot" :class="r.overall"></span>
-              <span class="inspect-host">{{ r.hostname || r.instance }}</span>
-              <span class="inspect-ip">{{ r.ip }}</span>
-              <span class="inspect-os">{{ r.os }}</span>
-              <span class="inspect-badge" :class="r.overall">{{ statusLabel(r.overall) }}</span>
-            </div>
-            <div class="check-grid">
-              <div v-for="c in r.checks" :key="c.item" class="check-item" :class="c.status">
-                <span class="check-name">{{ c.item }}</span>
-                <span class="check-value">{{ c.value }}</span>
-                <span class="check-status-dot" :class="c.status"></span>
-              </div>
-            </div>
-            <!-- 分区详情 -->
-            <div v-if="r.partitions && r.partitions.length" class="partitions-section">
-              <div class="part-title">分区详情</div>
-              <div class="part-grid">
-                <div v-for="p in r.partitions" :key="p.mountpoint" class="part-item">
-                  <div class="part-mount">{{ p.mountpoint }}</div>
-                  <div class="part-bar-wrap">
-                    <div class="part-bar" :style="{ width: p.usage_pct + '%' }" :class="usageBarClass(p.usage_pct)"></div>
-                  </div>
-                  <div class="part-info">{{ p.used_gb }}/{{ p.total_gb }}GB ({{ p.usage_pct }}%)</div>
-                </div>
-              </div>
-            </div>
-          </div>
+        <!-- 巡检结果表格 -->
+        <div class="inspect-table-wrap">
+          <table class="inspect-table">
+            <thead>
+              <tr>
+                <th class="ith-sort" @click="setInspectSort('overall')">
+                  状态<em>{{ inspectSortKey==='overall' ? (inspectSortAsc?'↑':'↓') : '' }}</em>
+                </th>
+                <th class="ith-sort" @click="setInspectSort('hostname')">
+                  主机名<em>{{ inspectSortKey==='hostname' ? (inspectSortAsc?'↑':'↓') : '' }}</em>
+                </th>
+                <th class="ith-sort" @click="setInspectSort('ip')">
+                  IP<em>{{ inspectSortKey==='ip' ? (inspectSortAsc?'↑':'↓') : '' }}</em>
+                </th>
+                <th>OS</th>
+                <th>分组</th>
+                <th v-for="col in inspectCheckCols" :key="col" class="ith-sort" @click="setInspectSort('check:'+col)">
+                  {{ col }}<em>{{ inspectSortKey==='check:'+col ? (inspectSortAsc?'↑':'↓') : '' }}</em>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in sortedInspectResults" :key="r.instance" :class="'irow-'+r.overall">
+                <td><span class="inspect-badge" :class="r.overall">{{ statusLabel(r.overall) }}</span></td>
+                <td class="itd-host">{{ r.hostname || r.instance }}</td>
+                <td class="mono itd-ip">{{ r.ip }}</td>
+                <td class="itd-os">{{ r.os || '-' }}</td>
+                <td class="itd-group">{{ groupMap[r.group] || '-' }}</td>
+                <td
+                  v-for="col in inspectCheckCols" :key="col"
+                  :class="inspectCellClass(r, col)"
+                  :title="inspectCellThreshold(r, col)"
+                >{{ inspectCellValue(r, col) }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -794,15 +789,50 @@ function setInspectSort(key) {
   inspectSortAsc.value = key === 'ip'
 }
 
+const inspectCheckCols = computed(() => {
+  const cols = []
+  const seen = new Set()
+  for (const r of inspectResults.value) {
+    for (const c of r.checks || []) {
+      if (!seen.has(c.item)) { seen.add(c.item); cols.push(c.item) }
+    }
+  }
+  return cols
+})
+
+function _inspectCheck(r, col) {
+  return (r.checks || []).find(c => c.item === col)
+}
+function inspectCellValue(r, col) {
+  return _inspectCheck(r, col)?.value ?? '-'
+}
+function inspectCellThreshold(r, col) {
+  return _inspectCheck(r, col)?.threshold ?? ''
+}
+function inspectCellClass(r, col) {
+  const s = _inspectCheck(r, col)?.status
+  return s === 'critical' ? 'cell-crit' : s === 'warning' ? 'cell-warn' : s === 'normal' ? 'cell-ok' : ''
+}
+
+const _checkSortVal = { critical: 3, warning: 2, normal: 1 }
+
 const sortedInspectResults = computed(() => {
   const items = [...inspectResults.value]
   if (!inspectSortKey.value) return items
   return items.sort((a, b) => {
     let diff = 0
-    if (inspectSortKey.value === 'overall') {
+    const key = inspectSortKey.value
+    if (key === 'overall') {
       diff = (inspectSeverityRank[a.overall] || 0) - (inspectSeverityRank[b.overall] || 0)
-    } else if (inspectSortKey.value === 'ip') {
+    } else if (key === 'ip') {
       diff = compareIp(a.ip, b.ip)
+    } else if (key === 'hostname') {
+      diff = String(a.hostname || a.instance || '').localeCompare(String(b.hostname || b.instance || ''))
+    } else if (key.startsWith('check:')) {
+      const col = key.slice(6)
+      const sa = _checkSortVal[_inspectCheck(a, col)?.status] || 0
+      const sb = _checkSortVal[_inspectCheck(b, col)?.status] || 0
+      diff = sa - sb
     }
     if (diff === 0) {
       diff = String(a.hostname || a.instance || '').localeCompare(String(b.hostname || b.instance || ''))
@@ -991,8 +1021,6 @@ async function runInspect() {
       const data = await resp.json()
       inspectResults.value = data.data || []
       inspectSummary.value = data.summary || {}
-      // 手动巡检：对齐定时推送，自动按分组推送到各群
-      notifyGroups(inspectResults.value)
       inspecting.value = false
       return
     }
@@ -1017,8 +1045,6 @@ async function runInspect() {
           if (msg.type === 'inspect_data') {
             inspectResults.value = msg.data
             inspectSummary.value = msg.summary
-            // 手动巡检：对齐定时推送，自动按分组推送到各群
-            notifyGroups(msg.data)
             inspecting.value = false
           } else if (msg.type === 'error') {
             inspectError.value = msg.message || '巡检失败'
@@ -1283,7 +1309,7 @@ onBeforeUnmount(() => {
 .text-muted { color: var(--text-muted); }
 
 /* 巡检 */
-.inspect-wrap { flex: 1; overflow-y: auto; min-height: 0; }
+.inspect-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .inspect-ai-card {
   background: linear-gradient(180deg, rgba(88,166,255,.08), rgba(88,166,255,.03));
   border: 1px solid rgba(88,166,255,.28);
@@ -1361,6 +1387,40 @@ onBeforeUnmount(() => {
   background: var(--accent-dim);
 }
 .inspect-sort-icon { font-size: 11px; line-height: 1; }
+
+/* ── 巡检结果表格 ── */
+.inspect-table-wrap {
+  flex: 1; overflow: auto; min-height: 0;
+}
+.inspect-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 12px; white-space: nowrap;
+}
+.inspect-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  padding: 7px 10px; text-align: left;
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  letter-spacing: .3px; user-select: none;
+}
+.ith-sort { cursor: pointer; }
+.ith-sort:hover { color: var(--text-primary); }
+.ith-sort em { font-style: normal; color: var(--accent); margin-left: 2px; }
+.inspect-table tbody tr { border-bottom: 1px solid rgba(46,49,80,.35); transition: background .1s; }
+.inspect-table tbody tr:hover { background: var(--bg-hover); }
+.irow-warning { background: rgba(234,179,8,.04); }
+.irow-critical { background: rgba(239,68,68,.06); }
+.inspect-table td { padding: 6px 10px; color: var(--text-secondary); vertical-align: middle; }
+.itd-host { color: var(--text-primary); font-weight: 500; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.itd-ip   { color: var(--text-muted); font-family: 'Consolas', monospace; }
+.itd-os   { color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.itd-group { color: var(--accent-hover); }
+/* 检查列状态着色 */
+.cell-ok   { color: var(--success); }
+.cell-warn { color: var(--warning); font-weight: 600; }
+.cell-crit { color: var(--error);   font-weight: 600; background: rgba(239,68,68,.06); }
+
 .inspect-list { display: flex; flex-direction: column; gap: 10px; }
 .inspect-card {
   background: var(--bg-card); border: 1px solid var(--border);
