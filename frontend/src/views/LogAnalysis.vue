@@ -195,68 +195,52 @@
       </div>
       <!-- ── 耗时追踪 Tab ── -->
       <div v-show="activeTab === 'trace'" class="trace-tab">
-        <!-- 查询表单 -->
-        <div class="trace-form-card">
-          <div class="trace-form-row">
-            <!-- 追踪值输入 -->
-            <div class="trace-form-field flex2">
-              <label class="trace-label">追踪值</label>
-              <div class="trace-input-wrap">
-                <span class="trace-input-icon">🔍</span>
-                <input
-                  v-model="traceValue"
-                  class="trace-input"
-                  placeholder="输入任意追踪值，如 traceId、requestId、关键字..."
-                  @keyup.enter="runTrace"
-                />
-                <button v-if="traceValue" class="kw-clear" @click="traceValue = ''">✕</button>
-              </div>
-            </div>
-            <!-- 服务过滤（可选） -->
-            <div class="trace-form-field">
-              <label class="trace-label">服务（可选）</label>
-              <select v-model="traceService" class="time-select">
-                <option value="">全部服务</option>
-                <option v-for="s in services" :key="s.name" :value="s.name">{{ s.name }}</option>
-              </select>
-            </div>
+        <!-- 查询表单（单行紧凑工具栏） -->
+        <div class="trace-form-bar">
+          <!-- 追踪值输入 -->
+          <div class="trace-input-wrap trace-input-grow">
+            <span class="trace-input-icon">🔍</span>
+            <input
+              v-model="traceValue"
+              class="trace-input"
+              placeholder="追踪值：traceId、requestId、关键字..."
+              @keyup.enter="runTrace"
+            />
+            <button v-if="traceValue" class="kw-clear" @click="traceValue = ''">✕</button>
           </div>
-          <!-- 时间范围 -->
-          <div class="trace-form-row">
-            <div class="trace-form-field flex2">
-              <label class="trace-label">时间范围</label>
-              <div class="trace-time-wrap">
-                <div class="time-mode-tabs" style="width:fit-content">
-                  <button class="tmode-btn" :class="{ active: traceTimeMode === 'relative' }" @click="traceTimeMode = 'relative'">快速</button>
-                  <button class="tmode-btn" :class="{ active: traceTimeMode === 'custom' }" @click="traceTimeMode = 'custom'">自定义</button>
-                </div>
-                <select v-if="traceTimeMode === 'relative'" v-model="traceHours" class="time-select" style="width:140px">
-                  <option value="1">最近 1 小时</option>
-                  <option value="6">最近 6 小时</option>
-                  <option value="24">最近 24 小时</option>
-                  <option value="72">最近 3 天</option>
-                  <option value="168">最近 7 天</option>
-                </select>
-                <template v-else>
-                  <input type="datetime-local" v-model="traceStart" class="dt-input" title="开始时间" />
-                  <span class="dt-sep">→</span>
-                  <input type="datetime-local" v-model="traceEnd" class="dt-input" title="结束时间" />
-                </template>
-              </div>
-            </div>
-            <!-- 分析按钮 -->
-            <div class="trace-form-field" style="align-self:flex-end">
-              <button
-                class="btn btn-trace-primary"
-                @click="runTrace"
-                :disabled="!traceValue || tracingKeyword"
-              >
-                <span v-if="tracingKeyword" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-                <span v-else>⏱</span>
-                开始分析
-              </button>
-            </div>
+          <!-- 服务过滤 -->
+          <select v-model="traceService" class="time-select trace-bar-select" title="服务（可选）">
+            <option value="">全部服务</option>
+            <option v-for="s in services" :key="s.name" :value="s.name">{{ s.name }}</option>
+          </select>
+          <!-- 时间模式 -->
+          <div class="time-mode-tabs" style="width:fit-content;flex-shrink:0">
+            <button class="tmode-btn" :class="{ active: traceTimeMode === 'relative' }" @click="traceTimeMode = 'relative'">快速</button>
+            <button class="tmode-btn" :class="{ active: traceTimeMode === 'custom' }" @click="traceTimeMode = 'custom'">自定义</button>
           </div>
+          <select v-if="traceTimeMode === 'relative'" v-model="traceHours" class="time-select" style="width:120px;flex-shrink:0">
+            <option value="1">最近 1 小时</option>
+            <option value="6">最近 6 小时</option>
+            <option value="24">最近 24 小时</option>
+            <option value="72">最近 3 天</option>
+            <option value="168">最近 7 天</option>
+          </select>
+          <template v-else>
+            <input type="datetime-local" v-model="traceStart" class="dt-input" style="width:152px;flex-shrink:0" title="开始时间" />
+            <span class="dt-sep" style="flex-shrink:0">→</span>
+            <input type="datetime-local" v-model="traceEnd"   class="dt-input" style="width:152px;flex-shrink:0" title="结束时间" />
+          </template>
+          <!-- 分析按钮 -->
+          <button
+            class="btn btn-trace-primary"
+            @click="runTrace"
+            :disabled="!traceValue || tracingKeyword"
+            style="flex-shrink:0"
+          >
+            <span v-if="tracingKeyword" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+            <span v-else>⏱</span>
+            开始分析
+          </button>
         </div>
 
         <!-- 结果区 -->
@@ -948,29 +932,20 @@ onMounted(() => {
 ═══════════════════════════════════════ */
 .trace-tab {
   flex: 1; display: flex; flex-direction: column;
-  overflow: hidden; padding: 14px 16px; gap: 14px;
+  overflow: hidden; padding: 10px 16px; gap: 10px;
 }
 
-/* 查询表单卡片 */
-.trace-form-card {
+/* 查询工具栏（单行） */
+.trace-form-bar {
+  display: flex; align-items: center; gap: 8px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 18px;
-  display: flex; flex-direction: column; gap: 12px;
+  padding: 8px 12px;
   flex-shrink: 0;
 }
-.trace-form-row {
-  display: flex; gap: 12px; align-items: flex-start;
-}
-.trace-form-field {
-  display: flex; flex-direction: column; gap: 5px; min-width: 0;
-}
-.flex2 { flex: 2; }
-.trace-label {
-  font-size: 11px; font-weight: 500;
-  color: var(--text-muted); letter-spacing: .3px;
-}
+.trace-input-grow { flex: 1; min-width: 0; }
+.trace-bar-select { width: 130px; flex-shrink: 0; }
 .trace-input-wrap {
   display: flex; align-items: center;
   background: var(--bg-base);
@@ -986,13 +961,9 @@ onMounted(() => {
 .trace-input {
   flex: 1; background: transparent; border: none;
   color: var(--text-primary); font-size: 13px;
-  padding: 7px 0; outline: none;
+  padding: 6px 0; outline: none;
 }
 .trace-input::placeholder { color: var(--text-muted); }
-
-.trace-time-wrap {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-}
 
 /* 开始分析按钮 */
 .btn-trace-primary {
