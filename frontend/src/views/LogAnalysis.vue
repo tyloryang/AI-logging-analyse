@@ -216,7 +216,7 @@
           <!-- 时间模式 -->
           <div class="time-mode-tabs" style="width:fit-content;flex-shrink:0">
             <button class="tmode-btn" :class="{ active: traceTimeMode === 'relative' }" @click="traceTimeMode = 'relative'">快速</button>
-            <button class="tmode-btn" :class="{ active: traceTimeMode === 'custom' }" @click="traceTimeMode = 'custom'">自定义</button>
+            <button class="tmode-btn" :class="{ active: traceTimeMode === 'custom' }" @click="switchTraceToCustom">自定义</button>
           </div>
           <select v-if="traceTimeMode === 'relative'" v-model="traceHours" class="time-select" style="width:120px;flex-shrink:0">
             <option value="1">最近 1 小时</option>
@@ -424,6 +424,17 @@ const totalErrors = computed(() =>
   services.value.reduce((s, v) => s + v.error_count, 0)
 )
 
+// 返回今天 00:00 ~ 当前时刻的本地时间字符串（datetime-local 格式）
+function todayRange() {
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  return {
+    start: `${date}T00:00`,
+    end:   `${date}T${pad(now.getHours())}:${pad(now.getMinutes())}`,
+  }
+}
+
 // datetime-local 返回本地时间字符串，转成 UTC ISO 再发给后端
 function toUtcStr(localStr) {
   if (!localStr) return ''
@@ -561,6 +572,10 @@ function onTimeModeChange() {
     customStart.value = ''
     customEnd.value   = ''
     onParamChange()
+  } else {
+    const r = todayRange()
+    if (!customStart.value) customStart.value = r.start
+    if (!customEnd.value)   customEnd.value   = r.end
   }
 }
 
@@ -642,6 +657,13 @@ async function runTrace() {
       loadingTraceLogs.value = false
     }
   }
+}
+
+function switchTraceToCustom() {
+  traceTimeMode.value = 'custom'
+  const r = todayRange()
+  if (!traceStart.value) traceStart.value = r.start
+  if (!traceEnd.value)   traceEnd.value   = r.end
 }
 
 function toggleSpan(i) {
