@@ -69,6 +69,16 @@
             <span v-else>🤖</span> AI分析
           </button>
           <button
+            v-if="inspectResults.length && !inspecting && groups.length"
+            class="btn btn-outline"
+            :disabled="notifyingGroups"
+            @click="notifyGroups"
+            title="将告警主机按分组推送到飞书/钉钉"
+          >
+            <span v-if="notifyingGroups" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+            <span v-else>📤</span> 按分组推送
+          </button>
+          <button
             v-if="inspectResults.length && !inspecting"
             class="btn btn-excel"
             :disabled="excelDownloading"
@@ -106,6 +116,23 @@
         </div>
       </div>
 
+      <!-- 分组筛选 -->
+      <div v-if="groups.length" class="group-filter-bar">
+        <span class="label-filter-title">分组：</span>
+        <input
+          v-model="groupSearch"
+          class="group-filter-search"
+          placeholder="搜索分组..."
+        />
+        <button class="label-filter-chip" :class="{ active: groupFilter === '' }" @click="groupFilter = ''">全部（{{ hosts.length }}）</button>
+        <button
+          v-for="g in filteredGroupsForFilter" :key="g.id"
+          class="label-filter-chip"
+          :class="{ active: groupFilter === g.id }"
+          @click="groupFilter = groupFilter === g.id ? '' : g.id"
+        >{{ g.name }}（{{ g.host_count || 0 }}）</button>
+      </div>
+
       <!-- 表格滚动区 -->
       <div class="table-wrap">
       <div v-if="loading && !hosts.length" class="empty-state">
@@ -141,7 +168,10 @@
         <tbody>
           <tr v-for="h in sortedHosts" :key="h.instance" @click="selectHost(h)">
             <td><span class="dot" :class="h.state === 'up' ? 'ok' : 'err'"></span></td>
-            <td class="hostname">{{ h.hostname || h.instance }}</td>
+            <td class="hostname">
+              {{ h.hostname || h.instance }}
+              <span v-if="h.group && groupMap[h.group]" class="group-badge-inline">{{ groupMap[h.group] }}</span>
+            </td>
             <td>{{ h.ip }}</td>
             <td v-if="visibleCols.has('job')" class="small-text">{{ h.job || '-' }}</td>
             <td v-if="visibleCols.has('cpu')" :class="usageClass(h.metrics.cpu_usage)">{{ fmt(h.metrics.cpu_usage, '%') }}</td>
@@ -551,6 +581,17 @@ const selectedGroup  = ref(null)
 const groupSaving    = ref(false)
 const groupForm      = reactive({ visible: false, id: '', name: '', feishu_webhook: '', feishu_keyword: '', dingtalk_webhook: '', dingtalk_keyword: '' })
 
+// CMDB 列表：按分组筛选（分组多时可搜索）
+const groupFilter = ref('')
+const groupSearch = ref('')
+const groupMap = computed(() => Object.fromEntries((groups.value || []).map(g => [g.id, g.name])))
+const filteredGroupsForFilter = computed(() => {
+  const kw = groupSearch.value.trim().toLowerCase()
+  const list = [...(groups.value || [])].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+  if (!kw) return list
+  return list.filter(g => String(g.name || '').toLowerCase().includes(kw) || String(g.id || '').toLowerCase().includes(kw))
+})
+
 const groupHosts = computed(() => {
   if (!selectedGroup.value) return []
   return hosts.value.filter(h => h.group === selectedGroup.value.id)
@@ -704,8 +745,12 @@ function setSort(key) {
 }
 
 const filteredHosts = computed(() => {
-  if (!labelFilters.value.size) return hosts.value
-  return hosts.value.filter(h => {
+  let base = hosts.value
+  if (groupFilter.value) {
+    base = base.filter(h => h.group === groupFilter.value)
+  }
+  if (!labelFilters.value.size) return base
+  return base.filter(h => {
     for (const [key, vals] of labelFilters.value) {
       const hv = (h.custom_labels || {})[key]
       if (!vals.has(hv)) return false
@@ -904,11 +949,25 @@ async function saveHost() {
 
 const inspectAiStreaming = ref(false)
 const excelDownloading = ref(false)
+const notifyingGroups = ref(false)
 
 function switchToInspect() {
   tab.value = 'inspect'
   if (!inspecting.value && !inspectResults.value.length) {
     runInspect()
+  }
+}
+
+async function notifyGroups(resultsOverride = null) {
+  const results = resultsOverride ?? inspectResults.value
+  if (notifyingGroups.value || !results?.length) return
+  notifyingGroups.value = true
+  try {
+    await api.notifyInspectGroups({ results })
+  } catch (e) {
+    alert('按分组推送失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+  } finally {
+    notifyingGroups.value = false
   }
 }
 
@@ -932,6 +991,8 @@ async function runInspect() {
       const data = await resp.json()
       inspectResults.value = data.data || []
       inspectSummary.value = data.summary || {}
+      // 手动巡检：对齐定时推送，自动按分组推送到各群
+      notifyGroups(inspectResults.value)
       inspecting.value = false
       return
     }
@@ -956,6 +1017,8 @@ async function runInspect() {
           if (msg.type === 'inspect_data') {
             inspectResults.value = msg.data
             inspectSummary.value = msg.summary
+            // 手动巡检：对齐定时推送，自动按分组推送到各群
+            notifyGroups(msg.data)
             inspecting.value = false
           } else if (msg.type === 'error') {
             inspectError.value = msg.message || '巡检失败'
@@ -1441,6 +1504,37 @@ onBeforeUnmount(() => {
   color: var(--text-muted); transition: all .15s;
 }
 .label-filter-clear:hover { color: var(--error); border-color: var(--error); }
+
+/* 鈹€鈹€ 分组筛选（CMDB 主表）鈹€鈹€ */
+.group-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.group-filter-search {
+  width: 180px; max-width: 48vw;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  outline: none;
+}
+.group-filter-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(82,130,255,.15); }
+.group-badge-inline {
+  display: inline-flex; align-items: center;
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  border: 1px solid rgba(82,130,255,.35);
+  background: rgba(82,130,255,.12);
+  color: #7aa6ff;
+}
 .action-cell { width: 40px; white-space: nowrap; }
 .label-cell { max-width: 260px; }
 .label-chips-wrap { display: flex; flex-wrap: wrap; gap: 2px; max-height: 44px; overflow: hidden; }

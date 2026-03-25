@@ -33,6 +33,7 @@ export const api = {
   updateHost:     (instance, data) => http.put(`/hosts/${instance}`, data),
   inspectHosts:   () => http.get('/hosts/inspect'),
   inspectHost:    (instance) => http.get(`/hosts/${instance}/inspect`),
+  notifyInspectGroups: (data) => http.post('/hosts/inspect/notify-groups', data),
   // SSH 凭证库
   listCredentials:   () => http.get('/ssh/credentials'),
   createCredential:  (data) => http.post('/ssh/credentials', data),

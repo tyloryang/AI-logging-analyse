@@ -87,6 +87,19 @@
         <div class="card panel-card">
           <div class="card-header">
             <h3>主机状态</h3>
+            <div v-if="groups.length" class="host-group-filter">
+              <input
+                v-model="groupSearch"
+                class="host-group-search"
+                placeholder="搜索分组..."
+              />
+              <select v-model="groupFilter" class="host-group-select">
+                <option value="">全部分组</option>
+                <option v-for="g in filteredGroupsForSelect" :key="g.id" :value="g.id">
+                  {{ g.name }}（{{ g.host_count || 0 }}）
+                </option>
+              </select>
+            </div>
           </div>
           <div v-if="hosts.length" class="host-list">
             <!-- 表头行，与数据行完全相同的 flex 结构 -->
@@ -98,6 +111,9 @@
                 主机名<em>{{ sortKey === 'hostname' ? (sortAsc ? ' ↑' : ' ↓') : '' }}</em>
               </span>
               <span class="host-ip col-hd">IP</span>
+              <span class="host-group col-hd" @click="toggleSort('group')">
+                分组<em>{{ sortKey === 'group' ? (sortAsc ? ' ↑' : ' ↓') : '' }}</em>
+              </span>
               <div class="host-metrics">
                 <span class="metric-tag col-hd" @click="toggleSort('cpu')">
                   CPU<em>{{ sortKey === 'cpu' ? (sortAsc ? '↑' : '↓') : '' }}</em>
@@ -131,6 +147,7 @@
               </span>
               <span class="host-name">{{ h.hostname || h.ip }}</span>
               <span class="host-ip mono">{{ h.ip }}</span>
+              <span class="host-group">{{ groupMap[h.group] || h.group || '-' }}</span>
               <div class="host-metrics">
                 <span class="metric-tag" :class="cpuClass(h.metrics.cpu_usage)">
                   CPU {{ h.metrics.cpu_usage != null ? h.metrics.cpu_usage + '%' : '-' }}
@@ -190,6 +207,17 @@ const errorMetrics = ref([])
 const totalErrors  = ref(0)
 const hosts        = ref([])
 const hostError    = ref(false)
+const groups       = ref([])
+const groupFilter  = ref('')
+const groupSearch  = ref('')
+
+const groupMap = computed(() => Object.fromEntries((groups.value || []).map(g => [g.id, g.name])))
+const filteredGroupsForSelect = computed(() => {
+  const kw = groupSearch.value.trim().toLowerCase()
+  const list = [...(groups.value || [])].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+  if (!kw) return list
+  return list.filter(g => String(g.name || '').toLowerCase().includes(kw) || String(g.id || '').toLowerCase().includes(kw))
+})
 
 const maxCount = computed(() => Math.max(...errorMetrics.value.map(e => e.count), 1))
 const barWidth = (n) => Math.round(n / maxCount.value * 100)
@@ -298,6 +326,7 @@ const sortAsc = ref(true)
 const sortCols = [
   { key: 'state',     label: '状态' },
   { key: 'hostname',  label: '主机名' },
+  { key: 'group',     label: '分组' },
   { key: 'cpu',       label: 'CPU' },
   { key: 'mem',       label: 'MEM' },
   { key: 'disk',      label: '磁盘' },
@@ -312,12 +341,14 @@ function toggleSort(key) {
 }
 
 const sortedHosts = computed(() => {
-  const list = [...hosts.value]
+  const base = !groupFilter.value ? hosts.value : hosts.value.filter(h => h.group === groupFilter.value)
+  const list = [...base]
   const dir = sortAsc.value ? 1 : -1
   list.sort((a, b) => {
     switch (sortKey.value) {
       case 'state':    return dir * ((a.state === 'up' ? 0 : 1) - (b.state === 'up' ? 0 : 1))
       case 'hostname': return dir * (a.hostname || a.ip).localeCompare(b.hostname || b.ip)
+      case 'group':    return dir * String(groupMap.value[a.group] || a.group || '').localeCompare(String(groupMap.value[b.group] || b.group || ''))
       case 'cpu':      return dir * ((a.metrics?.cpu_usage  ?? -1) - (b.metrics?.cpu_usage  ?? -1))
       case 'mem':      return dir * ((a.metrics?.mem_usage  ?? -1) - (b.metrics?.mem_usage  ?? -1))
       case 'disk':     return dir * ((maxDisk(a) ?? -1) - (maxDisk(b) ?? -1))
@@ -340,6 +371,11 @@ onMounted(async () => {
   if (hostsRes) hosts.value = hostsRes.data ?? []
   else hostError.value = true
   loading.value = false   // ← 立即显示，不再 loading
+
+  // groups：用于“主机状态”分组列与分组筛选
+  api.listGroups().then(r => {
+    groups.value = r.data ?? []
+  }).catch(() => {})
 
   // Loki 数据慢（~10s），后台继续加载，填入后 Vue 自动更新
   api.getServices().then(r => {
@@ -504,6 +540,7 @@ onMounted(async () => {
 .host-state-badge.err { background: rgba(248,81,73,.12);  color: var(--error);   }
 .host-name { flex: 1; min-width: 80px; max-width: 140px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .host-ip   { width: 110px; flex-shrink: 0; color: var(--text-muted); font-size: 11px; }
+.host-group { width: 120px; flex-shrink: 0; color: var(--text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .host-metrics { display: flex; gap: 4px; flex: 2; flex-wrap: nowrap; }
 /* fixed min-width aligns header with data */
 .metric-tag {
@@ -514,6 +551,30 @@ onMounted(async () => {
 .metric-tag.ok   { background: rgba(63,185,80,.1);  color: var(--success); }
 .metric-tag.warn { background: rgba(210,153,34,.12); color: var(--warning); }
 .metric-tag.crit { background: rgba(248,81,73,.12);  color: var(--error);   }
+
+.host-group-filter { display: flex; align-items: center; gap: 8px; }
+.host-group-search {
+  width: 160px; max-width: 40vw;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  outline: none;
+}
+.host-group-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(82,130,255,.15); }
+.host-group-select {
+  height: 28px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0 10px;
+  outline: none;
+}
 
 @media (max-width: 900px) {
   .stats-row  { grid-template-columns: 1fr; }

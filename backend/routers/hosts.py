@@ -235,6 +235,21 @@ class InspectExcelRequest(BaseModel):
     ai_text: str = ""
 
 
+class NotifyGroupsRequest(BaseModel):
+    results: list
+
+
+@router.post("/api/hosts/inspect/notify-groups")
+async def notify_groups_inspect(req: NotifyGroupsRequest):
+    """将巡检结果按分组推送到飞书/钉钉（手动巡检后按需触发）"""
+    try:
+        from scheduler import _send_group_inspect_notifications
+        await _send_group_inspect_notifications(req.results)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/hosts/inspect/excel")
 async def export_inspect_excel(req: InspectExcelRequest):
     """根据传入的巡检结果生成 Excel 文件并下载"""
