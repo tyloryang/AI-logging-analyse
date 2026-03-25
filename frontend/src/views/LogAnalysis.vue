@@ -365,7 +365,8 @@
                   <div
                     v-for="(log, i) in traceLogs" :key="i"
                     class="trace-span-row"
-                    :class="logClass(log.line)"
+                    :class="[logClass(log.line), { expanded: expandedSpans.has(i) }]"
+                    @click="toggleSpan(i)"
                   >
                     <div class="trace-span-idx">{{ i + 1 }}</div>
                     <div class="trace-span-elapsed">{{ spanElapsed(log) }}</div>
@@ -472,6 +473,7 @@ const traceLogs        = ref([])
 const tracingKeyword   = ref(false)   // trace API 请求中
 const loadingTraceLogs = ref(false)   // 日志列表加载中（独立状态）
 const traceResultTab   = ref('overview')  // 结果子页签：overview | logs
+const expandedSpans    = ref(new Set())   // 已展开的行索引
 
 const renderedAI = computed(() =>
   aiContent.value
@@ -618,6 +620,7 @@ async function runTrace() {
   traceResult.value = null
   traceLogs.value = []
   traceResultTab.value = 'overview'
+  expandedSpans.value = new Set()
 
   let tp
   try { tp = traceTimeParams() } catch { tracingKeyword.value = false; return }
@@ -655,6 +658,12 @@ async function runTrace() {
       loadingTraceLogs.value = false
     }
   }
+}
+
+function toggleSpan(i) {
+  const s = new Set(expandedSpans.value)
+  s.has(i) ? s.delete(i) : s.add(i)
+  expandedSpans.value = s
 }
 
 function spanElapsed(log) {
@@ -1184,10 +1193,11 @@ onMounted(() => {
   font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 11px;
 }
 .trace-span-row {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: flex-start; gap: 8px;
   padding: 5px 14px;
   border-bottom: 1px solid rgba(46,49,80,.35);
   transition: background .1s;
+  cursor: pointer;
 }
 .trace-span-row:hover { background: var(--bg-hover); }
 .trace-span-row.level-error { background: var(--log-error); }
@@ -1220,5 +1230,17 @@ onMounted(() => {
 .trace-span-line {
   flex: 1; color: var(--text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 1.5; padding-top: 1px;
+}
+.trace-span-row.expanded .trace-span-line {
+  white-space: pre-wrap; word-break: break-all;
+  text-overflow: unset; overflow: visible;
+}
+.trace-span-idx,
+.trace-span-elapsed,
+.trace-span-bar-wrap,
+.trace-span-ts,
+.trace-ep-svc {
+  flex-shrink: 0; margin-top: 2px;
 }
 </style>
