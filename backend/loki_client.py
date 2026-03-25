@@ -10,7 +10,8 @@ class LokiClient:
     def __init__(self, base_url: str, username: str = "", password: str = ""):
         self.base_url = base_url.rstrip("/")
         self.auth = (username, password) if username else None
-        self.timeout = httpx.Timeout(30.0)   # 标签/服务查询；流式分析走 stream=True 不受此限制
+        self.timeout      = httpx.Timeout(60.0)   # 常规查询
+        self.scan_timeout = httpx.Timeout(120.0)  # 大量日志扫描（trace/聚类）
 
     def _headers(self) -> dict:
         return {"Content-Type": "application/json"}
@@ -95,10 +96,12 @@ class LokiClient:
         end_ts: Optional[int] = None,
         limit: int = 5000,
         direction: str = "backward",
+        use_scan_timeout: bool = False,
     ) -> list[dict]:
         """
         查询日志范围，返回日志条目列表（自动分页，突破 Loki 单次 5000 条限制）。
         每条: {"timestamp": str, "line": str, "labels": dict}
+        use_scan_timeout: 大量扫描时使用更长的超时（trace/聚类等）
         """
         now = int(time.time() * 1e9)
         start = start_ts if start_ts else now - 86400 * int(1e9)
@@ -108,7 +111,8 @@ class LokiClient:
         remaining = limit
         cur_start, cur_end = start, end
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        timeout = self.scan_timeout if use_scan_timeout else self.timeout
+        async with httpx.AsyncClient(timeout=timeout) as client:
             while remaining > 0:
                 page_limit = min(remaining, self.LOKI_PAGE_SIZE)
                 page = await self._fetch_page(client, query, cur_start, cur_end, page_limit, direction)
@@ -151,12 +155,14 @@ class LokiClient:
         keyword: Optional[str] = None,
         start_ns: Optional[int] = None,
         end_ns: Optional[int] = None,
+        use_scan_timeout: bool = False,
     ) -> list[dict]:
         """
         查询日志，自动适配 app / job 标签。
         level:    None=全部, 'error'=错误级别, 'warn'=警告级别
         keyword:  关键字过滤（不区分大小写）
         start_ns / end_ns: 自定义时间范围（纳秒时间戳），优先于 hours
+        use_scan_timeout: 大量扫描时传 True，使用 scan_timeout（120s）
         """
         now_ns = int(time.time() * 1e9)
         s_ns = start_ns if start_ns is not None else int(now_ns - hours * 3600 * 1e9)
@@ -180,7 +186,7 @@ class LokiClient:
             safe_kw = re.escape(keyword)
             query += f' |~ "(?i){safe_kw}"'
 
-        return await self.query_range(query, s_ns, e_ns, limit)
+        return await self.query_range(query, s_ns, e_ns, limit, use_scan_timeout=use_scan_timeout)
 
     async def query_error_logs(
         self,

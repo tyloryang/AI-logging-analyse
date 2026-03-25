@@ -156,6 +156,7 @@ async def trace_keyword(
             keyword=keyword,
             start_ns=_parse_time_ns(start_time),
             end_ns=_parse_time_ns(end_time),
+            use_scan_timeout=True,   # 大量扫描使用 120s 超时
         )
         if not logs:
             return {"found": False, "keyword": keyword, "log_count": 0}

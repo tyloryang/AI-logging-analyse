@@ -266,10 +266,18 @@
           <small style="color:var(--text-muted)">最多扫描 50,000 条匹配日志</small>
         </div>
         <div v-else-if="traceResult" class="trace-result">
-          <!-- 未找到 -->
+          <!-- 未找到 / 请求失败 -->
           <div v-if="!traceResult.found" class="trace-not-found">
-            <span class="icon">🔍</span>
-            <p>在指定时间范围内未找到包含 <em>{{ traceResult.keyword }}</em> 的日志</p>
+            <span class="icon" style="font-size:28px">{{ traceResult._error ? '⚠️' : '🔍' }}</span>
+            <p v-if="traceResult._error" style="color:var(--error);font-size:13px">
+              请求失败：{{ traceResult._error }}
+            </p>
+            <p v-else>
+              在指定时间范围内未找到包含 <em>{{ traceResult.keyword }}</em> 的日志
+            </p>
+            <small v-if="!traceResult._error" style="color:var(--text-muted)">
+              请检查关键字拼写、时间范围或服务选择是否正确
+            </small>
           </div>
           <!-- 找到了 -->
           <template v-else>
@@ -369,10 +377,16 @@ const totalErrors = computed(() =>
   services.value.reduce((s, v) => s + v.error_count, 0)
 )
 
+// datetime-local 返回本地时间字符串，转成 UTC ISO 再发给后端
+function toUtcStr(localStr) {
+  if (!localStr) return ''
+  return new Date(localStr).toISOString().slice(0, 16)   // "2025-03-25T02:00"
+}
+
 // 构建时间参数（relative 或 custom）
 function timeParams() {
   if (timeMode.value === 'custom' && customStart.value && customEnd.value) {
-    return { start_time: customStart.value, end_time: customEnd.value }
+    return { start_time: toUtcStr(customStart.value), end_time: toUtcStr(customEnd.value) }
   }
   return { hours: hours.value }
 }
@@ -517,12 +531,12 @@ function clearKeyword() {
 
 function traceTimeParams() {
   if (traceTimeMode.value === 'custom' && traceStart.value && traceEnd.value) {
-    // 校验结束时间不早于开始时间
     if (traceEnd.value < traceStart.value) {
       alert('结束时间不能早于开始时间')
       throw new Error('invalid time range')
     }
-    return { start_time: traceStart.value, end_time: traceEnd.value }
+    // 本地时间 → UTC，避免服务端按 UTC 错误解析
+    return { start_time: toUtcStr(traceStart.value), end_time: toUtcStr(traceEnd.value) }
   }
   return { hours: traceHours.value }
 }
