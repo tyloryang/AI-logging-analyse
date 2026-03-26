@@ -16,6 +16,7 @@ import SettingsView from '../views/SettingsView.vue'
 import View403 from '../views/View403.vue'
 import SlowLogView from '../views/SlowLogView.vue'
 import AIAgent from '../views/AIAgent.vue'
+import SkyWalkingView from '../views/SkyWalkingView.vue'
 
 const routes = [
   // 公开路由
@@ -33,7 +34,8 @@ const routes = [
   { path: '/hosts',   component: HostCMDB,       name: 'hosts',     meta: { module: 'cmdb' } },
   { path: '/ssh',     component: SSHTerminal,    name: 'ssh',       meta: { module: 'ssh'  } },
   { path: '/slowlog', component: SlowLogView,    name: 'slowlog',   meta: { module: 'slowlog' } },
-  { path: '/agent',   component: AIAgent,        name: 'agent',     meta: { module: 'agent'   } },
+  { path: '/agent',       component: AIAgent,         name: 'agent',       meta: { module: 'agent'       } },
+  { path: '/skywalking',  component: SkyWalkingView,  name: 'skywalking',  meta: { module: 'skywalking'  } },
   { path: '/profile', component: ProfileView,    name: 'profile' },
   { path: '/admin/users',    component: AdminUsers,   name: 'admin-users', meta: { admin: true } },
   { path: '/settings',       component: SettingsView, name: 'settings',    meta: { admin: true } },

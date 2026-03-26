@@ -22,7 +22,8 @@ SYSTEM_MODULES = [
     {"id": "ssh",       "name": "SSH 终端", "description": "Web SSH 终端"},
     {"id": "slowlog",   "name": "慢日志分析","description": "MySQL 慢查询日志分析"},
     {"id": "admin",     "name": "用户管理", "description": "用户、权限与审计"},
-    {"id": "agent",     "name": "AI 智能体","description": "LangGraph 根因分析、自主巡检、智能对话"},
+    {"id": "agent",      "name": "AI 智能体",  "description": "LangGraph 根因分析、自主巡检、智能对话"},
+    {"id": "skywalking", "name": "APM 链路追踪","description": "SkyWalking 追踪、拓扑、性能指标"},
 ]
 
 

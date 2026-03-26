@@ -69,6 +69,14 @@ export const api = {
   adminSetPermissions: (id, data) => http.put(`/admin/users/${id}/permissions`, data),
   adminListModules: () => http.get('/admin/modules'),
   adminAuditLogs:  (params) => http.get('/admin/audit-logs', { params }),
+  // SkyWalking APM
+  swGetServices:    (hours = 1)           => http.get('/sw/services', { params: { hours } }),
+  swGetInstances:   (params)              => http.get('/sw/instances', { params }),
+  swGetEndpoints:   (params)             => http.get('/sw/endpoints', { params }),
+  swGetTraces:      (params)             => http.get('/sw/traces', { params }),
+  swGetTraceDetail: (traceId)            => http.get(`/sw/traces/${traceId}`),
+  swGetTopology:    (params)             => http.get('/sw/topology', { params }),
+  swGetMetrics:     (params)             => http.get('/sw/metrics', { params }),
   // 主机分组
   listGroups:    ()         => http.get('/groups'),
   createGroup:   (data)     => http.post('/groups', data),

@@ -10,6 +10,7 @@ import httpx
 from fastapi import APIRouter
 
 from state import loki, prom, analyzer, LOKI_URL, LOKI_USERNAME, LOKI_PASSWORD, PROMETHEUS_URL
+from skywalking_client import check_connectivity as sw_check, SKYWALKING_OAP_URL
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,7 +38,7 @@ async def health():
             logger.warning("[health] Prometheus 连接失败: %s", e)
             return False
 
-    loki_ok, prom_ok = await asyncio.gather(_check_loki(), _check_prom())
+    loki_ok, prom_ok, sw_ok = await asyncio.gather(_check_loki(), _check_prom(), sw_check())
 
     try:
         ai_name = analyzer.provider_name
@@ -53,7 +54,9 @@ async def health():
         "loki_url":             LOKI_URL,
         "prometheus_connected": prom_ok,
         "prometheus_url":       PROMETHEUS_URL,
-        "ai_provider":          ai_name,
-        "ai_ready":             ai_ok,
-        "timestamp":            datetime.now(timezone.utc).isoformat(),
+        "ai_provider":            ai_name,
+        "ai_ready":               ai_ok,
+        "skywalking_connected":   sw_ok,
+        "skywalking_url":         SKYWALKING_OAP_URL,
+        "timestamp":              datetime.now(timezone.utc).isoformat(),
     }
