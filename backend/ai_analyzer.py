@@ -157,13 +157,50 @@ class AIAnalyzer:
         service: str = "",
         extra_context: str = "",
     ) -> AsyncIterator[str]:
-        """流式分析日志"""
-        sample = logs[:200]
-        log_text = "\n".join(f"[{l['timestamp']}] {l['line'][:200]}" for l in sample)
+        """流式分析日志（智能采样：error优先 + 去重 + 近期优先）"""
+        # ── 分层采样 ──────────────────────────────────────────────────
+        # logs 已按时间倒序（最新在前）
+        BUDGET = 300
+
+        def _level(line: str) -> int:
+            l = line.lower()
+            if any(k in l for k in ("panic", "fatal", "critical")): return 4
+            if "error" in l or "exception" in l or "traceback" in l:  return 3
+            if "warn" in l:                                            return 2
+            return 1
+
+        # 去除完全重复的行（保留最新一条）
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for log in logs:
+            key = log["line"][:120]   # 用前120字符做去重键
+            if key not in seen:
+                seen.add(key)
+                deduped.append(log)
+
+        # 按严重级别分组
+        by_level: dict[int, list] = {4: [], 3: [], 2: [], 1: []}
+        for log in deduped:
+            by_level[_level(log["line"])].append(log)
+
+        # 按预算比例采样：严重(4)>error(3)>warn(2)>info(1)
+        weights = {4: 0.30, 3: 0.50, 2: 0.15, 1: 0.05}
+        sample: list[dict] = []
+        for lv in (4, 3, 2, 1):
+            quota = max(1, int(BUDGET * weights[lv]))
+            sample.extend(by_level[lv][:quota])
+        sample = sample[:BUDGET]
+
+        # 按时间升序展示（更符合阅读习惯）
+        sample.sort(key=lambda x: x.get("timestamp_ns", 0))
+
+        log_text = "\n".join(
+            f"[{l['timestamp']}] {l['line'][:200]}" for l in sample
+        )
 
         prompt = f"""你是一名资深 SRE（网站可靠性工程师），请对以下{'服务 ' + service + ' 的' if service else ''}日志进行深度分析。
 
-日志样本（共 {len(logs)} 条，展示前 {len(sample)} 条）：
+采样说明：原始日志 {len(logs)} 条，去重后 {len(deduped)} 条，按严重级别优先采样展示 {len(sample)} 条（最新优先）：
 ```
 {log_text}
 ```
@@ -327,6 +364,7 @@ class AIAnalyzer:
         self,
         templates: list[dict],
         service: str = "",
+        extra_hint: str = "",
     ) -> AsyncIterator[str]:
         """流式分析日志模板聚类结果"""
         total_logs = sum(t.get("count", 0) for t in templates)
@@ -338,7 +376,7 @@ class AIAnalyzer:
             tpl_lines.append(f"{i}. [{cnt}条/{pct}] 模板: {t.get('template', '')[:200]}"
                              + (f"\n   来源服务: {svcs}" if svcs else ""))
 
-        prompt = f"""你是一名资深 SRE，请分析以下{'服务 ' + service + ' 的' if service else ''}日志模板聚类结果。
+        prompt = f"""你是一名资深 SRE，请分析以下{'服务 ' + service + ' 的' if service else ''}日志模板聚类结果。{(' ' + extra_hint) if extra_hint else ''}
 
 聚类统计（共 {total_logs} 条日志，{len(templates)} 个模板，展示前 {len(tpl_lines)} 个）：
 {chr(10).join(tpl_lines)}

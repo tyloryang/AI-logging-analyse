@@ -251,22 +251,61 @@ async def analyze_templates_stream(
 
 @router.get("/api/analyze/stream")
 async def analyze_logs_stream(
-    service: Optional[str] = Query(None),
-    hours: int = Query(24),
+    service:    Optional[str] = Query(None),
+    hours:      int           = Query(24),
+    level:      Optional[str] = Query(None),
+    keyword:    Optional[str] = Query(None),
+    start_time: Optional[str] = Query(None),
+    end_time:   Optional[str] = Query(None),
 ):
-    """流式 AI 分析日志（SSE）"""
+    """流式 AI 分析日志（SSE）
+
+    策略：
+    1. 拉取当前过滤条件下的日志（与日志流保持一致）
+    2. 优先取 error/warn，近期优先，去除重复行
+    3. 超过 300 条时先用 Drain3 聚类，将摘要发给 AI（避免超出上下文）
+    """
     try:
-        logs = await loki.query_error_logs(service=service, hours=hours)
+        logs = await loki.query_logs(
+            service=service,
+            hours=hours,
+            limit=5000,
+            level=level or "error",        # 默认只分析错误日志
+            keyword=keyword or None,
+            start_ns=_parse_time_ns(start_time),
+            end_ns=_parse_time_ns(end_time),
+            use_scan_timeout=True,
+        )
+
         if not logs:
             async def empty():
-                yield "data: 该时间范围内未发现错误日志。\n\n"
+                yield "data: 该时间范围内未发现符合条件的日志。\n\n"
                 yield "data: [DONE]\n\n"
             return StreamingResponse(empty(), media_type="text/event-stream")
 
+        # ── 智能采样 ─────────────────────────────────────────────────
+        # 日志已按时间倒序（最新在前），优先保留最近的高严重性日志
+        SAMPLE_LIMIT = 300
+
+        if len(logs) <= SAMPLE_LIMIT:
+            sample = logs
+            use_cluster = False
+        else:
+            # 超过阈值：先聚类，用模板摘要替代原始日志喂给 AI
+            use_cluster = True
+            templates = clusterer.cluster(logs, top_n=40)
+
         async def generate():
             try:
-                async for chunk in analyzer.analyze_logs_stream(logs, service or ""):
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                if use_cluster:
+                    async for chunk in analyzer.analyze_templates_stream(
+                        templates, service or "",
+                        extra_hint=f"（原始日志 {len(logs)} 条，已聚类为 {len(templates)} 个模板）",
+                    ):
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                else:
+                    async for chunk in analyzer.analyze_logs_stream(sample, service or ""):
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as exc:
                 logger.exception("AI 分析流式输出异常")

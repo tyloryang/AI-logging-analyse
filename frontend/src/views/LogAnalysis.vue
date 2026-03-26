@@ -748,9 +748,12 @@ function switchTab(tab) {
 function startAIAnalysis() {
   aiContent.value = ''
   analyzingAI.value = true
-  const tp = timeParams()
-  const params = new URLSearchParams(tp)
-  if (selectedService.value) params.set('service', selectedService.value)
+  const params = new URLSearchParams({
+    ...timeParams(),
+    ...(selectedService.value ? { service: selectedService.value } : {}),
+    ...(levelFilter.value     ? { level:   levelFilter.value     } : {}),
+    ...(keyword.value         ? { keyword: keyword.value         } : {}),
+  })
   streamSSE(
     `/api/analyze/stream?${params}`,
     (chunk) => { try { aiContent.value += JSON.parse(chunk) } catch { aiContent.value += chunk } },
