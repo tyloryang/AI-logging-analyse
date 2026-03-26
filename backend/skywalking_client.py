@@ -307,7 +307,7 @@ class SkyWalkingClient:
             query {{
               getServiceTopology(serviceId: "{service_id}", duration: {dur_inline}) {{
                 nodes {{ id name type isReal }}
-                calls {{ id source target callType detectPoints }}
+                calls {{ id source target sourceComponents targetComponents detectPoints }}
               }}
             }}
             """)
@@ -317,7 +317,7 @@ class SkyWalkingClient:
             query {{
               getGlobalTopology(duration: {dur_inline}) {{
                 nodes {{ id name type isReal }}
-                calls {{ id source target callType detectPoints }}
+                calls {{ id source target sourceComponents targetComponents detectPoints }}
               }}
             }}
             """)
@@ -375,6 +375,49 @@ class SkyWalkingClient:
             "error_rate": error_rate,
             "duration":   dur,
         }
+
+
+    # ── 接口耗时 TopN ─────────────────────────────────────────────────────────
+    async def get_endpoint_topn(
+        self,
+        hours: int = 24,
+        top_n: int = 20,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> list[dict]:
+        dur = _build_duration(hours, start_time, end_time)
+        results = []
+        for metric, label in (
+            ("endpoint_avg", "avg_ms"),
+            ("endpoint_cpm", "cpm"),
+            ("endpoint_sla", "sla"),
+        ):
+            try:
+                data = await _gql("""
+                query TopN($d: Duration!, $name: String!, $n: Int!) {
+                  getAllEndpointTopN(duration: $d, name: $name, topN: $n, order: DES) {
+                    name value
+                  }
+                }
+                """, {"d": dur, "name": metric, "n": top_n})
+                items = data.get("getAllEndpointTopN") or []
+                if label == "avg_ms":
+                    results = items   # 以耗时排序为主列表
+                    for item in results:
+                        item["avg_ms"] = item.pop("value", 0)
+                else:
+                    # 合并到主列表
+                    lookup = {it["name"]: it["value"] for it in items}
+                    for item in results:
+                        item[label] = lookup.get(item["name"], 0)
+            except Exception as exc:
+                logger.debug("[SW] endpoint_topn %s failed: %s", metric, exc)
+
+        # 处理 sla: 10000 → 100.00%
+        for item in results:
+            raw_sla = item.get("sla", 0)
+            item["sla"] = round(raw_sla / 100, 2) if raw_sla else 0
+        return results
 
 
 # 全局单例

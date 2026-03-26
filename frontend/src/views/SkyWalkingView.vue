@@ -309,7 +309,7 @@
       </div>
 
       <!-- ════════════════════ 性能指标 Tab ════════════════════ -->
-      <div v-show="activeTab === 'metrics'" class="sw-tab-content">
+      <div v-show="activeTab === 'metrics'" class="sw-tab-content" style="flex-direction:column;overflow-y:auto">
         <div class="sw-metrics-toolbar">
           <span v-if="!selectedSvc" class="sw-hint">← 请先选择服务</span>
           <template v-else>
@@ -420,6 +420,41 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- 接口耗时 TopN -->
+        <div class="sw-endpoint-topn">
+          <div class="sw-mc-header" style="padding:12px 16px 8px">
+            <span class="sw-mc-title">接口耗时排行（全局 Top {{ endpointTopN.length }}）</span>
+            <button class="sw-btn sw-btn-outline" style="margin-left:auto" @click="loadEndpointTopN" :disabled="loadingTopN">
+              <span v-if="loadingTopN" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
+              <span v-else>🔄</span>
+            </button>
+          </div>
+          <div v-if="loadingTopN" style="padding:12px;color:var(--text-muted);font-size:12px">加载中...</div>
+          <div v-else-if="!endpointTopN.length" style="padding:12px;color:var(--text-muted);font-size:12px">暂无接口数据</div>
+          <table v-else class="sw-topn-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>接口</th>
+                <th>平均耗时</th>
+                <th>成功率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(ep, i) in endpointTopN" :key="ep.name">
+                <td class="sw-topn-rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</td>
+                <td class="sw-topn-name">{{ ep.name }}</td>
+                <td class="sw-topn-val" :class="ep.avg_ms > 1000 ? 'val-err' : ep.avg_ms > 300 ? 'val-warn' : 'val-ok'">
+                  {{ ep.avg_ms }} ms
+                </td>
+                <td class="sw-topn-sla" :class="ep.sla < 90 ? 'val-err' : ep.sla < 99 ? 'val-warn' : 'val-ok'">
+                  {{ ep.sla }}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -571,6 +606,8 @@ function selectNodeService(n) {
 const metrics        = ref(null)
 const instances      = ref([])
 const loadingMetrics = ref(false)
+const endpointTopN   = ref([])
+const loadingTopN    = ref(false)
 
 const avgRespTime  = computed(() => avg(metrics.value?.resp_time  || []))
 const avgThroughput= computed(() => avg(metrics.value?.throughput || []))
@@ -769,6 +806,17 @@ async function loadInstances() {
   }
 }
 
+async function loadEndpointTopN() {
+  loadingTopN.value = true
+  try {
+    endpointTopN.value = await api.swGetEndpointTopN({ hours: Number(hours.value), top_n: 20 })
+  } catch {
+    endpointTopN.value = []
+  } finally {
+    loadingTopN.value = false
+  }
+}
+
 function selectService(svc) {
   selectedSvc.value = svc
   selectedTrace.value = null
@@ -776,14 +824,14 @@ function selectService(svc) {
   tracePage.value = 1
   if (activeTab.value === 'traces')   loadTraces()
   if (activeTab.value === 'topology') loadTopology()
-  if (activeTab.value === 'metrics')  { loadMetrics(); loadInstances() }
+  if (activeTab.value === 'metrics')  { loadMetrics(); loadInstances(); loadEndpointTopN() }
 }
 
 function switchTab(tab) {
   activeTab.value = tab
-  if (tab === 'traces')                                   loadTraces()
-  if (tab === 'topology')                                 loadTopology()
-  if (tab === 'metrics'  && selectedSvc.value)           { loadMetrics(); loadInstances() }
+  if (tab === 'traces')    loadTraces()
+  if (tab === 'topology')  loadTopology()
+  if (tab === 'metrics')   { loadEndpointTopN(); if (selectedSvc.value) { loadMetrics(); loadInstances() } }
 }
 
 function onHoursChange() {
@@ -794,7 +842,7 @@ async function reloadAll() {
   await loadServices()
   loadTraces()
   if (activeTab.value === 'topology') loadTopology()
-  if (activeTab.value === 'metrics' && selectedSvc.value) { loadMetrics(); loadInstances() }
+  if (activeTab.value === 'metrics')  { loadEndpointTopN(); if (selectedSvc.value) { loadMetrics(); loadInstances() } }
 }
 
 onMounted(() => {
@@ -1043,7 +1091,7 @@ onMounted(() => {
 .sw-metrics-svc { font-size: 13px; color: var(--text-primary); font-weight: 500; }
 .sw-hint { font-size: 12px; color: var(--text-muted); }
 .sw-metrics-grid {
-  flex: 1; overflow-y: auto; padding: 14px;
+  padding: 14px;
   display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
 }
 .sw-metric-card {
@@ -1066,6 +1114,32 @@ onMounted(() => {
 .sw-inst-name { font-size: 12px; color: var(--text-primary); min-width: 120px; }
 .sw-inst-attrs { display: flex; gap: 8px; flex-wrap: wrap; }
 .sw-inst-attr { font-size: 11px; color: var(--text-muted); background: var(--bg-input); padding: 1px 5px; border-radius: 3px; }
+
+/* 接口耗时 TopN */
+.sw-endpoint-topn {
+  margin: 0 14px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.sw-topn-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.sw-topn-table th {
+  padding: 7px 12px; background: var(--bg-input);
+  color: var(--text-muted); font-weight: 500; text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.sw-topn-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
+.sw-topn-table tr:last-child td { border-bottom: none; }
+.sw-topn-rank { width: 32px; color: var(--text-muted); font-weight: 600; }
+.sw-topn-rank.rank-top { color: var(--accent); }
+.sw-topn-name { color: var(--text-primary); max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-topn-val, .sw-topn-sla { font-weight: 600; width: 90px; }
+.val-ok   { color: #3fb950; }
+.val-warn { color: #e3b341; }
+.val-err  { color: var(--error, #f85149); }
 
 /* 通用 */
 .sw-empty {

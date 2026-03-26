@@ -77,6 +77,7 @@ export const api = {
   swGetTraceDetail: (traceId)            => http.get(`/sw/traces/${traceId}`),
   swGetTopology:    (params)             => http.get('/sw/topology', { params }),
   swGetMetrics:     (params)             => http.get('/sw/metrics', { params }),
+  swGetEndpointTopN:(params)             => http.get('/sw/endpoint-topn', { params }),
   swTest:           ()                   => http.get('/sw/test'),
   // 主机分组
   listGroups:    ()         => http.get('/groups'),

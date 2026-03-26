@@ -116,6 +116,24 @@ async def get_sw_topology(
         _wrap(e)
 
 
+# ── 接口耗时 TopN ─────────────────────────────────────────────────────────────
+
+@router.get("/api/sw/endpoint-topn")
+async def get_sw_endpoint_topn(
+    hours:      int           = Query(24),
+    top_n:      int           = Query(20),
+    start_time: Optional[str] = Query(None),
+    end_time:   Optional[str] = Query(None),
+):
+    try:
+        return await sw_client.get_endpoint_topn(
+            hours=hours, top_n=top_n,
+            start_time=start_time, end_time=end_time,
+        )
+    except Exception as e:
+        _wrap(e)
+
+
 # ── 连通性诊断 ────────────────────────────────────────────────────────────────
 
 @router.get("/api/sw/test")
