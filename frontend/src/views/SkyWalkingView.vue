@@ -37,8 +37,11 @@
         <div v-if="loadingSvcs" class="sw-loading-row">
           <div class="spinner" style="width:12px;height:12px;border-width:2px"></div>
         </div>
-        <div v-else-if="!services.length && !loadingSvcs" class="sw-empty-svc">
-          <span style="color:var(--text-muted);font-size:12px">无法连接 OAP</span>
+        <div v-else-if="svcError" class="sw-empty-svc">
+          <span style="color:var(--error,#f87171);font-size:11px;line-height:1.5;display:block;padding:4px 0">⚠ {{ svcError }}</span>
+        </div>
+        <div v-else-if="!services.length" class="sw-empty-svc">
+          <span style="color:var(--text-muted);font-size:12px">暂无服务（时间范围内无数据）</span>
         </div>
         <div
           v-for="svc in services" :key="svc.id"
@@ -439,6 +442,7 @@ const hours        = ref('1')
 const services     = ref([])
 const selectedSvc  = ref(null)
 const loadingSvcs  = ref(false)
+const svcError     = ref('')
 
 // ── 追踪 ──────────────────────────────────────────────────────────────────────
 const traces        = ref([])
@@ -618,10 +622,17 @@ function formatTs(ts) {
 // ── 数据加载 ─────────────────────────────────────────────────────────────────
 async function loadServices() {
   loadingSvcs.value = true
+  svcError.value = ''
   try {
     services.value = await api.swGetServices(Number(hours.value))
   } catch (e) {
     services.value = []
+    svcError.value = e?.message || '连接 OAP 失败'
+    // Try to get more detail from diagnostic endpoint
+    try {
+      const diag = await api.swTest()
+      if (diag?.error) svcError.value = diag.error
+    } catch {}
   } finally {
     loadingSvcs.value = false
   }

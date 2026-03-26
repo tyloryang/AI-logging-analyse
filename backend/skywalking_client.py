@@ -1,10 +1,11 @@
 """SkyWalking OAP GraphQL client
 
-SkyWalking OAP 暴露两个端口：
-  11800 → gRPC（Agent 数据上报）
-  12800 → HTTP REST / GraphQL（查询接口）
+端口说明：
+  11800 → gRPC（Agent 数据上报，不能用于 HTTP 查询）
+  12800 → HTTP REST / GraphQL（查询接口，默认）
 
-SKYWALKING_OAP_URL 应指向 HTTP 查询端口（默认 12800）。
+如果 12800 连不上，请检查 K8s NodePort 或 Docker 端口映射，
+通过 SKYWALKING_OAP_URL 环境变量指定实际可访问的 HTTP 地址。
 """
 import os
 import logging
@@ -15,13 +16,12 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-# OAP HTTP Query URL（GraphQL），默认 12800
 SKYWALKING_OAP_URL = os.getenv("SKYWALKING_OAP_URL", "http://192.168.9.226:12800")
 GRAPHQL_URL = f"{SKYWALKING_OAP_URL.rstrip('/')}/graphql"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 时间格式工具
+# Duration 工具
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_duration(
@@ -29,10 +29,15 @@ def _build_duration(
     start_str: Optional[str] = None,
     end_str: Optional[str] = None,
 ) -> dict:
-    """构造 SkyWalking GraphQL Duration 对象，自动选择合适的 step。"""
+    """构造 SkyWalking Duration 对象。
+
+    SkyWalking Duration 格式（必须严格匹配，否则 OAP 返回空数据）：
+      DAY    → "yyyy-MM-dd"          e.g. "2025-03-26"
+      HOUR   → "yyyy-MM-dd HH"       e.g. "2025-03-26 10"   ← 仅2位小时
+      MINUTE → "yyyy-MM-dd HHmm"     e.g. "2025-03-26 1045" ← 4位HHmm
+    """
     if start_str and end_str:
         try:
-            # ISO format (UTC)
             for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"):
                 try:
                     start_dt = datetime.strptime(start_str, fmt).replace(tzinfo=timezone.utc)
@@ -51,15 +56,18 @@ def _build_duration(
 
     span_h = (end_dt - start_dt).total_seconds() / 3600
     if span_h > 24 * 3:
-        step = "DAY";    fmt = "%Y-%m-%d"
+        step     = "DAY"
+        time_fmt = "%Y-%m-%d"
     elif span_h > 1:
-        step = "HOUR";   fmt = "%Y-%m-%d %H00"
+        step     = "HOUR"
+        time_fmt = "%Y-%m-%d %H"          # ← 正确：仅 2 位小时，不加 "00"
     else:
-        step = "MINUTE"; fmt = "%Y-%m-%d %H%M"
+        step     = "MINUTE"
+        time_fmt = "%Y-%m-%d %H%M"        # ← 正确：4 位 HHmm
 
     return {
-        "start": start_dt.strftime(fmt),
-        "end":   end_dt.strftime(fmt),
+        "start": start_dt.strftime(time_fmt),
+        "end":   end_dt.strftime(time_fmt),
         "step":  step,
     }
 
@@ -69,10 +77,12 @@ def _build_duration(
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _gql(query: str, variables: Optional[dict] = None) -> dict:
-    """向 SkyWalking OAP 发送 GraphQL 请求，返回 data 字段。"""
+    """执行 GraphQL 查询，失败时抛出 RuntimeError 并记录详细日志。"""
     payload: dict = {"query": query}
     if variables:
         payload["variables"] = variables
+
+    logger.debug("[SW-GQL] URL=%s vars=%s", GRAPHQL_URL, variables)
 
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -81,32 +91,74 @@ async def _gql(query: str, variables: Optional[dict] = None) -> dict:
             json=payload,
             headers={"Content-Type": "application/json"},
         ) as resp:
+            text = await resp.text()
             if resp.status != 200:
-                text = await resp.text()
+                logger.error("[SW-GQL] HTTP %d: %s", resp.status, text[:500])
                 raise RuntimeError(f"OAP HTTP {resp.status}: {text[:300]}")
-            body = await resp.json()
+            try:
+                body = await resp.json(content_type=None)
+            except Exception:
+                import json as _json
+                body = _json.loads(text)
             if "errors" in body and body["errors"]:
+                logger.error("[SW-GQL] GraphQL errors: %s", body["errors"])
                 raise RuntimeError(f"GraphQL errors: {body['errors']}")
             return body.get("data") or {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 健康检查
+# 连通性诊断
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def check_connectivity() -> bool:
-    """检查 OAP 是否可达（查询服务列表）。"""
     try:
         dur = _build_duration(1)
-        await _gql(
-            "query { getAllServices(duration: $d) { id } }".replace(
-                "$d", f'{{start:"{dur["start"]}",end:"{dur["end"]}",step:{dur["step"]}}}'
-            )
-        )
+        # 用内联参数而非变量，避免类型声明问题
+        await _gql(f"""
+        query {{
+          getAllServices(duration: {{start:"{dur["start"]}",end:"{dur["end"]}",step:{dur["step"]}}}) {{
+            id
+          }}
+        }}
+        """)
         return True
     except Exception as e:
         logger.debug("[SkyWalking] connectivity check failed: %s", e)
         return False
+
+
+async def diagnose() -> dict:
+    """返回连通性诊断信息，供 /api/sw/test 端点使用。"""
+    import aiohttp as _aio
+    result = {
+        "oap_url": SKYWALKING_OAP_URL,
+        "graphql_url": GRAPHQL_URL,
+        "reachable": False,
+        "error": None,
+        "services_count": 0,
+        "duration_sample": None,
+    }
+    try:
+        dur = _build_duration(1)
+        result["duration_sample"] = dur
+        data = await _gql(f"""
+        query {{
+          getAllServices(duration: {{start:"{dur["start"]}",end:"{dur["end"]}",step:{dur["step"]}}}) {{
+            id name
+          }}
+        }}
+        """)
+        svcs = data.get("getAllServices") or []
+        result["reachable"]      = True
+        result["services_count"] = len(svcs)
+        result["services"]       = [s["name"] for s in svcs[:10]]
+    except _aio.ClientConnectorError as e:
+        result["error"] = f"连接失败（端口不通？）: {e}"
+    except RuntimeError as e:
+        result["error"] = str(e)
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {e}"
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,11 +170,13 @@ class SkyWalkingClient:
     # ── 服务列表 ─────────────────────────────────────────────────────────────
     async def get_services(self, hours: int = 1) -> list[dict]:
         dur = _build_duration(hours)
-        data = await _gql("""
-        query GetServices($d: Duration!) {
-          getAllServices(duration: $d) { id name group }
-        }
-        """, {"d": dur})
+        data = await _gql(f"""
+        query {{
+          getAllServices(duration: {{start:"{dur["start"]}",end:"{dur["end"]}",step:{dur["step"]}}}) {{
+            id name group
+          }}
+        }}
+        """)
         return data.get("getAllServices") or []
 
     # ── 服务实例 ─────────────────────────────────────────────────────────────
@@ -166,11 +220,14 @@ class SkyWalkingClient:
         page_size: int = 20,
     ) -> dict:
         dur = _build_duration(hours, start_time, end_time)
+
+        # !! 注意：TraceQueryCondition 不包含 orderCondition/queryOrder（会报 GraphQL error）
+        # 字段严格按 SkyWalking schema：serviceId, endpointId, traceId,
+        # queryDuration, traceState, paging
         condition: dict = {
             "queryDuration": dur,
             "traceState": "ERROR" if error_only else "ALL",
             "paging": {"pageNum": page, "pageSize": page_size},
-            "orderCondition": {"metric": "startTime", "sort": "DES"},
         }
         if service_id:
             condition["serviceId"] = service_id
@@ -200,7 +257,7 @@ class SkyWalkingClient:
             "total":  result.get("total") or 0,
         }
 
-    # ── 追踪详情（Span 列表）─────────────────────────────────────────────────
+    # ── 追踪详情 ─────────────────────────────────────────────────────────────
     async def get_trace_detail(self, trace_id: str) -> list[dict]:
         data = await _gql("""
         query GetTrace($tid: ID!) {
@@ -244,32 +301,33 @@ class SkyWalkingClient:
         end_time: Optional[str] = None,
     ) -> dict:
         dur = _build_duration(hours, start_time, end_time)
+        dur_inline = f'{{start:"{dur["start"]}",end:"{dur["end"]}",step:{dur["step"]}}}'
         if service_id:
-            data = await _gql("""
-            query GetSvcTopo($sid: ID!, $d: Duration!) {
-              getServiceTopology(serviceId: $sid, duration: $d) {
-                nodes { id name type isReal }
-                calls { id source target callType detectPoints }
-              }
-            }
-            """, {"sid": service_id, "d": dur})
+            data = await _gql(f"""
+            query {{
+              getServiceTopology(serviceId: "{service_id}", duration: {dur_inline}) {{
+                nodes {{ id name type isReal }}
+                calls {{ id source target callType detectPoints }}
+              }}
+            }}
+            """)
             result = data.get("getServiceTopology") or {}
         else:
-            data = await _gql("""
-            query GetGlobalTopo($d: Duration!) {
-              getGlobalTopology(duration: $d) {
-                nodes { id name type isReal }
-                calls { id source target callType detectPoints }
-              }
-            }
-            """, {"d": dur})
+            data = await _gql(f"""
+            query {{
+              getGlobalTopology(duration: {dur_inline}) {{
+                nodes {{ id name type isReal }}
+                calls {{ id source target callType detectPoints }}
+              }}
+            }}
+            """)
             result = data.get("getGlobalTopology") or {}
         return {
             "nodes": result.get("nodes") or [],
             "calls": result.get("calls") or [],
         }
 
-    # ── 服务性能指标 ─────────────────────────────────────────────────────────
+    # ── 服务指标 ─────────────────────────────────────────────────────────────
     async def get_service_metrics(
         self,
         service_name: str,
@@ -300,13 +358,12 @@ class SkyWalkingClient:
                         for v in mv["values"]["values"]
                     ]
             except Exception as exc:
-                logger.debug("[SkyWalking] metric %s failed: %s", metric_name, exc)
+                logger.debug("[SW] metric %s failed: %s", metric_name, exc)
             return []
 
-        resp_time  = await _read("service_resp_time")   # ms 平均响应时间
-        throughput = await _read("service_cpm")          # 每分钟调用次数
-        sla        = await _read("service_sla")          # 成功率 (0~10000, /100 = %)
-        p99        = await _read("service_percentile")   # 可能是多条label
+        resp_time  = await _read("service_resp_time")
+        throughput = await _read("service_cpm")
+        sla        = await _read("service_sla")
         error_rate = [
             {"id": v["id"], "value": round(100 - v["value"] / 100, 2)}
             for v in sla
@@ -316,7 +373,6 @@ class SkyWalkingClient:
             "resp_time":  resp_time,
             "throughput": throughput,
             "error_rate": error_rate,
-            "p99":        p99,
             "duration":   dur,
         }
 

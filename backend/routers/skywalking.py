@@ -116,6 +116,15 @@ async def get_sw_topology(
         _wrap(e)
 
 
+# ── 连通性诊断 ────────────────────────────────────────────────────────────────
+
+@router.get("/api/sw/test")
+async def test_sw_connection():
+    """测试 SkyWalking OAP 连通性，返回详细诊断信息"""
+    from skywalking_client import diagnose
+    return await diagnose()
+
+
 # ── 性能指标 ──────────────────────────────────────────────────────────────────
 
 @router.get("/api/sw/metrics")
