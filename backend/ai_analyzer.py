@@ -157,63 +157,33 @@ class AIAnalyzer:
         service: str = "",
         extra_context: str = "",
     ) -> AsyncIterator[str]:
-        """流式分析日志（智能采样：error优先 + 去重 + 近期优先）"""
-        # ── 分层采样 ──────────────────────────────────────────────────
-        # logs 已按时间倒序（最新在前）
-        BUDGET = 300
+        """流式分析日志。
 
-        def _level(line: str) -> int:
-            l = line.lower()
-            if any(k in l for k in ("panic", "fatal", "critical")): return 4
-            if "error" in l or "exception" in l or "traceback" in l:  return 3
-            if "warn" in l:                                            return 2
-            return 1
-
-        # 去除完全重复的行（保留最新一条）
-        seen: set[str] = set()
-        deduped: list[dict] = []
-        for log in logs:
-            key = log["line"][:120]   # 用前120字符做去重键
-            if key not in seen:
-                seen.add(key)
-                deduped.append(log)
-
-        # 按严重级别分组
-        by_level: dict[int, list] = {4: [], 3: [], 2: [], 1: []}
-        for log in deduped:
-            by_level[_level(log["line"])].append(log)
-
-        # 按预算比例采样：严重(4)>error(3)>warn(2)>info(1)
-        weights = {4: 0.30, 3: 0.50, 2: 0.15, 1: 0.05}
-        sample: list[dict] = []
-        for lv in (4, 3, 2, 1):
-            quota = max(1, int(BUDGET * weights[lv]))
-            sample.extend(by_level[lv][:quota])
-        sample = sample[:BUDGET]
-
-        # 按时间升序展示（更符合阅读习惯）
-        sample.sort(key=lambda x: x.get("timestamp_ns", 0))
-
+        调用前 logs 已由 router 完成去重+采样，此处直接构建 prompt。
+        每行截断到 300 字符，防止单条超长日志撑爆上下文。
+        """
         log_text = "\n".join(
-            f"[{l['timestamp']}] {l['line'][:200]}" for l in sample
+            f"[{l['timestamp']}] {l['line'][:300]}" for l in logs
         )
 
-        prompt = f"""你是一名资深 SRE（网站可靠性工程师），请对以下{'服务 ' + service + ' 的' if service else ''}日志进行深度分析。
+        svc_hint = f"服务 {service} 的" if service else ""
+        ctx_hint = f"\n\n{extra_context}" if extra_context else ""
 
-采样说明：原始日志 {len(logs)} 条，去重后 {len(deduped)} 条，按严重级别优先采样展示 {len(sample)} 条（最新优先）：
+        prompt = f"""你是一名资深 SRE（网站可靠性工程师），请对以下 {svc_hint}日志进行深度分析。{ctx_hint}
+
+日志内容（共 {len(logs)} 条，已按严重级别优先采样，时间升序）：
 ```
 {log_text}
 ```
-{('额外上下文：' + extra_context) if extra_context else ''}
 
 请提供：
-1. **错误模式识别** - 识别主要错误类型和出现规律
-2. **根因分析** - 推断可能的根本原因
-3. **影响评估** - 判断对系统稳定性的影响程度
-4. **优化建议** - 具体的修复和预防措施
-5. **优先级排序** - 哪些问题需要立即处理
+1. **错误模式识别** - 识别主要错误类型和出现规律，列出具体示例
+2. **根因分析** - 推断可能的根本原因（区分直接原因和深层原因）
+3. **影响评估** - 判断对系统稳定性的影响程度（高/中/低）
+4. **优化建议** - 具体的修复和预防措施（按优先级排列）
+5. **需立即处理的问题** - 用 🔴 标出需要立即响应的项目
 
-请用简洁专业的中文回答，重点突出关键问题。"""
+请用简洁专业的中文回答，重点突出关键问题，避免泛泛而谈。"""
 
         async for chunk in self.provider.stream(prompt, max_tokens=2048):
             yield chunk

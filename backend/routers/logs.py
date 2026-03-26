@@ -261,16 +261,19 @@ async def analyze_logs_stream(
     """流式 AI 分析日志（SSE）
 
     策略：
-    1. 拉取当前过滤条件下的日志（与日志流保持一致）
-    2. 优先取 error/warn，近期优先，去除重复行
-    3. 超过 300 条时先用 Drain3 聚类，将摘要发给 AI（避免超出上下文）
+    1. 与日志流保持完全一致的过滤条件（不强制 error 级别）
+    2. 字符预算采样（60k 字符 ≈ 20k tokens，适配 32k~128k 上下文模型）
+       优先级：fatal/panic > error/exception > warn > info
+       同级别内：最新优先（近期日志更有价值）
+       去重：相同前缀的行只保留一条
+    3. 独特模式 > 800 条时自动切换 Drain3 聚类，把万级日志压成 40 个模板
     """
     try:
         logs = await loki.query_logs(
             service=service,
             hours=hours,
-            limit=5000,
-            level=level or "error",        # 默认只分析错误日志
+            limit=3000,
+            level=level or None,          # 不强制 error，与日志流保持一致
             keyword=keyword or None,
             start_ns=_parse_time_ns(start_time),
             end_ns=_parse_time_ns(end_time),
@@ -283,28 +286,85 @@ async def analyze_logs_stream(
                 yield "data: [DONE]\n\n"
             return StreamingResponse(empty(), media_type="text/event-stream")
 
-        # ── 智能采样 ─────────────────────────────────────────────────
-        # 日志已按时间倒序（最新在前），优先保留最近的高严重性日志
-        SAMPLE_LIMIT = 300
+        # ── 字符预算采样 ──────────────────────────────────────────────
+        # 目标：60,000 字符日志内容 ≈ 20k tokens（为 prompt+回复预留空间）
+        # 适用于 32k~128k 上下文的模型
+        CHAR_BUDGET   = 60_000
+        CLUSTER_THRESHOLD = 800   # 去重后独特模式超过此数量改用聚类
 
-        if len(logs) <= SAMPLE_LIMIT:
-            sample = logs
-            use_cluster = False
-        else:
-            # 超过阈值：先聚类，用模板摘要替代原始日志喂给 AI
-            use_cluster = True
+        def _severity(line: str) -> int:
+            l = line.lower()
+            if any(k in l for k in ("panic", "fatal", "critical")):           return 4
+            if any(k in l for k in ("error", "exception", "traceback", "err")):return 3
+            if "warn" in l:                                                    return 2
+            return 1
+
+        # Step1: 去重（相同前100字符视为同一模式，保留最新的）
+        seen: dict[str, dict] = {}
+        for log in logs:                          # logs 已按时间倒序（最新在前）
+            key = log["line"][:100]
+            if key not in seen:
+                seen[key] = log
+        deduped = list(seen.values())             # 保留每种模式最新的一条
+
+        # Step2: 判断是否需要聚类
+        use_cluster = len(deduped) > CLUSTER_THRESHOLD
+        templates   = None
+        sample      = []
+        stats       = {"total": len(logs), "deduped": len(deduped)}
+
+        if use_cluster:
             templates = clusterer.cluster(logs, top_n=40)
+            stats["clusters"] = len(templates)
+        else:
+            # Step3: 按严重级别分桶，各桶内已是最新优先
+            buckets: dict[int, list] = {4: [], 3: [], 2: [], 1: []}
+            for log in deduped:
+                buckets[_severity(log["line"])].append(log)
+
+            # Step4: 按预算填充，高优先级优先，同时记录字符数
+            char_used = 0
+            for sev in (4, 3, 2, 1):
+                for log in buckets[sev]:
+                    line_str = f"[{log['timestamp']}] {log['line'][:300]}\n"
+                    if char_used + len(line_str) > CHAR_BUDGET:
+                        break
+                    sample.append(log)
+                    char_used += len(line_str)
+                if char_used >= CHAR_BUDGET:
+                    break
+
+            # 恢复时间升序（便于 AI 阅读时间线）
+            sample.sort(key=lambda x: x.get("timestamp_ns", 0))
+            stats["sampled"] = len(sample)
+            stats["chars"]   = char_used
+
+        logger.info(
+            "[AI分析] total=%d deduped=%d use_cluster=%s sample=%s",
+            stats["total"], stats["deduped"], use_cluster,
+            stats.get("clusters") or stats.get("sampled"),
+        )
 
         async def generate():
             try:
                 if use_cluster:
+                    hint = (f"（原始日志 {stats['total']} 条，"
+                            f"去重后 {stats['deduped']} 种模式，"
+                            f"已聚类为 {stats['clusters']} 个模板）")
                     async for chunk in analyzer.analyze_templates_stream(
-                        templates, service or "",
-                        extra_hint=f"（原始日志 {len(logs)} 条，已聚类为 {len(templates)} 个模板）",
+                        templates, service or "", extra_hint=hint,
                     ):
                         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 else:
-                    async for chunk in analyzer.analyze_logs_stream(sample, service or ""):
+                    async for chunk in analyzer.analyze_logs_stream(
+                        sample, service or "",
+                        extra_context=(
+                            f"采样说明：原始 {stats['total']} 条 → "
+                            f"去重后 {stats['deduped']} 条 → "
+                            f"按严重级别优先采样 {stats['sampled']} 条"
+                            f"（{stats['chars']} 字符）"
+                        ),
+                    ):
                         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as exc:
