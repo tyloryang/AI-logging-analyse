@@ -58,12 +58,12 @@ def _build_duration(
     if span_h > 24 * 3:
         step     = "DAY"
         time_fmt = "%Y-%m-%d"
-    elif span_h > 1:
+    elif span_h >= 1:                      # ← >= 1 避免 1h 刚好落到 MINUTE 粒度
         step     = "HOUR"
-        time_fmt = "%Y-%m-%d %H"          # ← 正确：仅 2 位小时，不加 "00"
+        time_fmt = "%Y-%m-%d %H"
     else:
         step     = "MINUTE"
-        time_fmt = "%Y-%m-%d %H%M"        # ← 正确：4 位 HHmm
+        time_fmt = "%Y-%m-%d %H%M"
 
     return {
         "start": start_dt.strftime(time_fmt),
@@ -221,13 +221,13 @@ class SkyWalkingClient:
     ) -> dict:
         dur = _build_duration(hours, start_time, end_time)
 
-        # !! 注意：TraceQueryCondition 不包含 orderCondition/queryOrder（会报 GraphQL error）
-        # 字段严格按 SkyWalking schema：serviceId, endpointId, traceId,
-        # queryDuration, traceState, paging
+        # TraceQueryCondition 必填字段：traceState, queryOrder, paging(pageSize)
+        # queryOrder 为 NON_NULL 枚举，必须传；needTotal=true 才能拿到总数
         condition: dict = {
             "queryDuration": dur,
             "traceState": "ERROR" if error_only else "ALL",
-            "paging": {"pageNum": page, "pageSize": page_size},
+            "queryOrder": "BY_START_TIME",
+            "paging": {"pageNum": page, "pageSize": page_size, "needTotal": True},
         }
         if service_id:
             condition["serviceId"] = service_id

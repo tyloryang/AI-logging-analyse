@@ -438,7 +438,7 @@ const TABS = [
 
 // ── 公共状态 ─────────────────────────────────────────────────────────────────
 const activeTab    = ref('traces')
-const hours        = ref('1')
+const hours        = ref('24')
 const services     = ref([])
 const selectedSvc  = ref(null)
 const loadingSvcs  = ref(false)
@@ -781,9 +781,9 @@ function selectService(svc) {
 
 function switchTab(tab) {
   activeTab.value = tab
-  if (tab === 'traces'   && !traces.value.length)         loadTraces()
-  if (tab === 'topology' && !topoNodes.value.length)      loadTopology()
-  if (tab === 'metrics'  && !metrics.value && selectedSvc.value) { loadMetrics(); loadInstances() }
+  if (tab === 'traces')                                   loadTraces()
+  if (tab === 'topology')                                 loadTopology()
+  if (tab === 'metrics'  && selectedSvc.value)           { loadMetrics(); loadInstances() }
 }
 
 function onHoursChange() {
