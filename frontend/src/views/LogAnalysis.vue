@@ -110,11 +110,15 @@
               <span v-if="loadingTemplates" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
               <span v-else>🔄</span>重新聚类
             </button>
+            <button class="btn btn-primary" @click="startTplAIAnalysis" :disabled="analyzingTplAI || loadingTemplates || !templates.length">
+              <span v-if="analyzingTplAI" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+              <span v-else>🤖</span>AI 分析
+            </button>
           </template>
         </div>
       </div>
 
-      <!-- AI 分析面板（仅日志流 tab 显示） -->
+      <!-- AI 分析面板（日志流 tab） -->
       <transition name="fade">
         <div v-if="(aiContent || analyzingAI) && activeTab === 'logs'" class="ai-panel">
           <div class="ai-panel-header">
@@ -123,6 +127,19 @@
           </div>
           <div class="ai-content" v-html="renderedAI"></div>
           <div v-if="analyzingAI" class="ai-typing">
+            <span class="dot1">·</span><span class="dot2">·</span><span class="dot3">·</span>
+          </div>
+        </div>
+      </transition>
+      <!-- AI 分析面板（模板聚合 tab） -->
+      <transition name="fade">
+        <div v-if="(tplAiContent || analyzingTplAI) && activeTab === 'templates'" class="ai-panel">
+          <div class="ai-panel-header">
+            <span>🤖 模板聚类 AI 分析</span>
+            <button class="btn btn-outline btn-xs" @click="tplAiContent = ''">关闭</button>
+          </div>
+          <div class="ai-content" v-html="renderedTplAI"></div>
+          <div v-if="analyzingTplAI" class="ai-typing">
             <span class="dot1">·</span><span class="dot2">·</span><span class="dot3">·</span>
           </div>
         </div>
@@ -208,11 +225,6 @@
             />
             <button v-if="traceValue" class="kw-clear" @click="traceValue = ''">✕</button>
           </div>
-          <!-- 服务过滤 -->
-          <select v-model="traceService" class="time-select trace-bar-select" title="服务（可选）">
-            <option value="">全部服务</option>
-            <option v-for="s in services" :key="s.name" :value="s.name">{{ s.name }}</option>
-          </select>
           <!-- 时间模式 -->
           <div class="time-mode-tabs" style="width:fit-content;flex-shrink:0">
             <button class="tmode-btn" :class="{ active: traceTimeMode === 'relative' }" @click="traceTimeMode = 'relative'">快速</button>
@@ -230,6 +242,10 @@
             <span class="dt-sep" style="flex-shrink:0">→</span>
             <input type="datetime-local" v-model="traceEnd"   class="dt-input" style="width:152px;flex-shrink:0" title="结束时间" />
           </template>
+          <!-- 当前服务提示 -->
+          <span v-if="selectedService" class="trace-svc-hint" style="flex-shrink:0;font-size:12px;color:var(--text-muted);white-space:nowrap">
+            服务: <em style="color:var(--primary)">{{ selectedService }}</em>
+          </span>
           <!-- 分析按钮 -->
           <button
             class="btn btn-trace-primary"
@@ -456,9 +472,12 @@ const loadingLogs  = ref(false)
 const analyzingAI  = ref(false)
 const aiContent    = ref('')
 
+// ── 模板聚合 AI ───────────────────────────
+const tplAiContent  = ref('')
+const analyzingTplAI = ref(false)
+
 // ── 耗时追踪 Tab ──────────────────────────
 const traceValue     = ref('')
-const traceService   = ref('')
 const traceTimeMode  = ref('relative')   // 默认快速模式，避免空 custom 字段误导
 const traceHours     = ref('24')
 const traceStart     = ref('')
@@ -472,6 +491,11 @@ const expandedSpans    = ref(new Set())   // 已展开的行索引
 
 const renderedAI = computed(() =>
   aiContent.value
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>')
+)
+const renderedTplAI = computed(() =>
+  tplAiContent.value
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
 )
@@ -558,8 +582,9 @@ async function loadTemplates() {
 
 function selectService(name) {
   selectedService.value = name
-  if (activeTab.value === 'logs')      loadLogs()
-  else                                 loadTemplates()
+  if (activeTab.value === 'logs')           loadLogs()
+  else if (activeTab.value === 'templates') loadTemplates()
+  // trace tab: 不自动触发，由用户手动点击"开始分析"
 }
 
 function onParamChange() {
@@ -629,7 +654,7 @@ async function runTrace() {
   try {
     traceData = await api.traceKeyword({
       keyword: traceValue.value,
-      service: traceService.value || undefined,
+      service: selectedService.value || undefined,
       ...tp,
     })
     traceResult.value = traceData
@@ -646,7 +671,7 @@ async function runTrace() {
     try {
       const logsR = await api.getLogs({
         keyword: traceValue.value,
-        service: traceService.value || undefined,
+        service: selectedService.value || undefined,
         limit: 2000,
         ...tp,
       })
@@ -689,6 +714,29 @@ function spanBarW(log) {
   if (!firstNs || !totalMs) return 0
   const ms = (parseInt(log.timestamp_ns) - firstNs) / 1_000_000
   return Math.min(100, Math.max(0, (ms / totalMs) * 100))
+}
+
+function startTplAIAnalysis() {
+  if (analyzingTplAI.value) return
+  tplAiContent.value = ''
+  analyzingTplAI.value = true
+  const params = new URLSearchParams({
+    ...(selectedService.value ? { service: selectedService.value } : {}),
+    ...(tplLevelFilter.value ? { level: tplLevelFilter.value } : {}),
+    ...(keyword.value ? { keyword: keyword.value } : {}),
+  })
+  if (timeMode.value === 'custom' && customStart.value && customEnd.value) {
+    params.set('start_time', toUtcStr(customStart.value))
+    params.set('end_time',   toUtcStr(customEnd.value))
+  } else {
+    params.set('hours', hours.value)
+  }
+  streamSSE(
+    `/api/analyze/templates/stream?${params}`,
+    chunk => { try { tplAiContent.value += JSON.parse(chunk) } catch { tplAiContent.value += chunk } },
+    () => { analyzingTplAI.value = false },
+    () => { analyzingTplAI.value = false },
+  )
 }
 
 function switchTab(tab) {

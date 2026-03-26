@@ -323,6 +323,38 @@ class AIAnalyzer:
         async for chunk in self.provider.stream(prompt, max_tokens=1500):
             yield chunk
 
+    async def analyze_templates_stream(
+        self,
+        templates: list[dict],
+        service: str = "",
+    ) -> AsyncIterator[str]:
+        """流式分析日志模板聚类结果"""
+        total_logs = sum(t.get("count", 0) for t in templates)
+        tpl_lines = []
+        for i, t in enumerate(templates[:30], 1):
+            cnt = t.get("count", 0)
+            pct = f"{cnt / total_logs * 100:.1f}%" if total_logs else "0%"
+            svcs = ", ".join(s["name"] for s in t.get("top_services", [])[:3])
+            tpl_lines.append(f"{i}. [{cnt}条/{pct}] 模板: {t.get('template', '')[:200]}"
+                             + (f"\n   来源服务: {svcs}" if svcs else ""))
+
+        prompt = f"""你是一名资深 SRE，请分析以下{'服务 ' + service + ' 的' if service else ''}日志模板聚类结果。
+
+聚类统计（共 {total_logs} 条日志，{len(templates)} 个模板，展示前 {len(tpl_lines)} 个）：
+{chr(10).join(tpl_lines)}
+
+请提供：
+1. **高频模式解读** - 出现最多的日志类型及其含义，重点关注错误/异常模板
+2. **异常模式识别** - 哪些模板反映了系统异常，严重程度如何
+3. **根因推断** - 基于日志模式，可能的问题根因是什么
+4. **优化建议** - 针对异常模板的具体处置建议（按优先级排序）
+5. **日志质量评估** - 日志是否完整、是否有冗余、是否需要优化日志级别
+
+请用简洁专业的中文回答，重点突出高频异常模板。"""
+
+        async for chunk in self.provider.stream(prompt, max_tokens=2048):
+            yield chunk
+
     async def calculate_host_health_score(self, summary: dict) -> int:
         """根据巡检结果计算主机集群健康评分"""
         total    = summary.get("total", 1)

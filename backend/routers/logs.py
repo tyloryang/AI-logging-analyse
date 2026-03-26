@@ -200,6 +200,53 @@ async def trace_keyword(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+# ── 模板聚类 AI 分析 ──────────────────────────────────────────────────────────
+
+@router.get("/api/analyze/templates/stream")
+async def analyze_templates_stream(
+    service: Optional[str] = Query(None),
+    hours: int = Query(24),
+    level: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
+    start_time: Optional[str] = Query(None),
+    end_time: Optional[str] = Query(None),
+):
+    """流式 AI 分析日志模板聚类（SSE）"""
+    try:
+        logs = await loki.query_logs(
+            service=service, hours=hours, limit=10000, level=level or None,
+            keyword=keyword or None,
+            start_ns=_parse_time_ns(start_time),
+            end_ns=_parse_time_ns(end_time),
+            use_scan_timeout=True,
+        )
+        templates = clusterer.cluster(logs, top_n=30)
+
+        if not templates:
+            async def empty():
+                yield "data: 该时间范围内未发现足够日志进行模板分析。\n\n"
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(empty(), media_type="text/event-stream")
+
+        async def generate():
+            try:
+                async for chunk in analyzer.analyze_templates_stream(templates, service or ""):
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as exc:
+                logger.exception("AI 模板分析流式输出异常")
+                yield f"data: {json.dumps('[AI分析出错] ' + str(exc), ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── AI 流式分析 ───────────────────────────────────────────────────────────────
 
 @router.get("/api/analyze/stream")
