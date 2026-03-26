@@ -11,10 +11,11 @@
       <div class="sw-time-row">
         <select v-model="hours" class="sw-select" @change="onHoursChange">
           <option value="1">1 小时</option>
-          <option value="3">3 小时</option>
           <option value="6">6 小时</option>
           <option value="24">24 小时</option>
           <option value="72">3 天</option>
+          <option value="168">7 天</option>
+          <option value="720">30 天</option>
         </select>
         <button class="sw-refresh-btn" @click="reloadAll" :disabled="loadingSvcs" title="刷新">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -141,7 +142,7 @@
             <div class="sw-wf-header">
               <div class="sw-wf-title">
                 <span class="sw-wf-ep">{{ selectedTrace.endpointNames?.[0] }}</span>
-                <span class="sw-wf-total">{{ selectedTrace.duration }} ms</span>
+                <span class="sw-wf-total">{{ traceTotalMs }} ms</span>
                 <span v-if="selectedTrace.isError" class="sw-err-badge">ERROR</span>
               </div>
               <div class="sw-wf-meta">
@@ -175,7 +176,7 @@
                   <span class="sw-span-type-dot" :class="spanTypeClass(span)"></span>
                   <span class="sw-span-svc">{{ span.serviceCode }}</span>
                   <span class="sw-span-sep">›</span>
-                  <span class="sw-span-ep">{{ span.endpoint || span.peer || span.component || span.type }}</span>
+                  <span class="sw-span-ep">{{ span.endpointName || span.peer || span.component || span.type }}</span>
                   <span v-if="span.isError" class="sw-span-err-dot"></span>
                 </div>
                 <!-- 时间轴列 -->
@@ -473,7 +474,7 @@ const TABS = [
 
 // ── 公共状态 ─────────────────────────────────────────────────────────────────
 const activeTab    = ref('traces')
-const hours        = ref('24')
+const hours        = ref('168')
 const services     = ref([])
 const selectedSvc  = ref(null)
 const loadingSvcs  = ref(false)
@@ -491,23 +492,23 @@ const spanTree      = ref([])
 const loadingSpans  = ref(false)
 const expandedSpans = ref(new Set())
 
-// 追踪瀑布图计算
-const traceStartNs = computed(() => {
+// 追踪瀑布图计算（startTime/endTime 单位均为 ms）
+const traceStartMs = computed(() => {
   if (!spanTree.value.length) return 0
   return Math.min(...spanTree.value.map(s => s.startTime))
 })
-const traceDurMs = computed(() => {
-  if (!selectedTrace.value) return 1
-  return selectedTrace.value.duration || 1
+const traceEndMs = computed(() => {
+  if (!spanTree.value.length) return 1
+  return Math.max(...spanTree.value.map(s => s.endTime))
 })
+const traceTotalMs = computed(() => Math.max(traceEndMs.value - traceStartMs.value, 1))
 
 function spanOffset(span) {
-  const offset = span.startTime - traceStartNs.value
-  return Math.max(0, (offset / traceDurMs.value) * 100)
+  return Math.max(0, ((span.startTime - traceStartMs.value) / traceTotalMs.value) * 100)
 }
 function spanWidth(span) {
-  const dur = span.endTime - span.startTime
-  return Math.max(0.3, (dur / traceDurMs.value) * 100)
+  const dur = Math.max(0, span.endTime - span.startTime)
+  return Math.max(0.3, (dur / traceTotalMs.value) * 100)
 }
 function spanDur(span) {
   return span.endTime - span.startTime

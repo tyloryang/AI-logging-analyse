@@ -277,7 +277,7 @@ class SkyWalkingClient:
               serviceInstanceName
               startTime
               endTime
-              endpoint
+              endpointName
               type
               peer
               component
