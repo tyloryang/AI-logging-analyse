@@ -7,6 +7,13 @@ COPY . .
 RUN npm run build
 
 FROM nginx:alpine
+# 安装常用网络/系统工具（alpine 用 apk）
+RUN apk add --no-cache \
+    curl wget vim \
+    iputils iproute2 net-tools bind-tools \
+    procps lsof \
+    busybox-extras \
+    jq
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
