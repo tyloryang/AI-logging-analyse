@@ -13,6 +13,19 @@ spec:
       labels:
         app: backend
     spec:
+      initContainers:
+        - name: init-data
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /mnt/data
+              [ -f /mnt/cmdb_hosts.json ]      || echo '{}'  > /mnt/cmdb_hosts.json
+              [ -f /mnt/ssh_credentials.json ] || echo '[]'  > /mnt/ssh_credentials.json
+          volumeMounts:
+            - name: data
+              mountPath: /mnt
       containers:
         - name: backend
           image: 192.168.9.221:5000/aiops-backend:latest
@@ -25,10 +38,17 @@ spec:
             - secretRef:
                 name: aiops-secret
           volumeMounts:
-            - name: reports
-              mountPath: /app/reports
             - name: data
               mountPath: /app/data
+              subPath: data
+            - name: data
+              mountPath: /app/cmdb_hosts.json
+              subPath: cmdb_hosts.json
+            - name: data
+              mountPath: /app/ssh_credentials.json
+              subPath: ssh_credentials.json
+            - name: reports
+              mountPath: /app/reports
           readinessProbe:
             httpGet:
               path: /api/health
@@ -50,12 +70,12 @@ spec:
               cpu: 1000m
               memory: 2Gi
       volumes:
-        - name: reports
-          persistentVolumeClaim:
-            claimName: aiops-reports-pvc
         - name: data
           persistentVolumeClaim:
             claimName: aiops-data-pvc
+        - name: reports
+          persistentVolumeClaim:
+            claimName: aiops-reports-pvc
 ---
 apiVersion: v1
 kind: Service

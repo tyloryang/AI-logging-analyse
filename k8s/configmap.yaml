@@ -23,14 +23,23 @@ data:
   EMBEDDING_MODEL: "qwen3-embedding-4b"
   EMBEDDING_DIM: "2560"
 
+  SKYWALKING_OAP_URL: "http://192.168.9.226:12800"
+
   DATABASE_URL: "sqlite+aiosqlite:///./data/aiops.db"
-  REDIS_URL: "redis://redis:6379"
+  REDIS_URL: "redis://redis:6379/0"
 
   APP_HOST: "0.0.0.0"
   APP_PORT: "8000"
   APP_URL: "http://localhost"
+  DEV_RELOAD: "false"
 
   REPORTS_DIR: "./reports"
+  CMDB_FILE: "./cmdb_hosts.json"
+  CREDENTIALS_FILE: "./ssh_credentials.json"
+  SSH_KEY_FILE: "./.ssh_key"
+  SLOWLOG_TARGETS_FILE: "./data/slowlog_targets.json"
+
+  CORS_ORIGINS: "*"
 
   SCHEDULE_CRON: "0 7 * * *"
   SCHEDULE_CHANNELS: "feishu"
