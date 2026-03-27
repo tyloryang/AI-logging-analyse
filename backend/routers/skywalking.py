@@ -21,9 +21,13 @@ def _wrap(exc: Exception):
 # ── 服务列表 ──────────────────────────────────────────────────────────────────
 
 @router.get("/api/sw/services")
-async def get_sw_services(hours: int = Query(1)):
+async def get_sw_services(
+    hours:      int           = Query(1),
+    start_time: Optional[str] = Query(None),
+    end_time:   Optional[str] = Query(None),
+):
     try:
-        return await sw_client.get_services(hours)
+        return await sw_client.get_services(hours, start_time, end_time)
     except Exception as e:
         _wrap(e)
 

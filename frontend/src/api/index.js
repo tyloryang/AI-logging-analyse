@@ -70,7 +70,7 @@ export const api = {
   adminListModules: () => http.get('/admin/modules'),
   adminAuditLogs:  (params) => http.get('/admin/audit-logs', { params }),
   // SkyWalking APM
-  swGetServices:    (hours = 1)           => http.get('/sw/services', { params: { hours } }),
+  swGetServices:    (params)              => http.get('/sw/services', { params }),
   swGetInstances:   (params)              => http.get('/sw/instances', { params }),
   swGetEndpoints:   (params)             => http.get('/sw/endpoints', { params }),
   swGetTraces:      (params)             => http.get('/sw/traces', { params }),

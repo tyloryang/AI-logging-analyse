@@ -7,21 +7,14 @@
         <span class="sw-panel-sub">APM 追踪</span>
       </div>
 
-      <!-- 时间范围 -->
+      <!-- 刷新按钮 -->
       <div class="sw-time-row">
-        <select v-model="hours" class="sw-select" @change="onHoursChange">
-          <option value="1">1 小时</option>
-          <option value="6">6 小时</option>
-          <option value="24">24 小时</option>
-          <option value="72">3 天</option>
-          <option value="168">7 天</option>
-          <option value="720">30 天</option>
-        </select>
-        <button class="sw-refresh-btn" @click="reloadAll" :disabled="loadingSvcs" title="刷新">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <button class="sw-refresh-btn sw-refresh-full" @click="reloadAll" :disabled="loadingSvcs">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
           </svg>
+          刷新
         </button>
       </div>
 
@@ -59,6 +52,42 @@
 
     <!-- ── 右侧主区域 ── -->
     <div class="sw-main">
+
+      <!-- ── 时间选择器 ── -->
+      <div class="sw-timebar">
+        <!-- 快捷预设 -->
+        <div class="sw-presets">
+          <button
+            v-for="p in TIME_PRESETS" :key="p.value"
+            class="sw-preset-btn"
+            :class="{ active: timeMode === 'preset' && hours === p.value }"
+            @click="applyPreset(p.value)"
+          >{{ p.label }}</button>
+          <button
+            class="sw-preset-btn sw-preset-custom"
+            :class="{ active: timeMode === 'custom' }"
+            @click="toggleCustomPicker"
+          >自定义 {{ timeMode === 'custom' ? '▲' : '▼' }}</button>
+        </div>
+        <!-- 当前时间范围展示 -->
+        <span class="sw-time-label">{{ timeRangeLabel }}</span>
+        <!-- 自定义时间范围展开面板 -->
+        <div v-if="showCustomPicker" class="sw-custom-picker">
+          <div class="sw-picker-row">
+            <label class="sw-picker-label">开始</label>
+            <input type="datetime-local" v-model="customStart" class="sw-picker-input" />
+          </div>
+          <div class="sw-picker-row">
+            <label class="sw-picker-label">结束</label>
+            <input type="datetime-local" v-model="customEnd" class="sw-picker-input" />
+          </div>
+          <div class="sw-picker-actions">
+            <button class="sw-btn sw-btn-primary" @click="applyCustomRange" :disabled="!customStart || !customEnd">应用</button>
+            <button class="sw-btn sw-btn-outline" @click="showCustomPicker = false">取消</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Tab 栏 -->
       <div class="sw-tab-bar">
         <button
@@ -463,7 +492,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api } from '../api/index.js'
 
 const TABS = [
@@ -472,9 +501,96 @@ const TABS = [
   { id: 'metrics',  label: '📊 性能指标' },
 ]
 
+// ── 时间范围 ──────────────────────────────────────────────────────────────────
+const TIME_PRESETS = [
+  { label: '5 分钟',  value: '0.083' },
+  { label: '15 分钟', value: '0.25'  },
+  { label: '1 小时',  value: '1'     },
+  { label: '3 小时',  value: '3'     },
+  { label: '6 小时',  value: '6'     },
+  { label: '24 小时', value: '24'    },
+  { label: '3 天',    value: '72'    },
+  { label: '7 天',    value: '168'   },
+  { label: '30 天',   value: '720'   },
+]
+
+const timeMode       = ref('preset')   // 'preset' | 'custom'
+const hours          = ref('168')      // 当前预设 hours
+const customStart    = ref('')         // datetime-local string (自定义)
+const customEnd      = ref('')
+const showCustomPicker = ref(false)
+// 已应用的自定义范围（ISO string: "2025-03-01T10:00"）
+const appliedStart   = ref('')
+const appliedEnd     = ref('')
+
+// 格式化为 HH:mm 显示
+function fmtDatetime(iso) {
+  if (!iso) return ''
+  return iso.replace('T', ' ').slice(0, 16)
+}
+
+const timeRangeLabel = computed(() => {
+  if (timeMode.value === 'custom') {
+    return `${fmtDatetime(appliedStart.value)} ~ ${fmtDatetime(appliedEnd.value)}`
+  }
+  const preset = TIME_PRESETS.find(p => p.value === hours.value)
+  const now = new Date()
+  const h = parseFloat(hours.value)
+  const start = new Date(now.getTime() - h * 3600000)
+  const pad = x => String(x).padStart(2, '0')
+  const fmt = d => `${d.getMonth()+1}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${fmt(start)} ~ ${fmt(now)}  (${preset?.label ?? hours.value + 'h'})`
+})
+
+// 计算传给 API 的时间参数
+const timeParams = computed(() => {
+  if (timeMode.value === 'custom') {
+    return {
+      start_time: appliedStart.value,
+      end_time:   appliedEnd.value,
+      hours:      Math.ceil((new Date(appliedEnd.value) - new Date(appliedStart.value)) / 3600000) || 1,
+    }
+  }
+  return { hours: parseFloat(hours.value) }
+})
+
+function applyPreset(val) {
+  hours.value      = val
+  timeMode.value   = 'preset'
+  showCustomPicker.value = false
+  reloadAll()
+}
+
+function toggleCustomPicker() {
+  if (!showCustomPicker.value) {
+    // 初始化为当前时间范围
+    if (!customEnd.value) {
+      const now = new Date()
+      const h = parseFloat(hours.value)
+      const s = new Date(now.getTime() - h * 3600000)
+      customEnd.value   = toDatetimeLocal(now)
+      customStart.value = toDatetimeLocal(s)
+    }
+  }
+  showCustomPicker.value = !showCustomPicker.value
+}
+
+function toDatetimeLocal(d) {
+  const pad = x => String(x).padStart(2,'0')
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function applyCustomRange() {
+  if (!customStart.value || !customEnd.value) return
+  appliedStart.value   = customStart.value
+  appliedEnd.value     = customEnd.value
+  timeMode.value       = 'custom'
+  showCustomPicker.value = false
+  reloadAll()
+}
+
 // ── 公共状态 ─────────────────────────────────────────────────────────────────
 const activeTab    = ref('traces')
-const hours        = ref('168')
 const services     = ref([])
 const selectedSvc  = ref(null)
 const loadingSvcs  = ref(false)
@@ -662,11 +778,10 @@ async function loadServices() {
   loadingSvcs.value = true
   svcError.value = ''
   try {
-    services.value = await api.swGetServices(Number(hours.value))
+    services.value = await api.swGetServices(timeParams.value)
   } catch (e) {
     services.value = []
     svcError.value = e?.message || '连接 OAP 失败'
-    // Try to get more detail from diagnostic endpoint
     try {
       const diag = await api.swTest()
       if (diag?.error) svcError.value = diag.error
@@ -685,7 +800,7 @@ async function loadTraces() {
     const r = await api.swGetTraces({
       service_id:  selectedSvc.value?.id,
       trace_id:    traceIdSearch.value || undefined,
-      hours:       Number(hours.value),
+      ...timeParams.value,
       error_only:  errorOnly.value,
       page:        tracePage.value,
       page_size:   20,
@@ -770,8 +885,8 @@ async function loadTopology() {
   loadingTopo.value = true
   try {
     topology.value = await api.swGetTopology({
-      hours:      Number(hours.value),
       service_id: selectedSvc.value?.id,
+      ...timeParams.value,
     })
   } catch {
     topology.value = { nodes: [], calls: [] }
@@ -786,7 +901,7 @@ async function loadMetrics() {
   try {
     metrics.value = await api.swGetMetrics({
       service_name: selectedSvc.value.name,
-      hours:        Number(hours.value),
+      ...timeParams.value,
     })
   } catch {
     metrics.value = null
@@ -800,7 +915,7 @@ async function loadInstances() {
   try {
     instances.value = await api.swGetInstances({
       service_id: selectedSvc.value.id,
-      hours:      Number(hours.value),
+      ...timeParams.value,
     })
   } catch {
     instances.value = []
@@ -810,7 +925,7 @@ async function loadInstances() {
 async function loadEndpointTopN() {
   loadingTopN.value = true
   try {
-    endpointTopN.value = await api.swGetEndpointTopN({ hours: Number(hours.value), top_n: 20 })
+    endpointTopN.value = await api.swGetEndpointTopN({ ...timeParams.value, top_n: 20 })
   } catch {
     endpointTopN.value = []
   } finally {
@@ -833,10 +948,6 @@ function switchTab(tab) {
   if (tab === 'traces')    loadTraces()
   if (tab === 'topology')  loadTopology()
   if (tab === 'metrics')   { loadEndpointTopN(); if (selectedSvc.value) { loadMetrics(); loadInstances() } }
-}
-
-function onHoursChange() {
-  reloadAll()
 }
 
 async function reloadAll() {
@@ -878,21 +989,63 @@ onMounted(() => {
   display: block; font-size: 11px; color: var(--text-muted); margin-top: 1px;
 }
 .sw-time-row {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center;
   padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-.sw-select {
-  flex: 1; height: 28px; padding: 0 6px;
-  background: var(--bg-input); border: 1px solid var(--border);
-  color: var(--text-primary); border-radius: 4px; font-size: 12px;
-}
 .sw-refresh-btn {
-  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
   background: var(--bg-input); border: 1px solid var(--border);
   color: var(--text-secondary); border-radius: 4px; cursor: pointer;
-  transition: background .12s;
+  transition: background .12s; font-size: 11px; padding: 0 8px; height: 26px;
 }
+.sw-refresh-full { width: 100%; justify-content: center; }
 .sw-refresh-btn:hover { background: var(--border); }
+
+/* ── 时间选择器 ── */
+.sw-timebar {
+  position: relative;
+  padding: 6px 12px 6px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sw-presets {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+}
+.sw-preset-btn {
+  padding: 3px 9px; font-size: 11px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent;
+  color: var(--text-secondary); transition: all .12s; white-space: nowrap;
+}
+.sw-preset-btn:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+.sw-preset-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sw-preset-custom { border-style: dashed; }
+.sw-time-label {
+  display: block; font-size: 10px; color: var(--text-muted);
+  margin-top: 5px; font-family: monospace; letter-spacing: .02em;
+}
+/* 自定义范围面板 */
+.sw-custom-picker {
+  position: absolute; left: 12px; right: 12px; top: calc(100% + 2px);
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 6px; padding: 12px; z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.sw-picker-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.sw-picker-label {
+  font-size: 11px; color: var(--text-muted); width: 28px; flex-shrink: 0;
+}
+.sw-picker-input {
+  flex: 1; height: 28px; padding: 0 6px; font-size: 11px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: 4px;
+  color-scheme: dark;
+}
+.sw-picker-actions {
+  display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px;
+}
 .sw-svc-list { flex: 1; overflow-y: auto; padding: 4px 0; }
 .sw-svc-item {
   display: flex; align-items: center; gap: 7px;

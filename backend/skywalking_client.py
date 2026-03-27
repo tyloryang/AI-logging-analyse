@@ -168,8 +168,13 @@ async def diagnose() -> dict:
 class SkyWalkingClient:
 
     # ── 服务列表 ─────────────────────────────────────────────────────────────
-    async def get_services(self, hours: int = 1) -> list[dict]:
-        dur = _build_duration(hours)
+    async def get_services(
+        self,
+        hours: int = 1,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> list[dict]:
+        dur = _build_duration(hours, start_time, end_time)
         data = await _gql(f"""
         query {{
           getAllServices(duration: {{start:"{dur["start"]}",end:"{dur["end"]}",step:{dur["step"]}}}) {{
