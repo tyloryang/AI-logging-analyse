@@ -9,7 +9,7 @@ from typing import Optional
 from urllib.parse import quote
 
 import asyncio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
@@ -21,6 +21,7 @@ import io
 from state import (
     prom, analyzer,
     load_cmdb, save_cmdb,
+    load_groups,
     encrypt_password, decrypt_password,
     PROMETHEUS_URL,
 )
@@ -175,16 +176,39 @@ async def _generate_inspection_summary(
 
 
 @router.get("/api/hosts/inspect")
-async def inspect_all_hosts():
-    """巡检全量主机，SSE 流式返回数据（不含 AI 分析）"""
+async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
+    """巡检主机，支持按分组过滤（group_id 为空则全量巡检），SSE 流式返回"""
     async def generate():
         try:
-            results = await prom.inspect_hosts()
+            # 按分组过滤实例
+            instances: Optional[list[str]] = None
+            group_name: str = ""
+            if group_id:
+                cmdb = load_cmdb()
+                instances = [inst for inst, meta in cmdb.items() if meta.get("group") == group_id]
+                groups = load_groups()
+                g = next((g for g in groups if g["id"] == group_id), None)
+                group_name = g["name"] if g else group_id
+                if not instances:
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'分组「{group_name}」下没有主机'}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+            results = await prom.inspect_hosts(instances=instances)
+
+            # 为每条结果附加分组信息（方便前端显示）
+            if group_id:
+                cmdb = load_cmdb()
+                for r in results:
+                    r.setdefault("group", cmdb.get(r.get("instance", ""), {}).get("group", ""))
+
             summary = {
-                "total":    len(results),
-                "normal":   sum(1 for r in results if r["overall"] == "normal"),
-                "warning":  sum(1 for r in results if r["overall"] == "warning"),
-                "critical": sum(1 for r in results if r["overall"] == "critical"),
+                "total":      len(results),
+                "normal":     sum(1 for r in results if r["overall"] == "normal"),
+                "warning":    sum(1 for r in results if r["overall"] == "warning"),
+                "critical":   sum(1 for r in results if r["overall"] == "critical"),
+                "group_id":   group_id or "",
+                "group_name": group_name,
             }
             yield f"data: {json.dumps({'type': 'inspect_data', 'data': results, 'summary': summary}, ensure_ascii=False)}\n\n"
         except Exception as exc:

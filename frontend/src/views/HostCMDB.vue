@@ -55,9 +55,18 @@
           </div>
         </div>
         <template v-if="tab === 'inspect'">
+          <select
+            v-model="inspectGroupId"
+            class="inspect-group-select"
+            :disabled="inspecting || inspectAiStreaming"
+            title="选择分组后只巡检该组主机"
+          >
+            <option value="">全部主机</option>
+            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.host_count || 0 }}台）</option>
+          </select>
           <button class="btn btn-primary" @click="runInspect" :disabled="inspecting || inspectAiStreaming">
             <span v-if="inspecting" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-            <span v-else>🔍</span> 执行巡检
+            <span v-else>🔍</span> {{ inspectGroupId ? '巡检此分组' : '执行巡检' }}
           </button>
           <button
             v-if="inspectResults.length && !inspecting"
@@ -218,6 +227,14 @@
         <span class="icon">🔍</span><p>点击「执行巡检」开始</p>
       </div>
       <div v-else style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0">
+        <!-- 巡检范围标签 -->
+        <div class="inspect-scope-bar">
+          <span class="inspect-scope-label">巡检范围：</span>
+          <span class="inspect-scope-badge" :class="inspectSummary.group_id ? 'group' : 'all'">
+            {{ inspectSummary.group_name || '全部主机' }}
+          </span>
+          <span class="inspect-scope-stat">共 {{ inspectSummary.total }} 台 · 正常 {{ inspectSummary.normal }} · 警告 {{ inspectSummary.warning }} · 严重 {{ inspectSummary.critical }}</span>
+        </div>
         <!-- AI 分析总结卡片（流式显示） -->
         <div v-if="inspectAiSummary || inspectAiStreaming" class="inspect-ai-card" :class="{ streaming: inspectAiStreaming }">
           <div class="inspect-ai-header">
@@ -524,6 +541,7 @@ const inspectAiSummary = ref('')
 const inspectAiProvider = ref('')
 const inspectAiFallback = ref(false)
 const inspectError = ref('')
+const inspectGroupId  = ref('')   // 当前选中的巡检分组（空=全部）
 
 const editForm = reactive({ owner: '', env: '', role: '', notes: '', group: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
 
@@ -1011,7 +1029,10 @@ async function runInspect() {
   inspectError.value = ''
 
   try {
-    const resp = await fetch('/api/hosts/inspect')
+    const url = inspectGroupId.value
+      ? `/api/hosts/inspect?group_id=${encodeURIComponent(inspectGroupId.value)}`
+      : '/api/hosts/inspect'
+    const resp = await fetch(url)
     if (!resp.ok) throw new Error(`巡检请求失败: ${resp.status}`)
 
     const ct = resp.headers.get('content-type') || ''
@@ -1310,6 +1331,27 @@ onBeforeUnmount(() => {
 
 /* 巡检 */
 .inspect-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+
+.inspect-group-select {
+  height: 32px; padding: 0 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-card);
+  color: var(--text); font-size: 13px; cursor: pointer;
+}
+.inspect-group-select:disabled { opacity: .5; cursor: not-allowed; }
+
+.inspect-scope-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; background: var(--bg-card);
+  border-bottom: 1px solid var(--border); font-size: 12px; flex-shrink: 0;
+}
+.inspect-scope-label { color: var(--text-muted); }
+.inspect-scope-badge {
+  padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+}
+.inspect-scope-badge.all { background: rgba(100,180,255,.15); color: #64b4ff; }
+.inspect-scope-badge.group { background: rgba(103,194,58,.15); color: #67c23a; }
+.inspect-scope-stat { color: var(--text-muted); margin-left: 4px; }
+
 .inspect-ai-card {
   background: linear-gradient(180deg, rgba(88,166,255,.08), rgba(88,166,255,.03));
   border: 1px solid rgba(88,166,255,.28);
