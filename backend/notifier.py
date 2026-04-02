@@ -215,10 +215,80 @@ def _build_feishu_slowlog_card(report: dict, keyword: str = "", report_url: str 
     }
 
 
+def _build_feishu_inspect_card(report: dict, keyword: str = "", report_url: str = "") -> dict:
+    """构造巡检日报飞书交互卡片（用于 /notify 接口推送已生成的报告）"""
+    score   = report.get("health_score", 0)
+    title   = report.get("title", "主机巡检日报")
+    summary = report.get("host_summary", {})
+    ai      = (report.get("ai_analysis") or "").strip()
+
+    total    = summary.get("total", 0)
+    normal   = summary.get("normal", 0)
+    warning  = summary.get("warning", 0)
+    critical = summary.get("critical", 0)
+
+    summary_line = (
+        f"**主机总数**: {total}  "
+        f"**正常**: {normal}  "
+        f"**警告**: {warning}  "
+        f"**严重**: {critical}"
+    )
+    header_content = f"{_health_emoji(score)} **健康评分**: {score}/100\n{summary_line}"
+    if keyword and keyword not in header_content and keyword not in title:
+        header_content = keyword + "\n" + header_content
+
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": header_content}}]
+
+    # 告警主机
+    abnormal = report.get("abnormal_hosts", [])
+    if abnormal:
+        lines = []
+        for r in abnormal[:10]:
+            status_icon = "🔴" if r.get("overall") == "critical" else "🟡"
+            hostname = r.get("hostname") or r.get("ip") or r.get("instance", "?")
+            issues = [c["item"] for c in r.get("checks", []) if c.get("status") != "normal"]
+            issue_text = "、".join(issues[:3]) + ("…" if len(issues) > 3 else "")
+            lines.append(f"{status_icon} **{hostname}** — {issue_text}")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {
+            "tag": "lark_md",
+            "content": "**⚠️ 告警主机**\n" + "\n".join(lines),
+        }})
+
+    if ai:
+        ai_excerpt = ai[:800] + ("..." if len(ai) > 800 else "")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {
+            "tag": "lark_md",
+            "content": f"**🤖 AI 分析**\n{ai_excerpt}",
+        }})
+
+    if report_url:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "action", "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "查看完整报告"},
+            "type": "primary",
+            "url": report_url,
+        }]})
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title":    {"tag": "plain_text", "content": title},
+                "template": _health_color_feishu(score),
+            },
+            "elements": elements,
+        },
+    }
+
+
 def _build_feishu_group_inspect_card(
     group_name: str,
     results: list[dict],
     keyword: str = "",
+    ai_text: str = "",
 ) -> dict:
     """构造按分组的主机巡检飞书告警卡片"""
     total    = len(results)
@@ -249,7 +319,6 @@ def _build_feishu_group_inspect_card(
         for r in alert_hosts[:10]:
             status_icon = "🔴" if r.get("overall") == "critical" else "🟡"
             hostname = r.get("hostname") or r.get("ip") or r.get("instance", "?")
-            # 汇总告警项
             issues = [
                 c["item"] for c in r.get("checks", [])
                 if c.get("status") != "normal"
@@ -260,6 +329,14 @@ def _build_feishu_group_inspect_card(
         elements.append({"tag": "div", "text": {
             "tag": "lark_md",
             "content": "**⚠️ 告警主机**\n" + "\n".join(lines),
+        }})
+
+    if ai_text:
+        ai_excerpt = ai_text.strip()[:800] + ("..." if len(ai_text) > 800 else "")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {
+            "tag": "lark_md",
+            "content": f"**🤖 AI 分析**\n{ai_excerpt}",
         }})
 
     return {
@@ -279,9 +356,10 @@ async def send_feishu_group_inspect(
     results: list[dict],
     webhook_url: str,
     keyword: str = "",
+    ai_text: str = "",
 ) -> dict:
     """按分组发送主机巡检告警到飞书群"""
-    payload = _build_feishu_group_inspect_card(group_name, results, keyword=keyword)
+    payload = _build_feishu_group_inspect_card(group_name, results, keyword=keyword, ai_text=ai_text)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(webhook_url, json=payload)
@@ -298,6 +376,8 @@ async def send_feishu(report: dict, webhook_url: str, keyword: str = "", report_
     """发送飞书消息，返回 {"ok": bool, "msg": str}"""
     if report.get("type") == "slowlog":
         payload = _build_feishu_slowlog_card(report, keyword=keyword, report_url=report_url)
+    elif report.get("type") == "inspect":
+        payload = _build_feishu_inspect_card(report, keyword=keyword, report_url=report_url)
     else:
         payload = _build_feishu_card(report, keyword=keyword, report_url=report_url)
     try:

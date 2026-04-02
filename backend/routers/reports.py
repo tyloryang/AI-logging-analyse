@@ -8,9 +8,10 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
+from typing import Optional
 
 from state import (
     loki, prom, analyzer,
@@ -19,8 +20,9 @@ from state import (
     DINGTALK_WEBHOOK, DINGTALK_KEYWORD,
     APP_URL,
     load_slowlog_targets, save_slowlog_targets,
+    load_groups, load_cmdb,
 )
-from notifier import send_feishu, send_dingtalk
+from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -141,10 +143,18 @@ async def list_reports():
 # ── 巡检日报 ──────────────────────────────────────────────────────────────────
 
 @router.get("/api/report/inspect/generate")
-async def generate_inspect_report():
-    """生成主机巡检日报，流式返回 AI 分析"""
+async def generate_inspect_report(group_id: Optional[str] = Query(None)):
+    """生成主机巡检日报，流式返回 AI 分析；可通过 group_id 限定分组"""
     try:
-        results = await prom.inspect_hosts()
+        instances: Optional[list] = None
+        group_name = ""
+        if group_id:
+            cmdb = load_cmdb()
+            instances = [inst for inst, meta in cmdb.items() if meta.get("group") == group_id]
+            groups = load_groups()
+            g = next((g for g in groups if g["id"] == group_id), None)
+            group_name = g["name"] if g else group_id
+        results = await prom.inspect_hosts(instances=instances if instances is not None else None)
         summary = {
             "total":    len(results),
             "normal":   sum(1 for r in results if r["overall"] == "normal"),
@@ -191,10 +201,13 @@ async def generate_inspect_report():
                 "partitions": r.get("partitions", []),
             })
 
+        title_suffix = f"【{group_name}】" if group_name else ""
         meta = {
             "id":             report_id,
             "type":           "inspect",
-            "title":          f"主机巡检日报 {now.strftime('%Y-%m-%d')}",
+            "group_id":       group_id or "",
+            "group_name":     group_name,
+            "title":          f"主机巡检日报{title_suffix} {now.strftime('%Y-%m-%d')}",
             "created_at":     now.isoformat(),
             "health_score":   health_score,
             "host_summary":   summary,
@@ -233,6 +246,85 @@ async def generate_inspect_report():
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _find_latest_group_inspect_report(group_id: str) -> Optional[dict]:
+    """在 REPORTS_DIR 中找到指定分组最新的、已含 AI 分析的巡检报告，没有则返回 None"""
+    best = None
+    for p in sorted(REPORTS_DIR.glob("inspect_*.json"), reverse=True):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if data.get("type") == "inspect" and data.get("group_id") == group_id and data.get("ai_analysis"):
+                best = data
+                break   # 按文件名倒序，第一个即最新
+        except Exception:
+            continue
+    return best
+
+
+@router.post("/api/report/inspect/generate-groups")
+async def generate_inspect_report_all_groups():
+    """为每个配置了飞书 webhook 的分组生成巡检报告并推送。
+    优先复用已有 AI 分析的最新报告；若不存在则重新采集并生成 AI 后推送。"""
+    groups = load_groups()
+    cmdb   = load_cmdb()
+
+    results = []
+    for group in groups:
+        webhook = group.get("feishu_webhook", "")
+        if not webhook:
+            results.append({"group_id": group["id"], "group_name": group.get("name", ""), "skipped": True, "reason": "未配置飞书 webhook"})
+            continue
+
+        group_id   = group["id"]
+        group_name = group.get("name", group_id)
+        keyword    = group.get("feishu_keyword", "")
+
+        instances = [inst for inst, meta in cmdb.items() if meta.get("group") == group_id]
+        if not instances:
+            results.append({"group_id": group_id, "group_name": group_name, "skipped": True, "reason": "该分组无主机"})
+            continue
+
+        try:
+            # ① 优先使用已有报告（有 AI 分析）
+            existing = _find_latest_group_inspect_report(group_id)
+            if existing:
+                host_results = existing.get("all_hosts", [])
+                ai_text      = existing.get("ai_analysis", "")
+                source       = "cached"
+            else:
+                # ② 重新采集 + 生成 AI
+                host_results = await prom.inspect_hosts(instances=instances)
+                summary = {
+                    "total":    len(host_results),
+                    "normal":   sum(1 for r in host_results if r["overall"] == "normal"),
+                    "warning":  sum(1 for r in host_results if r["overall"] == "warning"),
+                    "critical": sum(1 for r in host_results if r["overall"] == "critical"),
+                }
+                ai_parts: list[str] = []
+                try:
+                    async for chunk in analyzer.generate_host_inspect_report(host_results, summary):
+                        ai_parts.append(chunk)
+                except Exception:
+                    pass
+                ai_text = "".join(ai_parts)
+                source  = "generated"
+
+            push_result = await send_feishu_group_inspect(
+                group_name, host_results, webhook, keyword=keyword, ai_text=ai_text
+            )
+            results.append({
+                "group_id":   group_id,
+                "group_name": group_name,
+                "hosts":      len(host_results),
+                "source":     source,
+                "push":       push_result,
+            })
+        except Exception as exc:
+            logger.exception("分组 %s 巡检推送失败", group_name)
+            results.append({"group_id": group_id, "group_name": group_name, "error": str(exc)})
+
+    return {"results": results}
 
 
 @router.get("/api/report/inspect/{report_id}/excel")

@@ -1,4 +1,5 @@
 """FastAPI 依赖：current_user / require_permission"""
+import os
 import functools
 from fastapi import Request, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +8,8 @@ from cachetools import TTLCache
 from db import get_db
 from auth.models import User, Permission
 from auth.session import get_session
+
+NO_AUTH = os.getenv("NO_AUTH", "").lower() in ("1", "true", "yes")
 
 # 权限等级数值
 LEVEL_RANK = {"none": 0, "view": 1, "operate": 2}

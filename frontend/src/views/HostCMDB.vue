@@ -245,11 +245,16 @@
               </div>
               <div v-if="inspectAiProvider" class="inspect-ai-provider">模型：{{ inspectAiProvider }}</div>
             </div>
-            <span class="inspect-ai-badge" :class="{ fallback: inspectAiFallback, streaming: inspectAiStreaming }">
-              {{ inspectAiStreaming ? '生成中...' : inspectAiFallback ? '规则兜底' : 'AI生成' }}
-            </span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="inspect-ai-badge" :class="{ fallback: inspectAiFallback, streaming: inspectAiStreaming }">
+                {{ inspectAiStreaming ? '生成中...' : inspectAiFallback ? '规则兜底' : 'AI生成' }}
+              </span>
+              <button v-if="!inspectAiStreaming" class="ai-toggle-btn" @click="aiExpanded = !aiExpanded" :title="aiExpanded ? '收起' : '展开'">
+                {{ aiExpanded ? '▲ 收起' : '▼ 展开' }}
+              </button>
+            </div>
           </div>
-          <div class="inspect-ai-content">
+          <div v-show="aiExpanded || inspectAiStreaming" class="inspect-ai-content">
             <span v-if="inspectAiSummary">{{ inspectAiSummary }}</span>
             <span v-else-if="inspectAiStreaming" class="ai-placeholder">AI 正在分析巡检数据...</span>
             <span v-else class="ai-placeholder">暂无分析结果</span>
@@ -996,6 +1001,7 @@ async function saveHost() {
 }
 
 const inspectAiStreaming = ref(false)
+const aiExpanded = ref(true)
 const excelDownloading = ref(false)
 const notifyingGroups = ref(false)
 
@@ -1086,6 +1092,7 @@ async function runInspectAI() {
   inspectAiProvider.value = ''
   inspectAiFallback.value = false
   inspectAiStreaming.value = true
+  aiExpanded.value = true
 
   try {
     const resp = await fetch('/api/hosts/inspect/ai', {
@@ -1385,7 +1392,18 @@ onBeforeUnmount(() => {
 .inspect-ai-content {
   font-size: 13px; line-height: 1.75; color: var(--text-secondary);
   white-space: pre-wrap;
+  max-height: 260px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
+.ai-toggle-btn {
+  padding: 2px 10px; font-size: 11px;
+  background: var(--bg-hover); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-secondary);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.ai-toggle-btn:hover { background: var(--bg-card); color: var(--text-primary); }
 .inspect-ai-note {
   margin-top: 10px; font-size: 12px; color: var(--text-muted);
 }

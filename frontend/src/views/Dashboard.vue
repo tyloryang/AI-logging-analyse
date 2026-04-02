@@ -186,14 +186,14 @@
               <span class="host-ip mono">{{ h.ip }}</span>
               <span v-if="groups.length" class="host-group">{{ groupMap[h.group] || '-' }}</span>
               <div class="host-metrics">
-                <span class="metric-tag" :class="cpuClass(h.metrics.cpu_usage)">CPU {{ h.metrics.cpu_usage!=null?h.metrics.cpu_usage+'%':'-' }}</span>
-                <span class="metric-tag" :class="memClass(h.metrics.mem_usage)">MEM {{ h.metrics.mem_usage!=null?h.metrics.mem_usage+'%':'-' }}</span>
-                <span class="metric-tag" :class="diskClass(maxDisk(h))">DSK {{ maxDisk(h)!=null?maxDisk(h)+'%':'-' }}</span>
-                <span class="metric-tag" :class="tcpClass(h.metrics.tcp_estab)">TCP {{ h.metrics.tcp_estab!=null?h.metrics.tcp_estab:'-' }}</span>
-                <span class="metric-tag" :class="loadClass(h.metrics.load5)">LD {{ h.metrics.load5!=null?h.metrics.load5.toFixed(2):'-' }}</span>
-                <span v-if="fmtIO(h.metrics)" class="metric-tag ok">IO {{ fmtIO(h.metrics) }}</span>
-                <span v-if="fmtNet(h.metrics)" class="metric-tag ok">NET {{ fmtNet(h.metrics) }}</span>
-                <span v-if="fmtUptime(h.metrics.uptime_seconds)" class="metric-tag ok">UP {{ fmtUptime(h.metrics.uptime_seconds) }}</span>
+                <span class="metric-tag" :class="cpuClass(h.metrics.cpu_usage)">{{ h.metrics.cpu_usage!=null?h.metrics.cpu_usage+'%':'-' }}</span>
+                <span class="metric-tag" :class="memClass(h.metrics.mem_usage)">{{ h.metrics.mem_usage!=null?h.metrics.mem_usage+'%':'-' }}</span>
+                <span class="metric-tag" :class="diskClass(maxDisk(h))">{{ maxDisk(h)!=null?maxDisk(h)+'%':'-' }}</span>
+                <span class="metric-tag" :class="tcpClass(h.metrics.tcp_estab)">{{ h.metrics.tcp_estab!=null?h.metrics.tcp_estab:'-' }}</span>
+                <span class="metric-tag" :class="loadClass(h.metrics.load5)">{{ h.metrics.load5!=null?h.metrics.load5.toFixed(2):'-' }}</span>
+                <span v-if="fmtIO(h.metrics)" class="metric-tag ok">{{ fmtIO(h.metrics) }}</span>
+                <span v-if="fmtNet(h.metrics)" class="metric-tag ok">{{ fmtNet(h.metrics) }}</span>
+                <span v-if="fmtUptime(h.metrics.uptime_seconds)" class="metric-tag ok">{{ fmtUptime(h.metrics.uptime_seconds) }}</span>
               </div>
             </div>
           </div>

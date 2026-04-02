@@ -114,6 +114,7 @@ app.include_router(hosts_router)
 app.include_router(ssh_router)
 app.include_router(health_router)
 app.include_router(settings_router)
+
 app.include_router(slowlog_router)
 app.include_router(agent_router)
 app.include_router(groups_router)

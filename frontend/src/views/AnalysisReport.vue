@@ -27,10 +27,25 @@
             <option value="inspect">主机巡检日报</option>
             <option value="slowlog">MySQL 慢日志报告</option>
           </select>
+          <select v-if="reportType === 'inspect'" v-model="inspectGroupId" class="time-select">
+            <option value="">全部主机</option>
+            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+          </select>
           <button class="btn btn-primary btn-full" @click="generateReport" :disabled="generating">
             <span v-if="generating" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>▶</span>
             {{ generating ? 'AI 分析中...' : genBtnLabel }}
+          </button>
+          <button
+            v-if="reportType === 'inspect'"
+            class="btn btn-outline btn-full"
+            @click="generateAllGroups"
+            :disabled="groupGenerating"
+            title="为每个配置了飞书 webhook 的分组分别生成巡检报告并推送"
+          >
+            <span v-if="groupGenerating" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+            <span v-else>📤</span>
+            {{ groupGenerating ? '推送中...' : '按分组生成并推送' }}
           </button>
         </div>
 
@@ -405,6 +420,9 @@ const errorMsg      = ref('')
 const successMsg    = ref('')
 const notifying     = ref({ feishu: false, dingtalk: false })
 const credList      = ref([])
+const groups        = ref([])
+const inspectGroupId = ref('')
+const groupGenerating = ref(false)
 
 // ── 慢日志目标配置状态 ─────────────────────────────────────────────────
 const slcOpen   = ref(true)
@@ -514,6 +532,7 @@ async function loadReport(id) {
 function onTypeChange() {
   currentReport.value = null
   aiStreamContent.value = ''
+  inspectGroupId.value = ''
 }
 
 // ── 生成报告（SSE） ───────────────────────────────────────────────────
@@ -528,7 +547,10 @@ function generateReport() {
     slowlog: '/api/report/slowlog/generate',
     daily:   '/api/report/generate',
   }
-  const url = urlMap[reportType.value] || urlMap.daily
+  let url = urlMap[reportType.value] || urlMap.daily
+  if (reportType.value === 'inspect' && inspectGroupId.value) {
+    url += `?group_id=${encodeURIComponent(inspectGroupId.value)}`
+  }
 
   streamSSE(
     url,
@@ -554,6 +576,30 @@ function generateReport() {
       console.error('SSE error', err)
     },
   )
+}
+
+// ── 按分组生成并推送 ───────────────────────────────────────────────────
+async function generateAllGroups() {
+  if (groupGenerating.value) return
+  groupGenerating.value = true
+  errorMsg.value   = ''
+  successMsg.value = ''
+  try {
+    const r = await fetch('/api/report/inspect/generate-groups', { method: 'POST' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const data = await r.json()
+    const results = data.results || []
+    const pushed  = results.filter(x => x.push?.ok).length
+    const skipped = results.filter(x => x.skipped).length
+    const failed  = results.filter(x => x.error || (x.push && !x.push.ok)).length
+    successMsg.value = `分组推送完成：${pushed} 个成功，${skipped} 个跳过，${failed} 个失败`
+    setTimeout(() => { successMsg.value = '' }, 6000)
+    await loadReportList()
+  } catch (e) {
+    errorMsg.value = '按分组推送失败：' + e
+  } finally {
+    groupGenerating.value = false
+  }
 }
 
 // ── 通知推送 ───────────────────────────────────────────────────────────
@@ -585,6 +631,13 @@ onMounted(async () => {
     credList.value = c.data || c
   } catch {}
   loadSlcConfig()
+  try {
+    const r = await fetch('/api/groups')
+    if (r.ok) {
+      const d = await r.json()
+      groups.value = d.data || d
+    }
+  } catch {}
 })
 </script>
 

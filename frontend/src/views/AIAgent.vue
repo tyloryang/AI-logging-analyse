@@ -213,10 +213,20 @@ let msgIdCounter = 0
 let currentAssistantMsg = null
 
 // 每种模式独立的会话 ID，用于后端多轮历史隔离
+function genUUID() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    try { return crypto.randomUUID() } catch {}
+  }
+  // HTTP 环境 fallback
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
+  })
+}
 const convIds = ref({
-  rca:     crypto.randomUUID(),
-  inspect: crypto.randomUUID(),
-  chat:    crypto.randomUUID(),
+  rca:     genUUID(),
+  inspect: genUUID(),
+  chat:    genUUID(),
 })
 
 // ── 历史面板状态 ──────────────────────────────────────────────────────
