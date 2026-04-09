@@ -32,6 +32,7 @@ from routers.slowlog import router as slowlog_router
 from routers.agent import router as agent_router
 from routers.groups import router as groups_router
 from routers.skywalking import router as skywalking_router
+from routers.feishu_bot import router as feishu_bot_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -119,6 +120,7 @@ app.include_router(slowlog_router)
 app.include_router(agent_router)
 app.include_router(groups_router)
 app.include_router(skywalking_router)
+app.include_router(feishu_bot_router)
 
 
 if __name__ == "__main__":

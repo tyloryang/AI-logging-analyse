@@ -40,16 +40,20 @@ def _save(data: dict) -> None:
 
 
 class SettingsPayload(BaseModel):
-    loki_url:             str = ""
-    loki_username:        str = ""
-    loki_password:        str = ""   # 空字符串 = 不修改
-    prometheus_url:       str = ""
-    prometheus_username:  str = ""
-    prometheus_password:  str = ""   # 空字符串 = 不修改
-    ai_provider:          str = ""
-    ai_base_url:          str = ""
-    ai_model:             str = ""
-    ai_api_key:           str = ""   # 空字符串 = 不修改
+    loki_url:              str = ""
+    loki_username:         str = ""
+    loki_password:         str = ""   # 空字符串 = 不修改
+    prometheus_url:        str = ""
+    prometheus_username:   str = ""
+    prometheus_password:   str = ""   # 空字符串 = 不修改
+    ai_provider:           str = ""
+    ai_base_url:           str = ""
+    ai_model:              str = ""
+    ai_api_key:            str = ""   # 空字符串 = 不修改
+    feishu_bot_app_id:      str = ""
+    feishu_bot_app_secret:  str = ""   # 空字符串 = 不修改
+    feishu_bot_encrypt_key: str = ""   # 空字符串 = 不修改
+    feishu_bot_verify_token: str = ""  # 空字符串 = 不修改
 
 
 class TestPayload(BaseModel):
@@ -63,18 +67,22 @@ async def get_settings():
     """读取当前生效配置（密码已脱敏）"""
     import state
     return {
-        "loki_url":               state.LOKI_URL,
-        "loki_username":          state.LOKI_USERNAME,
-        "loki_password_set":      bool(state.LOKI_PASSWORD),
-        "prometheus_url":         state.PROMETHEUS_URL,
-        "prometheus_username":    state.PROMETHEUS_USERNAME,
-        "prometheus_password_set": bool(state.PROMETHEUS_PASSWORD),
-        "ai_provider":            os.getenv("AI_PROVIDER", "anthropic"),
-        "ai_base_url":            os.getenv("AI_BASE_URL", ""),
-        "ai_model":               os.getenv("AI_MODEL", ""),
-        "ai_api_key_set":         bool(
+        "loki_url":                  state.LOKI_URL,
+        "loki_username":             state.LOKI_USERNAME,
+        "loki_password_set":         bool(state.LOKI_PASSWORD),
+        "prometheus_url":            state.PROMETHEUS_URL,
+        "prometheus_username":       state.PROMETHEUS_USERNAME,
+        "prometheus_password_set":   bool(state.PROMETHEUS_PASSWORD),
+        "ai_provider":               os.getenv("AI_PROVIDER", "anthropic"),
+        "ai_base_url":               os.getenv("AI_BASE_URL", ""),
+        "ai_model":                  os.getenv("AI_MODEL", ""),
+        "ai_api_key_set":            bool(
             os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_API_KEY")
         ),
+        "feishu_bot_app_id":           os.getenv("FEISHU_BOT_APP_ID", ""),
+        "feishu_bot_app_secret_set":   bool(os.getenv("FEISHU_BOT_APP_SECRET", "")),
+        "feishu_bot_encrypt_key_set":  bool(os.getenv("FEISHU_BOT_ENCRYPT_KEY", "")),
+        "feishu_bot_verify_token_set": bool(os.getenv("FEISHU_BOT_VERIFY_TOKEN", "")),
     }
 
 
@@ -100,7 +108,12 @@ async def update_settings(body: SettingsPayload):
     if body.ai_base_url is not None:
                                   existing["ai_base_url"]         = body.ai_base_url
     if body.ai_model is not None: existing["ai_model"]           = body.ai_model
-    if body.ai_api_key:          existing["ai_api_key"]          = body.ai_api_key
+    if body.ai_api_key:              existing["ai_api_key"]              = body.ai_api_key
+    if body.feishu_bot_app_id is not None:
+                                          existing["feishu_bot_app_id"]       = body.feishu_bot_app_id
+    if body.feishu_bot_app_secret:        existing["feishu_bot_app_secret"]    = body.feishu_bot_app_secret
+    if body.feishu_bot_encrypt_key:       existing["feishu_bot_encrypt_key"]   = body.feishu_bot_encrypt_key
+    if body.feishu_bot_verify_token:      existing["feishu_bot_verify_token"]  = body.feishu_bot_verify_token
 
     _save(existing)
 
@@ -116,8 +129,29 @@ async def update_settings(body: SettingsPayload):
         state.LOKI_URL       = body.loki_url
         hot_reloaded.append("loki_url")
 
+    # 飞书机器人配置立即写入环境变量（当前进程生效，无需重启）
+    if body.feishu_bot_app_id is not None:
+        os.environ["FEISHU_BOT_APP_ID"] = body.feishu_bot_app_id
+        hot_reloaded.append("feishu_bot_app_id")
+    if body.feishu_bot_app_secret:
+        os.environ["FEISHU_BOT_APP_SECRET"] = body.feishu_bot_app_secret
+        hot_reloaded.append("feishu_bot_app_secret")
+        # 清除 token 缓存，强制下次重新获取
+        try:
+            from routers.feishu_bot import _token_cache
+            _token_cache["token"] = ""
+            _token_cache["expires_at"] = 0.0
+        except Exception:
+            pass
+    if body.feishu_bot_encrypt_key:
+        os.environ["FEISHU_BOT_ENCRYPT_KEY"] = body.feishu_bot_encrypt_key
+        hot_reloaded.append("feishu_bot_encrypt_key")
+    if body.feishu_bot_verify_token:
+        os.environ["FEISHU_BOT_VERIFY_TOKEN"] = body.feishu_bot_verify_token
+        hot_reloaded.append("feishu_bot_verify_token")
+
     note = (
-        f"已立即生效：{', '.join(hot_reloaded)}；认证信息/AI 配置重启后生效"
+        f"已立即生效：{', '.join(hot_reloaded)}；AI 配置重启后生效"
         if hot_reloaded
         else "配置已保存，重启服务后生效"
     )

@@ -293,7 +293,7 @@ async def generate_inspect_report_all_groups():
                 ai_text      = existing.get("ai_analysis", "")
                 source       = "cached"
             else:
-                # ② 重新采集 + 生成 AI
+                # ② 重新采集 + 生成 AI + 保存报告
                 host_results = await prom.inspect_hosts(instances=instances)
                 summary = {
                     "total":    len(host_results),
@@ -305,10 +305,61 @@ async def generate_inspect_report_all_groups():
                 try:
                     async for chunk in analyzer.generate_host_inspect_report(host_results, summary):
                         ai_parts.append(chunk)
-                except Exception:
-                    pass
+                except Exception as ai_exc:
+                    logger.warning("分组 %s AI生成失败: %s", group_name, ai_exc)
                 ai_text = "".join(ai_parts)
-                source  = "generated"
+
+                # 构建摘要主机列表并保存报告，下次可复用
+                issue_cnt: dict[str, int] = {}
+                for r in host_results:
+                    for c in r.get("checks", []):
+                        if c.get("status") != "normal":
+                            issue_cnt[c.get("item", "未知")] = issue_cnt.get(c.get("item", "未知"), 0) + 1
+                top_issues = sorted(issue_cnt.items(), key=lambda x: x[1], reverse=True)[:10]
+                abnormal   = sorted(
+                    [r for r in host_results if r.get("overall") != "normal"],
+                    key=lambda r: {"critical": 2, "warning": 1}.get(r.get("overall", "normal"), 0),
+                    reverse=True,
+                )
+                all_hosts_brief = []
+                for r in host_results:
+                    m = r.get("metrics") or {}
+                    all_hosts_brief.append({
+                        "hostname":   r.get("hostname") or r.get("instance", ""),
+                        "ip":         r.get("ip", ""),
+                        "os":         r.get("os", ""),
+                        "state":      r.get("state", ""),
+                        "overall":    r.get("overall", "normal"),
+                        "cpu_pct":    m.get("cpu_usage"),
+                        "mem_pct":    m.get("mem_usage"),
+                        "checks":     r.get("checks", []),
+                        "partitions": r.get("partitions", []),
+                    })
+                now_g     = datetime.now(timezone.utc)
+                rid_g     = "inspect_" + now_g.strftime("%Y%m%d%H%M%S") + f"_{group_id}"
+                health_g  = await analyzer.calculate_host_health_score(summary)
+                meta_g = {
+                    "id": rid_g, "type": "inspect",
+                    "group_id": group_id, "group_name": group_name,
+                    "title": f"主机巡检日报【{group_name}】 {now_g.strftime('%Y-%m-%d')}",
+                    "created_at": now_g.isoformat(),
+                    "health_score": health_g,
+                    "host_summary": summary,
+                    "top_issues": [{"item": k, "count": v} for k, v in top_issues],
+                    "abnormal_hosts": abnormal[:20],
+                    "all_hosts": all_hosts_brief,
+                    "ai_analysis": ai_text,
+                }
+                try:
+                    (REPORTS_DIR / f"{rid_g}.json").write_text(
+                        json.dumps(meta_g, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                except Exception as save_exc:
+                    logger.warning("分组 %s 报告保存失败: %s", group_name, save_exc)
+
+                # 推送时使用完整巡检结果（含 checks 字段）
+                host_results = all_hosts_brief
+                source = "generated"
 
             push_result = await send_feishu_group_inspect(
                 group_name, host_results, webhook, keyword=keyword, ai_text=ai_text
@@ -557,6 +608,44 @@ async def notify_report(report_id: str, body: NotifyRequest):
                 )
         else:
             results[ch] = {"ok": False, "msg": f"不支持的渠道: {ch}"}
+
+    return {"results": results}
+
+
+@router.post("/api/report/{report_id}/notify-groups")
+async def notify_report_groups(report_id: str, group_id: Optional[str] = Query(None)):
+    """将指定报告推送到分组。
+    若传入 group_id 则只推送该分组；否则推送所有已配置 webhook 的分组。"""
+    p = REPORTS_DIR / f"{report_id}.json"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    report     = json.loads(p.read_text(encoding="utf-8"))
+    report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
+
+    all_groups = load_groups()
+    # 若指定分组则只取该分组，否则取全部
+    target_groups = [g for g in all_groups if g["id"] == group_id] if group_id else all_groups
+
+    results = []
+    for group in target_groups:
+        gid        = group["id"]
+        group_name = group.get("name", gid)
+        pushed: dict[str, dict] = {}
+
+        feishu_wh = group.get("feishu_webhook", "")
+        if feishu_wh:
+            keyword = group.get("feishu_keyword", FEISHU_KEYWORD)
+            pushed["feishu"] = await send_feishu(report, feishu_wh, keyword=keyword, report_url=report_url)
+
+        dingtalk_wh = group.get("dingtalk_webhook", "")
+        if dingtalk_wh:
+            keyword = group.get("dingtalk_keyword", DINGTALK_KEYWORD)
+            pushed["dingtalk"] = await send_dingtalk(report, dingtalk_wh, keyword=keyword)
+
+        if not pushed:
+            results.append({"group_id": gid, "group_name": group_name, "skipped": True, "reason": "未配置 webhook"})
+        else:
+            results.append({"group_id": gid, "group_name": group_name, "push": pushed})
 
     return {"results": results}
 

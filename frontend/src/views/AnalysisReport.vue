@@ -178,6 +178,16 @@
                 <span v-if="notifying.dingtalk" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
                 <span v-else>🔔</span> 钉钉
               </button>
+              <button
+                v-if="currentReport?.id && !generating && groups.length"
+                class="btn btn-notify group-push"
+                :disabled="notifying.groups"
+                @click="sendNotifyGroups"
+                title="推送到所有已配置飞书/钉钉的分组"
+              >
+                <span v-if="notifying.groups" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+                <span v-else>📢</span> 按分组推送
+              </button>
               <div class="health-circle" :class="healthClass(currentReport.health_score)">
                 <div class="health-num">{{ currentReport.health_score }}</div>
                 <div class="health-label">健康评分 /100</div>
@@ -418,7 +428,7 @@ const loadingList   = ref(false)
 const aiStreamContent = ref('')
 const errorMsg      = ref('')
 const successMsg    = ref('')
-const notifying     = ref({ feishu: false, dingtalk: false })
+const notifying     = ref({ feishu: false, dingtalk: false, groups: false })
 const credList      = ref([])
 const groups        = ref([])
 const inspectGroupId = ref('')
@@ -621,6 +631,31 @@ async function sendNotify(channel) {
     errorMsg.value = `发送失败：${e}`
   } finally {
     notifying.value[channel] = false
+  }
+}
+
+async function sendNotifyGroups() {
+  if (!currentReport.value?.id || notifying.value.groups) return
+  notifying.value.groups = true
+  errorMsg.value   = ''
+  successMsg.value = ''
+  try {
+    // 有 group_id 则只推送该分组，否则推送全部
+    const gid = currentReport.value.group_id || ''
+    const url = `/api/report/${currentReport.value.id}/notify-groups${gid ? `?group_id=${encodeURIComponent(gid)}` : ''}`
+    const r = await fetch(url, { method: 'POST', credentials: 'include' })
+    const data = await r.json()
+    const results  = data.results || []
+    const pushed   = results.filter(x => x.push && (x.push.feishu?.ok || x.push.dingtalk?.ok)).length
+    const skipped  = results.filter(x => x.skipped).length
+    const failed   = results.filter(x => x.push && !x.push.feishu?.ok && !x.push.dingtalk?.ok).length
+    const groupLabel = gid ? `「${currentReport.value.group_name || gid}」` : '全部分组'
+    successMsg.value = `${groupLabel} 推送完成：${pushed} 成功，${skipped} 跳过，${failed} 失败`
+    setTimeout(() => { successMsg.value = '' }, 6000)
+  } catch (e) {
+    errorMsg.value = `按分组推送失败：${e}`
+  } finally {
+    notifying.value.groups = false
   }
 }
 
@@ -831,6 +866,8 @@ onMounted(async () => {
 .btn-notify.feishu:hover:not(:disabled)   { background: rgba(0,195,155,.2); }
 .btn-notify.dingtalk { background: rgba(255,106,0,.1); border-color: rgba(255,106,0,.4); color: #ff6a00; }
 .btn-notify.dingtalk:hover:not(:disabled) { background: rgba(255,106,0,.2); }
+.btn-notify.group-push { background: rgba(99,102,241,.1); border-color: rgba(99,102,241,.4); color: #818cf8; }
+.btn-notify.group-push:hover:not(:disabled) { background: rgba(99,102,241,.2); }
 
 /* 慢日志报告专用样式 */
 .slowlog-date-range {

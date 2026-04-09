@@ -104,6 +104,10 @@
             <label>告警阈值(s)</label>
             <input v-model.number="cred.alert_sec" type="number" min="1" step="1" />
           </div>
+          <div class="field field-narrow">
+            <label title="从文件末尾读取的大小，减小可避免超时">读取限制(MB)</label>
+            <input v-model.number="cred.tail_mb" type="number" min="1" max="500" step="10" />
+          </div>
         </div>
       </div>
     </div>
@@ -254,9 +258,12 @@
       <div class="ai-header">
         <span class="ai-badge">AI</span>
         <span>分析建议</span>
+        <button v-if="!analyzing" class="ai-toggle-btn" @click="aiExpanded = !aiExpanded">
+          {{ aiExpanded ? '▲ 收起' : '▼ 展开' }}
+        </button>
         <button v-if="!analyzing" class="btn-icon" @click="aiText = ''" title="关闭">✕</button>
       </div>
-      <div class="ai-body" v-html="renderedAi"></div>
+      <div v-show="aiExpanded || analyzing" class="ai-body" v-html="renderedAi"></div>
       <div v-if="analyzing" class="ai-typing">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       </div>
@@ -308,6 +315,12 @@
                 </select>
                 <input v-model="tab.filterUser" placeholder="用户过滤" class="filter-input" />
                 <input v-model="tab.filterSql" placeholder="SQL关键字" class="filter-input" />
+                <div class="export-btns">
+                  <span class="export-label">导出：</span>
+                  <button class="btn-export" @click="exportEntries(tab, 'csv')"  title="下载 CSV，Excel 可直接打开">CSV</button>
+                  <button class="btn-export" @click="exportEntries(tab, 'log')"  title="重建为标准 MySQL 慢日志格式">LOG</button>
+                  <button class="btn-export" @click="exportEntries(tab, 'json')" title="格式化 JSON">JSON</button>
+                </div>
               </div>
             </div>
             <div class="table-wrap">
@@ -455,6 +468,7 @@ const cred = reactive({
   alert_sec:     saved.alert_sec     ?? 10.0,
   date_from:     saved.date_from     ?? '',
   date_to:       saved.date_to       ?? '',
+  tail_mb:       saved.tail_mb       ?? 50,
 })
 watch([credMode, cred], () => {
   sessionStorage.setItem(CRED_KEY, JSON.stringify({ credMode: credMode.value, ...cred }))
@@ -612,6 +626,7 @@ async function fetchAll() {
         date_to:       cred.date_to   || null,
         threshold_sec: cred.threshold_sec,
         alert_sec:     cred.alert_sec,
+        tail_mb:       cred.tail_mb   ?? 50,
         ...buildPayloadForTarget(t),
       })
       t.entries  = res.entries  ?? []
@@ -685,6 +700,7 @@ function pagedEntries(tab) { const s=(tab.page-1)*PAGE_SIZE; return filteredEntr
 // ── AI 分析 ──────────────────────────────────────────────────────────────
 const analyzing  = ref(false)
 const aiText     = ref('')
+const aiExpanded = ref(true)
 const renderedAi = computed(() =>
   aiText.value
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
@@ -696,7 +712,7 @@ const renderedAi = computed(() =>
 )
 function startAnalysis() {
   if (!hasEntries.value) return
-  analyzing.value=true; aiText.value=''
+  analyzing.value=true; aiText.value=''; aiExpanded.value=true
   const all = targets.value
     .flatMap(t=>t.entries.filter(e=>!e.is_ignore).map(e=>({...e,_host:t.host_ip})))
     .sort((a,b)=>b.query_time-a.query_time).slice(0,15)
@@ -717,6 +733,45 @@ function fmtNum(n) {
   if (n>=1_000_000) return (n/1_000_000).toFixed(1)+'M'
   if (n>=1_000)     return (n/1_000).toFixed(1)+'K'
   return String(n??0)
+}
+
+// ── 导出 ──────────────────────────────────────────────────────────────────
+const exporting = ref(false)
+async function exportEntries(tab, fmt) {
+  const entries = filteredEntries(tab)
+  if (!entries.length) { alert('当前过滤结果为空，无可导出数据'); return }
+  exporting.value = true
+  try {
+    const res = await fetch('/api/slowlog/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entries,
+        host_ip:   tab.target.host_ip,
+        date_from: cred.date_from || null,
+        date_to:   cred.date_to   || null,
+        fmt,
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      alert('导出失败：' + (err.detail || res.status))
+      return
+    }
+    // 从 Content-Disposition 取文件名
+    const cd  = res.headers.get('Content-Disposition') || ''
+    const m   = cd.match(/filename="([^"]+)"/)
+    const filename = m ? m[1] : `slowlog_export.${fmt}`
+    const blob = await res.blob()
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  } catch(e) {
+    alert('导出出错：' + e.message)
+  } finally {
+    exporting.value = false
+  }
 }
 </script>
 
@@ -853,7 +908,9 @@ function fmtNum(n) {
 .ai-card { padding:16px 20px; border-left:3px solid var(--accent); }
 .ai-header { display:flex; align-items:center; gap:8px; margin-bottom:12px; font-size:13px; font-weight:600; color:var(--text-primary); }
 .ai-badge { background:var(--accent); color:#fff; font-size:10px; font-weight:700; padding:1px 6px; border-radius:3px; }
-.ai-body { font-size:13px; color:var(--text-primary); line-height:1.7; white-space:pre-wrap; }
+.ai-body { font-size:13px; color:var(--text-primary); line-height:1.7; white-space:pre-wrap; max-height:300px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+.ai-toggle-btn { margin-left:auto; padding:2px 10px; font-size:11px; background:var(--bg-hover); border:1px solid var(--border); border-radius:var(--radius); color:var(--text-secondary); cursor:pointer; white-space:nowrap; }
+.ai-toggle-btn:hover { background:var(--bg-card); color:var(--text-primary); }
 .ai-body :deep(h2),.ai-body :deep(h3),.ai-body :deep(h4) { color:var(--accent); margin:10px 0 4px; }
 .ai-body :deep(strong) { color:var(--warning); }
 .ai-typing { display:flex; gap:4px; margin-top:10px; }
@@ -892,6 +949,10 @@ function fmtNum(n) {
 .sel,.filter-input { background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius); padding:5px 8px; color:var(--text-primary); font-size:12px; font-family:inherit; outline:none; }
 .sel:focus,.filter-input:focus { border-color:var(--accent); }
 .filter-input { width:120px; }
+.export-btns  { display:flex; align-items:center; gap:4px; margin-left:auto; }
+.export-label { font-size:11px; color:var(--text-muted); }
+.btn-export   { padding:4px 9px; font-size:11px; font-weight:600; background:var(--bg-hover); border:1px solid var(--border); border-radius:var(--radius); color:var(--text-secondary); cursor:pointer; transition:.15s; }
+.btn-export:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
 .table-wrap { overflow-x:auto; }
 table { width:100%; border-collapse:collapse; }
 th { padding:8px 10px; font-size:10px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.06em; text-align:left; white-space:nowrap; border-bottom:1px solid var(--border-light); }

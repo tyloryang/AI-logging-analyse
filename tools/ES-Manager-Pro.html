@@ -1,0 +1,2229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ES Manager Pro — 多集群管理控制台</title>
+<style>
+:root{
+  --bg:#0c0f18;--bg2:#131824;--bg3:#1a2133;--bg4:#212d42;
+  --border:#252e42;--border2:#2e3d5c;
+  --accent:#4f8ef7;--accent2:#3a6fd8;--accent3:rgba(79,142,247,.12);
+  --green:#22c55e;--green2:rgba(34,197,94,.12);
+  --yellow:#eab308;--yellow2:rgba(234,179,8,.12);
+  --red:#ef4444;--red2:rgba(239,68,68,.12);
+  --orange:#f97316;--purple:#a855f7;--teal:#14b8a6;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif;--mono:'Cascadia Code','Fira Code','Consolas','JetBrains Mono',monospace;
+  --radius:8px;--radius2:12px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;font-size:13px}
+
+/* ═══ CLUSTER TABS BAR ═══ */
+.cluster-bar{height:44px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:stretch;flex-shrink:0;z-index:200;overflow-x:auto;overflow-y:hidden}
+.cluster-bar::-webkit-scrollbar{height:3px}
+.cluster-bar::-webkit-scrollbar-thumb{background:var(--border2)}
+.cb-logo{display:flex;align-items:center;gap:8px;padding:0 16px;font-weight:700;font-size:14px;color:#fff;border-right:1px solid var(--border);flex-shrink:0;white-space:nowrap}
+.cb-logo-icon{width:24px;height:24px;background:linear-gradient(135deg,var(--accent),var(--purple));border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:12px}
+.cluster-tab{display:flex;align-items:center;gap:8px;padding:0 14px;cursor:pointer;color:var(--text3);font-size:12px;border-right:1px solid var(--border);border-bottom:2px solid transparent;transition:.15s;flex-shrink:0;position:relative;white-space:nowrap;min-width:140px;max-width:220px}
+.cluster-tab:hover{background:var(--bg3);color:var(--text2)}
+.cluster-tab.active{background:var(--bg3);color:var(--text);border-bottom-color:var(--accent)}
+.ct-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex-shrink:0;transition:.2s}
+.ct-dot.green{background:var(--green);box-shadow:0 0 6px var(--green)}
+.ct-dot.yellow{background:var(--yellow)}
+.ct-dot.red{background:var(--red);box-shadow:0 0 4px var(--red)}
+.ct-dot.pulse{animation:dotPulse 1.5s infinite}
+@keyframes dotPulse{0%,100%{opacity:1}50%{opacity:.4}}
+.ct-name{flex:1;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.ct-env{font-size:10px;padding:1px 5px;border-radius:3px;background:var(--bg4);color:var(--text3);flex-shrink:0}
+.ct-close{width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:3px;opacity:0;transition:.15s;font-size:11px;color:var(--text3);flex-shrink:0}
+.cluster-tab:hover .ct-close{opacity:1}
+.ct-close:hover{background:var(--red2);color:var(--red)}
+.cb-add{display:flex;align-items:center;padding:0 16px;cursor:pointer;color:var(--text3);font-size:18px;flex-shrink:0;transition:.15s}
+.cb-add:hover{color:var(--accent)}
+.cb-settings{display:flex;align-items:center;padding:0 12px;cursor:pointer;color:var(--text3);margin-left:auto;flex-shrink:0;transition:.15s;font-size:14px;border-left:1px solid var(--border)}
+.cb-settings:hover{color:var(--text)}
+
+/* ═══ MAIN LAYOUT ═══ */
+.app-layout{display:flex;flex:1;overflow:hidden}
+
+/* ═══ SIDEBAR ═══ */
+.sidebar{width:200px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
+.nav-section{padding:10px 0 2px}
+.nav-label{font-size:10px;font-weight:600;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;padding:0 14px 5px}
+.nav-item{display:flex;align-items:center;gap:8px;padding:7px 14px;cursor:pointer;color:var(--text2);font-size:12.5px;border-left:2px solid transparent;transition:.12s}
+.nav-item:hover{background:var(--bg3);color:var(--text)}
+.nav-item.active{background:var(--accent3);color:var(--accent);border-left-color:var(--accent);font-weight:500}
+.nav-item .ni{font-size:13px;width:17px;text-align:center}
+
+/* ═══ MAIN CONTENT ═══ */
+.main{flex:1;overflow:hidden;display:flex;flex-direction:column;position:relative}
+.page{display:none;flex:1;flex-direction:column;overflow:hidden}
+.page.active{display:flex}
+.page-header{padding:14px 18px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.page-title{font-size:15px;font-weight:600}
+.page-subtitle{font-size:11px;color:var(--text3);margin-top:2px}
+.page-body{flex:1;overflow-y:auto;padding:14px 18px}
+
+/* ═══ CLUSTER CONNECT PANEL (welcome) ═══ */
+.welcome{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:24px;padding:40px}
+.welcome-title{font-size:22px;font-weight:700;color:var(--text)}
+.welcome-sub{color:var(--text3);font-size:14px;text-align:center;max-width:400px;line-height:1.6}
+.conn-form{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius2);padding:28px;width:480px;display:flex;flex-direction:column;gap:14px}
+.conn-form-title{font-size:15px;font-weight:600;margin-bottom:4px}
+.conn-row{display:flex;gap:8px}
+.saved-conns{display:flex;flex-direction:column;gap:6px}
+.saved-conn-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:.15s}
+.saved-conn-item:hover{border-color:var(--accent);background:var(--bg4)}
+.sci-dot{width:8px;height:8px;border-radius:50%}
+.sci-info{flex:1}
+.sci-name{font-size:13px;font-weight:500}
+.sci-host{font-size:11px;color:var(--text3);font-family:var(--mono)}
+.sci-actions{display:flex;gap:4px;opacity:0;transition:.15s}
+.saved-conn-item:hover .sci-actions{opacity:1}
+
+/* ═══ MULTI CLUSTER OVERVIEW ═══ */
+.mc-overview{display:grid;gap:10px}
+.mc-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius2);padding:16px;cursor:pointer;transition:.2s;position:relative;overflow:hidden}
+.mc-card:hover{border-color:var(--border2);transform:translateY(-1px)}
+.mc-card.active-cluster{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent3)}
+.mc-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px}
+.mc-card.hg::before{background:var(--green)}
+.mc-card.hy::before{background:var(--yellow)}
+.mc-card.hr::before{background:var(--red)}
+.mc-card.hd::before{background:var(--text3)}
+.mc-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.mc-name{font-size:14px;font-weight:600}
+.mc-env-tag{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600}
+.mc-metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.mc-metric{text-align:center}
+.mc-metric-val{font-size:16px;font-weight:700;line-height:1}
+.mc-metric-label{font-size:10px;color:var(--text3);margin-top:2px}
+.mc-actions{display:flex;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+
+/* ═══ BUTTONS ═══ */
+.btn{display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font);transition:.15s;white-space:nowrap}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:var(--accent2)}
+.btn-ghost{background:var(--bg3);color:var(--text2);border:1px solid var(--border2)}.btn-ghost:hover{color:var(--text)}
+.btn-danger{background:var(--red2);color:var(--red);border:1px solid rgba(239,68,68,.3)}.btn-danger:hover{background:rgba(239,68,68,.2)}
+.btn-success{background:var(--green2);color:var(--green);border:1px solid rgba(34,197,94,.3)}
+.btn-sm{padding:4px 10px;font-size:11px}
+.btn-xs{padding:2px 8px;font-size:11px}
+
+/* ═══ CARDS ═══ */
+.cards{display:grid;gap:10px;margin-bottom:14px}
+.cards-4{grid-template-columns:repeat(4,1fr)}
+.cards-3{grid-template-columns:repeat(3,1fr)}
+.cards-2{grid-template-columns:repeat(2,1fr)}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius2);padding:14px}
+.card-title{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px}
+.metric-val{font-size:26px;font-weight:700;line-height:1}
+.metric-sub{font-size:11px;color:var(--text3);margin-top:4px}
+.metric-green{color:var(--green)}.metric-yellow{color:var(--yellow)}.metric-red{color:var(--red)}.metric-blue{color:var(--accent)}
+
+/* ═══ TABLE ═══ */
+.tbl-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius2);overflow:hidden}
+.tbl-toolbar{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.tbl-title{font-size:13px;font-weight:600}
+.tbl-search{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:5px 10px;color:var(--text);font-size:12px;outline:none;width:180px;transition:.2s}
+.tbl-search:focus{border-color:var(--accent);width:220px}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px 12px;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;background:var(--bg3);border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid rgba(37,46,66,.5);font-size:12.5px;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--bg3)}
+.td-mono{font-family:var(--mono);font-size:11.5px}
+.td-link{color:var(--accent);cursor:pointer}.td-link:hover{text-decoration:underline}
+
+/* ═══ BADGES ═══ */
+.badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600}
+.badge-green{background:var(--green2);color:var(--green)}
+.badge-yellow{background:var(--yellow2);color:var(--yellow)}
+.badge-red{background:var(--red2);color:var(--red)}
+.badge-blue{background:var(--accent3);color:var(--accent)}
+.badge-gray{background:var(--bg4);color:var(--text3)}
+.badge-purple{background:rgba(168,85,247,.12);color:var(--purple)}
+.badge-teal{background:rgba(20,184,166,.12);color:var(--teal)}
+
+/* ═══ PROGRESS ═══ */
+.progress{height:5px;background:var(--bg4);border-radius:3px;overflow:hidden;min-width:50px}
+.progress-fill{height:100%;border-radius:3px;transition:width .4s}
+.pf-green{background:var(--green)}.pf-yellow{background:var(--yellow)}.pf-red{background:var(--red)}.pf-blue{background:var(--accent)}
+
+/* ═══ SHARD VIZ ═══ */
+.shard-item{display:inline-flex;flex-direction:column;border-radius:4px;font-size:9px;font-weight:600;text-align:center;padding:2px 4px;cursor:pointer;transition:.1s;min-width:26px;margin:2px}
+.shard-item:hover{transform:scale(1.15);z-index:10}
+.si-primary{background:rgba(34,197,94,.2);color:var(--green);border:1px solid rgba(34,197,94,.4)}
+.si-replica{background:rgba(79,142,247,.15);color:var(--accent);border:1px solid rgba(79,142,247,.3)}
+.si-unassigned{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3)}
+.si-initializing{background:var(--yellow2);color:var(--yellow);border:1px solid rgba(234,179,8,.3)}
+.si-relocating{background:rgba(249,115,22,.15);color:var(--orange);border:1px solid rgba(249,115,22,.3)}
+
+/* ═══ QUERY EDITOR ═══ */
+.query-layout{display:flex;gap:10px;flex:1;overflow:hidden;min-height:0}
+.query-left,.query-right{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0;overflow:hidden}
+.editor-wrap{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.editor-header{padding:7px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--text3);flex-shrink:0}
+textarea.editor{flex:1;background:transparent;border:none;outline:none;padding:10px 12px;color:var(--text);font-family:var(--mono);font-size:12px;line-height:1.7;resize:none;tab-size:2;min-height:0}
+.result-content{flex:1;overflow:auto;padding:10px}
+pre.json-out{font-family:var(--mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:var(--text)}
+.json-key{color:#7dd3fc}.json-str{color:#86efac}.json-num{color:#fbbf24}.json-bool{color:#f472b6}.json-null{color:var(--text3)}
+
+/* ═══ MODAL ═══ */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius2);padding:24px;width:500px;max-width:95vw;max-height:85vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.6)}
+.modal-title{font-size:15px;font-weight:600;margin-bottom:18px}
+.form-group{margin-bottom:12px}
+.form-label{display:block;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px}
+.form-input{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;outline:none;transition:.2s;font-family:var(--font)}
+.form-input:focus{border-color:var(--accent)}
+.form-input::placeholder{color:var(--text3)}
+select.form-input option{background:var(--bg3)}
+.form-row{display:flex;gap:10px}.form-row .form-group{flex:1}
+.form-input-mono{font-family:var(--mono);font-size:12px}
+.modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
+
+/* ═══ ALERT ═══ */
+.alert{padding:10px 14px;border-radius:var(--radius);font-size:12.5px;margin-bottom:10px;display:flex;align-items:flex-start;gap:8px}
+.alert-warning{background:var(--yellow2);border:1px solid rgba(234,179,8,.3);color:var(--yellow)}
+.alert-error{background:var(--red2);border:1px solid rgba(239,68,68,.3);color:var(--red)}
+.alert-success{background:var(--green2);border:1px solid rgba(34,197,94,.3);color:var(--green)}
+.alert-info{background:var(--accent3);border:1px solid rgba(79,142,247,.3);color:var(--accent)}
+
+/* ═══ TABS ═══ */
+.tab-bar{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);padding:0 14px;flex-shrink:0}
+.tab{padding:9px 14px;cursor:pointer;color:var(--text2);font-size:12.5px;border-bottom:2px solid transparent;transition:.15s;white-space:nowrap}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+
+/* ═══ NOTIFICATION ═══ */
+.notif-container{position:fixed;top:54px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.notif{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius);padding:10px 14px;font-size:12.5px;display:flex;align-items:center;gap:10px;pointer-events:all;box-shadow:0 4px 20px rgba(0,0,0,.5);animation:slideIn .25s ease;max-width:300px}
+@keyframes slideIn{from{transform:translateX(110%);opacity:0}to{transform:translateX(0);opacity:1}}
+.notif-success{border-left:3px solid var(--green)}.notif-error{border-left:3px solid var(--red)}.notif-info{border-left:3px solid var(--accent)}
+
+/* ═══ MISC ═══ */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+.sep{height:1px;background:var(--border);margin:10px 0}
+.kv{display:flex;gap:8px;margin-bottom:5px;font-size:12.5px}
+.kv-key{color:var(--text3);min-width:130px;flex-shrink:0}
+.kv-val{color:var(--text);font-family:var(--mono);font-size:12px;word-break:break-all}
+.flex{display:flex}.gap-2{gap:8px}.gap-1{gap:4px}.items-center{align-items:center}.justify-between{justify-content:space-between}.flex-1{flex:1}.flex-wrap{flex-wrap:wrap}
+.text-sm{font-size:12px}.text-xs{font-size:11px}
+.text-red{color:var(--red)}.text-green{color:var(--green)}.text-yellow{color:var(--yellow)}.text-blue{color:var(--accent)}.text-muted{color:var(--text3)}.text-orange{color:var(--orange)}
+.mt-1{margin-top:4px}.mt-2{margin-top:8px}.mt-3{margin-top:12px}.mb-1{margin-bottom:4px}.mb-2{margin-bottom:8px}.mb-3{margin-bottom:12px}
+.w-full{width:100%}.node-tag{padding:2px 6px;background:var(--bg4);border-radius:3px;font-size:10px;font-family:var(--mono);color:var(--text2)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--text3);gap:10px}
+.empty{text-align:center;padding:32px;color:var(--text3)}
+.empty-icon{font-size:28px;margin-bottom:8px}
+.query-method{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:6px 10px;color:var(--text);font-size:12px;cursor:pointer;outline:none}
+.query-path{flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:6px 10px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:.2s}
+.query-path:focus{border-color:var(--accent)}
+.query-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex-shrink:0}
+
+/* ═══ ENV COLOR TAGS ═══ */
+.env-prod{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3)}
+.env-uat{background:rgba(234,179,8,.12);color:var(--yellow);border:1px solid rgba(234,179,8,.3)}
+.env-sit{background:var(--accent3);color:var(--accent);border:1px solid rgba(79,142,247,.3)}
+.env-dev{background:rgba(168,85,247,.12);color:var(--purple);border:1px solid rgba(168,85,247,.3)}
+.env-other{background:var(--bg4);color:var(--text3);border:1px solid var(--border)}
+
+/* ═══ COMPARISON VIEW ═══ */
+.compare-grid{display:grid;gap:10px}
+.compare-header{display:flex;gap:10px;margin-bottom:6px}
+.compare-col-title{flex:1;font-size:12px;font-weight:600;color:var(--text2);text-align:center;padding:6px;background:var(--bg3);border-radius:6px}
+</style>
+</head>
+<body>
+
+<!-- ═══ CLUSTER TABS BAR ═══ -->
+<div class="cluster-bar" id="clusterBar">
+  <div class="cb-logo">
+    <div class="cb-logo-icon">⚡</div>
+    ES Manager
+  </div>
+  <!-- tabs injected here -->
+  <div class="cb-add" onclick="openAddClusterModal()" title="添加集群连接">＋</div>
+  <div class="cb-settings" onclick="openGlobalSettings()" title="全局管理">⚙</div>
+</div>
+
+<!-- NOTIFICATIONS -->
+<div class="notif-container" id="notifContainer"></div>
+
+<!-- ═══ APP LAYOUT ═══ -->
+<div class="app-layout">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar" id="sidebar">
+    <div style="padding:12px 14px 8px;border-bottom:1px solid var(--border)">
+      <div class="text-xs text-muted mb-1">当前集群</div>
+      <div id="sidebarClusterName" style="font-size:13px;font-weight:600;color:var(--text)">未选择</div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">监控</div>
+      <div class="nav-item active" onclick="showPage('overview')" id="nav-overview"><span class="ni">📊</span>集群概览</div>
+      <div class="nav-item" onclick="showPage('monitoring')" id="nav-monitoring"><span class="ni">📈</span>实时监控</div>
+      <div class="nav-item" onclick="showPage('nodes')" id="nav-nodes"><span class="ni">🖥</span>节点管理</div>
+      <div class="nav-item" onclick="showPage('multiview')" id="nav-multiview"><span class="ni">🌐</span>多集群视图</div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">索引</div>
+      <div class="nav-item" onclick="showPage('indices')" id="nav-indices"><span class="ni">📁</span>索引管理</div>
+      <div class="nav-item" onclick="showPage('shards')" id="nav-shards"><span class="ni">🔷</span>分片视图</div>
+      <div class="nav-item" onclick="showPage('aliases')" id="nav-aliases"><span class="ni">🏷</span>别名管理</div>
+      <div class="nav-item" onclick="showPage('templates')" id="nav-templates"><span class="ni">📄</span>索引模板</div>
+      <div class="nav-item" onclick="showPage('ilm')" id="nav-ilm"><span class="ni">♻️</span>ILM 策略</div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">数据</div>
+      <div class="nav-item" onclick="showPage('browser')" id="nav-browser"><span class="ni">🔍</span>数据浏览</div>
+      <div class="nav-item" onclick="showPage('query')" id="nav-query"><span class="ni">⚡</span>查询控制台</div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">管理</div>
+      <div class="nav-item" onclick="showPage('security')" id="nav-security"><span class="ni">🛡</span>安全管理</div>
+      <div class="nav-item" onclick="showPage('snapshots')" id="nav-snapshots"><span class="ni">📸</span>快照管理</div>
+      <div class="nav-item" onclick="showPage('tasks')" id="nav-tasks"><span class="ni">⚙️</span>任务管理</div>
+      <div class="nav-item" onclick="showPage('settings')" id="nav-settings"><span class="ni">🔧</span>集群设置</div>
+      <div class="nav-item" onclick="showPage('pipelines')" id="nav-pipelines"><span class="ni">🔀</span>Pipeline</div>
+    </div>
+    <div style="padding:10px 14px;margin-top:auto;border-top:1px solid var(--border)">
+      <div id="sidebarAutoRefresh" style="font-size:11px;color:var(--text3);margin-bottom:6px">自动刷新</div>
+      <select id="autoRefreshSel" class="form-input" style="font-size:11px;padding:4px 8px" onchange="setAutoRefresh(this.value)">
+        <option value="0">手动</option>
+        <option value="5000">5秒</option>
+        <option value="15000">15秒</option>
+        <option value="60000">1分钟</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main" id="mainArea">
+
+    <!-- WELCOME (no cluster selected) -->
+    <div class="page active" id="page-welcome">
+      <div class="welcome">
+        <div class="cb-logo-icon" style="width:56px;height:56px;font-size:28px;border-radius:14px">⚡</div>
+        <div>
+          <div class="welcome-title">ES Manager Pro</div>
+          <div class="welcome-sub">支持同时连接多个 Elasticsearch 集群，点击上方「＋」添加集群或选择已保存的连接</div>
+        </div>
+        <div id="savedConnsList" style="width:480px"></div>
+        <button class="btn btn-primary" style="padding:10px 24px;font-size:14px" onclick="openAddClusterModal()">＋ 添加集群连接</button>
+      </div>
+    </div>
+
+    <!-- MULTI CLUSTER VIEW -->
+    <div class="page" id="page-multiview">
+      <div class="page-header">
+        <div><div class="page-title">多集群总览</div><div class="page-subtitle" id="multiviewSubtitle">所有集群状态</div></div>
+        <div class="flex gap-2">
+          <button class="btn btn-ghost btn-sm" onclick="showPage('compare')">⚖ 集群对比</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadMultiview()">↻ 全部刷新</button>
+        </div>
+      </div>
+      <div class="page-body" id="multiviewBody">
+        <div class="empty"><div class="empty-icon">🌐</div>请先添加集群</div>
+      </div>
+    </div>
+
+    <!-- CLUSTER COMPARE -->
+    <div class="page" id="page-compare">
+      <div class="page-header">
+        <div><div class="page-title">集群对比</div><div class="page-subtitle">横向比较多个集群指标</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadCompare()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="compareBody">
+        <div class="empty">请先添加多个集群</div>
+      </div>
+    </div>
+
+    <!-- OVERVIEW -->
+    <div class="page" id="page-overview">
+      <div class="page-header">
+        <div><div class="page-title">集群概览</div><div class="page-subtitle" id="overviewSubtitle"></div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadOverview()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="overviewBody"><div class="empty"><div class="empty-icon">📊</div>请选择集群</div></div>
+    </div>
+
+    <!-- MONITORING -->
+    <div class="page" id="page-monitoring">
+      <div class="page-header">
+        <div><div class="page-title">实时监控</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadMonitoring()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="monitoringBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- NODES -->
+    <div class="page" id="page-nodes">
+      <div class="page-header">
+        <div><div class="page-title">节点管理</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadNodes()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="nodesBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- INDICES -->
+    <div class="page" id="page-indices">
+      <div class="page-header">
+        <div><div class="page-title">索引管理</div></div>
+        <div class="flex gap-2">
+          <button class="btn btn-primary btn-sm" onclick="showCreateIndexModal()">+ 新建</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadIndices()">↻ 刷新</button>
+        </div>
+      </div>
+      <div class="page-body" id="indicesBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- SHARDS -->
+    <div class="page" id="page-shards">
+      <div class="page-header">
+        <div><div class="page-title">分片视图</div></div>
+        <div class="flex gap-2">
+          <button class="btn btn-ghost btn-sm" onclick="showAllocationExplain()">🔍 分配诊断</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadShards()">↻ 刷新</button>
+        </div>
+      </div>
+      <div class="page-body" id="shardsBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- ALIASES -->
+    <div class="page" id="page-aliases">
+      <div class="page-header">
+        <div><div class="page-title">别名管理</div></div>
+        <div class="flex gap-2">
+          <button class="btn btn-primary btn-sm" onclick="showAddAliasModal()">+ 添加</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadAliases()">↻ 刷新</button>
+        </div>
+      </div>
+      <div class="page-body" id="aliasesBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- TEMPLATES -->
+    <div class="page" id="page-templates">
+      <div class="page-header"><div class="page-title">索引模板</div>
+        <button class="btn btn-ghost btn-sm" onclick="loadTemplates()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="templatesBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- ILM -->
+    <div class="page" id="page-ilm">
+      <div class="page-header">
+        <div class="page-title">ILM 生命周期</div>
+        <div class="flex gap-2">
+          <button class="btn btn-success btn-sm" onclick="ilmAction('start')">▶ 启动</button>
+          <button class="btn btn-danger btn-sm" onclick="ilmAction('stop')">⏹ 停止</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadIlm()">↻ 刷新</button>
+        </div>
+      </div>
+      <div class="page-body" id="ilmBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- BROWSER -->
+    <div class="page" id="page-browser">
+      <div class="page-header"><div class="page-title">数据浏览</div></div>
+      <div class="page-body" id="browserBody">
+        <div class="flex gap-2 mb-3 flex-wrap">
+          <select id="browserIndex" onchange="browserSearch(1)" style="min-width:200px" class="query-method"><option value="">选择索引...</option></select>
+          <input id="browserQuery" placeholder="搜索关键词 (留空=全部)" class="query-path" style="flex:1;min-width:180px">
+          <select id="browserSize" class="query-method"><option value="10">10条</option><option value="25">25条</option><option value="50">50条</option></select>
+          <button class="btn btn-primary" onclick="browserSearch(1)">🔍 搜索</button>
+        </div>
+        <div id="browserResults"><div class="empty">选择索引后开始搜索</div></div>
+      </div>
+    </div>
+
+    <!-- QUERY CONSOLE -->
+    <div class="page" id="page-query">
+      <div class="page-header">
+        <div><div class="page-title">查询控制台</div><div class="page-subtitle" id="queryClusterLabel">当前集群: —</div></div>
+        <div class="flex gap-2">
+          <select id="queryClusterSel" class="query-method" onchange="switchQueryCluster(this.value)" style="max-width:180px"><option value="">选择集群...</option></select>
+        </div>
+      </div>
+      <div style="flex:1;overflow:hidden;padding:10px 14px;display:flex;flex-direction:column;gap:8px">
+        <div class="query-toolbar">
+          <select id="qMethod" class="query-method"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select>
+          <input id="qPath" class="query-path" value="_cluster/health" placeholder="API 路径">
+          <button class="btn btn-primary" onclick="sendQuery()">▶ 执行</button>
+          <button class="btn btn-ghost" onclick="formatQBody()">格式化</button>
+          <select id="qPresets" class="query-method" onchange="applyPreset(this.value)" style="max-width:180px">
+            <option value="">快捷命令...</option>
+            <optgroup label="集群">
+              <option value="GET|_cluster/health">集群健康</option>
+              <option value="GET|_cluster/stats">集群统计</option>
+              <option value="GET|_cluster/settings">集群设置</option>
+              <option value="GET|_cluster/pending_tasks">待处理任务</option>
+              <option value="GET|_cluster/allocation/explain">分配诊断</option>
+            </optgroup>
+            <optgroup label="节点">
+              <option value="GET|_cat/nodes?v&h=ip,name,heap.percent,disk.used_percent,cpu,master">节点列表</option>
+              <option value="GET|_nodes/stats/jvm">JVM统计</option>
+              <option value="GET|_nodes/hot_threads">热点线程</option>
+            </optgroup>
+            <optgroup label="索引">
+              <option value="GET|_cat/indices?v&s=store.size:desc">索引列表(按大小)</option>
+              <option value="GET|_cat/shards?v&h=index,shard,prirep,state,unassigned.reason">分片列表</option>
+              <option value="GET|_cat/aliases?v">别名列表</option>
+              <option value="GET|_cat/allocation?v">磁盘分配</option>
+            </optgroup>
+            <optgroup label="搜索">
+              <option value="POST|_search|{\n  &quot;query&quot;: {\n    &quot;match_all&quot;: {}\n  },\n  &quot;size&quot;: 10\n}">全局搜索</option>
+            </optgroup>
+          </select>
+          <label class="flex items-center gap-1 text-xs text-muted" style="cursor:pointer">
+            <input type="checkbox" id="qPretty" checked> 美化
+          </label>
+        </div>
+        <div class="query-layout">
+          <div class="query-left">
+            <div class="editor-wrap">
+              <div class="editor-header">
+                <span>请求体 (JSON)</span>
+                <div class="flex gap-2">
+                  <span id="qBodyStatus" class="text-xs"></span>
+                  <button class="btn btn-xs btn-ghost" onclick="document.getElementById('qBody').value=''">清空</button>
+                </div>
+              </div>
+              <textarea class="editor" id="qBody" oninput="validateQBody()" spellcheck="false" placeholder='{"query":{"match_all":{}}}' onpaste="setTimeout(()=>{try{const el=document.getElementById('qBody');const v=el.value.trim();if(v.startsWith('{')||v.startsWith('['))el.value=JSON.stringify(JSON.parse(v),null,2);validateQBody();}catch{}},0)" onkeydown="if(event.ctrlKey&&event.shiftKey&&event.key==='F'){event.preventDefault();formatQBody();}"></textarea>
+            </div>
+            <div style="height:30px;flex-shrink:0;overflow:hidden">
+              <div class="flex gap-1 items-center" style="height:100%">
+                <span class="text-xs text-muted">历史:</span>
+                <div id="qHistory" class="flex gap-1" style="overflow-x:auto;flex:1"></div>
+              </div>
+            </div>
+          </div>
+          <div class="query-right">
+            <div class="editor-wrap">
+              <div class="editor-header">
+                <span>响应结果</span>
+                <div class="flex gap-2">
+                  <span id="qResultMeta" class="text-xs"></span>
+                  <button class="btn btn-xs btn-ghost" id="qResultFmtBtn" onclick="toggleQResultFmt()" title="展开/压缩 JSON">展开</button>
+                  <button class="btn btn-xs btn-ghost" onclick="copyQResult()">复制</button>
+                </div>
+              </div>
+              <div class="result-content" id="qResult"><div class="empty text-sm">执行查询后显示结果</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECURITY -->
+    <div class="page" id="page-security">
+      <div class="page-header"><div class="page-title">安全管理</div></div>
+      <div style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+        <div class="tab-bar">
+          <div class="tab active" onclick="secTab('users',this)">用户</div>
+          <div class="tab" onclick="secTab('roles',this)">角色</div>
+          <div class="tab" onclick="secTab('apikeys',this)">API Keys</div>
+          <div class="tab" onclick="secTab('privileges',this)">当前权限</div>
+        </div>
+        <div class="page-body" id="securityBody"><div class="empty">请选择集群</div></div>
+      </div>
+    </div>
+
+    <!-- SNAPSHOTS -->
+    <div class="page" id="page-snapshots">
+      <div class="page-header">
+        <div class="page-title">快照管理</div>
+        <div class="flex gap-2">
+          <button class="btn btn-primary btn-sm" onclick="showCreateSnapshotModal()">+ 创建</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadSnapshots()">↻ 刷新</button>
+        </div>
+      </div>
+      <div class="page-body" id="snapshotsBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- TASKS -->
+    <div class="page" id="page-tasks">
+      <div class="page-header">
+        <div class="page-title">任务管理</div>
+        <button class="btn btn-ghost btn-sm" onclick="loadTasks()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="tasksBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="page" id="page-settings">
+      <div class="page-header">
+        <div class="page-title">集群设置</div>
+        <button class="btn btn-ghost btn-sm" onclick="loadClusterSettings()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="settingsBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+    <!-- PIPELINES -->
+    <div class="page" id="page-pipelines">
+      <div class="page-header">
+        <div class="page-title">Ingest Pipeline</div>
+        <button class="btn btn-ghost btn-sm" onclick="loadPipelines()">↻ 刷新</button>
+      </div>
+      <div class="page-body" id="pipelinesBody"><div class="empty">请选择集群</div></div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /app-layout -->
+
+<div id="modalContainer"></div>
+
+<script>
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  CLUSTER MANAGER — 多集群核心状态                            ║
+// ╚══════════════════════════════════════════════════════════════╝
+const CM = {
+  clusters: {},        // id → clusterConfig
+  activeId: null,      // 当前激活的集群ID
+  autoRefreshTimer: null,
+  currentPage: 'welcome',
+  secSubTab: 'users',
+  qHistory: JSON.parse(localStorage.getItem('esm_qhist')||'[]'),
+  qResultData: null,
+  browserPage: 1,
+};
+
+// 颜色池（给集群自动分配标识色）
+const CLUSTER_COLORS = ['#4f8ef7','#22c55e','#eab308','#a855f7','#14b8a6','#f97316','#ec4899','#06b6d4'];
+let colorIdx = 0;
+
+function genId() { return 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6); }
+
+// 当前激活集群的配置
+function activeCluster() { return CM.activeId ? CM.clusters[CM.activeId] : null; }
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  HTTP 层 — 带集群 context                                    ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function clusterReq(cid, method, path, body, opts={}) {
+  const c = CM.clusters[cid];
+  if (!c || !c.connected) throw new Error('集群未连接: ' + (c?.name||cid));
+  const url = c.host.replace(/\/$/, '') + '/' + path.replace(/^\//, '');
+  const headers = { 'Content-Type':'application/json', 'Accept':'application/json' };
+  if (c.apiKey) headers['Authorization'] = 'ApiKey ' + c.apiKey;
+  else if (c.user) headers['Authorization'] = 'Basic ' + btoa(c.user + ':' + c.pass);
+  const cfg = { method, headers, signal: AbortSignal.timeout(opts.timeout||30000) };
+  if (body !== undefined && body !== null) cfg.body = typeof body==='string'?body:JSON.stringify(body);
+  const r = await fetch(url, cfg);
+  const txt = await r.text();
+  let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
+  return { ok: r.ok, status: r.status, data };
+}
+
+// 对当前激活集群的快捷方法
+const esGet  = (p, o)    => clusterReq(CM.activeId, 'GET',    p, null, o);
+const esPost = (p, b, o) => clusterReq(CM.activeId, 'POST',   p, b, o);
+const esPut  = (p, b, o) => clusterReq(CM.activeId, 'PUT',    p, b, o);
+const esDel  = (p, b, o) => clusterReq(CM.activeId, 'DELETE', p, b, o);
+
+async function safeGet(path, cid) {
+  try {
+    const id = cid || CM.activeId;
+    const r = await clusterReq(id, 'GET', path);
+    return r.ok ? r.data : null;
+  } catch { return null; }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  CLUSTER LIFECYCLE                                            ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function connectCluster(cfg) {
+  const c = CM.clusters[cfg.id];
+  c.status = 'connecting';
+  updateClusterTab(cfg.id);
+  try {
+    // 使用 fetch 直连（不经过 clusterReq，因为 clusterReq 要求 connected=true）
+    const headers = {'Content-Type':'application/json','Accept':'application/json'};
+    if (c.apiKey) headers['Authorization'] = 'ApiKey ' + c.apiKey;
+    else if (c.user) headers['Authorization'] = 'Basic ' + btoa(c.user + ':' + c.pass);
+    const res = await fetch(c.host.replace(/\/$/,'') + '/', {method:'GET', headers, signal:AbortSignal.timeout(10000)});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    c.connected = true;
+    c.clusterName = d.cluster_name || cfg.name;
+    c.version = d.version?.number || '8.x';
+    c.status = 'connected';
+    c.health = null;
+    notify(`✓ 已连接: ${c.clusterName} (${c.version})`, 'success');
+    // 立即获取健康状态
+    updateClusterHealth(cfg.id);
+    updateClusterTab(cfg.id);
+    saveConnections();
+    return true;
+  } catch(e) {
+    c.connected = false;
+    c.status = 'error';
+    c.error = e.message;
+    notify(`✗ 连接失败 [${cfg.name}]: ${e.message}`, 'error');
+    updateClusterTab(cfg.id);
+    return false;
+  }
+}
+
+async function updateClusterHealth(cid) {
+  const c = CM.clusters[cid];
+  if (!c?.connected) return;
+  try {
+    const r = await clusterReq(cid, 'GET', '_cluster/health');
+    if (r.ok) {
+      c.health = r.data;
+      updateClusterTab(cid);
+      if (cid === CM.activeId) updateSidebarHealth();
+    }
+  } catch{}
+}
+
+function addCluster(cfg) {
+  const id = cfg.id || genId();
+  cfg.id = id;
+  cfg.color = cfg.color || CLUSTER_COLORS[colorIdx % CLUSTER_COLORS.length];
+  colorIdx++;
+  cfg.connected = false;
+  cfg.status = 'idle';
+  CM.clusters[id] = cfg;
+  renderClusterTabs();
+  return id;
+}
+
+function removeCluster(id) {
+  const c = CM.clusters[id];
+  if (!confirm(`确认断开并移除集群 "${c?.name}"？`)) return;
+  delete CM.clusters[id];
+  if (CM.activeId === id) {
+    CM.activeId = null;
+    const remaining = Object.keys(CM.clusters);
+    if (remaining.length > 0) switchCluster(remaining[0]);
+    else showWelcome();
+  }
+  renderClusterTabs();
+  saveConnections();
+  notify(`集群 ${c?.name} 已移除`, 'info');
+}
+
+function switchCluster(id) {
+  if (!CM.clusters[id]) return;
+  CM.activeId = id;
+  const c = CM.clusters[id];
+  document.getElementById('sidebarClusterName').textContent = c.clusterName || c.name;
+  renderClusterTabs();
+  updateSidebarHealth();
+  updateQueryClusterSelect();
+  if (c.connected) {
+    if (CM.currentPage === 'welcome' || CM.currentPage === 'multiview') showPage('overview');
+    else showPage(CM.currentPage);
+  } else {
+    showPage('overview');
+  }
+  document.getElementById('sidebar').style.display = '';
+}
+
+function showWelcome() {
+  CM.activeId = null;
+  document.getElementById('sidebar').style.display = 'none';
+  showPage('welcome', true);
+  renderSavedConnections();
+}
+
+function updateSidebarHealth() {
+  const c = activeCluster();
+  if (!c) return;
+  const name = `${c.clusterName||c.name}`;
+  const env = c.env ? ` [${c.env}]` : '';
+  document.getElementById('sidebarClusterName').textContent = name + env;
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  CLUSTER TABS RENDERING                                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+function renderClusterTabs() {
+  const bar = document.getElementById('clusterBar');
+  // remove old tabs
+  bar.querySelectorAll('.cluster-tab').forEach(t => t.remove());
+  const addBtn = bar.querySelector('.cb-add');
+
+  Object.values(CM.clusters).forEach(c => {
+    const health = c.health?.status;
+    const dotClass = !c.connected ? '' : health==='green' ? 'green' : health==='yellow' ? 'yellow' : health==='red' ? 'red' : 'pulse';
+    const envClass = {prod:'env-prod',uat:'env-uat',sit:'env-sit',dev:'env-dev'}[c.env?.toLowerCase()] || 'env-other';
+    const tab = document.createElement('div');
+    tab.className = 'cluster-tab' + (c.id===CM.activeId?' active':'');
+    tab.dataset.id = c.id;
+    tab.innerHTML = `
+      <div class="ct-dot ${dotClass}" style="background:${c.connected?'':'var(--text3)'};${c.connected&&health==='green'?`box-shadow:0 0 6px ${c.color}`:''};${c.connected?`background:${health==='green'?c.color:health==='yellow'?'var(--yellow)':'var(--red)'}`:``}"></div>
+      <div class="ct-name" style="color:${c.id===CM.activeId?c.color:''}">
+        ${escH(c.name)}
+        ${c.connected?`<span style="font-size:9px;color:var(--text3);margin-left:4px">${c.version||''}</span>`:''}
+      </div>
+      ${c.env?`<div class="ct-env badge ${envClass}">${escH(c.env)}</div>`:''}
+      <div class="ct-close" onclick="event.stopPropagation();removeCluster('${c.id}')">✕</div>
+    `;
+    tab.addEventListener('click', () => {
+      if (!c.connected) {
+        connectCluster(c);
+        switchCluster(c.id);
+      } else {
+        switchCluster(c.id);
+      }
+    });
+    bar.insertBefore(tab, addBtn);
+  });
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  SAVED CONNECTIONS (localStorage)                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+function saveConnections() {
+  const saved = Object.values(CM.clusters).map(c => ({
+    id:c.id, name:c.name, host:c.host, user:c.user, pass:c.pass,
+    apiKey:c.apiKey, env:c.env, color:c.color, note:c.note
+  }));
+  localStorage.setItem('esm_connections', JSON.stringify(saved));
+}
+
+function loadSavedConnections() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('esm_connections') || '[]');
+    saved.forEach(cfg => addCluster(cfg));
+    renderSavedConnections();
+    renderClusterTabs();
+  } catch(e) {}
+}
+
+function renderSavedConnections() {
+  const el = document.getElementById('savedConnsList');
+  if (!el) return;
+  const clusters = Object.values(CM.clusters);
+  if (!clusters.length) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = `<div class="text-xs text-muted mb-2" style="text-align:center">已保存的连接</div>
+  <div class="saved-conns">` +
+  clusters.map(c => `
+    <div class="saved-conn-item" onclick="connectAndSwitch('${c.id}')">
+      <div class="sci-dot" style="background:${c.color}"></div>
+      <div class="sci-info">
+        <div class="sci-name">${escH(c.name)} ${c.env?`<span class="badge badge-gray" style="font-size:10px">${escH(c.env)}</span>`:''}</div>
+        <div class="sci-host">${escH(c.host)}</div>
+      </div>
+      <div class="sci-actions">
+        <button class="btn btn-xs btn-ghost" onclick="event.stopPropagation();editCluster('${c.id}')">编辑</button>
+        <button class="btn btn-xs btn-danger" onclick="event.stopPropagation();removeCluster('${c.id}')">删除</button>
+      </div>
+    </div>
+  `).join('') + '</div>';
+}
+
+async function connectAndSwitch(id) {
+  const ok = await connectCluster(CM.clusters[id]);
+  switchCluster(id);
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  ADD / EDIT CLUSTER MODAL                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+function openAddClusterModal(editId) {
+  const c = editId ? CM.clusters[editId] : null;
+  showModal(c ? '编辑集群连接' : '添加集群连接', `
+    <div class="form-row">
+      <div class="form-group flex-1"><label class="form-label">连接名称 *</label>
+        <input class="form-input" id="cfgName" placeholder="生产-ES集群" value="${escH(c?.name||'')}"></div>
+      <div class="form-group" style="width:100px"><label class="form-label">环境</label>
+        <select class="form-input" id="cfgEnv">
+          <option value="">无</option>
+          <option value="prod" ${c?.env==='prod'?'selected':''}>PROD</option>
+          <option value="uat"  ${c?.env==='uat'?'selected':''}>UAT</option>
+          <option value="sit"  ${c?.env==='sit'?'selected':''}>SIT</option>
+          <option value="dev"  ${c?.env==='dev'?'selected':''}>DEV</option>
+        </select></div>
+    </div>
+    <div class="form-group"><label class="form-label">Host *</label>
+      <input class="form-input form-input-mono" id="cfgHost" placeholder="https://your-es:9200" value="${escH(c?.host||'http://localhost:9200')}"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">用户名</label>
+        <input class="form-input" id="cfgUser" placeholder="elastic" value="${escH(c?.user||'')}"></div>
+      <div class="form-group"><label class="form-label">密码</label>
+        <input class="form-input" id="cfgPass" type="password" placeholder="••••••" value="${escH(c?.pass||'')}"></div>
+    </div>
+    <div class="form-group"><label class="form-label">API Key (优先于账号密码)</label>
+      <input class="form-input form-input-mono" id="cfgApiKey" placeholder="base64_encoded_api_key" value="${escH(c?.apiKey||'')}"></div>
+    <div class="form-group"><label class="form-label">备注</label>
+      <input class="form-input" id="cfgNote" placeholder="可选备注信息" value="${escH(c?.note||'')}"></div>
+    <div class="form-group"><label class="form-label">标识颜色</label>
+      <div class="flex gap-2 flex-wrap mt-1">
+        ${CLUSTER_COLORS.map(col=>`<div onclick="document.querySelectorAll('.color-opt').forEach(e=>e.classList.remove('sel'));this.classList.add('sel')" 
+          class="color-opt ${(c?.color||CLUSTER_COLORS[0])===col?'sel':''}" 
+          data-color="${col}"
+          style="width:24px;height:24px;border-radius:50%;background:${col};cursor:pointer;border:2px solid ${(c?.color||CLUSTER_COLORS[0])===col?'#fff':'transparent'};transition:.15s"
+          onmouseenter="this.style.transform='scale(1.2)'" onmouseleave="this.style.transform=''"></div>`).join('')}
+      </div>
+    </div>
+    <div id="cfgTestResult" style="margin-top:8px"></div>
+    <div style="margin-top:12px">
+      <button class="btn btn-ghost btn-sm" onclick="testConnConfig()">🔌 测试连接</button>
+    </div>
+  `, async () => {
+    const name = document.getElementById('cfgName').value.trim();
+    const host = document.getElementById('cfgHost').value.trim();
+    if (!name || !host) { notify('请填写名称和 Host', 'error'); return false; }
+    const selColor = document.querySelector('.color-opt.sel');
+    const color = selColor?.dataset.color || CLUSTER_COLORS[colorIdx % CLUSTER_COLORS.length];
+    const cfg = {
+      id: editId || genId(),
+      name, host, env: document.getElementById('cfgEnv').value,
+      user: document.getElementById('cfgUser').value.trim(),
+      pass: document.getElementById('cfgPass').value,
+      apiKey: document.getElementById('cfgApiKey').value.trim(),
+      note: document.getElementById('cfgNote').value.trim(),
+      color
+    };
+    if (editId) {
+      Object.assign(CM.clusters[editId], cfg);
+      renderClusterTabs();
+      saveConnections();
+      notify('连接配置已更新', 'success');
+    } else {
+      addCluster(cfg);
+      const ok = await connectCluster(CM.clusters[cfg.id]);
+      switchCluster(cfg.id);
+    }
+    renderSavedConnections();
+    return true;
+  });
+}
+
+async function testConnConfig() {
+  const host = document.getElementById('cfgHost').value.trim();
+  const user = document.getElementById('cfgUser').value.trim();
+  const pass = document.getElementById('cfgPass').value;
+  const apiKey = document.getElementById('cfgApiKey').value.trim();
+  const el = document.getElementById('cfgTestResult');
+  el.innerHTML = '<div class="alert alert-info">🔌 测试连接中...</div>';
+  try {
+    const headers = { 'Content-Type':'application/json' };
+    if (apiKey) headers['Authorization'] = 'ApiKey ' + apiKey;
+    else if (user) headers['Authorization'] = 'Basic ' + btoa(user+':'+pass);
+    const r = await fetch(host.replace(/\/$/, '') + '/', { method:'GET', headers, signal:AbortSignal.timeout(8000) });
+    const d = await r.json();
+    el.innerHTML = `<div class="alert alert-success">✓ 连接成功！集群: <strong>${d.cluster_name}</strong>，版本: <strong>${d.version?.number}</strong></div>`;
+  } catch(e) {
+    el.innerHTML = `<div class="alert alert-error">✗ 连接失败: ${escH(e.message)}</div>`;
+  }
+}
+
+function editCluster(id) { openAddClusterModal(id); }
+
+function openGlobalSettings() {
+  const clusters = Object.values(CM.clusters);
+  showModal('集群管理', `
+    <div class="form-group">
+      <label class="form-label">已添加的集群 (${clusters.length})</label>
+      ${clusters.length ? `<div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        ${clusters.map(c=>`<div class="saved-conn-item" style="cursor:default">
+          <div class="sci-dot" style="background:${c.color}"></div>
+          <div class="sci-info">
+            <div class="sci-name">${escH(c.name)} ${c.env?`<span class="badge badge-gray" style="font-size:10px">${escH(c.env)}</span>`:''}</div>
+            <div class="sci-host">${escH(c.host)} · ${c.connected?`<span class="text-green">已连接</span>`:'<span class="text-muted">未连接</span>'}</div>
+          </div>
+          <div class="flex gap-1">
+            ${!c.connected?`<button class="btn btn-xs btn-success" onclick="connectCluster(CM.clusters['${c.id}']).then(()=>{renderClusterTabs();closeModal()})">连接</button>`:''}
+            <button class="btn btn-xs btn-ghost" onclick="closeModal();editCluster('${c.id}')">编辑</button>
+            <button class="btn btn-xs btn-danger" onclick="removeCluster('${c.id}');closeModal()">删除</button>
+          </div>
+        </div>`).join('')}
+      </div>` : '<div class="empty" style="padding:16px">暂无集群</div>'}
+    </div>
+    <div class="flex gap-2 mt-2">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal();openAddClusterModal()">+ 添加集群</button>
+      <button class="btn btn-ghost btn-sm" onclick="reconnectAll()">↻ 全部重连</button>
+      <button class="btn btn-danger btn-sm" onclick="if(confirm('确认清除所有连接？')){Object.keys(CM.clusters).forEach(id=>delete CM.clusters[id]);CM.activeId=null;saveConnections();renderClusterTabs();showWelcome();closeModal()}">清除全部</button>
+    </div>
+  `, () => true, '关闭');
+}
+
+async function reconnectAll() {
+  closeModal();
+  for (const id of Object.keys(CM.clusters)) {
+    await connectCluster(CM.clusters[id]);
+  }
+  renderClusterTabs();
+  notify('全部重连完成', 'success');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  NAVIGATION                                                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+function showPage(id, force) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const page = document.getElementById('page-'+id);
+  const nav  = document.getElementById('nav-'+id);
+  if (page) page.classList.add('active');
+  if (nav)  nav.classList.add('active');
+  CM.currentPage = id;
+
+  if (!force && CM.activeId && CM.clusters[CM.activeId]?.connected) {
+    const loaders = {
+      overview: loadOverview, monitoring: loadMonitoring, nodes: loadNodes,
+      indices: loadIndices, shards: loadShards, aliases: loadAliases,
+      templates: loadTemplates, ilm: loadIlm, browser: loadBrowserIndices,
+      security: () => secTab(CM.secSubTab),
+      snapshots: loadSnapshots, tasks: loadTasks,
+      settings: loadClusterSettings, pipelines: loadPipelines,
+      multiview: loadMultiview, compare: loadCompare,
+    };
+    if (loaders[id]) loaders[id]();
+  }
+}
+
+function setAutoRefresh(ms) {
+  if (CM.autoRefreshTimer) { clearInterval(CM.autoRefreshTimer); CM.autoRefreshTimer = null; }
+  if (+ms > 0) CM.autoRefreshTimer = setInterval(() => {
+    if (CM.activeId) showPage(CM.currentPage, false);
+    Object.keys(CM.clusters).forEach(id => updateClusterHealth(id));
+  }, +ms);
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  UTILS                                                        ║
+// ╚══════════════════════════════════════════════════════════════╝
+function escH(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function fmtBytes(b){ if(!b)return'—'; const u=['B','KB','MB','GB','TB']; let i=0; b=Number(b); while(b>=1024&&i<4){b/=1024;i++;} return b.toFixed(i?1:0)+' '+u[i]; }
+function fmtNum(n){ return n!=null?Number(n).toLocaleString():'—'; }
+function fmtPct(n){ return n!=null?Number(n).toFixed(1)+'%':'—'; }
+function fmtDur(ms){ if(!ms)return'0ms'; if(ms<1000)return ms+'ms'; if(ms<60000)return(ms/1000).toFixed(1)+'s'; return Math.round(ms/60000)+'m'; }
+function pctClass(v){ return v>85?'metric-red':v>75?'metric-yellow':'metric-green'; }
+function pfClass(v){ return v>85?'pf-red':v>75?'pf-yellow':'pf-green'; }
+function healthColor(s){ return s==='green'?'var(--green)':s==='yellow'?'var(--yellow)':'var(--red)'; }
+function badge(txt,cls){ return `<span class="badge badge-${cls}">${escH(txt)}</span>`; }
+function healthBadge(s){ const m={green:'green',yellow:'yellow',red:'red'}; return s?badge(s.toUpperCase(),m[s]||'gray'):badge('—','gray'); }
+function progressBar(pct,cls){ return `<div class="progress"><div class="progress-fill ${cls||pfClass(pct)}" style="width:${Math.min(pct,100)}%"></div></div>`; }
+function loading(el){ document.getElementById(el).innerHTML='<div class="loading"><div class="spinner"></div> 加载中...</div>'; }
+function syntaxHighlight(json){
+  if(typeof json!=='string')json=JSON.stringify(json,null,2);
+  return json.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?/g,m=>/:$/.test(m)?`<span class="json-key">${m}</span>`:`<span class="json-str">${m}</span>`)
+    .replace(/\b(true|false)\b/g,'<span class="json-bool">$1</span>')
+    .replace(/\bnull\b/g,'<span class="json-null">null</span>')
+    .replace(/\b(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g,'<span class="json-num">$1</span>');
+}
+function jsonPre(d){ return `<pre class="json-out">${syntaxHighlight(JSON.stringify(d,null,2))}</pre>`; }
+function tableHtml(cols,rows){
+  if(!rows?.length)return'<div class="empty" style="padding:20px">暂无数据</div>';
+  let h='<div class="tbl-wrap"><table><thead><tr>'+cols.map(c=>`<th>${escH(c)}</th>`).join('')+'</tr></thead><tbody>';
+  rows.forEach(r=>{h+='<tr>';r.forEach(c=>h+=`<td>${c===null||c===undefined?'<span class="text-muted">—</span>':c}</td>`);h+='</tr>';});
+  return h+'</tbody></table></div>';
+}
+function notify(msg,type='info',dur=3000){
+  const c=document.getElementById('notifContainer');
+  const el=document.createElement('div');
+  el.className=`notif notif-${type}`;
+  el.innerHTML=`<span>${{success:'✓',error:'✗',info:'ℹ'}[type]||'ℹ'}</span><span style="flex:1">${escH(msg)}</span>`;
+  el.onclick=()=>el.remove();
+  c.appendChild(el);
+  setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(()=>el.remove(),300);},dur);
+}
+function filterTable(sid,tid){
+  const q=document.getElementById(sid).value.toLowerCase();
+  document.querySelectorAll(`#${tid} tbody tr`).forEach(r=>r.style.display=r.textContent.toLowerCase().includes(q)?'':'none');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  MULTI-CLUSTER VIEW                                           ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadMultiview() {
+  const ids = Object.keys(CM.clusters);
+  document.getElementById('multiviewSubtitle').textContent = `${ids.length} 个集群`;
+  loading('multiviewBody');
+  if (!ids.length) { document.getElementById('multiviewBody').innerHTML='<div class="empty"><div class="empty-icon">🌐</div>请先添加集群</div>'; return; }
+
+  // 并发获取所有集群健康
+  const results = await Promise.all(ids.map(async id => {
+    const c = CM.clusters[id];
+    if (!c.connected) return { id, c, health:null, stats:null, nodes:null };
+    const [health, stats, nodes] = await Promise.all([
+      safeGet('_cluster/health', id),
+      safeGet('_cluster/stats', id),
+      safeGet('_cat/nodes?format=json&h=ip,name,heap.percent,disk.used_percent,cpu,master', id),
+    ]);
+    c.health = health;
+    return { id, c, health, stats, nodes };
+  }));
+
+  renderClusterTabs(); // 更新健康状态点
+
+  let html = '<div class="mc-overview" style="grid-template-columns:1fr">';
+  results.forEach(({id, c, health, stats, nodes}) => {
+    const hStatus = health?.status || 'unknown';
+    const hClass = !c.connected ? 'hd' : hStatus==='green'?'hg':hStatus==='yellow'?'hy':'hr';
+    const envClass = {prod:'env-prod',uat:'env-uat',sit:'env-sit',dev:'env-dev'}[c.env?.toLowerCase()]||'env-other';
+
+    let metricHtml = '';
+    if (!c.connected) {
+      metricHtml = `<div class="text-muted text-sm">未连接 · <button class="btn btn-xs btn-ghost" onclick="connectAndSwitch('${id}')">立即连接</button></div>`;
+    } else if (!health) {
+      metricHtml = '<div class="text-muted text-sm">获取数据失败</div>';
+    } else {
+      // 计算堆/磁盘
+      let heapPct=0, diskPct=0;
+      if (nodes?.length) {
+        const h = nodes.map(n=>parseInt(n['heap.percent']||0)).filter(Boolean);
+        const d = nodes.map(n=>parseInt(n['disk.used_percent']||0)).filter(Boolean);
+        if(h.length) heapPct = Math.max(...h);
+        if(d.length) diskPct = Math.max(...d);
+      }
+      metricHtml = `<div class="mc-metrics">
+        <div class="mc-metric"><div class="mc-metric-val" style="color:${healthColor(hStatus)}">${hStatus.toUpperCase()}</div><div class="mc-metric-label">健康</div></div>
+        <div class="mc-metric"><div class="mc-metric-val" style="color:var(--accent)">${health.number_of_nodes}</div><div class="mc-metric-label">节点</div></div>
+        <div class="mc-metric"><div class="mc-metric-val ${pctClass(heapPct)}">${heapPct}%</div><div class="mc-metric-label">JVM堆峰值</div></div>
+        <div class="mc-metric"><div class="mc-metric-val ${pctClass(diskPct)}">${diskPct}%</div><div class="mc-metric-label">磁盘峰值</div></div>
+        <div class="mc-metric"><div class="mc-metric-val" style="color:var(--text)">${fmtNum(health.unassigned_shards)}</div><div class="mc-metric-label" style="color:${health.unassigned_shards>0?'var(--red)':'var(--text3)'}">未分配片</div></div>
+      </div>
+      ${health.unassigned_shards>0?`<div class="alert alert-error" style="margin:8px 0 0;padding:6px 10px;font-size:12px">⚠ 存在 ${health.unassigned_shards} 个未分配分片</div>`:''}
+      ${heapPct>85?`<div class="alert alert-error" style="margin:8px 0 0;padding:6px 10px;font-size:12px">⚠ JVM 堆使用率 ${heapPct}% 超过 85%</div>`:''}
+      ${diskPct>85?`<div class="alert alert-error" style="margin:8px 0 0;padding:6px 10px;font-size:12px">⚠ 磁盘使用率 ${diskPct}% 超过 85%（low watermark）</div>`:''}`;
+    }
+
+    html += `<div class="mc-card ${hClass} ${id===CM.activeId?'active-cluster':''}" style="border-color:${id===CM.activeId?c.color:''}">
+      <div class="mc-header">
+        <div class="ct-dot ${hStatus==='green'?'green':hStatus==='yellow'?'yellow':'red'}" style="width:10px;height:10px;background:${c.connected?c.color:'var(--text3)'}"></div>
+        <div class="mc-name">${escH(c.clusterName||c.name)}</div>
+        ${c.env?`<span class="mc-env-tag badge ${envClass}">${escH(c.env.toUpperCase())}</span>`:''}
+        <span class="text-xs text-muted" style="margin-left:auto">${escH(c.host)}</span>
+        ${c.connected&&c.version?`<span class="badge badge-gray" style="font-size:10px">v${escH(c.version)}</span>`:''}
+      </div>
+      ${metricHtml}
+      <div class="mc-actions">
+        ${c.connected
+          ? `<button class="btn btn-primary btn-sm" onclick="switchCluster('${id}');showPage('overview')">进入管理</button>
+             <button class="btn btn-ghost btn-sm" onclick="switchCluster('${id}');showPage('query')">查询控制台</button>
+             <button class="btn btn-ghost btn-sm" onclick="updateClusterHealth('${id}').then(()=>loadMultiview())">↻ 刷新</button>`
+          : `<button class="btn btn-success btn-sm" onclick="connectAndSwitch('${id}')">连接</button>`}
+        <button class="btn btn-ghost btn-sm" onclick="editCluster('${id}')">编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="removeCluster('${id}')">移除</button>
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  document.getElementById('multiviewBody').innerHTML = html;
+}
+
+async function loadCompare() {
+  const connected = Object.values(CM.clusters).filter(c => c.connected);
+  if (connected.length < 2) { document.getElementById('compareBody').innerHTML = '<div class="alert alert-info">需要至少 2 个已连接的集群才能对比</div>'; return; }
+  loading('compareBody');
+
+  const results = await Promise.all(connected.map(async c => {
+    const [health, stats, nodeStats] = await Promise.all([
+      safeGet('_cluster/health', c.id),
+      safeGet('_cluster/stats', c.id),
+      safeGet('_nodes/stats/jvm,fs', c.id),
+    ]);
+    let totalHeapUsed=0, totalHeapMax=0, totalDiskUsed=0, totalDiskTotal=0;
+    if (nodeStats?.nodes) {
+      Object.values(nodeStats.nodes).forEach(n => {
+        totalHeapUsed += n.jvm?.mem?.heap_used_in_bytes||0;
+        totalHeapMax  += n.jvm?.mem?.heap_max_in_bytes||0;
+        const fs = n.fs?.total;
+        if (fs) { totalDiskUsed += fs.total_in_bytes-(fs.available_in_bytes||0); totalDiskTotal += fs.total_in_bytes||0; }
+      });
+    }
+    return { c, health, stats, heapPct: totalHeapMax?totalHeapUsed/totalHeapMax*100:0, diskPct: totalDiskTotal?totalDiskUsed/totalDiskTotal*100:0 };
+  }));
+
+  const metrics = [
+    { label:'集群状态', fn: r => r.health?.status ? `<span style="color:${healthColor(r.health.status)}">${r.health.status.toUpperCase()}</span>` : '—' },
+    { label:'节点数', fn: r => fmtNum(r.health?.number_of_nodes) },
+    { label:'数据节点', fn: r => fmtNum(r.health?.number_of_data_nodes) },
+    { label:'活跃主分片', fn: r => fmtNum(r.health?.active_primary_shards) },
+    { label:'未分配分片', fn: r => `<span class="${r.health?.unassigned_shards>0?'text-red':''}">${fmtNum(r.health?.unassigned_shards)}</span>` },
+    { label:'文档总数', fn: r => fmtNum(r.stats?.indices?.docs?.count) },
+    { label:'存储大小', fn: r => fmtBytes(r.stats?.indices?.store?.size_in_bytes) },
+    { label:'索引数量', fn: r => fmtNum(r.stats?.indices?.count) },
+    { label:'JVM堆使用率', fn: r => `<span class="${pctClass(r.heapPct)}">${r.heapPct.toFixed(1)}%</span>` },
+    { label:'磁盘使用率', fn: r => `<span class="${pctClass(r.diskPct)}">${r.diskPct.toFixed(1)}%</span>` },
+    { label:'ES版本', fn: r => escH(r.c.version||'—') },
+  ];
+
+  let html = `<div class="tbl-wrap">
+  <div class="tbl-toolbar"><span class="tbl-title">集群指标对比</span></div>
+  <table><thead><tr><th>指标</th>${results.map(r=>`<th><div style="color:${r.c.color}">${escH(r.c.clusterName||r.c.name)}</div>${r.c.env?`<div class="text-xs text-muted">${escH(r.c.env)}</div>`:''}</th>`).join('')}</tr></thead><tbody>`;
+  metrics.forEach(m => {
+    html += `<tr><td class="text-muted" style="font-weight:500">${escH(m.label)}</td>${results.map(r=>`<td>${m.fn(r)}</td>`).join('')}</tr>`;
+  });
+  html += '</tbody></table></div>';
+  document.getElementById('compareBody').innerHTML = html;
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: OVERVIEW                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadOverview() {
+  if (!activeCluster()?.connected) { document.getElementById('overviewBody').innerHTML='<div class="empty">请先连接集群</div>'; return; }
+  loading('overviewBody');
+  const c = activeCluster();
+  try {
+    const [health, stats, catNodes, nodeStats] = await Promise.all([
+      safeGet('_cluster/health'), safeGet('_cluster/stats'),
+      safeGet('_cat/nodes?format=json&h=ip,name,heap.percent,disk.used_percent,cpu,master,node.role,load_1m'),
+      safeGet('_nodes/stats/jvm,fs'),
+    ]);
+    if (!health) { document.getElementById('overviewBody').innerHTML='<div class="alert alert-error">获取集群信息失败</div>'; return; }
+    c.health = health; updateClusterTab(CM.activeId); renderClusterTabs();
+    document.getElementById('overviewSubtitle').textContent = `${health.cluster_name} · v${c.version} · ${health.number_of_nodes} 节点`;
+
+    let totalHeapUsed=0, totalHeapMax=0, totalDiskUsed=0, totalDiskTotal=0;
+    if (nodeStats?.nodes) Object.values(nodeStats.nodes).forEach(n => {
+      totalHeapUsed += n.jvm?.mem?.heap_used_in_bytes||0; totalHeapMax += n.jvm?.mem?.heap_max_in_bytes||0;
+      const fs=n.fs?.total; if(fs){totalDiskUsed+=fs.total_in_bytes-(fs.available_in_bytes||0);totalDiskTotal+=fs.total_in_bytes||0;}
+    });
+    const heapPct = totalHeapMax>0?(totalHeapUsed/totalHeapMax*100):0;
+    const diskPct = totalDiskTotal>0?(totalDiskUsed/totalDiskTotal*100):0;
+    const hColor = healthColor(health.status);
+    const activePct = health.active_shards_percent_as_number||0;
+
+    const alerts = [];
+    if (health.status==='red') alerts.push({type:'error',msg:`集群状态 RED！未分配主分片: ${health.unassigned_shards}`});
+    if (health.status==='yellow') alerts.push({type:'warning',msg:`集群状态 YELLOW，副本存在未分配: ${health.unassigned_shards}`});
+    if (heapPct>85) alerts.push({type:'error',msg:`JVM 堆峰值 ${heapPct.toFixed(1)}% 超过 85%，OOM 风险！`});
+    else if (heapPct>75) alerts.push({type:'warning',msg:`JVM 堆峰值 ${heapPct.toFixed(1)}% 超过 75%`});
+    if (diskPct>85) alerts.push({type:'error',msg:`磁盘使用率 ${diskPct.toFixed(1)}% 超过 85%（low watermark）`});
+    else if (diskPct>75) alerts.push({type:'warning',msg:`磁盘使用率 ${diskPct.toFixed(1)}% 超过 75%`});
+    if (health.unassigned_shards>0) alerts.push({type:'warning',msg:`存在 ${health.unassigned_shards} 个未分配分片`});
+
+    let html = alerts.map(a=>`<div class="alert alert-${a.type}">${escH(a.msg)}</div>`).join('');
+    html += `<div class="cards cards-4 mb-3">
+      <div class="card"><div class="card-title">集群状态</div><div class="metric-val" style="color:${hColor}">${health.status?.toUpperCase()}</div><div class="metric-sub">${escH(health.cluster_name)}</div></div>
+      <div class="card"><div class="card-title">节点数量</div><div class="metric-val metric-blue">${health.number_of_nodes}</div><div class="metric-sub">数据节点: ${health.number_of_data_nodes}</div></div>
+      <div class="card"><div class="card-title">文档总量</div><div class="metric-val metric-blue">${fmtNum(stats?.indices?.docs?.count)}</div><div class="metric-sub">存储: ${fmtBytes(stats?.indices?.store?.size_in_bytes)}</div></div>
+      <div class="card"><div class="card-title">活跃分片</div><div class="metric-val ${pctClass(activePct)}">${fmtNum(health.active_shards)}</div><div class="metric-sub">未分配: ${health.unassigned_shards}</div></div>
+    </div>
+    <div class="cards cards-4 mb-3">
+      <div class="card"><div class="card-title">JVM 堆使用率</div><div class="metric-val ${pctClass(heapPct)}">${heapPct.toFixed(1)}%</div><div class="metric-sub">${fmtBytes(totalHeapUsed)} / ${fmtBytes(totalHeapMax)}</div><div class="mt-2">${progressBar(heapPct)}</div></div>
+      <div class="card"><div class="card-title">磁盘使用率</div><div class="metric-val ${pctClass(diskPct)}">${diskPct.toFixed(1)}%</div><div class="metric-sub">已用 ${fmtBytes(totalDiskUsed)} / ${fmtBytes(totalDiskTotal)}</div><div class="mt-2">${progressBar(diskPct)}</div></div>
+      <div class="card"><div class="card-title">主分片</div><div class="metric-val metric-blue">${fmtNum(health.active_primary_shards)}</div><div class="metric-sub">迁移中: ${health.relocating_shards} · 初始化: ${health.initializing_shards}</div></div>
+      <div class="card"><div class="card-title">索引数量</div><div class="metric-val metric-blue">${fmtNum(stats?.indices?.count)}</div><div class="metric-sub">已删文档: ${fmtNum(stats?.indices?.docs?.deleted)}</div></div>
+    </div>`;
+
+    if (catNodes?.length) {
+      html += `<div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">节点状态</span></div>
+      <table><thead><tr><th>节点</th><th>IP</th><th>角色</th><th>M</th><th>JVM堆%</th><th>磁盘%</th><th>CPU%</th><th>Load 1m</th></tr></thead><tbody>`;
+      catNodes.forEach(n => {
+        const heap=parseInt(n['heap.percent']||0), disk=parseInt(n['disk.used_percent']||0);
+        html+=`<tr><td class="td-mono text-blue">${escH(n.name)}</td><td class="td-mono text-muted">${escH(n.ip)}</td>
+        <td>${(n['node.role']||'').split('').map(r=>({m:'master',d:'data',i:'ingest',c:'coord',r:'remote',l:'ml',v:'voting'})[r]||r).filter(Boolean).map(r=>`<span class="node-tag">${r}</span>`).join(' ')}</td>
+        <td>${n.master==='*'?'<span style="color:var(--yellow)">★</span>':''}</td>
+        <td><div class="flex gap-2 items-center"><span class="${pctClass(heap)}">${heap}%</span>${progressBar(heap)}</div></td>
+        <td><div class="flex gap-2 items-center"><span class="${pctClass(disk)}">${disk}%</span>${progressBar(disk)}</div></td>
+        <td>${n.cpu||0}%</td><td class="text-muted">${n.load_1m||''}</td></tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    document.getElementById('overviewBody').innerHTML = html;
+  } catch(e) { document.getElementById('overviewBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`; }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: MONITORING                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadMonitoring() {
+  if (!activeCluster()?.connected) return;
+  loading('monitoringBody');
+  try {
+    const [nodeStats, threadPool, breakers] = await Promise.all([
+      safeGet('_nodes/stats/jvm,os,fs,process'),
+      safeGet('_cat/thread_pool?format=json&h=node_name,name,active,rejected,completed,queue,queue_size'),
+      safeGet('_nodes/stats/breaker'),
+    ]);
+    let html = '';
+    if (nodeStats?.nodes) {
+      const keyPools = (threadPool||[]).filter(t=>['write','search','get','bulk','refresh','flush','merge'].includes(t.name));
+      const hasRej = keyPools.some(t=>parseInt(t.rejected||0)>0);
+      if (hasRej) html += '<div class="alert alert-error mb-2">⚠ 存在线程池拒绝，请立即检查集群负载！</div>';
+
+      html += `<div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">节点资源监控</span></div>
+      <table><thead><tr><th>节点</th><th>JVM堆</th><th>JVM%</th><th>非堆</th><th>GC Young</th><th>GC Old</th><th>磁盘可用</th><th>磁盘%</th><th>CPU%</th></tr></thead><tbody>`;
+      Object.entries(nodeStats.nodes).forEach(([id,n])=>{
+        const hu=n.jvm?.mem?.heap_used_in_bytes||0, hm=n.jvm?.mem?.heap_max_in_bytes||1;
+        const hp=(hu/hm*100);
+        const da=n.fs?.total?.available_in_bytes, dt=n.fs?.total?.total_in_bytes;
+        const dp=dt?((dt-da)/dt*100):0;
+        const gcY=n.jvm?.gc?.collectors?.young||n.jvm?.gc?.collectors?.G1Young||{};
+        const gcO=n.jvm?.gc?.collectors?.old||n.jvm?.gc?.collectors?.G1Old||{};
+        html+=`<tr><td class="td-mono text-blue">${escH(n.name)}</td>
+          <td>${fmtBytes(hu)}/${fmtBytes(hm)}</td>
+          <td><div class="flex gap-2 items-center"><span class="${pctClass(hp)}">${hp.toFixed(1)}%</span>${progressBar(hp)}</div></td>
+          <td class="text-muted">${fmtBytes(n.jvm?.mem?.non_heap_used_in_bytes)}</td>
+          <td class="text-muted">${gcY.collection_count||0}次/${fmtDur(gcY.collection_time_in_millis)}</td>
+          <td class="${gcO.collection_time_in_millis>1000?'text-red':'text-muted'}">${gcO.collection_count||0}次/${fmtDur(gcO.collection_time_in_millis)}</td>
+          <td>${fmtBytes(da)}</td>
+          <td><div class="flex gap-2 items-center"><span class="${pctClass(dp)}">${dp.toFixed(1)}%</span>${progressBar(dp)}</div></td>
+          <td>${n.os?.cpu?.percent||0}%</td></tr>`;
+      });
+      html += '</tbody></table></div>';
+
+      // 线程池
+      if (keyPools.length) {
+        html += `<div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">线程池状态</span></div>
+        <table><thead><tr><th>节点</th><th>线程池</th><th>活跃</th><th>队列</th><th>队列上限</th><th>完成</th><th>拒绝</th></tr></thead><tbody>`;
+        keyPools.forEach(t=>{
+          const rej=parseInt(t.rejected||0);
+          html+=`<tr><td class="text-muted">${escH(t.node_name)}</td><td class="text-blue">${escH(t.name)}</td>
+            <td>${escH(t.active)}</td><td>${escH(t.queue)}</td><td class="text-muted">${escH(t.queue_size)}</td>
+            <td class="text-muted">${escH(t.completed)}</td><td class="${rej>0?'text-red':''}">${rej>0?'⚠ ':''} ${rej}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+      }
+
+      // 熔断器
+      if (breakers?.nodes) {
+        html += `<div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">熔断器状态</span></div>
+        <table><thead><tr><th>节点</th><th>熔断器</th><th>当前使用</th><th>限制</th><th>使用%</th><th>触发次数</th></tr></thead><tbody>`;
+        Object.entries(breakers.nodes).forEach(([id,n])=>{
+          Object.entries(n.breakers||{}).forEach(([name,b])=>{
+            const p=b.limit_size_in_bytes>0?(b.estimated_size_in_bytes/b.limit_size_in_bytes*100):0;
+            html+=`<tr><td class="text-muted">${escH(n.name)}</td><td class="text-blue">${escH(name)}</td>
+              <td>${fmtBytes(b.estimated_size_in_bytes)}</td><td>${fmtBytes(b.limit_size_in_bytes)}</td>
+              <td><div class="flex gap-2 items-center"><span class="${pctClass(p)}">${p.toFixed(1)}%</span>${progressBar(p)}</div></td>
+              <td class="${b.tripped>0?'text-red':''}">${b.tripped||0}</td></tr>`;
+          });
+        });
+        html += '</tbody></table></div>';
+      }
+    }
+    document.getElementById('monitoringBody').innerHTML = html || '<div class="empty">暂无监控数据</div>';
+  } catch(e) { document.getElementById('monitoringBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`; }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: NODES                                                  ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadNodes() {
+  if (!activeCluster()?.connected) return;
+  loading('nodesBody');
+  try {
+    const d = await safeGet('_cat/nodes?format=json&h=ip,name,heap.percent,heap.current,heap.max,disk.used_percent,disk.avail,cpu,load_1m,master,node.role,uptime');
+    let html = `<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">节点列表</span><span class="text-muted text-sm">共 ${d?.length||0} 个</span></div>
+    <table><thead><tr><th>节点名</th><th>IP</th><th>角色</th><th>M</th><th>JVM%</th><th>堆当前/最大</th><th>磁盘%</th><th>磁盘剩余</th><th>CPU%</th><th>Load</th><th>运行时长</th><th>操作</th></tr></thead><tbody>`;
+    (d||[]).forEach(n=>{
+      const heap=parseInt(n['heap.percent']||0), disk=parseInt(n['disk.used_percent']||0);
+      html+=`<tr>
+        <td class="td-mono text-blue">${escH(n.name)}</td><td class="td-mono text-muted">${escH(n.ip)}</td>
+        <td>${(n['node.role']||'').split('').map(r=>({m:'master',d:'data',i:'ingest',c:'coord',r:'remote',l:'ml',v:'voting'})[r]||r).filter(Boolean).map(r=>`<span class="node-tag">${r}</span>`).join(' ')}</td>
+        <td>${n.master==='*'?'<span style="color:var(--yellow)">★</span>':''}</td>
+        <td class="${pctClass(heap)}">${heap}%</td>
+        <td class="td-mono text-muted">${escH(n['heap.current']||'')} / ${escH(n['heap.max']||'')}</td>
+        <td class="${pctClass(disk)}">${disk}%</td>
+        <td class="text-muted">${escH(n['disk.avail']||'')}</td>
+        <td>${n.cpu||0}%</td><td class="text-muted">${n.load_1m||''}</td>
+        <td class="text-muted text-xs">${n.uptime||''}</td>
+        <td><button class="btn btn-xs btn-ghost" onclick="showNodeDetail('${escH(n.name)}')">详情</button></td>
+      </tr>`;
+    });
+    html += '</tbody></table></div><div id="nodeDetailPanel" class="mt-3"></div>';
+    document.getElementById('nodesBody').innerHTML = html;
+  } catch(e) { document.getElementById('nodesBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`; }
+}
+
+async function showNodeDetail(name) {
+  const panel = document.getElementById('nodeDetailPanel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="loading"><div class="spinner"></div> 加载...</div>';
+  const r = await safeGet(`_nodes/${encodeURIComponent(name)}/stats`);
+  const n = Object.values(r?.nodes||{})[0];
+  if (!n) { panel.innerHTML='<div class="alert alert-error">节点不存在</div>'; return; }
+  const hp=n.jvm?.mem?.heap_used_percent||0;
+  panel.innerHTML=`<div class="card">
+    <div class="card-title flex justify-between"><span>节点详情: <span class="text-blue">${escH(n.name)}</span></span><button class="btn btn-xs btn-ghost" onclick="this.closest('.card').remove()">✕</button></div>
+    <div class="cards cards-3">
+      <div><div class="text-xs text-muted mb-1">JVM 堆</div><div>${fmtBytes(n.jvm?.mem?.heap_used_in_bytes)} / ${fmtBytes(n.jvm?.mem?.heap_max_in_bytes)}</div><div class="mt-1">${progressBar(hp)}</div></div>
+      <div><div class="text-xs text-muted mb-1">GC 统计</div>${Object.entries(n.jvm?.gc?.collectors||{}).map(([k,v])=>`<div class="text-xs">${k}: ${v.collection_count}次 / ${fmtDur(v.collection_time_in_millis)}</div>`).join('')}</div>
+      <div><div class="text-xs text-muted mb-1">磁盘</div><div>可用 ${fmtBytes(n.fs?.total?.available_in_bytes)}</div><div class="text-xs text-muted">总计 ${fmtBytes(n.fs?.total?.total_in_bytes)}</div></div>
+    </div></div>`;
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: INDICES                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadIndices() {
+  if (!activeCluster()?.connected) return;
+  loading('indicesBody');
+  try {
+    const d = await safeGet('_cat/indices?format=json&s=index&h=health,status,index,uuid,pri,rep,docs.count,docs.deleted,store.size,pri.store.size');
+    let html=`<div class="tbl-wrap"><div class="tbl-toolbar">
+      <span class="tbl-title">索引列表</span>
+      <input class="tbl-search" id="idxSearch" placeholder="搜索索引名..." oninput="filterTable('idxSearch','idxTable')">
+      <div class="flex gap-1">
+        <button class="btn btn-xs btn-ghost" onclick="filterByHealth('green')">Green</button>
+        <button class="btn btn-xs btn-ghost" onclick="filterByHealth('yellow')">Yellow</button>
+        <button class="btn btn-xs btn-ghost" onclick="filterByHealth('red')">Red</button>
+        <button class="btn btn-xs btn-ghost" onclick="filterByHealth('')">全部</button>
+      </div>
+      <span class="text-muted text-sm">共 ${d?.length||0} 个</span>
+    </div>
+    <table id="idxTable"><thead><tr><th>健康</th><th>状态</th><th>索引名</th><th>主分片</th><th>副本</th><th>文档数</th><th>已删文档</th><th>存储</th><th>操作</th></tr></thead><tbody>`;
+    (d||[]).forEach(i=>{
+      html+=`<tr data-health="${i.health}">
+        <td>${healthBadge(i.health)}</td>
+        <td>${badge(i.status==='open'?'open':'close',i.status==='open'?'green':'gray')}</td>
+        <td class="td-mono text-blue td-link" onclick="showIndexDetail('${escH(i.index)}')">${escH(i.index)}</td>
+        <td class="text-muted">${i.pri}</td><td class="text-muted">${i.rep}</td>
+        <td>${fmtNum(i['docs.count'])}</td><td class="text-muted">${fmtNum(i['docs.deleted'])}</td>
+        <td>${i['store.size']||''}</td>
+        <td><div class="flex gap-1">
+          <button class="btn btn-xs btn-ghost" onclick="showIndexDetail('${escH(i.index)}')">详情</button>
+          <button class="btn btn-xs btn-ghost" onclick="showIdxActions('${escH(i.index)}','${i.status}')">动作▾</button>
+        </div></td>
+      </tr>`;
+    });
+    html += '</tbody></table></div><div id="indexDetailPanel" class="mt-3"></div>';
+    document.getElementById('indicesBody').innerHTML = html;
+  } catch(e) { document.getElementById('indicesBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`; }
+}
+
+function filterByHealth(h) {
+  document.querySelectorAll('#idxTable tbody tr').forEach(r => {
+    r.style.display = !h || r.dataset.health === h ? '' : 'none';
+  });
+}
+
+async function showIndexDetail(name) {
+  const panel = document.getElementById('indexDetailPanel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="loading"><div class="spinner"></div> 加载...</div>';
+  try {
+    const [stats, sets, aliases] = await Promise.all([
+      safeGet(`${encodeURIComponent(name)}/_stats`),
+      safeGet(`${encodeURIComponent(name)}/_settings`),
+      safeGet(`_cat/aliases?format=json&index=${encodeURIComponent(name)}&h=alias,is_write_index`),
+    ]);
+    const s = stats?._all?.total;
+    const st = sets?.[name]?.settings?.index || {};
+    panel.innerHTML=`<div class="card">
+      <div class="card-title flex justify-between"><span>索引: <span class="text-blue">${escH(name)}</span></span>
+        <button class="btn btn-xs btn-ghost" onclick="this.closest('.card').remove()">✕</button></div>
+      <div class="cards cards-3 mb-2">
+        <div><div class="text-xs text-muted mb-1">统计</div>
+          <div class="kv"><span class="kv-key">文档数</span><span class="kv-val">${fmtNum(s?.docs?.count)}</span></div>
+          <div class="kv"><span class="kv-key">存储大小</span><span class="kv-val">${fmtBytes(s?.store?.size_in_bytes)}</span></div>
+          <div class="kv"><span class="kv-key">写入总量</span><span class="kv-val">${fmtNum(s?.indexing?.index_total)}</span></div>
+          <div class="kv"><span class="kv-key">查询总量</span><span class="kv-val">${fmtNum(s?.search?.query_total)}</span></div>
+        </div>
+        <div><div class="text-xs text-muted mb-1">设置</div>
+          <div class="kv"><span class="kv-key">主分片</span><span class="kv-val">${st.number_of_shards||'?'}</span></div>
+          <div class="kv"><span class="kv-key">副本数</span><span class="kv-val">${st.number_of_replicas||'?'}</span></div>
+          <div class="kv"><span class="kv-key">刷新间隔</span><span class="kv-val">${st.refresh_interval||'1s'}</span></div>
+          <div class="kv"><span class="kv-key">ILM策略</span><span class="kv-val">${st['lifecycle']?.name||'无'}</span></div>
+        </div>
+        <div><div class="text-xs text-muted mb-1">别名</div>
+          ${(aliases||[]).map(a=>`<div class="kv"><span class="kv-val text-blue">${escH(a.alias)}</span>${a.is_write_index==='true'?badge('write','green'):''}</div>`).join('') || '<span class="text-muted text-xs">无</span>'}
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn btn-xs btn-ghost" onclick="idxAction('${escH(name)}','refresh')">刷新</button>
+        <button class="btn btn-xs btn-ghost" onclick="idxAction('${escH(name)}','flush')">Flush</button>
+        <button class="btn btn-xs btn-ghost" onclick="idxForceMerge('${escH(name)}')">ForceMerge</button>
+        <button class="btn btn-xs btn-ghost" onclick="showJsonModal('Mapping',null,'${encodeURIComponent(name)}/_mapping')">Mapping</button>
+        <button class="btn btn-xs btn-ghost" onclick="showJsonModal('Settings',null,'${encodeURIComponent(name)}/_settings')">Settings</button>
+        <button class="btn btn-xs btn-danger" onclick="deleteIndex('${escH(name)}')">删除</button>
+      </div></div>`;
+  } catch(e) { if(panel)panel.innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`; }
+}
+
+let ctxMenu=null;
+function showIdxActions(name,status) {
+  if(ctxMenu)ctxMenu.remove();
+  ctxMenu=document.createElement('div');
+  ctxMenu.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius2);padding:8px;z-index:500;min-width:160px;box-shadow:0 8px 32px rgba(0,0,0,.5)';
+  const actions=status==='open'?[
+    {l:'刷新',f:`idxAction('${name}','refresh')`},
+    {l:'Flush',f:`idxAction('${name}','flush')`},
+    {l:'关闭索引',f:`idxOpenClose('${name}','close')`},
+    {l:'ForceMerge',f:`idxForceMerge('${name}')`},
+    {l:'删除',f:`deleteIndex('${name}')`,d:true},
+  ]:[
+    {l:'打开索引',f:`idxOpenClose('${name}','open')`},
+    {l:'删除',f:`deleteIndex('${name}')`,d:true},
+  ];
+  actions.forEach(a=>{
+    const btn=document.createElement('div');
+    btn.style.cssText=`padding:8px 14px;cursor:pointer;border-radius:6px;font-size:13px;color:${a.d?'var(--red)':'var(--text)'}`;
+    btn.textContent=a.l;
+    btn.onmouseenter=()=>btn.style.background='var(--bg3)';
+    btn.onmouseleave=()=>btn.style.background='transparent';
+    btn.onclick=()=>{ctxMenu.remove();eval(a.f);};
+    ctxMenu.appendChild(btn);
+  });
+  const cl=document.createElement('div');
+  cl.style.cssText='padding:6px 14px;cursor:pointer;border-top:1px solid var(--border);margin-top:4px;font-size:12px;color:var(--text3);text-align:center';
+  cl.textContent='取消';cl.onclick=()=>ctxMenu.remove();
+  ctxMenu.appendChild(cl);
+  document.body.appendChild(ctxMenu);
+}
+
+async function idxAction(name,action) {
+  const r=await esPost(`${encodeURIComponent(name)}/_${action}`);
+  if(r.ok)notify(`${name} ${action} 成功`,'success');else notify(`${action} 失败`,'error');
+}
+async function idxOpenClose(name,action) {
+  const r=await esPost(`${encodeURIComponent(name)}/_${action}`);
+  if(r.ok){notify(`索引 ${name} 已${action==='open'?'打开':'关闭'}`,'success');loadIndices();}else notify('失败','error');
+}
+async function idxForceMerge(name) {
+  const segs=prompt('最大段数:','1'); if(!segs)return;
+  notify(`正在 ForceMerge ${name}...`,'info',5000);
+  const r=await esPost(`${encodeURIComponent(name)}/_forcemerge?max_num_segments=${segs}`,null,{timeout:120000});
+  if(r.ok)notify('ForceMerge 完成','success');else notify('失败','error');
+}
+async function deleteIndex(name) {
+  if(!confirm(`确认删除索引 "${name}"？此操作不可逆！`))return;
+  if(prompt(`请输入索引名确认: ${name}`)!==name){notify('取消','info');return;}
+  const r=await esDel(encodeURIComponent(name));
+  if(r.ok){notify(`索引 ${name} 已删除`,'success');loadIndices();}else notify('删除失败','error');
+}
+
+function showCreateIndexModal() {
+  showModal('新建索引',`
+    <div class="form-group"><label class="form-label">索引名</label><input class="form-input" id="niName" placeholder="my-index"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">主分片</label><input class="form-input" id="niShards" type="number" value="1" min="1"></div>
+      <div class="form-group"><label class="form-label">副本</label><input class="form-input" id="niReplicas" type="number" value="1" min="0"></div>
+    </div>`,
+  async()=>{
+    const name=document.getElementById('niName').value.trim();
+    if(!name){notify('请输入索引名','error');return false;}
+    const r=await esPut(encodeURIComponent(name),{settings:{number_of_shards:+document.getElementById('niShards').value||1,number_of_replicas:+document.getElementById('niReplicas').value||0}});
+    if(r.ok){notify(`索引 ${name} 创建成功`,'success');loadIndices();return true;}
+    notify('创建失败: '+JSON.stringify(r.data?.error?.reason||r.data),'error');return false;
+  });
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: SHARDS                                                 ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadShards() {
+  if (!activeCluster()?.connected) return;
+  loading('shardsBody');
+  try {
+    const d=await safeGet('_cat/shards?format=json&h=index,shard,prirep,state,docs,store,node,unassigned.reason&s=state');
+    const ua=d?.filter(s=>s.state==='UNASSIGNED')||[];
+    let html='';
+    if(ua.length)html+=`<div class="alert alert-error mb-2">⚠ ${ua.length} 个未分配分片 <button class="btn btn-xs btn-danger" style="margin-left:8px" onclick="showAllocationExplain()">查看原因</button></div>`;
+
+    const byIdx={};
+    d?.forEach(s=>{if(!byIdx[s.index])byIdx[s.index]=[];byIdx[s.index].push(s);});
+    html+=`<div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">分片拓扑视图</span><input class="tbl-search" id="shardSearch" placeholder="搜索索引..." oninput="filterShardViz(this.value)"></div>
+    <div style="padding:10px;" id="shardViz">`;
+    Object.entries(byIdx).slice(0,60).forEach(([idx,shards])=>{
+      html+=`<div class="mb-2" data-idx="${escH(idx)}"><div class="flex gap-2 items-center mb-1"><span class="text-sm text-blue td-link" onclick="showIndexDetail('${escH(idx)}')">${escH(idx)}</span><span class="text-xs text-muted">${shards.length}片</span></div><div>`;
+      shards.sort((a,b)=>a.shard-b.shard||a.prirep.localeCompare(b.prirep)).forEach(s=>{
+        const sc=s.state==='STARTED'?(s.prirep==='p'?'si-primary':'si-replica'):s.state==='UNASSIGNED'?'si-unassigned':s.state==='RELOCATING'?'si-relocating':'si-initializing';
+        const icon=s.state==='STARTED'?'■':s.state==='UNASSIGNED'?'◈':s.state==='RELOCATING'?'◇':'◌';
+        html+=`<div class="shard-item ${sc}" title="${escH(`${s.prirep==='p'?'主':'副'} #${s.shard}|${s.state}|${s.node||'未分配'}|${s.docs||0}文档`)}">${icon}<br>${s.prirep.toUpperCase()}${s.shard}</div>`;
+      });
+      html+='</div></div>';
+    });
+    html+='</div></div>';
+
+    html+=`<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">全部分片 (${d?.length||0})</span>
+    <input class="tbl-search" id="allShardSearch" placeholder="搜索..." oninput="filterTable('allShardSearch','allShardsTable')"></div>
+    <table id="allShardsTable"><thead><tr><th>索引</th><th>分片</th><th>类型</th><th>状态</th><th>文档数</th><th>大小</th><th>节点</th><th>未分配原因</th></tr></thead><tbody>`;
+    d?.forEach(s=>{
+      const sc=s.state==='STARTED'?'text-green':s.state==='UNASSIGNED'?'text-red':'text-yellow';
+      html+=`<tr><td class="text-blue">${escH(s.index)}</td><td>${s.shard}</td>
+        <td>${s.prirep==='p'?badge('P','blue'):badge('R','gray')}</td>
+        <td class="${sc}">${s.state}</td>
+        <td class="text-muted">${fmtNum(s.docs)}</td><td class="text-muted">${s.store||''}</td>
+        <td class="td-mono text-muted">${s.node||'—'}</td>
+        <td class="text-red text-xs">${s['unassigned.reason']||''}</td></tr>`;
+    });
+    html+='</tbody></table></div>';
+    document.getElementById('shardsBody').innerHTML=html;
+  } catch(e){document.getElementById('shardsBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+
+function filterShardViz(q){
+  q=q.toLowerCase();
+  document.querySelectorAll('#shardViz>div').forEach(el=>el.style.display=q===''||el.dataset.idx?.toLowerCase().includes(q)?'':'none');
+}
+async function showAllocationExplain(){
+  try{const r=await esPost('_cluster/allocation/explain');showJsonModal('分配诊断',r.data);}
+  catch(e){notify(e.message,'error');}
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: ALIASES                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadAliases(){
+  if(!activeCluster()?.connected)return;
+  loading('aliasesBody');
+  try{
+    const d=await safeGet('_cat/aliases?format=json&h=alias,index,filter,is_write_index&s=alias');
+    let html=`<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">别名列表</span>
+    <input class="tbl-search" id="aliasSearch" placeholder="搜索..." oninput="filterTable('aliasSearch','aliasTable')">
+    <span class="text-muted text-sm">共 ${d?.length||0} 个</span></div>
+    <table id="aliasTable"><thead><tr><th>别名</th><th>索引</th><th>过滤器</th><th>写入索引</th><th>操作</th></tr></thead><tbody>`;
+    (d||[]).forEach(a=>html+=`<tr><td class="text-blue td-mono">${escH(a.alias)}</td><td class="text-muted">${escH(a.index)}</td>
+      <td class="text-muted text-xs">${escH(a.filter||'')}</td>
+      <td>${a.is_write_index==='true'?badge('写入','green'):''}</td>
+      <td><button class="btn btn-xs btn-danger" onclick="removeAlias('${escH(a.index)}','${escH(a.alias)}')">删除</button></td></tr>`);
+    html+='</tbody></table></div>';
+    document.getElementById('aliasesBody').innerHTML=html;
+  }catch(e){document.getElementById('aliasesBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+function showAddAliasModal(){
+  showModal('添加别名',`
+    <div class="form-group"><label class="form-label">索引名</label><input class="form-input" id="aliasIdx" placeholder="my-index"></div>
+    <div class="form-group"><label class="form-label">别名</label><input class="form-input" id="aliasNm" placeholder="my-alias"></div>
+    <div class="form-group"><label class="form-label">设为写入索引</label>
+      <select class="form-input" id="aliasWr"><option value="false">否</option><option value="true">是</option></select></div>`,
+  async()=>{
+    const idx=document.getElementById('aliasIdx').value.trim(), nm=document.getElementById('aliasNm').value.trim();
+    if(!idx||!nm){notify('请填写完整','error');return false;}
+    const r=await esPost('_aliases',{actions:[{add:{index:idx,alias:nm,is_write_index:document.getElementById('aliasWr').value==='true'}}]});
+    if(r.ok){notify('别名添加成功','success');loadAliases();return true;}
+    notify('失败','error');return false;
+  });
+}
+async function removeAlias(idx,alias){
+  if(!confirm(`确认删除别名 ${alias}？`))return;
+  const r=await esPost('_aliases',{actions:[{remove:{index:idx,alias}}]});
+  if(r.ok){notify('别名已删除','success');loadAliases();}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: TEMPLATES                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadTemplates(){
+  if(!activeCluster()?.connected)return;
+  loading('templatesBody');
+  try{
+    const [idx,comp]=await Promise.all([safeGet('_index_template'),safeGet('_component_template').catch(()=>null)]);
+    let html='';
+    if(idx?.index_templates?.length){
+      html+=`<div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">索引模板 v2 (${idx.index_templates.length})</span></div>
+      <table><thead><tr><th>名称</th><th>匹配模式</th><th>优先级</th><th>版本</th><th>操作</th></tr></thead><tbody>`;
+      idx.index_templates.forEach(t=>html+=`<tr><td class="text-blue td-mono">${escH(t.name)}</td>
+        <td class="text-muted">${(t.index_template?.index_patterns||[]).join(', ')}</td>
+        <td>${t.index_template?.priority||0}</td><td class="text-muted">${t.index_template?.version||'—'}</td>
+        <td><div class="flex gap-1">
+          <button class="btn btn-xs btn-ghost" onclick="showJsonModal('模板',null,'_index_template/${encodeURIComponent(t.name)}')">查看</button>
+          <button class="btn btn-xs btn-danger" onclick="deleteTmpl('${escH(t.name)}')">删除</button>
+        </div></td></tr>`);
+      html+='</tbody></table></div>';
+    }
+    if(comp?.component_templates?.length){
+      html+=`<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">组件模板 (${comp.component_templates.length})</span></div>
+      <table><thead><tr><th>名称</th><th>版本</th><th>操作</th></tr></thead><tbody>`;
+      comp.component_templates.forEach(t=>html+=`<tr><td class="text-blue td-mono">${escH(t.name)}</td>
+        <td class="text-muted">${t.component_template?.version||'—'}</td>
+        <td><button class="btn btn-xs btn-ghost" onclick="showJsonModal('组件模板',null,'_component_template/${encodeURIComponent(t.name)}')">查看</button></td></tr>`);
+      html+='</tbody></table></div>';
+    }
+    document.getElementById('templatesBody').innerHTML=html||'<div class="empty">暂无模板</div>';
+  }catch(e){document.getElementById('templatesBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function deleteTmpl(name){
+  if(!confirm(`确认删除模板 "${name}"？`))return;
+  const r=await esDel(`_index_template/${encodeURIComponent(name)}`);
+  if(r.ok){notify('模板已删除','success');loadTemplates();}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: ILM                                                    ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadIlm(){
+  if(!activeCluster()?.connected)return;
+  loading('ilmBody');
+  try{
+    const [status,policies]=await Promise.all([safeGet('_ilm/status'),safeGet('_ilm/policy')]);
+    const run=status?.operation_mode==='RUNNING';
+    let html=`<div class="alert alert-${run?'success':'warning'} mb-2">ILM 状态: <strong>${status?.operation_mode||'未知'}</strong></div>`;
+    if(policies&&Object.keys(policies).length){
+      html+=`<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">ILM 策略 (${Object.keys(policies).length})</span></div>
+      <table><thead><tr><th>策略名</th><th>阶段</th><th>修改时间</th><th>操作</th></tr></thead><tbody>`;
+      Object.entries(policies).forEach(([name,p])=>{
+        html+=`<tr><td class="text-blue td-mono">${escH(name)}</td>
+          <td>${Object.keys(p.policy?.phases||{}).map(ph=>`<span class="node-tag">${ph}</span>`).join(' ')}</td>
+          <td class="text-muted text-xs">${p.modified_date||''}</td>
+          <td><button class="btn btn-xs btn-ghost" onclick="showJsonModal('ILM策略',null,'_ilm/policy/${encodeURIComponent(name)}')">详情</button></td></tr>`;
+      });
+      html+='</tbody></table></div>';
+    }else html+='<div class="empty">暂无 ILM 策略</div>';
+    document.getElementById('ilmBody').innerHTML=html;
+  }catch(e){document.getElementById('ilmBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function ilmAction(action){
+  const r=await esPost(`_ilm/${action}`);
+  if(r.ok){notify(`ILM 已${action==='start'?'启动':'停止'}`,'success');loadIlm();}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: BROWSER                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadBrowserIndices(){
+  if(!activeCluster()?.connected)return;
+  try{
+    const d=await safeGet('_cat/indices?format=json&h=index,status&s=index');
+    const sel=document.getElementById('browserIndex');
+    if(!sel)return;
+    sel.innerHTML='<option value="">选择索引...</option>';
+    (d||[]).filter(i=>i.status==='open').forEach(i=>{const o=document.createElement('option');o.value=o.textContent=i.index;sel.appendChild(o);});
+  }catch(e){}
+}
+async function browserSearch(page=1){
+  const index=document.getElementById('browserIndex').value;
+  if(!index){notify('请选择索引','error');return;}
+  const q=document.getElementById('browserQuery').value.trim();
+  const size=parseInt(document.getElementById('browserSize').value);
+  const from=(page-1)*size; CM.browserPage=page;
+  const res=document.getElementById('browserResults');
+  res.innerHTML='<div class="loading"><div class="spinner"></div> 搜索中...</div>';
+  try{
+    const body=q?{query:{multi_match:{query:q,fields:['*']}},size,from}:{query:{match_all:{}},size,from};
+    const r=await esPost(`${encodeURIComponent(index)}/_search`,body);
+    if(!r.ok){res.innerHTML=`<div class="alert alert-error">${escH(JSON.stringify(r.data?.error?.reason||r.data))}</div>`;return;}
+    const d=r.data, total=d.hits?.total?.value||0, hits=d.hits?.hits||[];
+    const totalPages=Math.ceil(Math.min(total,10000)/size);
+    let html=`<div class="flex justify-between items-center mb-2">
+      <span class="text-sm text-muted">共 <strong class="text-blue">${fmtNum(total)}</strong> 条，耗时 ${d.took}ms</span></div>`;
+    hits.forEach((h)=>{
+      html+=`<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:6px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;transition:.1s" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='block'?'none':'block'" onmouseenter="this.style.background='var(--bg3)'" onmouseleave="this.style.background=''">
+          <span class="td-mono text-blue" style="font-size:12px">${escH(h._id)}</span>
+          <span class="text-muted text-xs">_index: ${escH(h._index)}</span>
+          <span class="text-muted text-xs" style="margin-left:auto">▼</span>
+        </div>
+        <div style="display:none;padding:10px 12px;border-top:1px solid var(--border)">
+          <div class="flex gap-1 mb-2">
+            <button class="btn btn-xs btn-danger" onclick="deleteDoc('${escH(h._index)}','${escH(h._id)}')">删除</button>
+          </div>
+          <pre class="json-out" style="font-size:11.5px">${syntaxHighlight(JSON.stringify(h._source,null,2))}</pre>
+        </div>
+      </div>`;
+    });
+    if(!hits.length)html+='<div class="empty">无结果</div>';
+    if(totalPages>1){
+      html+='<div class="flex gap-1 mt-2">';
+      if(page>1)html+=`<div class="btn btn-xs btn-ghost" onclick="browserSearch(${page-1})">‹</div>`;
+      for(let p=Math.max(1,page-2);p<=Math.min(totalPages,page+2);p++)
+        html+=`<div class="btn btn-xs ${p===page?'btn-primary':'btn-ghost'}" onclick="browserSearch(${p})">${p}</div>`;
+      if(page<totalPages)html+=`<div class="btn btn-xs btn-ghost" onclick="browserSearch(${page+1})">›</div>`;
+      html+='</div>';
+    }
+    res.innerHTML=html;
+  }catch(e){res.innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function deleteDoc(index,id){
+  if(!confirm(`确认删除文档 ${id}？`))return;
+  const r=await esDel(`${encodeURIComponent(index)}/_doc/${encodeURIComponent(id)}`);
+  if(r.ok){notify('已删除','success');browserSearch(CM.browserPage);}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: QUERY CONSOLE (多集群支持)                            ║
+// ╚══════════════════════════════════════════════════════════════╝
+let qActiveClusterId = null;
+
+function updateQueryClusterSelect() {
+  const sel=document.getElementById('queryClusterSel');
+  if(!sel)return;
+  sel.innerHTML='<option value="">选择集群...</option>';
+  Object.values(CM.clusters).filter(c=>c.connected).forEach(c=>{
+    const o=document.createElement('option');
+    o.value=c.id;
+    o.textContent=`${c.name} ${c.env?'['+c.env+']':''} (${c.host.slice(0,30)})`;
+    if(c.id===(qActiveClusterId||CM.activeId))o.selected=true;
+    sel.appendChild(o);
+  });
+  if(!qActiveClusterId&&CM.activeId)qActiveClusterId=CM.activeId;
+  updateQueryClusterLabel();
+}
+
+function switchQueryCluster(id){
+  qActiveClusterId=id||CM.activeId;
+  updateQueryClusterLabel();
+}
+function updateQueryClusterLabel(){
+  const c=qActiveClusterId?CM.clusters[qActiveClusterId]:activeCluster();
+  document.getElementById('queryClusterLabel').textContent=c?`当前集群: ${c.name} ${c.env?'['+c.env+']':''}`:'未选择集群';
+}
+
+let _qResult=null;
+function applyPreset(v){
+  if(!v)return;
+  const p=v.split('|');
+  document.getElementById('qMethod').value=p[0]||'GET';
+  document.getElementById('qPath').value=p[1]||'';
+  if(p[2])document.getElementById('qBody').value=p[2].replace(/&quot;/g,'"');
+  document.getElementById('qPresets').value='';
+  validateQBody();
+}
+function validateQBody(){
+  const body=document.getElementById('qBody').value.trim(),el=document.getElementById('qBodyStatus');
+  if(!body){el.textContent='';return true;}
+  try{JSON.parse(body);el.textContent='✓ 有效 JSON';el.style.color='var(--green)';return true;}
+  catch(e){el.textContent='✗ JSON 错误';el.style.color='var(--red)';return false;}
+}
+function formatQBody(){
+  const el=document.getElementById('qBody');
+  const v=el.value.trim();
+  if(!v){notify('请求体为空','info');return;}
+  try{el.value=JSON.stringify(JSON.parse(v),null,2);validateQBody();notify('已格式化','success',1500);}
+  catch{notify('JSON 格式错误，无法格式化','error');}
+}
+let _qResultCompact=false;
+function toggleQResultFmt(){
+  if(!_qResult)return;
+  _qResultCompact=!_qResultCompact;
+  const btn=document.getElementById('qResultFmtBtn');
+  const res=document.getElementById('qResult');
+  if(_qResultCompact){
+    btn.textContent='展开';
+    res.innerHTML=`<pre class="json-out" style="white-space:pre-wrap;word-break:break-all">${escH(JSON.stringify(_qResult))}</pre>`;
+  }else{
+    btn.textContent='压缩';
+    res.innerHTML=`<pre class="json-out">${syntaxHighlight(JSON.stringify(_qResult,null,2))}</pre>`;
+  }
+}
+function copyQResult(){
+  if(!_qResult)return;
+  navigator.clipboard.writeText(JSON.stringify(_qResult,null,2)).then(()=>notify('已复制','success'));
+}
+function addQHist(path,method){
+  CM.qHistory=CM.qHistory.filter(h=>!(h.path===path&&h.method===method));
+  CM.qHistory.unshift({path,method});
+  CM.qHistory=CM.qHistory.slice(0,20);
+  localStorage.setItem('esm_qhist',JSON.stringify(CM.qHistory));
+  renderQHist();
+}
+function renderQHist(){
+  const c=document.getElementById('qHistory');
+  if(!c)return;
+  c.innerHTML=CM.qHistory.slice(0,8).map(h=>`<div class="btn btn-xs btn-ghost" onclick="document.getElementById('qMethod').value='${h.method}';document.getElementById('qPath').value='${escH(h.path)}'" title="${escH(h.method+' '+h.path)}">${escH(h.method+' '+h.path.slice(0,25)+(h.path.length>25?'...':''))}</div>`).join('');
+}
+async function sendQuery(){
+  const cid=qActiveClusterId||CM.activeId;
+  if(!cid||!CM.clusters[cid]?.connected){notify('请先选择已连接的集群','error');return;}
+  const method=document.getElementById('qMethod').value;
+  const path=document.getElementById('qPath').value.trim().replace(/^\//,'');
+  const bodyTxt=document.getElementById('qBody').value.trim();
+  const pretty=document.getElementById('qPretty').checked;
+  if(!path){notify('请输入路径','error');return;}
+  if(bodyTxt&&!validateQBody())return;
+  const res=document.getElementById('qResult'),meta=document.getElementById('qResultMeta');
+  res.innerHTML='<div class="loading"><div class="spinner"></div> 请求中...</div>';meta.textContent='';
+  const t0=Date.now();
+  try{
+    const body=bodyTxt?JSON.parse(bodyTxt):undefined;
+    const r=await clusterReq(cid,method,path,body);
+    const elapsed=Date.now()-t0;
+    _qResult=r.data;
+    _qResultCompact=false;
+    const fmtBtn=document.getElementById('qResultFmtBtn');
+    if(fmtBtn)fmtBtn.textContent='压缩';
+    meta.textContent=`HTTP ${r.status} · ${elapsed}ms`;
+    meta.style.color=r.ok?'var(--green)':'var(--red)';
+    res.innerHTML=pretty?jsonPre(r.data):`<pre class="json-out">${escH(JSON.stringify(r.data))}</pre>`;
+    addQHist(path,method);
+  }catch(e){res.innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;meta.textContent='错误';}
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: SECURITY                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+function secTab(tab,el){
+  CM.secSubTab=tab;
+  if(el){document.querySelectorAll('#page-security .tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');}
+  if(!activeCluster()?.connected)return;
+  ({users:loadUsers,roles:loadRoles,apikeys:loadApiKeys,privileges:loadPrivileges}[tab]||loadUsers)();
+}
+async function loadUsers(){
+  loading('securityBody');
+  try{
+    const r=await esGet('_security/user');
+    if(!r.ok){document.getElementById('securityBody').innerHTML='<div class="alert alert-warning">需要安全许可证或权限不足</div>';return;}
+    let html=`<div class="flex gap-2 mb-2"><button class="btn btn-primary btn-sm" onclick="showCreateUserModal()">+ 创建用户</button></div>
+    <div class="tbl-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>`;
+    Object.entries(r.data).forEach(([name,u])=>html+=`<tr>
+      <td class="text-blue td-mono">${escH(name)}</td>
+      <td>${(u.roles||[]).map(r=>`<span class="node-tag">${escH(r)}</span>`).join(' ')}</td>
+      <td>${u.enabled!==false?badge('启用','green'):badge('禁用','red')}</td>
+      <td><div class="flex gap-1">
+        <button class="btn btn-xs btn-ghost" onclick="showChangePassModal('${escH(name)}')">改密码</button>
+        <button class="btn btn-xs btn-danger" onclick="deleteUser('${escH(name)}')">删除</button>
+      </div></td></tr>`);
+    document.getElementById('securityBody').innerHTML=html+'</tbody></table></div>';
+  }catch(e){document.getElementById('securityBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function loadRoles(){
+  loading('securityBody');
+  try{
+    const r=await esGet('_security/role');
+    if(!r.ok){document.getElementById('securityBody').innerHTML='<div class="alert alert-warning">需要安全许可证</div>';return;}
+    let html=`<div class="tbl-wrap"><table><thead><tr><th>角色名</th><th>集群权限</th><th>索引权限</th><th>操作</th></tr></thead><tbody>`;
+    Object.entries(r.data).forEach(([name,ro])=>html+=`<tr>
+      <td class="text-blue td-mono">${escH(name)}</td>
+      <td class="text-muted text-xs">${escH((ro.cluster||[]).join(', ').slice(0,60))}</td>
+      <td class="text-muted text-xs">${escH((ro.indices||[]).map(i=>i.names?.join(',')+':['+i.privileges?.join(',')+']').join(';').slice(0,80))}</td>
+      <td><button class="btn btn-xs btn-ghost" onclick="showJsonModal('角色',null,'_security/role/${encodeURIComponent(name)}')">详情</button></td></tr>`);
+    document.getElementById('securityBody').innerHTML=html+'</tbody></table></div>';
+  }catch(e){document.getElementById('securityBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function loadApiKeys(){
+  loading('securityBody');
+  try{
+    const r=await esGet('_security/api_key');
+    if(!r.ok){document.getElementById('securityBody').innerHTML='<div class="alert alert-warning">需要安全许可证</div>';return;}
+    const keys=r.data?.api_keys||[];
+    let html=`<div class="flex gap-2 mb-2"><button class="btn btn-primary btn-sm" onclick="showCreateApiKeyModal()">+ 创建 API Key</button></div>
+    <div class="tbl-wrap"><table><thead><tr><th>名称</th><th>ID</th><th>用户</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead><tbody>`;
+    keys.forEach(k=>html+=`<tr>
+      <td class="text-blue">${escH(k.name)}</td>
+      <td class="td-mono text-muted text-xs">${escH(k.id)}</td>
+      <td class="text-muted">${escH(k.username||'')}</td>
+      <td class="text-muted text-xs">${k.creation?new Date(k.creation).toLocaleString():'—'}</td>
+      <td>${k.invalidated?badge('已失效','red'):badge('有效','green')}</td>
+      <td>${!k.invalidated?`<button class="btn btn-xs btn-danger" onclick="invalidateApiKey('${escH(k.id)}')">作废</button>`:''}</td></tr>`);
+    document.getElementById('securityBody').innerHTML=html+'</tbody></table></div>';
+  }catch(e){document.getElementById('securityBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function loadPrivileges(){
+  loading('securityBody');
+  const r=await esGet('_security/user/_privileges');
+  document.getElementById('securityBody').innerHTML=r.ok?jsonPre(r.data):'<div class="alert alert-warning">无法获取</div>';
+}
+function showCreateUserModal(){
+  showModal('创建用户',`
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">用户名</label><input class="form-input" id="nuName" placeholder="username"></div>
+      <div class="form-group"><label class="form-label">密码</label><input class="form-input" id="nuPass" type="password" placeholder="password"></div>
+    </div>
+    <div class="form-group"><label class="form-label">角色 (逗号分隔)</label><input class="form-input" id="nuRoles" placeholder="superuser,viewer"></div>`,
+  async()=>{
+    const name=document.getElementById('nuName').value.trim(),pass=document.getElementById('nuPass').value;
+    if(!name||!pass){notify('请填写用户名和密码','error');return false;}
+    const roles=document.getElementById('nuRoles').value.split(',').map(r=>r.trim()).filter(Boolean);
+    const r=await esPut(`_security/user/${encodeURIComponent(name)}`,{password:pass,roles});
+    if(r.ok){notify('用户创建成功','success');loadUsers();return true;}notify('失败','error');return false;
+  });
+}
+function showChangePassModal(name){
+  showModal(`修改密码: ${name}`,`
+    <div class="form-group"><label class="form-label">新密码</label><input class="form-input" id="npPass" type="password"></div>`,
+  async()=>{
+    const p=document.getElementById('npPass').value;
+    if(!p){notify('请输入密码','error');return false;}
+    const r=await esPut(`_security/user/${encodeURIComponent(name)}/_password`,{password:p});
+    if(r.ok){notify('密码已修改','success');return true;}notify('失败','error');return false;
+  });
+}
+async function deleteUser(name){
+  if(!confirm(`删除用户 "${name}"？`))return;
+  const r=await esDel(`_security/user/${encodeURIComponent(name)}`);
+  if(r.ok){notify('已删除','success');loadUsers();}else notify('失败','error');
+}
+function showCreateApiKeyModal(){
+  showModal('创建 API Key',`
+    <div class="form-group"><label class="form-label">名称</label><input class="form-input" id="akName" placeholder="my-api-key"></div>
+    <div class="form-group"><label class="form-label">过期时间 (如 30d，留空永不过期)</label><input class="form-input" id="akExp" placeholder="30d"></div>`,
+  async()=>{
+    const name=document.getElementById('akName').value.trim();
+    if(!name){notify('请填写名称','error');return false;}
+    const body={name};const exp=document.getElementById('akExp').value.trim();if(exp)body.expiration=exp;
+    const r=await esPost('_security/api_key',body);
+    if(r.ok){
+      const d=r.data;
+      showModal('API Key 创建成功',`
+        <div class="alert alert-warning mb-2">⚠ 请立即保存 encoded 值，此后无法再次查看！</div>
+        <div class="form-group"><label class="form-label">ID</label><input class="form-input" readonly value="${escH(d.id)}"></div>
+        <div class="form-group"><label class="form-label">Encoded</label><textarea class="form-input" readonly style="height:70px;font-family:var(--mono);font-size:11px">${escH(d.encoded)}</textarea></div>`,
+      ()=>{loadApiKeys();return true;},'关闭');return true;
+    }notify('失败','error');return false;
+  });
+}
+async function invalidateApiKey(id){
+  if(!confirm(`作废 API Key ${id}？`))return;
+  const r=await esDel('_security/api_key',{ids:[id]});
+  if(r.ok){notify('已作废','success');loadApiKeys();}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: SNAPSHOTS                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadSnapshots(){
+  if(!activeCluster()?.connected)return;
+  loading('snapshotsBody');
+  try{
+    const repos=await safeGet('_snapshot');
+    if(!repos||!Object.keys(repos).length){document.getElementById('snapshotsBody').innerHTML='<div class="empty">暂无快照仓库</div>';return;}
+    let html=`<div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">快照仓库</span></div>
+    <table><thead><tr><th>仓库名</th><th>类型</th><th>操作</th></tr></thead><tbody>`;
+    Object.entries(repos).forEach(([name,r])=>html+=`<tr>
+      <td class="text-blue">${escH(name)}</td><td>${badge(r.type||'','blue')}</td>
+      <td><div class="flex gap-1">
+        <button class="btn btn-xs btn-ghost" onclick="verifyRepo('${escH(name)}')">验证</button>
+        <button class="btn btn-xs btn-ghost" onclick="loadRepoSnaps('${escH(name)}')">查看快照</button>
+      </div></td></tr>`);
+    html+='</tbody></table></div><div id="repoSnapshotsPanel"></div>';
+    document.getElementById('snapshotsBody').innerHTML=html;
+  }catch(e){document.getElementById('snapshotsBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function verifyRepo(name){
+  const r=await esPost(`_snapshot/${encodeURIComponent(name)}/_verify`);
+  if(r.ok)notify(`仓库 ${name} 验证通过`,'success');else notify('验证失败','error');
+}
+async function loadRepoSnaps(repo){
+  const panel=document.getElementById('repoSnapshotsPanel');
+  panel.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  try{
+    const r=await esGet(`_snapshot/${encodeURIComponent(repo)}/_all?verbose=false`);
+    const snaps=r.data?.snapshots||[];
+    let html=`<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">快照: ${escH(repo)}</span><span class="text-muted text-sm">${snaps.length}个</span></div>
+    <table><thead><tr><th>快照名</th><th>状态</th><th>开始时间</th><th>耗时</th><th>分片</th><th>操作</th></tr></thead><tbody>`;
+    snaps.forEach(s=>{
+      const sc=s.state==='SUCCESS'?'green':s.state==='FAILED'?'red':'yellow';
+      html+=`<tr><td class="text-blue td-mono">${escH(s.snapshot)}</td>
+        <td>${badge(s.state||'',sc)}</td>
+        <td class="text-muted text-xs">${s.start_time||''}</td>
+        <td class="text-muted">${s.duration_in_millis?fmtDur(s.duration_in_millis):'—'}</td>
+        <td class="text-muted">${s.shards?.successful||0}/${s.shards?.total||0}</td>
+        <td><div class="flex gap-1">
+          <button class="btn btn-xs btn-ghost" onclick="restoreSnapshot('${escH(repo)}','${escH(s.snapshot)}')">恢复</button>
+          <button class="btn btn-xs btn-danger" onclick="deleteSnapshot('${escH(repo)}','${escH(s.snapshot)}')">删除</button>
+        </div></td></tr>`;
+    });
+    panel.innerHTML=html+'</tbody></table></div>';
+  }catch(e){panel.innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+function showCreateSnapshotModal(){
+  showModal('创建快照',`
+    <div class="form-group"><label class="form-label">仓库名</label><input class="form-input" id="sRepo" placeholder="my-repo"></div>
+    <div class="form-group"><label class="form-label">快照名</label><input class="form-input" id="sName" placeholder="snapshot-${new Date().toISOString().slice(0,10)}"></div>
+    <div class="form-group"><label class="form-label">索引 (逗号分隔，留空=全部)</label><input class="form-input" id="sIdx" placeholder="my-index-*"></div>`,
+  async()=>{
+    const repo=document.getElementById('sRepo').value.trim(),name=document.getElementById('sName').value.trim();
+    if(!repo||!name){notify('请填写仓库名和快照名','error');return false;}
+    const body={ignore_unavailable:true,include_global_state:false};
+    const idx=document.getElementById('sIdx').value.trim();if(idx)body.indices=idx;
+    const r=await esPut(`_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(name)}?wait_for_completion=false`,body);
+    if(r.ok){notify('快照创建已发起','success');loadSnapshots();return true;}
+    notify('失败: '+JSON.stringify(r.data?.error?.reason),'error');return false;
+  });
+}
+async function deleteSnapshot(repo,name){
+  if(!confirm(`确认删除快照 ${repo}/${name}？`))return;
+  const r=await esDel(`_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(name)}`);
+  if(r.ok){notify('快照已删除','success');loadRepoSnaps(repo);}else notify('失败','error');
+}
+async function restoreSnapshot(repo,name){
+  if(!confirm(`确认从快照 ${name} 恢复？`))return;
+  const r=await esPost(`_snapshot/${encodeURIComponent(repo)}/${encodeURIComponent(name)}/_restore`);
+  if(r.ok)notify('恢复已发起','success');else notify('恢复失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: TASKS                                                  ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadTasks(){
+  if(!activeCluster()?.connected)return;
+  loading('tasksBody');
+  try{
+    const r=await esGet('_tasks?detailed=true&group_by=none');
+    const list=Object.entries(r.data?.tasks||{}).map(([id,t])=>({...t,_id:id}));
+    let html=`<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">运行中的任务 (${list.length})</span></div>`;
+    if(!list.length)html+='<div class="empty" style="padding:20px">暂无运行任务</div>';
+    else{
+      html+=`<table><thead><tr><th>任务ID</th><th>节点</th><th>动作</th><th>运行时间</th><th>可取消</th><th>操作</th></tr></thead><tbody>`;
+      list.forEach(t=>{
+        const ms=Math.round((t.running_time_in_nanos||0)/1e6);
+        html+=`<tr><td class="td-mono text-muted text-xs">${escH(t._id)}</td>
+          <td class="text-muted">${escH(t.node||'')}</td>
+          <td class="text-blue text-xs">${escH(t.action||'')}</td>
+          <td class="${ms>30000?'text-red':''}">${fmtDur(ms)}</td>
+          <td>${t.cancellable?badge('可取消','yellow'):''}</td>
+          <td>${t.cancellable?`<button class="btn btn-xs btn-danger" onclick="cancelTask('${escH(t._id)}')">取消</button>`:''}</td></tr>`;
+      });
+      html+='</tbody></table>';
+    }
+    html+='</div>';
+    document.getElementById('tasksBody').innerHTML=html;
+  }catch(e){document.getElementById('tasksBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function cancelTask(id){
+  if(!confirm(`取消任务 ${id}？`))return;
+  const r=await esPost(`_tasks/${encodeURIComponent(id)}/_cancel`);
+  if(r.ok){notify('取消请求已发送','success');setTimeout(loadTasks,1000);}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: SETTINGS                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadClusterSettings(){
+  if(!activeCluster()?.connected)return;
+  loading('settingsBody');
+  try{
+    const settings=await safeGet('_cluster/settings?include_defaults=false');
+    let html=`
+    <div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">快捷操作</span></div>
+    <div style="padding:14px;display:flex;flex-direction:column;gap:10px">
+      <div class="flex gap-2 items-center">
+        <span class="text-sm" style="min-width:180px">分片分配模式</span>
+        <button class="btn btn-ghost btn-sm" onclick="setAlloc('all')">全部启用</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--yellow)" onclick="setAlloc('primaries')">仅主分片</button>
+        <button class="btn btn-danger btn-sm" onclick="setAlloc('none')">禁止分配</button>
+      </div>
+      <div class="flex gap-2 items-center">
+        <span class="text-sm" style="min-width:180px">磁盘 Watermark</span>
+        <button class="btn btn-ghost btn-sm" onclick="setWatermark('85%','90%','95%')">恢复默认</button>
+        <button class="btn btn-danger btn-sm" onclick="setWatermark('90%','95%','97%')">临时放宽(应急)</button>
+      </div>
+      <div class="flex gap-2 items-center">
+        <span class="text-sm" style="min-width:180px">缓存清理</span>
+        <button class="btn btn-ghost btn-sm" onclick="clearCache()">清理全局缓存</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearFdCache()">清理 Fielddata</button>
+      </div>
+    </div></div>
+
+    <div class="tbl-wrap mb-3"><div class="tbl-toolbar"><span class="tbl-title">自定义设置</span></div>
+    <div style="padding:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <input class="form-input" id="setKey" placeholder="cluster.routing.allocation.enable" style="flex:2;min-width:200px">
+      <input class="form-input" id="setVal" placeholder="值" style="flex:1;min-width:100px">
+      <select class="form-input" id="setType" style="width:130px"><option value="transient">临时</option><option value="persistent">持久</option></select>
+      <button class="btn btn-primary btn-sm" onclick="applySet()">应用</button>
+      <button class="btn btn-ghost btn-sm" onclick="resetSet()">重置</button>
+    </div></div>
+
+    <div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">当前非默认设置</span></div>
+    <div style="padding:12px">
+      <div class="text-xs text-muted mb-1">持久化设置</div>
+      <pre class="json-out" style="font-size:11px">${syntaxHighlight(JSON.stringify(settings?.persistent||{},null,2))}</pre>
+      <div class="sep"></div>
+      <div class="text-xs text-muted mb-1">临时设置</div>
+      <pre class="json-out" style="font-size:11px">${syntaxHighlight(JSON.stringify(settings?.transient||{},null,2))}</pre>
+    </div></div>`;
+    document.getElementById('settingsBody').innerHTML=html;
+  }catch(e){document.getElementById('settingsBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function setAlloc(mode){const r=await esPut('_cluster/settings',{transient:{'cluster.routing.allocation.enable':mode}});if(r.ok)notify(`分片分配: ${mode}`,'success');else notify('失败','error');}
+async function setWatermark(l,h,f){
+  const r=await esPut('_cluster/settings',{transient:{'cluster.routing.allocation.disk.watermark.low':l,'cluster.routing.allocation.disk.watermark.high':h,'cluster.routing.allocation.disk.watermark.flood_stage':f}});
+  if(r.ok)notify(`Watermark 设置: ${l}/${h}/${f}`,'success');else notify('失败','error');
+}
+async function clearCache(){const r=await esPost('_cache/clear');if(r.ok)notify('缓存已清理','success');else notify('失败','error');}
+async function clearFdCache(){const r=await esPost('_cache/clear?fielddata=true');if(r.ok)notify('Fielddata 缓存已清理','success');else notify('失败','error');}
+async function applySet(){
+  const key=document.getElementById('setKey').value.trim(),val=document.getElementById('setVal').value.trim(),type=document.getElementById('setType').value;
+  if(!key){notify('请输入键','error');return;}
+  const body={};body[type]={};body[type][key]=val||null;
+  const r=await esPut('_cluster/settings',body);
+  if(r.ok){notify(`${key} = ${val}`,'success');loadClusterSettings();}else notify('失败','error');
+}
+async function resetSet(){
+  const key=document.getElementById('setKey').value.trim(),type=document.getElementById('setType').value;
+  if(!key){notify('请输入键','error');return;}
+  const body={};body[type]={};body[type][key]=null;
+  const r=await esPut('_cluster/settings',body);
+  if(r.ok){notify(`${key} 已重置`,'success');loadClusterSettings();}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PAGE: PIPELINES                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+async function loadPipelines(){
+  if(!activeCluster()?.connected)return;
+  loading('pipelinesBody');
+  try{
+    const r=await esGet('_ingest/pipeline');
+    if(!r.ok){document.getElementById('pipelinesBody').innerHTML='<div class="alert alert-warning">无法获取</div>';return;}
+    let html=`<div class="tbl-wrap"><div class="tbl-toolbar"><span class="tbl-title">Ingest Pipeline (${Object.keys(r.data).length})</span></div>
+    <table><thead><tr><th>名称</th><th>描述</th><th>处理器数</th><th>操作</th></tr></thead><tbody>`;
+    Object.entries(r.data).forEach(([name,p])=>html+=`<tr>
+      <td class="text-blue td-mono">${escH(name)}</td>
+      <td class="text-muted">${escH(p.description||'')}</td>
+      <td>${p.processors?.length||0}</td>
+      <td><div class="flex gap-1">
+        <button class="btn btn-xs btn-ghost" onclick="showJsonModal('Pipeline',null,'_ingest/pipeline/${encodeURIComponent(name)}')">查看</button>
+        <button class="btn btn-xs btn-danger" onclick="deletePipeline('${escH(name)}')">删除</button>
+      </div></td></tr>`);
+    document.getElementById('pipelinesBody').innerHTML=html+'</tbody></table></div>';
+  }catch(e){document.getElementById('pipelinesBody').innerHTML=`<div class="alert alert-error">${escH(e.message)}</div>`;}
+}
+async function deletePipeline(name){
+  if(!confirm(`删除 Pipeline "${name}"？`))return;
+  const r=await esDel(`_ingest/pipeline/${encodeURIComponent(name)}`);
+  if(r.ok){notify('已删除','success');loadPipelines();}else notify('失败','error');
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  MODALS                                                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+function showModal(title,body,onOk,okLabel='确认'){
+  document.getElementById('modalContainer').innerHTML=`
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-title">${escH(title)}</div>
+      ${body}
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+        <button class="btn btn-primary" onclick="_modalOkHandler()">${escH(okLabel)}</button>
+      </div>
+    </div>
+  </div>`;
+  window._modalOnOk=onOk;
+}
+async function _modalOkHandler(){if(window._modalOnOk){const r=await window._modalOnOk();if(r!==false)closeModal();}else closeModal();}
+function closeModal(){document.getElementById('modalContainer').innerHTML='';}
+
+async function showJsonModal(title,data,path){
+  if(path&&!data){
+    try{const r=await esGet(path);data=r.data;}catch(e){data={error:e.message};}
+  }
+  document.getElementById('modalContainer').innerHTML=`
+  <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal" style="width:680px;max-width:95vw">
+      <div class="flex justify-between items-center mb-3">
+        <div style="font-size:14px;font-weight:600">${escH(title)}</div>
+        <div class="flex gap-2">
+          <button class="btn btn-xs btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${JSON.stringify(data||{})},null,2)).then(()=>notify('已复制','success'))">复制</button>
+          <button class="btn btn-xs btn-ghost" onclick="closeModal()">✕</button>
+        </div>
+      </div>
+      <div style="max-height:65vh;overflow:auto;background:var(--bg3);border-radius:var(--radius);padding:12px">
+        <pre class="json-out">${syntaxHighlight(JSON.stringify(data,null,2))}</pre>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INIT                                                         ║
+// ╚══════════════════════════════════════════════════════════════╝
+function updateClusterTab(id){} // placeholder, renderClusterTabs handles all
+
+window.addEventListener('load', () => {
+  loadSavedConnections();
+  document.getElementById('sidebar').style.display = 'none';
+  showPage('welcome', true);
+  renderSavedConnections();
+  renderQHist();
+
+  // 定期刷新所有集群健康状态（60s）
+  setInterval(() => {
+    Object.keys(CM.clusters).forEach(id => {
+      if(CM.clusters[id].connected) updateClusterHealth(id);
+    });
+  }, 60000);
+});
+</script>
+</body>
+</html>

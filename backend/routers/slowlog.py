@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
-from typing import Optional
+from typing import List, Optional
 
 import asyncssh
 from fastapi import APIRouter, HTTPException, Query
@@ -21,6 +23,11 @@ from state import load_cmdb, load_credentials, decrypt_password, analyzer
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# SSH 读取超时（秒）
+_SSH_READ_TIMEOUT = 120
+# 默认读取文件尾部大小（MB）
+_DEFAULT_TAIL_MB = 50
+
 
 # ── SSH 读文件辅助 ─────────────────────────────────────────────────────────────
 
@@ -30,15 +37,42 @@ async def _read_remote_file(
     username: str,
     password: str,
     filepath: str,
+    tail_mb: float = _DEFAULT_TAIL_MB,
+    date_from: Optional[str] = None,
 ) -> str:
-    """通过 SSH 读取远端文件内容"""
+    """通过 SSH 读取远端文件尾部内容，默认取最后 tail_mb MB 避免超大文件超时"""
+    # 构造读取命令：优先按日期行过滤，否则按字节尾截取
+    size_bytes = max(1, int(tail_mb * 1024 * 1024))
+    if date_from:
+        # 找到第一个 >= date_from 的 "# Time:" 行所在位置后读取，兼容大文件
+        safe_date = date_from.replace("'", "").replace('"', "")[:10]
+        cmd = (
+            f"awk '/^# Time:/ && $0 >= \"# Time: {safe_date}\" {{found=1}} found' "
+            f"{filepath} || tail -c {size_bytes} {filepath}"
+        )
+    else:
+        cmd = f"tail -c {size_bytes} {filepath}"
+
     try:
         async with asyncssh.connect(
             host, port=port, username=username, password=password,
             known_hosts=None, connect_timeout=15,
         ) as conn:
-            result = await conn.run(f"cat {filepath}", check=True)
+            try:
+                result = await asyncio.wait_for(
+                    conn.run(cmd, check=False),
+                    timeout=_SSH_READ_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                raise HTTPException(
+                    504,
+                    detail=f"SSH 读取超时（>{_SSH_READ_TIMEOUT}s），文件过大，请缩小 tail_mb 或设置日期范围",
+                )
+            if result.returncode not in (0, 1):  # awk 无匹配返回 1 是正常的
+                raise HTTPException(502, detail=f"远端命令失败：{result.stderr[:200]}")
             return result.stdout
+    except HTTPException:
+        raise
     except asyncssh.PermissionDenied:
         raise HTTPException(403, detail=f"SSH 认证失败：{username}@{host}")
     except asyncssh.ConnectionLost:
@@ -112,6 +146,15 @@ class FetchRequest(BaseModel):
     ssh_user:      str   = ""
     ssh_password:  str   = ""
     credential_id: str   = ""
+    tail_mb:       float = _DEFAULT_TAIL_MB   # 读取文件尾部 MB 数，0=全量（慎用）
+
+
+class ExportRequest(BaseModel):
+    entries:    List[dict]
+    host_ip:    str = ""
+    date_from:  Optional[str] = None
+    date_to:    Optional[str] = None
+    fmt:        str = "csv"    # csv | log | json
 
 
 # ── 接口 ─────────────────────────────────────────────────────────────────────
@@ -127,8 +170,12 @@ async def fetch_slow_log(body: FetchRequest):
         port=body.ssh_port,
     )
 
+    tail_mb = body.tail_mb if body.tail_mb > 0 else _DEFAULT_TAIL_MB
     try:
-        text = await _read_remote_file(host, port, username, password, body.log_path)
+        text = await _read_remote_file(
+            host, port, username, password, body.log_path,
+            tail_mb=tail_mb, date_from=body.date_from,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -245,4 +292,106 @@ SQL: {e['sql'][:300]}{'...' if len(e['sql']) > 300 else ''}
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── 导出 ──────────────────────────────────────────────────────────────────────
+
+@router.post("/api/slowlog/export")
+async def export_slow_log(body: ExportRequest):
+    """
+    将慢查询列表导出为文件下载。
+    fmt=csv  → CSV 表格（Excel 可直接打开）
+    fmt=log  → 重建为标准 MySQL 慢日志格式（.log）
+    fmt=json → 格式化 JSON（.json）
+    """
+    entries = body.entries
+    if not entries:
+        raise HTTPException(400, detail="entries 为空")
+
+    host     = body.host_ip or "unknown"
+    date_tag = ""
+    if body.date_from:
+        date_tag = body.date_from
+        if body.date_to and body.date_to != body.date_from:
+            date_tag += f"~{body.date_to}"
+
+    fmt = (body.fmt or "csv").lower()
+
+    # ── CSV ────────────────────────────────────────────────────────────────
+    if fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "序号", "时间", "耗时(s)", "锁定(s)",
+            "扫描行", "返回行", "严重程度",
+            "用户", "主机", "告警", "SQL",
+        ])
+        for e in entries:
+            writer.writerow([
+                e.get("id", ""),
+                e.get("time_str", e.get("time_raw", "")),
+                e.get("query_time", ""),
+                e.get("lock_time", ""),
+                e.get("rows_examined", ""),
+                e.get("rows_sent", ""),
+                e.get("severity", ""),
+                e.get("user", ""),
+                e.get("host", ""),
+                "是" if e.get("is_alert") else "",
+                e.get("sql", "").replace("\n", " "),
+            ])
+        content  = "\ufeff" + buf.getvalue()   # BOM 保证 Excel 正确识别 UTF-8
+        filename = f"slowlog_{host}_{date_tag or 'all'}.csv"
+        return StreamingResponse(
+            iter([content.encode("utf-8-sig")]),
+            media_type="text/csv; charset=utf-8-sig",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # ── MySQL slow log 格式 ────────────────────────────────────────────────
+    if fmt == "log":
+        lines = [
+            f"# Exported MySQL slow log — host: {host}  date: {date_tag or 'all'}\n",
+            f"# Total: {len(entries)} entries\n\n",
+        ]
+        for e in entries:
+            time_str = e.get("time_raw") or e.get("time_str", "")
+            lines.append(f"# Time: {time_str}\n")
+            lines.append(
+                f"# User@Host: {e.get('user','unknown')}[{e.get('user','unknown')}] @ "
+                f"[{e.get('host','')}]  Id: {e.get('id','')}\n"
+            )
+            lines.append(
+                f"# Query_time: {e.get('query_time',0):.6f}  "
+                f"Lock_time: {e.get('lock_time',0):.6f}  "
+                f"Rows_sent: {e.get('rows_sent',0)}  "
+                f"Rows_examined: {e.get('rows_examined',0)}\n"
+            )
+            lines.append(f"SET timestamp={int(0)};\n")
+            lines.append(e.get("sql", "").strip() + ";\n\n")
+
+        content  = "".join(lines)
+        filename = f"slowlog_{host}_{date_tag or 'all'}.log"
+        return StreamingResponse(
+            iter([content.encode("utf-8")]),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # ── JSON ───────────────────────────────────────────────────────────────
+    summary  = build_summary(entries)
+    payload  = {
+        "host":      host,
+        "date_from": body.date_from,
+        "date_to":   body.date_to,
+        "summary":   summary,
+        "entries":   entries,
+    }
+    content  = json.dumps(payload, ensure_ascii=False, indent=2)
+    filename = f"slowlog_{host}_{date_tag or 'all'}.json"
+    return StreamingResponse(
+        iter([content.encode("utf-8")]),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

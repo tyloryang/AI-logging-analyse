@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aiops-es-elastic-user
+  namespace: aiops
+type: kubernetes.io/basic-auth
+stringData:
+  username: elastic
+  password: Password!
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aiops-es-elastic-roles
+  namespace: aiops
+type: Opaque
+stringData:
+  users_roles: "superuser:elastic\n"
+---
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: aiops-es
+  namespace: aiops
+spec:
+  version: 8.19.3
+  image: 192.168.9.221:5000/elasticsearch:8.19.3
+  auth:
+    fileRealm:
+      - secretName: aiops-es-elastic-user
+      - secretName: aiops-es-elastic-roles
+  nodeSets:
+    - name: default
+      count: 3
+      config:
+        node.store.allow_mmap: false
+        http.cors.enabled: true
+        http.cors.allow-origin: "*"
+        http.cors.allow-methods: "OPTIONS,HEAD,GET,POST,PUT,DELETE"
+        http.cors.allow-headers: "Authorization,X-Requested-With,Content-Type,Accept"
+        http.cors.allow-credentials: true
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              env:
+                - name: ES_JAVA_OPTS
+                  value: -Xms1g -Xmx1g
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 1Gi
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: nfs-csi
+            resources:
+              requests:
+                storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-es-http-nodeport
+  namespace: aiops
+spec:
+  type: NodePort
+  selector:
+    common.k8s.elastic.co/type: elasticsearch
+    elasticsearch.k8s.elastic.co/cluster-name: aiops-es
+  ports:
+    - name: https
+      port: 9200
+      targetPort: 9200
+      nodePort: 30920
