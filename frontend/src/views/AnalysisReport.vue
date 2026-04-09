@@ -157,6 +157,27 @@
               <p class="report-date">报告时间：{{ formatDate(currentReport.created_at) }}</p>
             </div>
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <!-- 导出按钮 -->
+              <div v-if="currentReport?.id && !generating" class="export-group">
+                <span class="export-label">导出</span>
+                <button
+                  v-if="currentReport.type === 'slowlog'"
+                  class="btn-export-r"
+                  @click="exportReport('csv')"
+                  title="导出慢查询为 CSV（Excel 可直接打开）"
+                >CSV</button>
+                <button
+                  v-if="currentReport.type === 'slowlog'"
+                  class="btn-export-r"
+                  @click="exportReport('host_csv')"
+                  title="导出各主机汇总为 CSV"
+                >主机 CSV</button>
+                <button
+                  class="btn-export-r"
+                  @click="exportReport('json')"
+                  title="导出完整报告 JSON"
+                >JSON</button>
+              </div>
               <button v-if="!generating" class="btn btn-outline" @click="generateReport" title="重新生成">
                 🔄 重新生成
               </button>
@@ -659,6 +680,70 @@ async function sendNotifyGroups() {
   }
 }
 
+// ── 导出报告 ───────────────────────────────────────────────────────────
+function exportReport(fmt) {
+  const r = currentReport.value
+  if (!r) return
+
+  // 构造文件名前缀
+  const dateTag = r.created_at
+    ? new Date(r.created_at).toISOString().slice(0, 10).replace(/-/g, '')
+    : 'export'
+  const typeTag = r.type || 'daily'
+
+  if (fmt === 'json') {
+    const content  = JSON.stringify(r, null, 2)
+    const filename = `report_${typeTag}_${dateTag}.json`
+    _downloadBlob(new Blob([content], { type: 'application/json;charset=utf-8' }), filename)
+    return
+  }
+
+  // CSV：慢查询 Top 列表
+  if (fmt === 'csv' && r.type === 'slowlog') {
+    const rows = [
+      ['排名', '主机 IP', '耗时(s)', '扫描行数', 'SQL 摘要'],
+      ...(r.top_slow || []).map((s, i) => [
+        i + 1,
+        s.host_ip,
+        s.query_time,
+        s.rows_examined,
+        (s.sql_brief || '').replace(/,/g, '，'),
+      ]),
+    ]
+    const content  = '\ufeff' + rows.map(row => row.join(',')).join('\r\n')
+    const filename = `slowlog_top_${dateTag}.csv`
+    _downloadBlob(new Blob([content], { type: 'text/csv;charset=utf-8-sig' }), filename)
+    return
+  }
+
+  // CSV：各主机汇总
+  if (fmt === 'host_csv' && r.type === 'slowlog') {
+    const rows = [
+      ['主机 IP', '慢查询数', '告警数', '平均耗时(s)', '最大耗时(s)', 'Top SQL 模板'],
+      ...(r.host_results || []).map(h => [
+        h.host_ip,
+        h.total,
+        h.alert_count,
+        h.avg_query_time,
+        h.max_query_time,
+        ((h.top_clusters || [])[0]?.template || '').replace(/,/g, '，').slice(0, 100),
+      ]),
+    ]
+    const content  = '\ufeff' + rows.map(row => row.join(',')).join('\r\n')
+    const filename = `slowlog_hosts_${dateTag}.csv`
+    _downloadBlob(new Blob([content], { type: 'text/csv;charset=utf-8-sig' }), filename)
+  }
+}
+
+function _downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a   = document.createElement('a')
+  a.href    = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 onMounted(async () => {
   await loadReportList()
   try {
@@ -868,6 +953,21 @@ onMounted(async () => {
 .btn-notify.dingtalk:hover:not(:disabled) { background: rgba(255,106,0,.2); }
 .btn-notify.group-push { background: rgba(99,102,241,.1); border-color: rgba(99,102,241,.4); color: #818cf8; }
 .btn-notify.group-push:hover:not(:disabled) { background: rgba(99,102,241,.2); }
+
+/* 导出按钮组 */
+.export-group {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--bg-hover); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 4px 8px;
+}
+.export-label { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
+.btn-export-r {
+  padding: 3px 9px; font-size: 11px; font-weight: 600;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text-secondary);
+  cursor: pointer; transition: .15s;
+}
+.btn-export-r:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* 慢日志报告专用样式 */
 .slowlog-date-range {
