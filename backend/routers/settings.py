@@ -117,17 +117,50 @@ async def update_settings(body: SettingsPayload):
 
     _save(existing)
 
-    # 热重载：只更新 URL（不影响 auth，无需重建 httpx.AsyncClient）
+    # 热重载 ─────────────────────────────────────────────────────────────────
     import state
+    from loki_client import LokiClient
+    from prom_client import PrometheusClient
+
     hot_reloaded = []
-    if body.prometheus_url:
-        state.prom.base_url  = body.prometheus_url.rstrip("/")
-        state.PROMETHEUS_URL = body.prometheus_url
-        hot_reloaded.append("prometheus_url")
-    if body.loki_url:
-        state.loki.base_url  = body.loki_url.rstrip("/")
-        state.LOKI_URL       = body.loki_url
-        hot_reloaded.append("loki_url")
+
+    # Loki：URL 或认证有变化时重建客户端
+    loki_changed = body.loki_url or body.loki_username is not None or body.loki_password
+    if loki_changed:
+        new_url  = existing.get("loki_url",      state.LOKI_URL)
+        new_user = existing.get("loki_username",  state.LOKI_USERNAME)
+        new_pass = existing.get("loki_password",  state.LOKI_PASSWORD)
+        state.loki          = LokiClient(new_url, new_user, new_pass)
+        state.LOKI_URL      = new_url
+        state.LOKI_USERNAME = new_user
+        state.LOKI_PASSWORD = new_pass
+        hot_reloaded.append("loki")
+
+    # Prometheus：URL 或认证有变化时重建客户端
+    prom_changed = body.prometheus_url or body.prometheus_username is not None or body.prometheus_password
+    if prom_changed:
+        new_url  = existing.get("prometheus_url",      state.PROMETHEUS_URL)
+        new_user = existing.get("prometheus_username",  state.PROMETHEUS_USERNAME)
+        new_pass = existing.get("prometheus_password",  state.PROMETHEUS_PASSWORD)
+        state.prom               = PrometheusClient(new_url, new_user, new_pass)
+        state.PROMETHEUS_URL     = new_url
+        state.PROMETHEUS_USERNAME = new_user
+        state.PROMETHEUS_PASSWORD = new_pass
+        hot_reloaded.append("prometheus")
+
+    # AI Provider：配置变化时重置 provider（下次调用时懒初始化）
+    ai_changed = body.ai_provider or body.ai_base_url is not None or body.ai_model is not None or body.ai_api_key
+    if ai_changed:
+        if body.ai_provider:  os.environ["AI_PROVIDER"]  = body.ai_provider
+        if body.ai_base_url:  os.environ["AI_BASE_URL"]  = body.ai_base_url
+        if body.ai_model:     os.environ["AI_MODEL"]     = body.ai_model
+        if body.ai_api_key:
+            if existing.get("ai_provider", os.getenv("AI_PROVIDER", "anthropic")) == "openai":
+                os.environ["AI_API_KEY"]         = body.ai_api_key
+            else:
+                os.environ["ANTHROPIC_API_KEY"]  = body.ai_api_key
+        state.analyzer._provider = None   # 触发懒重建
+        hot_reloaded.append("ai_provider")
 
     # 飞书机器人配置立即写入环境变量（当前进程生效，无需重启）
     if body.feishu_bot_app_id is not None:

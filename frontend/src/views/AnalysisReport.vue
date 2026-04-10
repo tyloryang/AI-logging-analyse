@@ -616,9 +616,7 @@ async function generateAllGroups() {
   errorMsg.value   = ''
   successMsg.value = ''
   try {
-    const r = await fetch('/api/report/inspect/generate-groups', { method: 'POST' })
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    const data = await r.json()
+    const data = await api.generateInspectGroups()
     const results = data.results || []
     const pushed  = results.filter(x => x.push?.ok).length
     const skipped = results.filter(x => x.skipped).length
@@ -663,9 +661,7 @@ async function sendNotifyGroups() {
   try {
     // 有 group_id 则只推送该分组，否则推送全部
     const gid = currentReport.value.group_id || ''
-    const url = `/api/report/${currentReport.value.id}/notify-groups${gid ? `?group_id=${encodeURIComponent(gid)}` : ''}`
-    const r = await fetch(url, { method: 'POST', credentials: 'include' })
-    const data = await r.json()
+    const data = await api.notifyReportGroups(currentReport.value.id, gid)
     const results  = data.results || []
     const pushed   = results.filter(x => x.push && (x.push.feishu?.ok || x.push.dingtalk?.ok)).length
     const skipped  = results.filter(x => x.skipped).length
@@ -752,11 +748,8 @@ onMounted(async () => {
   } catch {}
   loadSlcConfig()
   try {
-    const r = await fetch('/api/groups')
-    if (r.ok) {
-      const d = await r.json()
-      groups.value = d.data || d
-    }
+    const d = await api.listGroups()
+    groups.value = d.data || d
   } catch {}
 })
 </script>

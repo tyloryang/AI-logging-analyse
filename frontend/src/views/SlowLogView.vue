@@ -610,34 +610,40 @@ function targetCredLabel(t) {
   return null
 }
 
+// 并发限制：最多同时 3 个 SSH 连接，避免大量主机同时建连
+async function _fetchTarget(t) {
+  t.loading = true; t.error = ''; t.entries = []; t.clusters = []; t.page = 1
+  try {
+    const res = await api.slowlogFetch({
+      host_ip:       t.host_ip,
+      log_path:      t.log_path,
+      date_from:     cred.date_from || null,
+      date_to:       cred.date_to   || null,
+      threshold_sec: cred.threshold_sec,
+      alert_sec:     cred.alert_sec,
+      tail_mb:       cred.tail_mb   ?? 50,
+      ...buildPayloadForTarget(t),
+    })
+    t.entries  = res.entries  ?? []
+    t.clusters = (res.clusters ?? []).map(c => reactive({ ...c, _open: false }))
+    t.summary  = res.summary  ?? {}
+  } catch (e) {
+    t.error = typeof e === 'string' ? e : (e?.message || '获取失败')
+  } finally {
+    t.loading = false
+  }
+}
+
 async function fetchAll() {
   const list = validTargets.value
   if (!list.length) return
   fetching.value = true
   aiText.value   = ''
 
-  await Promise.all(list.map(async t => {
-    t.loading = true; t.error = ''; t.entries = []; t.clusters = []; t.page = 1
-    try {
-      const res = await api.slowlogFetch({
-        host_ip:       t.host_ip,
-        log_path:      t.log_path,
-        date_from:     cred.date_from || null,
-        date_to:       cred.date_to   || null,
-        threshold_sec: cred.threshold_sec,
-        alert_sec:     cred.alert_sec,
-        tail_mb:       cred.tail_mb   ?? 50,
-        ...buildPayloadForTarget(t),
-      })
-      t.entries  = res.entries  ?? []
-      t.clusters = (res.clusters ?? []).map(c => reactive({ ...c, _open: false }))
-      t.summary  = res.summary  ?? {}
-    } catch (e) {
-      t.error = typeof e === 'string' ? e : (e?.message || '获取失败')
-    } finally {
-      t.loading = false
-    }
-  }))
+  const CONCURRENCY = 3
+  for (let i = 0; i < list.length; i += CONCURRENCY) {
+    await Promise.all(list.slice(i, i + CONCURRENCY).map(_fetchTarget))
+  }
 
   fetching.value = false
   const first = resultTabs.value.find(tab => tab.total > 0)

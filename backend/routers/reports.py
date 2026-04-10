@@ -23,6 +23,7 @@ from state import (
     load_groups, load_cmdb,
 )
 from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
+from report_store import save_report_meta, list_report_meta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -105,6 +106,7 @@ async def generate_report():
                 yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
             meta["ai_analysis"] = "".join(ai_content_parts)
             report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            asyncio.create_task(save_report_meta(meta))
             # 后台写入 Milvus（不阻塞 SSE 流）
             try:
                 from agent.report_memory import get_report_memory
@@ -124,20 +126,21 @@ async def generate_report():
 
 @router.get("/api/report/list")
 async def list_reports():
-    """历史报告列表"""
-    reports = []
-    for p in sorted(REPORTS_DIR.glob("*.json"), reverse=True)[:50]:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            reports.append({k: data[k] for k in [
-                "id", "type", "title", "created_at", "health_score",
-                "total_logs", "total_errors", "service_count", "active_alerts",
-                # 慢日志报告专有摘要字段
-                "total_queries", "alert_queries", "hosts_count",
-            ] if k in data})
-        except Exception:
-            pass
-    return {"data": reports}
+    """历史报告列表（从 DB 查询元数据，不再逐文件读取）"""
+    rows = await list_report_meta(limit=50)
+    # DB 为空时降级到文件扫描（首次启动 sync 尚未完成的容错）
+    if not rows:
+        for p in sorted(REPORTS_DIR.glob("*.json"), reverse=True)[:50]:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                rows.append({k: data[k] for k in [
+                    "id", "type", "title", "created_at", "health_score",
+                    "total_logs", "total_errors", "service_count", "active_alerts",
+                    "total_queries", "alert_queries", "hosts_count",
+                ] if k in data})
+            except Exception:
+                pass
+    return {"data": rows}
 
 
 # ── 巡检日报 ──────────────────────────────────────────────────────────────────
@@ -231,6 +234,7 @@ async def generate_inspect_report(group_id: Optional[str] = Query(None)):
                 yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
             meta["ai_analysis"] = "".join(ai_parts)
             report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            asyncio.create_task(save_report_meta(meta))
             # 后台写入 Milvus
             try:
                 from agent.report_memory import get_report_memory
@@ -354,6 +358,7 @@ async def generate_inspect_report_all_groups():
                     (REPORTS_DIR / f"{rid_g}.json").write_text(
                         json.dumps(meta_g, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
+                    asyncio.create_task(save_report_meta(meta_g))
                 except Exception as save_exc:
                     logger.warning("分组 %s 报告保存失败: %s", group_name, save_exc)
 
@@ -676,195 +681,32 @@ async def put_slowlog_targets(body: SlowlogTargetsConfig):
 @router.get("/api/report/slowlog/generate")
 async def generate_slowlog_report():
     """根据已保存的目标配置生成慢日志分析报告，SSE 流式返回"""
-    from datetime import date as date_cls, timedelta
-    from slow_log_parser import parse_slow_log, build_summary
-    from sql_cluster import cluster_slow_queries
-    from routers.slowlog import _read_remote_file, _resolve_credential
+    from report_builder import collect_slowlog_data, build_slowlog_ai_prompt
 
-    config  = load_slowlog_targets()
-    targets = config.get("targets", [])
-    if not targets:
+    config = load_slowlog_targets()
+    if not config.get("targets"):
         raise HTTPException(400, detail="未配置慢日志分析目标，请先在「慢日志报告 · 配置目标」中添加主机")
 
-    date_days     = max(1, int(config.get("date_days", 1)))
-    threshold_sec = float(config.get("threshold_sec", 1.0))
-    alert_sec     = float(config.get("alert_sec", 10.0))
-
-    today     = date_cls.today()
-    date_from = (today - timedelta(days=date_days - 1)).strftime("%Y-%m-%d")
-    date_to   = today.strftime("%Y-%m-%d")
-
-    now       = datetime.now(timezone.utc)
-    report_id = "slowlog_" + now.strftime("%Y%m%d%H%M%S")
-
     async def generate():
-        host_results: list[dict] = []
-        all_entries:  list[dict] = []
-        errors:       list[dict] = []
-
-        for t in targets:
-            host_ip  = (t.get("host_ip") or "").strip()
-            log_path = t.get("log_path") or "/mysqldata/mysql/data/3306/mysql-slow.log"
-            if not host_ip:
-                continue
-            try:
-                username, password, host, port = _resolve_credential(
-                    host_ip,
-                    credential_id=t.get("credential_id", ""),
-                    username=t.get("ssh_user", ""),
-                    password=t.get("ssh_password", ""),
-                    port=int(t.get("ssh_port", 22)),
-                )
-                text    = await _read_remote_file(host, port, username, password, log_path)
-                entries = parse_slow_log(
-                    text,
-                    date_from=date_from, date_to=date_to,
-                    threshold_sec=threshold_sec, alert_sec=alert_sec,
-                )
-                try:
-                    clusters = cluster_slow_queries(entries)
-                except Exception:
-                    clusters = []
-                summary = build_summary(entries)
-                for e in entries:
-                    all_entries.append({**e, "_host_ip": host_ip})
-                host_results.append({
-                    "host_ip":        host_ip,
-                    "total":          summary.get("total", 0),
-                    "alert_count":    summary.get("alert_count", 0),
-                    "avg_query_time": summary.get("avg_query_time", 0),
-                    "max_query_time": summary.get("max_query_time", 0),
-                    "top_clusters": [
-                        {
-                            "rank":        c["rank"],
-                            "template":    c["template"],
-                            "count":       c["count"],
-                            "total_time":  c["total_time"],
-                            "avg_time":    c["avg_time"],
-                            "max_time":    c["max_time"],
-                            "alert_count": c["alert_count"],
-                        }
-                        for c in clusters[:5]
-                    ],
-                })
-            except Exception as e:
-                errors.append({"host_ip": host_ip, "error": str(e)})
-
-        total_queries = sum(r["total"] for r in host_results)
-        alert_queries = sum(r["alert_count"] for r in host_results)
-        avg_qt = (
-            sum(r["avg_query_time"] * r["total"] for r in host_results) / total_queries
-            if total_queries else 0.0
-        )
-        max_qt = max((r["max_query_time"] for r in host_results), default=0.0)
-
-        # 健康评分
-        if total_queries == 0:
-            health_score = 50
-        else:
-            deduct = 0
-            ratio = alert_queries / total_queries
-            if ratio > 0.3:   deduct += 40
-            elif ratio > 0.1: deduct += 20
-            if max_qt > 60:   deduct += 20
-            elif max_qt > 30: deduct += 10
-            if avg_qt > 10:   deduct += 15
-            elif avg_qt > 5:  deduct += 8
-            health_score = max(0, 100 - deduct)
-
-        top_slow = sorted(all_entries, key=lambda e: e.get("query_time", 0), reverse=True)[:10]
-        top_slow_brief = [
-            {
-                "host_ip":       e.get("_host_ip", ""),
-                "query_time":    e.get("query_time", 0),
-                "rows_examined": e.get("rows_examined", 0),
-                "sql_brief":     e.get("sql", "")[:200],
-            }
-            for e in top_slow
-        ]
-
-        meta = {
-            "id":             report_id,
-            "type":           "slowlog",
-            "title":          f"MySQL 慢日志报告 {now.strftime('%Y-%m-%d')}",
-            "created_at":     now.isoformat(),
-            "health_score":   health_score,
-            "date_from":      date_from,
-            "date_to":        date_to,
-            "total_queries":  total_queries,
-            "alert_queries":  alert_queries,
-            "avg_query_time": round(avg_qt, 2),
-            "max_query_time": round(max_qt, 3),
-            "hosts_count":    len(host_results),
-            "host_results":   host_results,
-            "top_slow":       top_slow_brief,
-            "errors":         errors,
-        }
-
-        yield f"data: __META__{json.dumps(meta, ensure_ascii=False)}\n\n"
-
-        if not all_entries:
-            meta["ai_analysis"] = "未找到满足条件的慢查询记录，请检查目标主机、日志路径及时间范围配置。"
-            (REPORTS_DIR / f"{report_id}.json").write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+        data = await collect_slowlog_data(config)
+        if data is None:
+            yield f"data: {json.dumps('未找到满足条件的慢查询记录', ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
 
-        # 构建 AI 分析提示词
-        prompt = f"""你是 MySQL 数据库性能专家，请分析以下慢查询日志汇总报告并给出优化建议。
+        meta = {k: v for k, v in data.items() if not k.startswith("_")}
+        yield f"data: __META__{json.dumps(meta, ensure_ascii=False)}\n\n"
 
-**报告概况**
-- 分析时间段：{date_from} ~ {date_to}
-- 分析主机数：{len(host_results)} 台
-- 慢查询总数：{total_queries}（≥{threshold_sec}s）
-- 告警数（≥{alert_sec}s）：{alert_queries}
-- 平均耗时：{round(avg_qt, 2)}s
-- 最大耗时：{round(max_qt, 2)}s
-
-**各主机情况**
-"""
-        for hr in host_results:
-            prompt += (
-                f"- {hr['host_ip']}：{hr['total']} 条慢查询，"
-                f"{hr['alert_count']} 条告警，最大耗时 {hr['max_query_time']}s\n"
+        if not data.get("_all_entries"):
+            meta["ai_analysis"] = "未找到满足条件的慢查询记录，请检查目标主机、日志路径及时间范围配置。"
+            (REPORTS_DIR / f"{meta['id']}.json").write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            asyncio.create_task(save_report_meta(meta))
+            yield "data: [DONE]\n\n"
+            return
 
-        if top_slow_brief:
-            prompt += "\n**TOP 10 最慢查询**\n"
-            for i, s in enumerate(top_slow_brief, 1):
-                sql_preview = s["sql_brief"][:200] + ("..." if len(s["sql_brief"]) >= 200 else "")
-                prompt += (
-                    f"\n[{i}] 主机={s['host_ip']} 耗时={s['query_time']}s "
-                    f"扫描行={s['rows_examined']}\n"
-                    f"SQL: {sql_preview}\n"
-                )
-
-        # 跨主机 Top 聚合模板
-        all_clusters: list[dict] = []
-        for hr in host_results:
-            for c in hr.get("top_clusters", [])[:3]:
-                all_clusters.append({**c, "host_ip": hr["host_ip"]})
-        all_clusters.sort(key=lambda x: x.get("total_time", 0), reverse=True)
-        if all_clusters:
-            prompt += "\n**SQL 模板聚合 Top（按总耗时排序）**\n"
-            for i, c in enumerate(all_clusters[:8], 1):
-                prompt += (
-                    f"\n[{i}] {c['host_ip']} 出现 {c['count']} 次，"
-                    f"总耗时 {c['total_time']}s，单次最大 {c['max_time']}s\n"
-                    f"模板: {c['template'][:200]}\n"
-                )
-
-        prompt += """
-**请按以下结构输出分析报告**：
-1. 整体评估（问题等级：严重/警告/正常）
-2. 主要问题分析（高频/高耗时 SQL 的根因）
-3. 具体优化建议（加索引、改写 SQL、分页、缓存等可操作方案）
-4. 各主机重点关注事项
-5. 优先处理顺序
-
-使用中文输出，格式清晰，给出可操作的建议。"""
-
+        prompt = build_slowlog_ai_prompt(data)
         ai_parts: list[str] = []
         try:
             async for chunk in analyzer.provider.stream(prompt, max_tokens=3000):
@@ -876,10 +718,10 @@ async def generate_slowlog_report():
             yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
 
         meta["ai_analysis"] = "".join(ai_parts)
-        (REPORTS_DIR / f"{report_id}.json").write_text(
+        (REPORTS_DIR / f"{meta['id']}.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        # 后台写入 Milvus
+        asyncio.create_task(save_report_meta(meta))
         try:
             from agent.report_memory import get_report_memory
             asyncio.create_task(get_report_memory().save(meta))

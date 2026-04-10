@@ -71,6 +71,18 @@ async def lifespan(app: FastAPI):
         if created:
             logger.info("[AUTH] 初始管理员账号已创建")
 
+    # ── 历史报告元数据同步到 DB ────────────────────────────────────
+    async def _sync_report_meta():
+        try:
+            from report_store import sync_from_files
+            ok, skipped = await sync_from_files(REPORTS_DIR)
+            if ok:
+                logger.info("[report_store] 历史报告元数据同步: 导入 %d 条，跳过 %d 条", ok, skipped)
+        except Exception as exc:
+            logger.warning("[report_store] 元数据同步失败（不影响启动）: %s", exc)
+
+    asyncio.create_task(_sync_report_meta())
+
     # ── 历史日报批量导入 Milvus（后台，不阻塞启动）────────────────
     async def _import_reports():
         try:

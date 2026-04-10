@@ -84,6 +84,13 @@ export const api = {
   createGroup:   (data)     => http.post('/groups', data),
   updateGroup:   (id, data) => http.put(`/groups/${id}`, data),
   deleteGroup:   (id)       => http.delete(`/groups/${id}`),
+  // 报告通知（分组推送）
+  notifyReportGroups:        (id, groupId) => {
+    const q = groupId ? `?group_id=${encodeURIComponent(groupId)}` : ''
+    return http.post(`/report/${id}/notify-groups${q}`)
+  },
+  generateInspectGroups:     ()        => http.post('/report/inspect/generate-groups'),
+  downloadInspectExcel:      (id)      => `/api/report/inspect/${id}/excel`,
 }
 
 /** 流式 SSE 工具 */

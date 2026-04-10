@@ -4,6 +4,11 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 import httpx
+from cachetools import TTLCache
+
+# 服务列表 / 错误统计缓存 60s，避免 Dashboard 频繁刷新触发大量 Loki 请求
+_svc_cache:   TTLCache = TTLCache(maxsize=1, ttl=60)
+_err_cache:   TTLCache = TTLCache(maxsize=8, ttl=60)
 
 
 class LokiClient:
@@ -200,16 +205,23 @@ class LokiClient:
         return await self.query_logs(service=service, hours=hours, limit=limit, level="error")
 
     async def count_errors_by_service(self, hours: float = 24) -> dict[str, int]:
-        """统计各服务错误数"""
+        """统计各服务错误数（结果缓存 60s）"""
+        cache_key = f"err_{hours}"
+        if cache_key in _err_cache:
+            return _err_cache[cache_key]
         logs = await self.query_error_logs(hours=hours, limit=10000)
         counts: dict[str, int] = {}
         for log in logs:
             svc = log["labels"].get("app") or log["labels"].get("job") or "unknown"
             counts[svc] = counts.get(svc, 0) + 1
-        return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
+        result = dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
+        _err_cache[cache_key] = result
+        return result
 
     async def get_services(self) -> list[dict]:
-        """获取服务列表及错误数"""
+        """获取服务列表及错误数（结果缓存 60s）"""
+        if "services" in _svc_cache:
+            return _svc_cache["services"]
         try:
             names = await self.get_label_values("app")
         except Exception:
@@ -226,4 +238,5 @@ class LokiClient:
                 "error_count": error_counts.get(name, 0),
             })
         services.sort(key=lambda x: x["error_count"], reverse=True)
+        _svc_cache["services"] = services
         return services

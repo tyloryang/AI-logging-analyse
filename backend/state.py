@@ -56,27 +56,32 @@ DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")
 DINGTALK_KEYWORD = os.getenv("DINGTALK_KEYWORD", "")
 APP_URL          = os.getenv("APP_URL", "").rstrip("/")
 
-SCHEDULE_CRON     = os.getenv("SCHEDULE_CRON", "0 9 * * *")
+SCHEDULE_CRON          = os.getenv("SCHEDULE_CRON", "0 9 * * *")
+REPORT_RETENTION_DAYS  = int(os.getenv("REPORT_RETENTION_DAYS", "90"))  # 0 = 不清理
 SCHEDULE_CHANNELS = [
     ch.strip() for ch in os.getenv("SCHEDULE_CHANNELS", "").split(",") if ch.strip()
 ]
 
-# ── SSH 密钥（自动生成并持久化）─────────────────────────────────────────────
+# ── SSH 密钥（支持三种来源：env 直传 > 文件 > 自动生成）─────────────────────
 
-_SSH_KEY_FILE = Path(os.getenv("SSH_KEY_FILE", "./.ssh_key"))
-if not os.getenv("SSH_KEY_FILE"):
-    logger.warning(
-        "[安全] SSH_KEY_FILE 未配置，密钥存于工作目录 %s。"
-        "容器重启/迁移时若该文件丢失，已存 SSH 密码将无法解密。"
-        "建议通过 SSH_KEY_FILE 环境变量指向持久化路径。",
-        _SSH_KEY_FILE.resolve(),
-    )
-if _SSH_KEY_FILE.exists():
+_FERNET_KEY_ENV = os.getenv("SSH_FERNET_KEY", "").strip()  # Base64 Fernet key，容器部署推荐
+_SSH_KEY_FILE   = Path(os.getenv("SSH_KEY_FILE", "./.ssh_key"))
+
+if _FERNET_KEY_ENV:
+    _FERNET_KEY = _FERNET_KEY_ENV.encode()
+    logger.info("[启动] SSH 加密密钥来自 SSH_FERNET_KEY 环境变量")
+elif _SSH_KEY_FILE.exists():
     _FERNET_KEY = _SSH_KEY_FILE.read_bytes().strip()
+    logger.info("[启动] SSH 加密密钥来自文件: %s", _SSH_KEY_FILE)
 else:
     _FERNET_KEY = Fernet.generate_key()
     _SSH_KEY_FILE.write_bytes(_FERNET_KEY)
-    logger.info("[启动] 已生成 SSH 密码加密密钥: %s", _SSH_KEY_FILE)
+    logger.warning(
+        "[安全] SSH_FERNET_KEY 未配置，已自动生成密钥并写入 %s。"
+        "容器重启若该文件丢失则已存密码无法解密，"
+        "建议设置 SSH_FERNET_KEY 环境变量（值为 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`）。",
+        _SSH_KEY_FILE.resolve(),
+    )
 
 _fernet = Fernet(_FERNET_KEY)
 
