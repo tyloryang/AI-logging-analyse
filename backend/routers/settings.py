@@ -98,7 +98,7 @@ async def get_settings():
         "ai_api_key_set": bool(
             os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_API_KEY")
         ),
-        "grafana_url": os.getenv("GRAFANA_URL", "http://localhost:3000"),
+        "grafana_url": os.getenv("GRAFANA_URL", ""),
         "grafana_api_key_set": bool(os.getenv("GRAFANA_API_KEY", "")),
         "skywalking_oap_url": os.getenv("SKYWALKING_OAP_URL", "http://localhost:12800"),
         "feishu_bot_app_id": os.getenv("FEISHU_BOT_APP_ID", ""),
@@ -220,7 +220,7 @@ async def update_settings(body: SettingsPayload):
         hot_reloaded.append("prometheus")
 
     # Grafana / SkyWalking URL 热更新（直接写环境变量，observability 路由每次请求时读取）
-    new_grafana_url = existing.get("grafana_url", os.getenv("GRAFANA_URL", "http://localhost:3000"))
+    new_grafana_url = existing.get("grafana_url", os.getenv("GRAFANA_URL", ""))
     new_sw_url = existing.get("skywalking_oap_url", os.getenv("SKYWALKING_OAP_URL", "http://localhost:12800"))
     if new_grafana_url:
         os.environ["GRAFANA_URL"] = new_grafana_url

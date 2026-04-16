@@ -44,10 +44,19 @@
     <!-- discover error hint -->
     <div v-if="discoverError && grafanaUrl" class="discover-hint">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      自动发现失败：{{ discoverError }}，已显示手动配置的看板。
-      如需自动发现，请在
+      <span>自动发现失败：<b>{{ discoverError }}</b></span>
+      <span class="hint-link" @click="runDiag">诊断</span>
+      <span class="hint-sep">·</span>
       <span class="hint-link" @click="$router.push('/settings')">系统配置</span>
-      中填写 Grafana API Key。
+    </div>
+
+    <!-- diag result -->
+    <div v-if="diagResult" class="diag-panel">
+      <div class="diag-row"><span class="diag-k">Grafana URL</span><span class="diag-v">{{ diagResult.grafana_url || '未设置' }}</span></div>
+      <div class="diag-row"><span class="diag-k">API Key</span><span class="diag-v" :class="diagResult.api_key_set ? 'ok' : 'warn'">{{ diagResult.api_key_set ? '已配置' : '未配置' }}</span></div>
+      <div class="diag-row"><span class="diag-k">健康检查</span><span class="diag-v" :class="diagResult.health_ok ? 'ok' : 'err'">{{ diagResult.health_ok ? '正常' : diagResult.health_error }}</span></div>
+      <div class="diag-row"><span class="diag-k">看板搜索</span><span class="diag-v" :class="diagResult.search_ok ? 'ok' : 'err'">{{ diagResult.search_ok ? `正常（${diagResult.search_count} 个看板）` : diagResult.search_error }}</span></div>
+      <button class="diag-close" @click="diagResult = null">×</button>
     </div>
 
     <!-- Tab bar -->
@@ -158,6 +167,7 @@ const kioskMode     = ref(true)
 const discovering   = ref(false)
 const discoverError = ref('')
 const discovered    = ref(false)   // true = boards came from Grafana API
+const diagResult    = ref(null)
 
 const TIME_PRESETS = [
   { label: '30m', value: '30m' },
@@ -285,6 +295,16 @@ watch(frameKey, () => {
   }, 15000)
 })
 
+async function runDiag() {
+  diagResult.value = null
+  try {
+    diagResult.value = await api.testGrafanaConnection()
+  } catch (e) {
+    diagResult.value = { grafana_url: grafanaUrl.value, health_ok: false, search_ok: false,
+      health_error: String(e), search_error: '', api_key_set: false }
+  }
+}
+
 onMounted(loadBoards)
 </script>
 
@@ -368,6 +388,28 @@ onMounted(loadBoards)
   font-size: 12px; color: var(--text-secondary); flex-shrink: 0;
 }
 .hint-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.hint-sep { color: var(--text-tertiary); }
+
+/* diag panel */
+.diag-panel {
+  position: relative;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 36px 12px 14px;
+  margin-bottom: 4px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.diag-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.diag-k { color: var(--text-tertiary); width: 80px; flex-shrink: 0; }
+.diag-v { color: var(--text-primary); }
+.diag-v.ok  { color: var(--success); }
+.diag-v.warn { color: var(--warning); }
+.diag-v.err  { color: var(--error); }
+.diag-close {
+  position: absolute; top: 8px; right: 10px;
+  background: none; border: none; color: var(--text-tertiary);
+  font-size: 16px; cursor: pointer; line-height: 1;
+}
+.diag-close:hover { color: var(--text-primary); }
 
 /* ── Tab bar ── */
 .tab-bar {

@@ -34,7 +34,7 @@ _GRAFANA_BOARD_DEFS = [
 
 def _build_grafana_boards():
     """每次调用时读取 env + settings.json，支持热更新和自定义看板"""
-    base = os.getenv("GRAFANA_URL", "http://localhost:3000").rstrip("/")
+    base = os.getenv("GRAFANA_URL", "").strip().rstrip("/")
     # 合并默认 + 自定义
     try:
         settings_file = Path(__file__).resolve().parent.parent / "data" / "settings.json"
@@ -55,8 +55,10 @@ def _build_grafana_boards():
     for b in combined:
         if b.get("url"):
             result.append({**b})
-        else:
+        elif base and b.get("uid"):
             result.append({**b, "url": f"{base}/d/{b['uid']}/{b['id']}"})
+        else:
+            result.append({**b, "url": ""})
     return result
 
 
@@ -204,7 +206,7 @@ async def get_overview(hours: int = Query(1, ge=1, le=24)):
         "recent_traces":    recent_traces,
         "problem_services": problem_services,
         "grafana_boards":   grafana_boards,
-        "grafana_url":      os.getenv("GRAFANA_URL", ""),
+        "grafana_url":      os.getenv("GRAFANA_URL", "").strip().rstrip("/"),
         "error_breakdown":  error_breakdown,
         "timestamp":        datetime.now(timezone.utc).isoformat(),
     }
@@ -374,12 +376,12 @@ class GrafanaBoardIn(BaseModel):
 @router.get("/grafana/boards")
 async def list_grafana_boards():
     """返回全部看板（默认 + 自定义），附带完整 URL"""
-    base = os.getenv("GRAFANA_URL", "http://localhost:3000").rstrip("/")
+    base = os.getenv("GRAFANA_URL", "").strip().rstrip("/")
     boards = []
     for b in _all_boards_raw():
         full_url = b.get("url") or (f"{base}/d/{b['uid']}/{b['id']}" if b.get("uid") else "")
         boards.append({**b, "url": full_url, "custom": b.get("custom", False)})
-    return {"boards": boards, "grafana_url": os.getenv("GRAFANA_URL", "")}
+    return {"boards": boards, "grafana_url": base}
 
 
 @router.post("/grafana/boards")
@@ -428,54 +430,137 @@ async def delete_grafana_board(board_id: str):
 async def discover_grafana_boards():
     """
     调用 Grafana /api/search 自动发现所有已安装看板。
-    需要在系统配置中填写 Grafana URL 和 API Key（或匿名访问已开启）。
-    返回格式与 /grafana/boards 一致，前端可直接渲染。
+    需要在系统配置中填写 Grafana URL 和 API Key（或开启匿名访问）。
     """
     import httpx
 
-    base = os.getenv("GRAFANA_URL", "").rstrip("/")
-    api_key = os.getenv("GRAFANA_API_KEY", "")
+    # 先刷新环境变量，确保通过 settings 页面保存的 key 立即生效
+    try:
+        from runtime_env import refresh_runtime_settings_env
+        refresh_runtime_settings_env()
+    except Exception:
+        pass
+
+    base    = (os.getenv("GRAFANA_URL", "") or "").strip().rstrip("/")
+    api_key = (os.getenv("GRAFANA_API_KEY", "") or "").strip()
 
     if not base:
-        return {"boards": [], "error": "未配置 GRAFANA_URL", "grafana_url": ""}
+        return {"boards": [], "error": "未配置 GRAFANA_URL，请先在系统配置中填写 Grafana 地址", "grafana_url": ""}
 
     headers: dict[str, str] = {}
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        # 兼容用户直接粘贴带 "Bearer " 前缀的 token
+        token = api_key if api_key.startswith("Bearer ") else f"Bearer {api_key}"
+        headers["Authorization"] = token
+
+    search_url = f"{base}/api/search"
+    logger.info("[grafana-discover] GET %s  api_key_set=%s", search_url, bool(api_key))
 
     try:
-        async with httpx.AsyncClient(
-            timeout=8.0,
-            trust_env=False,
-            headers=headers,
-        ) as client:
-            resp = await client.get(
-                f"{base}/api/search",
-                params={"type": "dash-db", "limit": 500},
-            )
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False, headers=headers) as client:
+            resp = await client.get(search_url, params={"type": "dash-db", "limit": 500})
+            logger.info("[grafana-discover] status=%s", resp.status_code)
             resp.raise_for_status()
             raw: list[dict] = resp.json()
     except httpx.HTTPStatusError as e:
         status = e.response.status_code
-        msg = "需要 API Key 认证" if status == 401 else f"Grafana 返回 {status}"
+        body_text = e.response.text[:200]
+        if status == 401:
+            msg = "API Key 无效或已过期（401 Unauthorized）"
+        elif status == 403:
+            msg = "API Key 权限不足，需要 Viewer 以上角色（403 Forbidden）"
+        else:
+            msg = f"Grafana 返回 {status}：{body_text}"
+        logger.warning("[grafana-discover] error: %s", msg)
+        return {"boards": [], "error": msg, "grafana_url": base}
+    except httpx.ConnectError as e:
+        msg = f"无法连接 Grafana（{base}）：{e}"
+        logger.warning("[grafana-discover] connect error: %s", msg)
+        return {"boards": [], "error": msg, "grafana_url": base}
+    except httpx.TimeoutException:
+        msg = f"连接 Grafana 超时（{base}），请检查地址和网络"
+        logger.warning("[grafana-discover] timeout: %s", base)
         return {"boards": [], "error": msg, "grafana_url": base}
     except Exception as e:
+        logger.exception("[grafana-discover] unexpected error")
         return {"boards": [], "error": str(e), "grafana_url": base}
 
     boards = []
     for item in raw:
-        uid = item.get("uid", "")
-        url_path = item.get("url", "")          # e.g. /d/xxxx/title
+        uid      = item.get("uid", "")
+        url_path = item.get("url", "")
         full_url = f"{base}{url_path}" if url_path.startswith("/") else url_path
         boards.append({
-            "id":    uid or item.get("id", ""),
-            "uid":   uid,
-            "title": item.get("title", ""),
-            "url":   full_url,
-            "tags":  item.get("tags", []),
+            "id":     uid or str(item.get("id", "")),
+            "uid":    uid,
+            "title":  item.get("title", ""),
+            "url":    full_url,
+            "tags":   item.get("tags", []),
             "folder": item.get("folderTitle", "General"),
             "custom": False,
         })
 
     boards.sort(key=lambda b: (b["folder"], b["title"]))
+    logger.info("[grafana-discover] found %d boards", len(boards))
     return {"boards": boards, "total": len(boards), "grafana_url": base}
+
+
+@router.get("/grafana/test")
+async def test_grafana_connection():
+    """诊断 Grafana 连通性，返回详细状态（供排查自动发现失败时使用）"""
+    import httpx
+
+    try:
+        from runtime_env import refresh_runtime_settings_env
+        refresh_runtime_settings_env()
+    except Exception:
+        pass
+
+    base    = (os.getenv("GRAFANA_URL", "") or "").strip().rstrip("/")
+    api_key = (os.getenv("GRAFANA_API_KEY", "") or "").strip()
+
+    result = {
+        "grafana_url":   base,
+        "api_key_set":   bool(api_key),
+        "health_ok":     False,
+        "search_ok":     False,
+        "search_count":  0,
+        "health_error":  "",
+        "search_error":  "",
+    }
+
+    if not base:
+        result["health_error"] = "GRAFANA_URL 未配置"
+        return result
+
+    headers: dict[str, str] = {}
+    if api_key:
+        token = api_key if api_key.startswith("Bearer ") else f"Bearer {api_key}"
+        headers["Authorization"] = token
+
+    async with httpx.AsyncClient(timeout=8.0, trust_env=False, headers=headers) as client:
+        # 1. 健康检查（无需认证）
+        try:
+            r = await client.get(f"{base}/api/health")
+            result["health_ok"] = r.status_code == 200
+            if not result["health_ok"]:
+                result["health_error"] = f"HTTP {r.status_code}"
+        except Exception as e:
+            result["health_error"] = str(e)
+
+        # 2. 搜索接口（需要认证或匿名）
+        try:
+            r = await client.get(f"{base}/api/search", params={"type": "dash-db", "limit": 5})
+            if r.status_code == 200:
+                result["search_ok"] = True
+                result["search_count"] = len(r.json())
+            elif r.status_code == 401:
+                result["search_error"] = "401 Unauthorized：需要 API Key 或开启匿名访问"
+            elif r.status_code == 403:
+                result["search_error"] = "403 Forbidden：API Key 权限不足"
+            else:
+                result["search_error"] = f"HTTP {r.status_code}: {r.text[:100]}"
+        except Exception as e:
+            result["search_error"] = str(e)
+
+    return result

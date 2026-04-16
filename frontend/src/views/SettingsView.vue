@@ -363,6 +363,8 @@ function applySettings(s) {
   form.loki_url = s.loki_url || ''
   form.loki_username = s.loki_username || ''
   form.grafana_url = s.grafana_url || ''
+  // grafana_api_key 不回显到表单（敏感字段），只保留用户主动输入的值
+  // 若服务端已配置（grafana_api_key_set=true），保持表单为空让用户选择是否覆盖
   form.skywalking_oap_url = s.skywalking_oap_url || ''
   form.ai_provider = s.ai_provider || 'anthropic'
   form.ai_base_url = s.ai_base_url || ''
