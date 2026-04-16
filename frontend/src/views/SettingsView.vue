@@ -101,9 +101,21 @@
               <input v-model="form.grafana_url" placeholder="http://192.168.x.x:3000" />
             </div>
             <div class="field">
+              <label>
+                Grafana API Key
+                <span class="conn-badge" :class="settings.grafana_api_key_set ? 'ok' : 'idle'" style="margin-left:6px;font-size:10px">
+                  {{ settings.grafana_api_key_set ? '已配置' : '未配置' }}
+                </span>
+              </label>
+              <input v-model="form.grafana_api_key" type="password" placeholder="Bearer Token（用于自动发现看板）" autocomplete="new-password" />
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
               <label>SkyWalking OAP 地址</label>
               <input v-model="form.skywalking_oap_url" placeholder="http://192.168.x.x:12800" />
             </div>
+            <div class="field"></div>
           </div>
           <p class="field-hint">
             Grafana 看板将在"Grafana 看板"页面以 iframe 嵌入展示（需要在 grafana.ini 中设置
@@ -310,6 +322,7 @@ const form = reactive({
   loki_username:            '',
   loki_password:            '',
   grafana_url:              '',
+  grafana_api_key:          '',
   skywalking_oap_url:       '',
   ai_provider:              'anthropic',
   ai_base_url:              '',

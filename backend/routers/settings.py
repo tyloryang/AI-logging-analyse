@@ -59,6 +59,7 @@ class SettingsPayload(BaseModel):
     prometheus_username: str = ""
     prometheus_password: str = ""
     grafana_url: str = ""
+    grafana_api_key: str = ""
     skywalking_oap_url: str = ""
     ai_provider: str = ""
     ai_base_url: str = ""
@@ -98,6 +99,7 @@ async def get_settings():
             os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_API_KEY")
         ),
         "grafana_url": os.getenv("GRAFANA_URL", "http://localhost:3000"),
+        "grafana_api_key_set": bool(os.getenv("GRAFANA_API_KEY", "")),
         "skywalking_oap_url": os.getenv("SKYWALKING_OAP_URL", "http://localhost:12800"),
         "feishu_bot_app_id": os.getenv("FEISHU_BOT_APP_ID", ""),
         "feishu_bot_app_secret_set": bool(os.getenv("FEISHU_BOT_APP_SECRET", "")),
@@ -143,6 +145,8 @@ async def update_settings(body: SettingsPayload):
 
     if body.grafana_url is not None:
         existing["grafana_url"] = body.grafana_url
+    if body.grafana_api_key:
+        existing["grafana_api_key"] = body.grafana_api_key
     if body.skywalking_oap_url is not None:
         existing["skywalking_oap_url"] = body.skywalking_oap_url
 
@@ -221,6 +225,10 @@ async def update_settings(body: SettingsPayload):
     if new_grafana_url:
         os.environ["GRAFANA_URL"] = new_grafana_url
         hot_reloaded.append("grafana_url")
+    new_grafana_api_key = existing.get("grafana_api_key", "")
+    if new_grafana_api_key:
+        os.environ["GRAFANA_API_KEY"] = new_grafana_api_key
+        hot_reloaded.append("grafana_api_key")
     if new_sw_url:
         os.environ["SKYWALKING_OAP_URL"] = new_sw_url
         hot_reloaded.append("skywalking_oap_url")

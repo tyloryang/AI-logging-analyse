@@ -4,13 +4,29 @@
     <div class="page-header">
       <div class="header-left">
         <h1>Grafana 监控</h1>
-        <span class="subtitle">{{ grafanaUrl || '未配置 Grafana URL' }}</span>
+        <span class="subtitle">
+          {{ grafanaUrl || '未配置 Grafana URL' }}
+          <span v-if="discovered" class="discover-badge">自动发现 {{ boards.length }} 个</span>
+          <span v-else-if="discoverError" class="discover-warn" :title="discoverError">配置模式</span>
+        </span>
       </div>
       <div class="header-actions">
+        <!-- 自动发现按钮 -->
+        <button
+          class="btn-icon btn-discover"
+          :class="{ spinning: discovering }"
+          title="从 Grafana 自动发现全部看板"
+          @click="discoverBoards"
+          :disabled="discovering || !grafanaUrl"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
         <select v-model="selectedBoard" class="board-select" @change="onBoardChange">
           <option v-for="b in boards" :key="b.id" :value="b.id">{{ b.title }}</option>
         </select>
-        <button class="btn-icon" title="刷新" @click="reloadFrame">
+        <button class="btn-icon" title="刷新画面" @click="reloadFrame">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -25,6 +41,15 @@
       </div>
     </div>
 
+    <!-- discover error hint -->
+    <div v-if="discoverError && grafanaUrl" class="discover-hint">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      自动发现失败：{{ discoverError }}，已显示手动配置的看板。
+      如需自动发现，请在
+      <span class="hint-link" @click="$router.push('/settings')">系统配置</span>
+      中填写 Grafana API Key。
+    </div>
+
     <!-- Tab bar -->
     <div class="tab-bar">
       <button
@@ -36,8 +61,12 @@
       >
         <span class="tab-icon" v-html="GRAFANA_ICON"></span>
         {{ b.title }}
+        <span v-if="b.folder && b.folder !== 'General'" class="tab-folder">{{ b.folder }}</span>
       </button>
-      <button class="tab-btn tab-add" title="在系统配置中添加更多看板" @click="$router.push('/settings')">
+      <button v-if="discovering" class="tab-btn tab-loading" disabled>
+        <span class="mini-spinner"></span> 发现中...
+      </button>
+      <button class="tab-btn tab-add" title="前往系统配置管理看板" @click="$router.push('/settings')">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         配置
       </button>
@@ -117,15 +146,18 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { api } from '../api/index.js'
 
 // ── 状态 ──────────────────────────────────────────────────────────────────
-const boards      = ref([])
-const grafanaUrl  = ref('')
+const boards        = ref([])
+const grafanaUrl    = ref('')
 const selectedBoard = ref('')
-const currentUrl  = ref('')
-const frameKey    = ref(0)
-const frameLoading = ref(false)
-const embedBlocked = ref(false)
-const timeRange   = ref('1h')
-const kioskMode   = ref(true)
+const currentUrl    = ref('')
+const frameKey      = ref(0)
+const frameLoading  = ref(false)
+const embedBlocked  = ref(false)
+const timeRange     = ref('1h')
+const kioskMode     = ref(true)
+const discovering   = ref(false)
+const discoverError = ref('')
+const discovered    = ref(false)   // true = boards came from Grafana API
 
 const TIME_PRESETS = [
   { label: '30m', value: '30m' },
@@ -188,18 +220,54 @@ function onFrameError() {
   embedBlocked.value = true
 }
 
-// ── 加载看板列表 ─────────────────────────────────────────────────────────
+// ── 加载看板：先尝试 Grafana API 自动发现，失败则用配置的默认看板 ────────
 async function loadBoards() {
+  // 1. 先从 overview 拿 grafana_url
   try {
     const data = await api.observabilityOverview()
     grafanaUrl.value = data.grafana_url || ''
-    boards.value     = data.grafana_boards || []
-    if (boards.value.length && !selectedBoard.value) {
-      selectedBoard.value = boards.value[0].id
-      rebuildUrl()
+  } catch (_) {}
+
+  // 2. 尝试自动发现
+  await discoverBoards()
+}
+
+async function discoverBoards() {
+  discovering.value   = true
+  discoverError.value = ''
+  try {
+    const data = await api.discoverGrafanaBoards()
+    if (data.boards && data.boards.length > 0) {
+      boards.value   = data.boards
+      grafanaUrl.value = data.grafana_url || grafanaUrl.value
+      discovered.value = true
+      discoverError.value = ''
+    } else {
+      // Grafana 可达但没有看板，或有错误，回退到配置的默认看板
+      discoverError.value = data.error || ''
+      await _loadFallbackBoards()
     }
   } catch (e) {
-    console.error('Failed to load Grafana boards', e)
+    discoverError.value = typeof e === 'string' ? e : (e?.message || '自动发现失败')
+    await _loadFallbackBoards()
+  } finally {
+    discovering.value = false
+  }
+  // 选中第一个
+  if (boards.value.length && !selectedBoard.value) {
+    selectedBoard.value = boards.value[0].id
+    rebuildUrl()
+  }
+}
+
+async function _loadFallbackBoards() {
+  try {
+    const data = await api.observabilityGrafanaBoards()
+    boards.value     = data.boards || []
+    grafanaUrl.value = data.grafana_url || grafanaUrl.value
+    discovered.value = false
+  } catch (e) {
+    console.error('Failed to load fallback boards', e)
   }
 }
 
@@ -277,6 +345,29 @@ onMounted(loadBoards)
   transition: all 0.15s;
 }
 .btn-icon:hover { border-color: var(--accent); color: var(--accent); }
+.btn-discover.spinning svg { animation: spin 0.8s linear infinite; }
+.btn-discover:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* discover badge / hint */
+.discover-badge {
+  display: inline-block; margin-left: 6px;
+  padding: 1px 7px; border-radius: 10px; font-size: 10px;
+  background: rgba(56,200,100,.12); color: var(--success);
+  border: 1px solid rgba(56,200,100,.25);
+}
+.discover-warn {
+  display: inline-block; margin-left: 6px;
+  padding: 1px 7px; border-radius: 10px; font-size: 10px;
+  background: rgba(210,153,34,.1); color: var(--warning);
+  border: 1px solid rgba(210,153,34,.25); cursor: default;
+}
+.discover-hint {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 12px; margin-bottom: 4px; border-radius: 6px;
+  background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.2);
+  font-size: 12px; color: var(--text-secondary); flex-shrink: 0;
+}
+.hint-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 
 /* ── Tab bar ── */
 .tab-bar {
@@ -308,6 +399,17 @@ onMounted(loadBoards)
 .tab-add { color: var(--text-tertiary); margin-left: auto; }
 .tab-add:hover { color: var(--accent); }
 .tab-icon { opacity: 0.7; }
+.tab-folder {
+  font-size: 10px; color: var(--text-tertiary);
+  background: var(--surface-1); border-radius: 3px;
+  padding: 1px 4px; margin-left: 2px;
+}
+.tab-loading { color: var(--text-tertiary); cursor: default; }
+.mini-spinner {
+  display: inline-block; width: 10px; height: 10px;
+  border: 1.5px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.6s linear infinite;
+}
 
 /* ── iframe wrap ── */
 .iframe-wrap {

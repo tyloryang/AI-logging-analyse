@@ -21,6 +21,7 @@ _SETTINGS_ENV_MAPPING = {
     "prometheus_username": "PROMETHEUS_USERNAME",
     "prometheus_password": "PROMETHEUS_PASSWORD",
     "grafana_url": "GRAFANA_URL",
+    "grafana_api_key": "GRAFANA_API_KEY",
     "skywalking_oap_url": "SKYWALKING_OAP_URL",
     "ai_provider": "AI_PROVIDER",
     "ai_base_url": "AI_BASE_URL",

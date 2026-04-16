@@ -418,3 +418,64 @@ async def delete_grafana_board(board_id: str):
     settings["grafana_boards"] = customs
     _save_settings(settings)
     return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Grafana 自动发现：调用 Grafana HTTP API 获取全部看板
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/grafana/discover")
+async def discover_grafana_boards():
+    """
+    调用 Grafana /api/search 自动发现所有已安装看板。
+    需要在系统配置中填写 Grafana URL 和 API Key（或匿名访问已开启）。
+    返回格式与 /grafana/boards 一致，前端可直接渲染。
+    """
+    import httpx
+
+    base = os.getenv("GRAFANA_URL", "").rstrip("/")
+    api_key = os.getenv("GRAFANA_API_KEY", "")
+
+    if not base:
+        return {"boards": [], "error": "未配置 GRAFANA_URL", "grafana_url": ""}
+
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=8.0,
+            trust_env=False,
+            headers=headers,
+        ) as client:
+            resp = await client.get(
+                f"{base}/api/search",
+                params={"type": "dash-db", "limit": 500},
+            )
+            resp.raise_for_status()
+            raw: list[dict] = resp.json()
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        msg = "需要 API Key 认证" if status == 401 else f"Grafana 返回 {status}"
+        return {"boards": [], "error": msg, "grafana_url": base}
+    except Exception as e:
+        return {"boards": [], "error": str(e), "grafana_url": base}
+
+    boards = []
+    for item in raw:
+        uid = item.get("uid", "")
+        url_path = item.get("url", "")          # e.g. /d/xxxx/title
+        full_url = f"{base}{url_path}" if url_path.startswith("/") else url_path
+        boards.append({
+            "id":    uid or item.get("id", ""),
+            "uid":   uid,
+            "title": item.get("title", ""),
+            "url":   full_url,
+            "tags":  item.get("tags", []),
+            "folder": item.get("folderTitle", "General"),
+            "custom": False,
+        })
+
+    boards.sort(key=lambda b: (b["folder"], b["title"]))
+    return {"boards": boards, "total": len(boards), "grafana_url": base}

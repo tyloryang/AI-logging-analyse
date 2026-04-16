@@ -83,6 +83,7 @@ export const api = {
   observabilityOverview: (params) => http.get('/observability/overview', { params }),
   // Grafana 看板管理
   observabilityGrafanaBoards: () => http.get('/observability/grafana/boards'),
+  discoverGrafanaBoards: () => http.get('/observability/grafana/discover'),
   addGrafanaBoard: (data) => http.post('/observability/grafana/boards', data),
   deleteGrafanaBoard: (id) => http.delete(`/observability/grafana/boards/${id}`),
   // 主机分组
