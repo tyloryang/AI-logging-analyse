@@ -107,7 +107,26 @@
                   {{ settings.grafana_api_key_set ? '已配置' : '未配置' }}
                 </span>
               </label>
-              <input v-model="form.grafana_api_key" type="password" placeholder="Bearer Token（用于自动发现看板）" autocomplete="new-password" />
+              <div class="input-with-btn">
+                <input v-model="form.grafana_api_key" type="password" placeholder="glsa_xxxx...（Service Account Token）" autocomplete="new-password" />
+                <button
+                  class="btn btn-outline btn-sm"
+                  :disabled="testingGrafana"
+                  @click="testGrafana"
+                >{{ testingGrafana ? '检测中...' : '测试连通' }}</button>
+              </div>
+              <!-- 测试结果 -->
+              <div v-if="grafanaTestResult" class="grafana-test-result" :class="grafanaTestResult.ok ? 'ok' : 'err'">
+                <template v-if="grafanaTestResult.ok">
+                  <span class="test-icon">✓</span>
+                  连接正常，发现 <b>{{ grafanaTestResult.count }}</b> 个看板
+                  <span class="test-version" v-if="grafanaTestResult.version">· Grafana {{ grafanaTestResult.version }}</span>
+                </template>
+                <template v-else>
+                  <span class="test-icon">✗</span>
+                  {{ grafanaTestResult.error }}
+                </template>
+              </div>
             </div>
           </div>
           <div class="field-row">
@@ -340,6 +359,9 @@ const form = reactive({
 const testing     = reactive({ prometheus: false, loki: false })
 const testResults = reactive({ prometheus: null, loki: null })  // null | true | false
 
+const testingGrafana    = ref(false)
+const grafanaTestResult = ref(null)   // null | { ok, count, version, error }
+
 const promStatus     = computed(() => testResults.prometheus === null ? 'idle' : testResults.prometheus ? 'ok' : 'err')
 const lokiStatus     = computed(() => testResults.loki === null ? 'idle' : testResults.loki ? 'ok' : 'err')
 const promStatusText = computed(() => testResults.prometheus === null ? '未测试' : testResults.prometheus ? '连接正常' : '连接失败')
@@ -414,6 +436,37 @@ onMounted(async () => {
   }
   loadGrafanaBoards()
 })
+
+async function testGrafana() {
+  testingGrafana.value    = true
+  grafanaTestResult.value = null
+
+  // 若表单里填了新 URL 或新 Key，先保存使其热重载，再测试
+  const needSave = form.grafana_url || form.grafana_api_key
+  if (needSave) {
+    try {
+      await api.saveSettings({ ...form })
+    } catch (_) { /* 保存失败不阻断测试 */ }
+  }
+
+  try {
+    const r = await api.testGrafanaConnection()
+    if (r.health_ok && r.search_ok) {
+      grafanaTestResult.value = { ok: true, count: r.search_count, version: r.version || '' }
+    } else {
+      const err = r.search_error || r.health_error || '连接失败'
+      grafanaTestResult.value = { ok: false, error: err }
+    }
+    // 刷新 API Key 状态徽章
+    settings.value = { ...settings.value, grafana_api_key_set: r.api_key_set }
+    // 刷新看板列表
+    loadGrafanaBoards()
+  } catch (e) {
+    grafanaTestResult.value = { ok: false, error: typeof e === 'string' ? e : (e?.message || '请求失败') }
+  } finally {
+    testingGrafana.value = false
+  }
+}
 
 async function testConn(type) {
   testing[type] = true
@@ -640,6 +693,27 @@ async function saveSettings() {
 }
 .board-del:hover { background: rgba(248,81,73,.2); }
 .boards-empty { font-size: 12px; color: var(--text-tertiary); padding: 8px 0; text-align: center; }
+
+/* Grafana API Key 测试按钮行 */
+.input-with-btn {
+  display: flex; gap: 8px; align-items: stretch;
+}
+.input-with-btn input {
+  flex: 1; min-width: 0;
+}
+.grafana-test-result {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 7px; padding: 7px 10px; border-radius: 6px;
+  font-size: 12px; font-weight: 500;
+}
+.grafana-test-result.ok  {
+  background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.25); color: var(--success);
+}
+.grafana-test-result.err {
+  background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.25); color: var(--error);
+}
+.test-icon { font-size: 13px; font-weight: 700; }
+.test-version { font-weight: 400; color: var(--text-tertiary); }
 code {
   background: var(--surface-2); border: 1px solid var(--border);
   border-radius: 3px; padding: 1px 5px;

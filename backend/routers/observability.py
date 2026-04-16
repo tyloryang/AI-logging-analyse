@@ -522,6 +522,7 @@ async def test_grafana_connection():
     result = {
         "grafana_url":   base,
         "api_key_set":   bool(api_key),
+        "version":       "",
         "health_ok":     False,
         "search_ok":     False,
         "search_count":  0,
@@ -539,18 +540,23 @@ async def test_grafana_connection():
         headers["Authorization"] = token
 
     async with httpx.AsyncClient(timeout=8.0, trust_env=False, headers=headers) as client:
-        # 1. 健康检查（无需认证）
+        # 1. 健康检查（无需认证），同时读取版本号
         try:
             r = await client.get(f"{base}/api/health")
             result["health_ok"] = r.status_code == 200
-            if not result["health_ok"]:
+            if result["health_ok"]:
+                try:
+                    result["version"] = r.json().get("version", "")
+                except Exception:
+                    pass
+            else:
                 result["health_error"] = f"HTTP {r.status_code}"
         except Exception as e:
             result["health_error"] = str(e)
 
-        # 2. 搜索接口（需要认证或匿名）
+        # 2. 搜索接口（需要认证或匿名）— 拉取全量以获得准确数量
         try:
-            r = await client.get(f"{base}/api/search", params={"type": "dash-db", "limit": 5})
+            r = await client.get(f"{base}/api/search", params={"type": "dash-db", "limit": 500})
             if r.status_code == 200:
                 result["search_ok"] = True
                 result["search_count"] = len(r.json())
