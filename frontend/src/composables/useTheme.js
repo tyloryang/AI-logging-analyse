@@ -15,7 +15,7 @@ function applyTheme(id) {
   }
 }
 
-const currentTheme = ref(localStorage.getItem(STORAGE_KEY) || 'dark')
+const currentTheme = ref(localStorage.getItem(STORAGE_KEY) || 'light')
 applyTheme(currentTheme.value)
 
 export function useTheme() {

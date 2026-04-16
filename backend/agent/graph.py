@@ -69,6 +69,13 @@ SYSTEM_PROMPTS = {
 
 def _get_llm():
     """与 ai_analyzer.py 读取完全相同的环境变量，确保配置一致"""
+    try:
+        from runtime_env import refresh_runtime_settings_env
+
+        refresh_runtime_settings_env()
+    except Exception:
+        pass
+
     provider = os.getenv("AI_PROVIDER", "anthropic").lower()
 
     if provider == "openai":
@@ -91,12 +98,14 @@ def _get_llm():
                 max_output_tokens=4096,
             )
 
+        import httpx
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             base_url=base_url,
             api_key=api_key,
             model=model,
             max_tokens=4096,
+            http_async_client=httpx.AsyncClient(trust_env=False),
         )
 
     # 默认 Anthropic
@@ -105,11 +114,13 @@ def _get_llm():
     if not api_key:
         raise ValueError("AI_PROVIDER=anthropic 时必须设置 ANTHROPIC_API_KEY")
 
+    import httpx
     from langchain_anthropic import ChatAnthropic
     return ChatAnthropic(
         model=model,
         api_key=api_key,
         max_tokens=4096,
+        http_async_client=httpx.AsyncClient(trust_env=False),
     )
 
 

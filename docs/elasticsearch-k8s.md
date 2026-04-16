@@ -1,5 +1,5 @@
 # Elasticsearch 8.19.3 on Kubernetes
-
+重新扫码
 本仓库新增了一个基于 ECK（Elastic Cloud on Kubernetes）的 Elasticsearch 8.19.3 三节点集群清单：
 
 - 集群名：`aiops-es`

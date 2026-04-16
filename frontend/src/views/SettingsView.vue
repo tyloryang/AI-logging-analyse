@@ -86,6 +86,29 @@
         </div>
       </div>
 
+      <!-- Grafana & SkyWalking -->
+      <div class="card settings-section">
+        <div class="section-head">
+          <div class="section-title">
+            <span class="section-icon grafana">G</span>
+            可观测性平台
+          </div>
+        </div>
+        <div class="field-group">
+          <div class="field-row">
+            <div class="field">
+              <label>Grafana 地址</label>
+              <input v-model="form.grafana_url" placeholder="http://192.168.x.x:3000" />
+            </div>
+            <div class="field">
+              <label>SkyWalking OAP 地址</label>
+              <input v-model="form.skywalking_oap_url" placeholder="http://192.168.x.x:12800" />
+            </div>
+          </div>
+          <p class="field-hint">Grafana 看板链接将在可观测性总览页展示。SkyWalking 地址用于 Trace / APM 数据查询。</p>
+        </div>
+      </div>
+
       <!-- AI Provider -->
       <div class="card settings-section">
         <div class="section-head">
@@ -170,6 +193,29 @@
             </div>
           </div>
 
+          <div class="feishu-security-title">
+            <span class="security-label">独立回调服务</span>
+            <span class="security-hint">绑定地址和端口用于单独启动飞书回调进程</span>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>绑定 Host / IP</label>
+              <input v-model="form.feishu_callback_host" placeholder="0.0.0.0" />
+            </div>
+            <div class="field">
+              <label>绑定端口</label>
+              <input v-model.number="form.feishu_callback_port" type="number" min="1" max="65535" placeholder="8001" />
+            </div>
+          </div>
+          <div class="field">
+            <label>公网 Base URL（可选）</label>
+            <input
+              v-model="form.feishu_callback_public_base_url"
+              placeholder="https://your-public-domain-or-ip:8001"
+            />
+            <p class="field-hint">如为空，页面将自动使用当前访问主机 + 独立回调端口拼出回调地址。</p>
+          </div>
+
           <!-- Webhook URL -->
           <div class="field">
             <label>Webhook 回调地址（粘贴到飞书开放平台 → 事件与回调）</label>
@@ -198,7 +244,7 @@
         <span v-if="saving" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
         {{ saving ? '保存中...' : '保存配置' }}
       </button>
-      <span class="save-hint">Prometheus / Loki URL 及飞书机器人配置变更立即生效，其余配置重启后生效</span>
+      <span class="save-hint">Prometheus / Loki 和飞书密钥配置会立即生效；独立回调服务 Host / 端口改动需重启该独立服务。</span>
     </div>
 
   </div>
@@ -221,6 +267,8 @@ const form = reactive({
   loki_url:                 '',
   loki_username:            '',
   loki_password:            '',
+  grafana_url:              '',
+  skywalking_oap_url:       '',
   ai_provider:              'anthropic',
   ai_base_url:              '',
   ai_model:                 '',
@@ -229,6 +277,9 @@ const form = reactive({
   feishu_bot_app_secret:    '',
   feishu_bot_encrypt_key:   '',
   feishu_bot_verify_token:  '',
+  feishu_callback_host:     '0.0.0.0',
+  feishu_callback_port:     8001,
+  feishu_callback_public_base_url: '',
 })
 
 const testing     = reactive({ prometheus: false, loki: false })
@@ -240,22 +291,36 @@ const promStatusText = computed(() => testResults.prometheus === null ? '未测�
 const lokiStatusText = computed(() => testResults.loki === null ? '未测试' : testResults.loki ? '连接正常' : '连接失败')
 
 const webhookUrl = computed(() => {
+  const protocol = window.location.protocol || 'http:'
   const host = window.location.hostname
-  return `http://${host}:30800/api/feishu/webhook`
+  const publicBaseUrl = (form.feishu_callback_public_base_url || '').trim().replace(/\/$/, '')
+  if (publicBaseUrl) {
+    return `${publicBaseUrl}/webhook/event`
+  }
+  const port = form.feishu_callback_port || 8001
+  return `${protocol}//${host}:${port}/webhook/event`
 })
+
+function applySettings(s) {
+  settings.value = s
+  form.prometheus_url = s.prometheus_url || ''
+  form.prometheus_username = s.prometheus_username || ''
+  form.loki_url = s.loki_url || ''
+  form.loki_username = s.loki_username || ''
+  form.grafana_url = s.grafana_url || ''
+  form.skywalking_oap_url = s.skywalking_oap_url || ''
+  form.ai_provider = s.ai_provider || 'anthropic'
+  form.ai_base_url = s.ai_base_url || ''
+  form.ai_model = s.ai_model || ''
+  form.feishu_bot_app_id = s.feishu_bot_app_id || ''
+  form.feishu_callback_host = s.feishu_callback_host || '0.0.0.0'
+  form.feishu_callback_port = Number(s.feishu_callback_port) || 8001
+  form.feishu_callback_public_base_url = s.feishu_callback_public_base_url || ''
+}
 
 onMounted(async () => {
   try {
-    const s = await api.getSettings()
-    settings.value = s
-    form.prometheus_url      = s.prometheus_url      || ''
-    form.prometheus_username = s.prometheus_username || ''
-    form.loki_url            = s.loki_url            || ''
-    form.loki_username       = s.loki_username       || ''
-    form.ai_provider         = s.ai_provider         || 'anthropic'
-    form.ai_base_url         = s.ai_base_url         || ''
-    form.ai_model            = s.ai_model            || ''
-    form.feishu_bot_app_id      = s.feishu_bot_app_id      || ''
+    applySettings(await api.getSettings())
   } catch (e) {
     loadError.value = '加载配置失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误')
   }
@@ -294,8 +359,7 @@ async function saveSettings() {
   try {
     const r = await api.saveSettings({ ...form })
     saveNote.value = r.note || '保存成功'
-    // Refresh displayed settings
-    settings.value = await api.getSettings()
+    applySettings(await api.getSettings())
   } catch (e) {
     saveNote.value = '保存失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误')
   } finally {
@@ -328,10 +392,11 @@ async function saveSettings() {
   font-size: 11px; font-weight: 700;
   font-family: 'JetBrains Mono', monospace;
 }
-.section-icon.prom   { background: rgba(232,93,15,0.15); color: #e85d0f; }
-.section-icon.loki   { background: rgba(251,191,36,0.15); color: #d97706; }
-.section-icon.ai     { background: var(--accent-dim); color: var(--accent); }
-.section-icon.feishu { background: rgba(0,186,113,0.15); color: #00ba71; }
+.section-icon.prom    { background: rgba(232,93,15,0.15); color: #e85d0f; }
+.section-icon.loki    { background: rgba(251,191,36,0.15); color: #d97706; }
+.section-icon.ai      { background: var(--accent-dim); color: var(--accent); }
+.section-icon.feishu  { background: rgba(0,186,113,0.15); color: #00ba71; }
+.section-icon.grafana { background: rgba(248,134,0,0.15); color: #f88600; }
 
 .conn-badge {
   display: flex; align-items: center; gap: 6px;

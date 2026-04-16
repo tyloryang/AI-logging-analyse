@@ -5,6 +5,7 @@
       <div class="sw-panel-header">
         <span class="sw-panel-title">SkyWalking</span>
         <span class="sw-panel-sub">APM 追踪</span>
+        <span v-if="demoMode" class="sw-demo-badge" title="OAP 不可达，当前展示演示数据">DEMO</span>
       </div>
 
       <!-- 刷新按钮 -->
@@ -595,6 +596,17 @@ const services     = ref([])
 const selectedSvc  = ref(null)
 const loadingSvcs  = ref(false)
 const svcError     = ref('')
+const demoMode     = ref(false)
+
+async function checkDemoMode() {
+  try {
+    const r = await fetch('/api/sw/demo-status', { credentials: 'include' })
+    if (r.ok) {
+      const d = await r.json()
+      demoMode.value = d.demo_mode === true
+    }
+  } catch { /* ignore */ }
+}
 
 // ── 追踪 ──────────────────────────────────────────────────────────────────────
 const traces        = ref([])
@@ -958,6 +970,7 @@ async function reloadAll() {
 }
 
 onMounted(() => {
+  checkDemoMode()
   loadServices()
   loadTraces()
 })
@@ -984,6 +997,13 @@ onMounted(() => {
 .sw-panel-title {
   display: block; font-size: 13px; font-weight: 600;
   color: var(--text-primary); letter-spacing: .03em;
+}
+.sw-demo-badge {
+  display: inline-block; margin-top: 6px;
+  padding: 1px 7px; border-radius: 3px;
+  background: rgba(210,153,34,0.15); color: var(--warning);
+  font-size: 10px; font-weight: 700; letter-spacing: .08em;
+  border: 1px solid rgba(210,153,34,0.3);
 }
 .sw-panel-sub {
   display: block; font-size: 11px; color: var(--text-muted); margin-top: 1px;

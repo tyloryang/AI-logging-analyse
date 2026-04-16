@@ -103,8 +103,13 @@ class ResponsesApiChatModel(BaseChatModel):
 
     # ── 异步生成 ──────────────────────────────────────────────────────
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        import httpx
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
+        client = AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            http_client=httpx.AsyncClient(trust_env=False),
+        )
         inp = self._to_input(messages)
         req: dict = {
             "model": self.model_name,
@@ -143,8 +148,13 @@ class ResponsesApiChatModel(BaseChatModel):
     async def _astream(
         self, messages, stop=None, run_manager=None, **kwargs
     ) -> AsyncIterator[ChatGenerationChunk]:
+        import httpx
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
+        client = AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            http_client=httpx.AsyncClient(trust_env=False),
+        )
         inp = self._to_input(messages)
         req: dict = {
             "model": self.model_name,

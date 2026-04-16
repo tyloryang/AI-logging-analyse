@@ -18,7 +18,10 @@
           <span class="hi-mode-icon" v-html="getModeIconSvg(item.mode)"></span>
           <div class="hi-info">
             <div class="hi-title">{{ item.title || '新对话' }}</div>
-            <div class="hi-date">{{ fmtHistoryDate(item.updated_at) }}</div>
+            <div class="hi-date">
+              <span class="hi-model-tag">{{ aiModelShort }}</span>
+              {{ fmtHistoryDate(item.updated_at) }}
+            </div>
           </div>
           <button class="hi-del" @click.stop="deleteConversation(item.conv_id)" title="删除">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -38,19 +41,30 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <span class="agent-icon-wrap" v-html="AGENT_ICON"></span>
-        <div>
-          <h1>AI 智能体</h1>
-          <span class="subtitle">由 LangGraph 驱动 · 自主推理 · 多工具协作</span>
+        <div class="agent-title-info">
+          <div class="agent-title-row">
+            <h1>AIOps 智能助手</h1>
+            <span class="model-badge">{{ aiModelShort }}</span>
+            <span class="exec-badge" v-if="streaming">执行中</span>
+            <span class="exec-badge idle" v-else>待命</span>
+          </div>
+          <span class="subtitle">自主推理 · 多工具协作 · 根因分析</span>
         </div>
       </div>
-      <div class="mode-tabs">
-        <button
-          v-for="m in MODES" :key="m.key"
-          class="mode-tab" :class="{ active: mode === m.key }"
-          @click="switchMode(m.key)"
-        >
-          <span class="mode-icon" v-html="m.icon"></span>
-          {{ m.label }}
+      <div class="header-right">
+        <div class="mode-tabs">
+          <button
+            v-for="m in MODES" :key="m.key"
+            class="mode-tab" :class="{ active: mode === m.key }"
+            @click="switchMode(m.key)"
+          >
+            <span class="mode-icon" v-html="m.icon"></span>
+            {{ m.label }}
+          </button>
+        </div>
+        <button class="hdr-btn" @click="newConversation" :disabled="streaming" title="新建对话">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          新会话
         </button>
       </div>
     </div>
@@ -86,26 +100,72 @@
             <div class="assistant-body">
 
               <!-- 工具调用卡片 -->
-              <div v-for="tc in msg.toolCalls" :key="tc.id" class="tool-card" :class="tc.pending ? 'pending' : 'done'">
-                <div class="tool-header" @click="tc.expanded = !tc.expanded">
-                  <span class="tool-status-dot" :class="tc.pending ? 'spin' : 'ok'"></span>
-                  <span class="tool-name">{{ TOOL_LABELS[tc.tool] || tc.tool }}</span>
-                  <span v-if="!tc.pending" class="tool-params">
-                    {{ formatInput(tc.input) }}
-                  </span>
-                  <span v-if="tc.pending" class="tool-pending-text">执行中...</span>
-                  <span v-if="!tc.pending && tc.output" class="tool-expand-btn">
-                    {{ tc.expanded ? '▲ 收起' : '▼ 查看结果' }}
-                  </span>
-                </div>
-                <div v-if="tc.expanded && tc.output" class="tool-output">
-                  <pre>{{ tc.output }}</pre>
-                </div>
-              </div>
+              <template v-for="tc in msg.toolCalls" :key="tc.id">
 
-              <!-- AI 文本回复（流式） -->
+                <!-- Ansible Playbook 专用卡片 -->
+                <div v-if="isAnsibleTool(tc)" class="ansible-card" :class="{ pending: tc.pending }">
+                  <div class="ansible-header">
+                    <span class="ansible-icon">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                    </span>
+                    <span class="ansible-title">Ansible Playbook 执行</span>
+                    <span v-if="tc.pending" class="ansible-status running">运行中</span>
+                    <span v-else-if="isAnsibleSuccess(tc)" class="ansible-status success">完成</span>
+                    <span v-else class="ansible-status failed">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </span>
+                  </div>
+                  <div class="ansible-body">
+                    <div class="ansible-field">
+                      <span class="ansible-key">目标主机</span>
+                      <span class="ansible-val mono">{{ tc.input?.host || tc.input?.target || extractAnsibleField(tc, 'host') }}</span>
+                    </div>
+                    <div class="ansible-field">
+                      <span class="ansible-key">执行方式</span>
+                      <span class="ansible-val">ansible</span>
+                    </div>
+                    <div class="ansible-field">
+                      <span class="ansible-key">超时</span>
+                      <span class="ansible-val mono">{{ tc.input?.timeout || '30' }}s</span>
+                    </div>
+                    <div class="ansible-field" v-if="tc.output && extractTaskId(tc.output)">
+                      <span class="ansible-key">任务编号</span>
+                      <span class="ansible-val">
+                        <a class="ansible-link" href="#" @click.prevent>
+                          #{{ extractTaskId(tc.output) }} 前往任务中心
+                        </a>
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="tc.output && !tc.pending" class="ansible-log" @click="tc.expanded = !tc.expanded">
+                    <span>{{ tc.expanded ? '▲ 收起日志' : '▼ 查看执行日志' }}</span>
+                  </div>
+                  <div v-if="tc.expanded && tc.output" class="tool-output">
+                    <pre>{{ tc.output }}</pre>
+                  </div>
+                </div>
+
+                <!-- 通用工具调用卡片 -->
+                <div v-else class="tool-card" :class="tc.pending ? 'pending' : 'done'">
+                  <div class="tool-header" @click="tc.expanded = !tc.expanded">
+                    <span class="tool-status-dot" :class="tc.pending ? 'spin' : 'ok'"></span>
+                    <span class="tool-name">{{ TOOL_LABELS[tc.tool] || tc.tool }}</span>
+                    <span v-if="!tc.pending" class="tool-params">{{ formatInput(tc.input) }}</span>
+                    <span v-if="tc.pending" class="tool-pending-text">执行中...</span>
+                    <span v-if="!tc.pending && tc.output" class="tool-expand-btn">
+                      {{ tc.expanded ? '▲ 收起' : '▼ 查看结果' }}
+                    </span>
+                  </div>
+                  <div v-if="tc.expanded && tc.output" class="tool-output">
+                    <pre>{{ tc.output }}</pre>
+                  </div>
+                </div>
+
+              </template>
+
+              <!-- AI 文本回复（流式，支持结构化段落渲染） -->
               <div v-if="msg.content || msg.streaming" class="ai-text">
-                <span class="ai-content">{{ msg.content }}</span>
+                <div class="ai-content" v-html="renderContent(msg.content)"></div>
                 <span v-if="msg.streaming" class="cursor-blink"></span>
               </div>
 
@@ -138,6 +198,7 @@
           :disabled="streaming"
           rows="1"
           @keydown.enter.exact.prevent="onEnter"
+          @keydown.esc="inputText = ''"
           @input="autoResize"
         ></textarea>
         <button class="send-btn" :disabled="streaming || !inputText.trim()" @click="onSend">
@@ -145,8 +206,9 @@
           <span v-else v-html="SEND_ICON"></span>
         </button>
       </div>
-      <div v-if="messages.length" class="input-actions">
-        <button class="action-btn" @click="clearChat">清空对话</button>
+      <div class="input-actions">
+        <span class="input-hint-text">Enter 发送 · Shift+Enter 换行 · Esc 清空</span>
+        <button v-if="messages.length" class="action-btn" @click="clearChat">清空对话</button>
       </div>
     </div>
 
@@ -159,6 +221,71 @@ import { ref, computed, nextTick, reactive, onMounted } from 'vue'
 
 // ── 图标 ──────────────────────────────────────────────────────────────
 const AGENT_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M9 11V7a3 3 0 0 1 6 0v4"/><circle cx="9" cy="16" r="1" fill="currentColor"/><circle cx="15" cy="16" r="1" fill="currentColor"/><path d="M12 3v2"/></svg>`
+
+// ── AI 模型短名（从健康检查读取） ─────────────────────────────────────
+const aiModelShort = ref('AI')
+async function fetchAiModel() {
+  try {
+    const r = await fetch('/api/health', { credentials: 'include' })
+    if (r.ok) {
+      const d = await r.json()
+      const p = d.ai_provider || ''
+      if (p.startsWith('Anthropic')) aiModelShort.value = 'Claude'
+      else {
+        const m = p.match(/\((.+)\)/)
+        aiModelShort.value = m ? m[1].slice(0, 10) : (p.slice(0, 10) || 'AI')
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+// ── Ansible Playbook 卡片辅助函数 ────────────────────────────────────
+function isAnsibleTool(tc) {
+  const t = (tc.tool || '').toLowerCase()
+  return t.includes('ansible') || t.includes('playbook') || t.includes('run_task') || t.includes('execute_task')
+}
+function isAnsibleSuccess(tc) {
+  if (!tc.output) return false
+  const out = typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output)
+  return out.includes('success') || out.includes('ok') || out.includes('完成') || out.includes('PLAY RECAP')
+}
+function extractAnsibleField(tc, field) {
+  if (!tc.input) return '--'
+  const obj = typeof tc.input === 'string' ? (() => { try { return JSON.parse(tc.input) } catch { return {} } })() : tc.input
+  return obj[field] || obj['hosts'] || obj['inventory'] || '--'
+}
+function extractTaskId(output) {
+  if (!output) return null
+  const s = typeof output === 'string' ? output : JSON.stringify(output)
+  const m = s.match(/task[_\s]?id[:\s]+(\d+)/i) || s.match(/#(\d+)/)
+  return m ? m[1] : null
+}
+
+// ── AI 文本结构化渲染 ─────────────────────────────────────────────────
+function renderContent(text) {
+  if (!text) return ''
+  // 转义 HTML
+  let t = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  // 标题行：**铁路追踪**、**根因分析**、**建议行动** 等 → 段落标题
+  t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+
+  // 有序/无序列表
+  t = t.replace(/^(\d+)\.\s+(.+)$/gm, '<div class="ai-li"><span class="ai-li-num">$1</span>$2</div>')
+  t = t.replace(/^[-•]\s+(.+)$/gm, '<div class="ai-li"><span class="ai-li-dot">•</span>$1</div>')
+
+  // 行内代码
+  t = t.replace(/`([^`]+)`/g, '<code class="ai-code">$1</code>')
+
+  // 换行
+  t = t.replace(/\n/g, '<br>')
+
+  // 结构化标题块（如 ## 根因分析）
+  t = t.replace(/## (.+?)(&lt;br&gt;|<br>)/g, '<div class="ai-section-title">$1</div>')
+
+  return t
+}
 const SEND_ICON  = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`
 const SCAN_ICON  = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h1m18 0h1M12 2v1m0 18v1M4.93 4.93l.7.7m12.74 12.74.7.7M4.93 19.07l.7-.7m12.74-12.74.7-.7"/><circle cx="12" cy="12" r="4"/></svg>`
 
@@ -312,7 +439,10 @@ function newConversation() {
   clearChat()
 }
 
-onMounted(loadHistoryList)
+onMounted(() => {
+  loadHistoryList()
+  fetchAiModel()
+})
 
 // ── 工具函数 ──────────────────────────────────────────────────────────
 function formatInput(input) {
@@ -909,15 +1039,17 @@ function handleEvent(data, msg) {
 .send-btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* 清空按钮 */
-.input-actions { display: flex; gap: 8px; }
+.input-actions {
+  display: flex; align-items: center; gap: 8px;
+}
+.input-hint-text {
+  font-size: 11px; color: var(--text-muted);
+  flex: 1;
+}
 .action-btn {
-  font-size: 11px;
-  color: var(--text-muted);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0 2px;
-  font-family: inherit;
+  font-size: 11px; color: var(--text-muted);
+  background: none; border: none; cursor: pointer;
+  padding: 0 2px; font-family: inherit;
 }
 .action-btn:hover { color: var(--text-secondary); }
 
@@ -929,5 +1061,139 @@ function handleEvent(data, msg) {
   border-radius: 50%;
   animation: spin .8s linear infinite;
   display: inline-block;
+}
+
+/* ── 标题区增强 ────────────────────────────────────────────── */
+.agent-title-info { display: flex; flex-direction: column; gap: 2px; }
+.agent-title-row { display: flex; align-items: center; gap: 8px; }
+.agent-title-row h1 { font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 0; }
+
+.model-badge {
+  display: inline-flex; align-items: center;
+  padding: 1px 8px; border-radius: 10px;
+  font-size: 10px; font-weight: 600;
+  background: rgba(56,139,253,0.12);
+  color: var(--accent);
+  border: 1px solid rgba(56,139,253,0.25);
+  font-family: 'JetBrains Mono', monospace;
+}
+.exec-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 8px; border-radius: 10px;
+  font-size: 10px; font-weight: 600;
+  background: rgba(210,153,34,0.12);
+  color: var(--warning);
+  border: 1px solid rgba(210,153,34,0.25);
+}
+.exec-badge::before {
+  content: '';
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--warning);
+  animation: blink .8s step-end infinite;
+}
+.exec-badge.idle { background: rgba(63,185,80,0.1); color: var(--success); border-color: rgba(63,185,80,0.2); }
+.exec-badge.idle::before { background: var(--success); animation: none; }
+
+.header-right { display: flex; align-items: center; gap: 10px; }
+.hdr-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 12px; font-size: 12px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: var(--text-secondary);
+  cursor: pointer; font-family: inherit;
+  transition: all .15s; white-space: nowrap;
+}
+.hdr-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.hdr-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Ansible Playbook 卡片 ─────────────────────────────────── */
+.ansible-card {
+  border: 1px solid rgba(63,185,80,0.3);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-surface, var(--bg-card));
+  font-size: 12px;
+  min-width: 280px;
+}
+.ansible-card.pending { border-color: rgba(210,153,34,0.35); }
+
+.ansible-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  background: rgba(63,185,80,0.06);
+  border-bottom: 1px solid rgba(63,185,80,0.15);
+}
+.ansible-card.pending .ansible-header {
+  background: rgba(210,153,34,0.06);
+  border-bottom-color: rgba(210,153,34,0.15);
+}
+.ansible-icon { display: flex; align-items: center; color: var(--success); }
+.ansible-card.pending .ansible-icon { color: var(--warning); }
+.ansible-title { font-size: 12px; font-weight: 600; color: var(--text-primary); flex: 1; }
+
+.ansible-status {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 600;
+}
+.ansible-status.running { background: rgba(210,153,34,0.15); color: var(--warning); }
+.ansible-status.success { background: rgba(63,185,80,0.15); color: var(--success); }
+.ansible-status.failed  { background: rgba(248,81,73,0.12); color: var(--error); display: flex; align-items: center; }
+
+.ansible-body { padding: 8px 12px; display: flex; flex-direction: column; gap: 5px; }
+.ansible-field { display: flex; align-items: center; gap: 12px; }
+.ansible-key {
+  width: 60px; flex-shrink: 0;
+  font-size: 11px; color: var(--text-muted);
+}
+.ansible-val { font-size: 12px; color: var(--text-primary); }
+.ansible-link {
+  color: var(--accent); text-decoration: none; font-size: 12px;
+}
+.ansible-link:hover { text-decoration: underline; }
+
+.ansible-log {
+  padding: 5px 12px;
+  font-size: 11px; color: var(--text-muted);
+  cursor: pointer; border-top: 1px solid var(--border-light);
+}
+.ansible-log:hover { color: var(--text-secondary); }
+
+/* ── AI 文本结构化渲染 ─────────────────────────────────────── */
+.ai-text { white-space: normal !important; }
+.ai-content :deep(.ai-section-title) {
+  font-weight: 700; color: var(--accent);
+  font-size: 13px; margin: 10px 0 4px;
+  padding-left: 8px;
+  border-left: 3px solid var(--accent);
+}
+.ai-content :deep(strong) {
+  font-weight: 700; color: var(--text-primary);
+}
+.ai-content :deep(.ai-li) {
+  display: flex; gap: 8px; align-items: baseline;
+  margin: 3px 0; padding-left: 4px;
+}
+.ai-content :deep(.ai-li-num) {
+  flex-shrink: 0; width: 18px; height: 18px;
+  border-radius: 50%; background: var(--accent);
+  color: #fff; font-size: 10px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ai-content :deep(.ai-li-dot) { color: var(--accent); font-weight: 700; }
+.ai-content :deep(.ai-code) {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; padding: 1px 5px;
+  background: var(--bg-surface); border-radius: 3px;
+  color: var(--accent);
+}
+
+/* ── 历史面板增强 ──────────────────────────────────────────── */
+.hi-model-tag {
+  font-size: 9px; padding: 1px 5px;
+  border-radius: 3px; background: var(--accent-dim);
+  color: var(--accent); font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
 }
 </style>

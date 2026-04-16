@@ -1,14 +1,13 @@
-"""AI Ops 日志分析系统 - FastAPI 主入口
+"""AI Ops 日志分析系统 - FastAPI 主入口"""
 
-load_dotenv() 必须在所有本地模块 import 之前执行，
-否则 state.py / auth/session.py 等模块级 os.getenv() 会取到默认值。
-"""
-from dotenv import load_dotenv
-load_dotenv()
+import os
+
+from runtime_env import bootstrap_runtime_env
+
+bootstrap_runtime_env()
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -33,6 +32,8 @@ from routers.agent import router as agent_router
 from routers.groups import router as groups_router
 from routers.skywalking import router as skywalking_router
 from routers.feishu_bot import router as feishu_bot_router
+from routers.observability import router as observability_router
+from routers.agent_config import router as agent_config_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -133,6 +134,8 @@ app.include_router(agent_router)
 app.include_router(groups_router)
 app.include_router(skywalking_router)
 app.include_router(feishu_bot_router)
+app.include_router(observability_router)
+app.include_router(agent_config_router)
 
 
 if __name__ == "__main__":

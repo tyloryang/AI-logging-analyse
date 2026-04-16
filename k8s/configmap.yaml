@@ -31,6 +31,9 @@ data:
   APP_HOST: "0.0.0.0"
   APP_PORT: "8000"
   APP_URL: "http://localhost"
+  FEISHU_CALLBACK_HOST: "0.0.0.0"
+  FEISHU_CALLBACK_PORT: "8001"
+  FEISHU_CALLBACK_PUBLIC_BASE_URL: ""
   DEV_RELOAD: "false"
 
   REPORTS_DIR: "./reports"

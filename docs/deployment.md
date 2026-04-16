@@ -211,6 +211,10 @@ stringData:
   ADMIN_USERNAME: "admin"
   ADMIN_PASSWORD: "Admin@2026"           # 建议修改
   FEISHU_WEBHOOK: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"  # 替换
+  FEISHU_BOT_APP_ID: "cli_xxxxxxxxxxxxxxxx"       # 飞书事件回调应用 App ID
+  FEISHU_BOT_APP_SECRET: "your_feishu_app_secret" # 飞书事件回调应用 Secret
+  FEISHU_BOT_ENCRYPT_KEY: ""                      # 可选：飞书事件加密密钥
+  FEISHU_BOT_VERIFY_TOKEN: ""                     # 可选：飞书 Verification Token
 ```
 
 ```bash
@@ -300,6 +304,10 @@ service/redis      ClusterIP   10.x.x.x      6379/TCP
 | `ADMIN_USERNAME` | 后台管理员账号 |
 | `ADMIN_PASSWORD` | 后台管理员密码 |
 | `FEISHU_WEBHOOK` | 飞书机器人 Webhook 地址 |
+| `FEISHU_BOT_APP_ID` | 飞书事件回调应用 App ID |
+| `FEISHU_BOT_APP_SECRET` | 飞书事件回调应用 Secret |
+| `FEISHU_BOT_ENCRYPT_KEY` | 飞书事件加密密钥（可选） |
+| `FEISHU_BOT_VERIFY_TOKEN` | 飞书 Verification Token（可选） |
 | `DINGTALK_WEBHOOK` | 钉钉机器人 Webhook 地址 |
 
 ### 6.3 Milvus 不可用的降级行为
@@ -555,3 +563,53 @@ kubectl exec -it -n aiops deploy/backend -- \
 | Prometheus | NodePort | 24404 | 外部服务 |
 | Milvus | TCP | 19530 | 外部服务 |
 | Embedding | HTTP | 10009 | 外部服务 |
+---
+
+## 12. 飞书独立回调服务
+
+如果希望把飞书事件回调从主后端解耦，可以单独启动一个轻量回调服务。
+
+### 12.1 相关环境变量
+
+```env
+FEISHU_CALLBACK_HOST=0.0.0.0
+FEISHU_CALLBACK_PORT=8001
+FEISHU_CALLBACK_PUBLIC_BASE_URL=
+```
+
+- `FEISHU_CALLBACK_HOST`：独立回调服务绑定的 Host / IP
+- `FEISHU_CALLBACK_PORT`：独立回调服务监听端口
+- `FEISHU_CALLBACK_PUBLIC_BASE_URL`：展示给飞书开放平台的公网地址，可为空；为空时前端会自动按“当前访问主机 + 回调端口”拼接
+
+### 12.2 启动方式
+
+在仓库根目录执行：
+
+```bash
+python backend/feishu_callback_app.py
+```
+
+或先进入 `backend` 目录再执行：
+
+```bash
+uvicorn feishu_callback_app:app --host 0.0.0.0 --port 8001
+```
+
+### 12.3 健康检查
+
+```bash
+curl http://127.0.0.1:8001/healthz
+```
+
+### 12.4 飞书开放平台配置
+
+在前端“系统配置 -> 飞书机器人”里配置好：
+
+- `App ID`
+- `App Secret`
+- `Encrypt Key`（可选）
+- `Verify Token`（可选）
+- `回调服务 Host / Port`
+- `公网 Base URL`（如有域名或反向代理）
+
+随后把页面展示的 `Webhook 回调地址` 填到飞书开放平台的“事件与回调”。

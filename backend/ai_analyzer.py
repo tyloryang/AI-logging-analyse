@@ -26,8 +26,11 @@ class BaseAIProvider(ABC):
 
 class AnthropicProvider(BaseAIProvider):
     def __init__(self, api_key: str, model: str):
-        import anthropic
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        import anthropic, httpx
+        self.client = anthropic.AsyncAnthropic(
+            api_key=api_key,
+            http_client=httpx.AsyncClient(trust_env=False),
+        )
         self.model = model or "claude-opus-4-6"
 
     @property
@@ -51,9 +54,11 @@ class AnthropicProvider(BaseAIProvider):
 class OpenAICompatProvider(BaseAIProvider):
     def __init__(self, base_url: str, api_key: str, model: str, wire_api: str = "chat"):
         from openai import AsyncOpenAI
+        import httpx
         self.client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key or "EMPTY",   # 本地模型通常不需要 key，传占位符
+            http_client=httpx.AsyncClient(trust_env=False),
         )
         self.model = model
         self.wire_api = wire_api  # "chat" = /chat/completions, "responses" = /responses

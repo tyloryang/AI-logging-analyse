@@ -147,6 +147,25 @@ async def test_sw_connection():
     return await diagnose()
 
 
+@router.get("/api/sw/demo-status")
+async def get_demo_status():
+    """返回当前是否在使用 Demo 数据模式。"""
+    import os
+    from skywalking_client import check_connectivity as sw_check
+    demo_env = os.getenv("SW_DEMO_MODE", "").lower() in ("1", "true", "yes")
+    reachable = False
+    if not demo_env:
+        try:
+            reachable = await sw_check()
+        except Exception:
+            pass
+    return {
+        "demo_mode":  demo_env or not reachable,
+        "demo_env":   demo_env,
+        "oap_reachable": reachable,
+    }
+
+
 # ── 性能指标 ──────────────────────────────────────────────────────────────────
 
 @router.get("/api/sw/metrics")
