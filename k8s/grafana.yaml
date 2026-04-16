@@ -1,0 +1,117 @@
+---
+# Grafana 部署 — 启用 allow_embedding（AIOps 平台 iframe 嵌入必需）
+# kubectl apply -f k8s/grafana.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring          # 与项目其他组件保持同一命名空间，按实际修改
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          ports:
+            - containerPort: 3000
+          env:
+            # ── 关键配置：允许 iframe 嵌入 ──────────────────────────────
+            - name: GF_SECURITY_ALLOW_EMBEDDING
+              value: "true"
+            # ── 管理员账号（建议改成 Secret 引用）─────────────────────
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secret
+                  key: admin-user
+                  optional: true
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secret
+                  key: admin-password
+                  optional: true
+            # ── 根 URL（与 Ingress 保持一致）──────────────────────────
+            - name: GF_SERVER_ROOT_URL
+              value: "http://grafana.example.com"   # 按实际修改
+            # ── 匿名访问（内网只读场景可开启）─────────────────────────
+            # - name: GF_AUTH_ANONYMOUS_ENABLED
+            #   value: "true"
+            # - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+            #   value: "Viewer"
+          volumeMounts:
+            - name: grafana-storage
+              mountPath: /var/lib/grafana
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: grafana-storage
+          persistentVolumeClaim:
+            claimName: grafana-pvc
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+  namespace: monitoring
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30300       # NodePort 访问：http://<node-ip>:30300
+  type: NodePort
+
+---
+# 管理员密码 Secret（按需修改 base64 值）
+# echo -n "admin" | base64  →  YWRtaW4=
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-secret
+  namespace: monitoring
+type: Opaque
+data:
+  admin-user: YWRtaW4=         # admin
+  admin-password: YWRtaW4=     # admin  ← 生产环境请更换强密码

@@ -34,6 +34,32 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── Grafana（docker compose --profile grafana up）──
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [grafana]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # 允许 iframe 嵌入（AIOps 平台 Grafana 看板功能必需）
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      # 关闭登录页面（内网可选，生产环境请删除此行）
+      # GF_AUTH_ANONYMOUS_ENABLED: "true"
+      # GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3000}"
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      # 允许跨域（前端不同域访问时取消注释）
+      # GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── 可选：MySQL 8（docker compose --profile mysql up）──
   mysql:
     image: mysql:8
@@ -72,3 +98,4 @@ volumes:
   aiops_data:
   mysql_data:
   pg_data:
+  grafana_data:
