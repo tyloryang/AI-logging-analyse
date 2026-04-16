@@ -1,0 +1,13 @@
+[31mfailed to load config from D:\loki-log-analyse\frontend\vite.config.js[39m
+[31merror when starting dev server:
+Error: spawn EPERM
+    at ChildProcess.spawn (node:internal/child_process:421:11)
+    at Object.spawn (node:child_process:796:9)
+    at ensureServiceIsRunning (D:\loki-log-analyse\frontend\node_modules\esbuild\lib\main.js:1975:29)
+    at build (D:\loki-log-analyse\frontend\node_modules\esbuild\lib\main.js:1873:26)
+    at bundleConfigFile (file:///D:/loki-log-analyse/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:66845:24)
+    at loadConfigFromFile (file:///D:/loki-log-analyse/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:66815:27)
+    at resolveConfig (file:///D:/loki-log-analyse/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:66416:30)
+    at _createServer (file:///D:/loki-log-analyse/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:63015:24)
+    at createServer (file:///D:/loki-log-analyse/frontend/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:63012:10)
+    at CAC.<anonymous> (file:///D:/loki-log-analyse/frontend/node_modules/vite/dist/node/cli.js:736:26)[39m

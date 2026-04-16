@@ -12,6 +12,7 @@ const routes = [
   { path: '/',        component: () => import('../views/Dashboard.vue'),      name: 'dashboard', meta: { module: 'dashboard' } },
   { path: '/logs',    component: () => import('../views/LogAnalysis.vue'),    name: 'logs',      meta: { module: 'log' } },
   { path: '/metrics', component: () => import('../views/MetricsMonitor.vue'), name: 'metrics',   meta: { module: 'metrics' } },
+  { path: '/grafana', component: () => import('../views/GrafanaView.vue'),   name: 'grafana',   meta: { module: 'metrics' } },
   { path: '/alerts',  component: () => import('../views/AlertHistory.vue'),   name: 'alerts',    meta: { module: 'alert' } },
   { path: '/report',  component: () => import('../views/AnalysisReport.vue'), name: 'report',    meta: { module: 'report' } },
   { path: '/hosts',   component: () => import('../views/HostCMDB.vue'),       name: 'hosts',     meta: { module: 'cmdb' } },

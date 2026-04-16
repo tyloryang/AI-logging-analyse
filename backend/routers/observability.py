@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Query
@@ -32,12 +33,31 @@ _GRAFANA_BOARD_DEFS = [
 ]
 
 def _build_grafana_boards():
-    # 每次调用时读取 env，支持 settings 页面热更新
+    """每次调用时读取 env + settings.json，支持热更新和自定义看板"""
     base = os.getenv("GRAFANA_URL", "http://localhost:3000").rstrip("/")
-    return [
-        {**b, "url": f"{base}/d/{b['uid']}/{b['id']}"}
-        for b in _GRAFANA_BOARD_DEFS
-    ]
+    # 合并默认 + 自定义
+    try:
+        settings_file = Path(__file__).resolve().parent.parent / "data" / "settings.json"
+        custom_boards: list[dict] = []
+        if settings_file.exists():
+            d = json.loads(settings_file.read_text(encoding="utf-8"))
+            custom_boards = d.get("grafana_boards", [])
+    except Exception:
+        custom_boards = []
+
+    combined = list(_GRAFANA_BOARD_DEFS)
+    existing_ids = {b["id"] for b in combined}
+    for b in custom_boards:
+        if b.get("id") not in existing_ids:
+            combined.append(b)
+
+    result = []
+    for b in combined:
+        if b.get("url"):
+            result.append({**b})
+        else:
+            result.append({**b, "url": f"{base}/d/{b['uid']}/{b['id']}"})
+    return result
 
 
 # ── 辅助：从 Loki 获取各服务错误数 ─────────────────────────────────────────
@@ -184,6 +204,7 @@ async def get_overview(hours: int = Query(1, ge=1, le=24)):
         "recent_traces":    recent_traces,
         "problem_services": problem_services,
         "grafana_boards":   grafana_boards,
+        "grafana_url":      os.getenv("GRAFANA_URL", ""),
         "error_breakdown":  error_breakdown,
         "timestamp":        datetime.now(timezone.utc).isoformat(),
     }
@@ -307,3 +328,93 @@ async def analyze_observability(req: AnalyzeReq):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Grafana 看板管理（自定义看板增删改查）
+# 自定义看板存储在 data/settings.json["grafana_boards"]
+# ══════════════════════════════════════════════════════════════════════════════
+
+from pathlib import Path as _Path
+
+_SETTINGS_FILE = _Path(__file__).resolve().parent.parent / "data" / "settings.json"
+
+
+def _load_settings() -> dict:
+    if _SETTINGS_FILE.exists():
+        try:
+            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_settings(data: dict) -> None:
+    _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _all_boards_raw() -> list[dict]:
+    """合并默认看板 + 自定义看板"""
+    custom: list[dict] = _load_settings().get("grafana_boards", [])
+    combined = list(_GRAFANA_BOARD_DEFS)
+    existing_ids = {b["id"] for b in combined}
+    for b in custom:
+        if b.get("id") not in existing_ids:
+            combined.append(b)
+    return combined
+
+
+class GrafanaBoardIn(BaseModel):
+    title: str
+    uid: str = ""
+    url: str = ""   # 完整 URL（直接填写时优先；uid 用于拼接）
+
+
+@router.get("/grafana/boards")
+async def list_grafana_boards():
+    """返回全部看板（默认 + 自定义），附带完整 URL"""
+    base = os.getenv("GRAFANA_URL", "http://localhost:3000").rstrip("/")
+    boards = []
+    for b in _all_boards_raw():
+        full_url = b.get("url") or (f"{base}/d/{b['uid']}/{b['id']}" if b.get("uid") else "")
+        boards.append({**b, "url": full_url, "custom": b.get("custom", False)})
+    return {"boards": boards, "grafana_url": os.getenv("GRAFANA_URL", "")}
+
+
+@router.post("/grafana/boards")
+async def add_grafana_board(board: GrafanaBoardIn):
+    """添加自定义 Grafana 看板"""
+    import uuid as _uuid
+    settings = _load_settings()
+    customs: list[dict] = settings.get("grafana_boards", [])
+    new_board = {
+        "id": f"custom-{_uuid.uuid4().hex[:8]}",
+        "title": board.title.strip(),
+        "uid": board.uid.strip(),
+        "url": board.url.strip(),
+        "custom": True,
+    }
+    customs.append(new_board)
+    settings["grafana_boards"] = customs
+    _save_settings(settings)
+    return {"ok": True, "board": new_board}
+
+
+@router.delete("/grafana/boards/{board_id}")
+async def delete_grafana_board(board_id: str):
+    """删除自定义 Grafana 看板（默认看板不可删）"""
+    settings = _load_settings()
+    customs: list[dict] = settings.get("grafana_boards", [])
+    before = len(customs)
+    customs = [b for b in customs if b.get("id") != board_id]
+    if len(customs) == before:
+        # 尝试删除默认看板 → 拒绝
+        if any(b["id"] == board_id for b in _GRAFANA_BOARD_DEFS):
+            from fastapi import HTTPException as _HTTPException
+            raise _HTTPException(status_code=400, detail="默认看板不可删除")
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=404, detail="看板不存在")
+    settings["grafana_boards"] = customs
+    _save_settings(settings)
+    return {"ok": True}

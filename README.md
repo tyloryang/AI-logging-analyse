@@ -95,6 +95,8 @@
 
 ## 🏗️ 技术架构
 
+![项目架构图](screenshots/project_architecture_style_1_flat_icon.png)
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    浏览器  Vue 3 + Vite                          │

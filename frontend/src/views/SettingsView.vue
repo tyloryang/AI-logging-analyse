@@ -105,7 +105,44 @@
               <input v-model="form.skywalking_oap_url" placeholder="http://192.168.x.x:12800" />
             </div>
           </div>
-          <p class="field-hint">Grafana 看板链接将在可观测性总览页展示。SkyWalking 地址用于 Trace / APM 数据查询。</p>
+          <p class="field-hint">
+            Grafana 看板将在"Grafana 看板"页面以 iframe 嵌入展示（需要在 grafana.ini 中设置
+            <code>allow_embedding = true</code> 或环境变量 <code>GF_SECURITY_ALLOW_EMBEDDING=true</code>）。
+          </p>
+
+          <!-- Grafana 看板管理 -->
+          <div class="boards-section">
+            <div class="boards-header">
+              <span class="boards-title">Grafana 看板列表</span>
+              <button class="btn-sm" @click="showAddBoard = !showAddBoard">+ 添加看板</button>
+            </div>
+
+            <!-- 添加表单 -->
+            <div v-if="showAddBoard" class="add-board-form">
+              <input v-model="newBoard.title" placeholder="看板名称（如 Node Exporter）" class="board-input" />
+              <input v-model="newBoard.uid" placeholder="Grafana UID（如 rYdddlPWk）" class="board-input" />
+              <input v-model="newBoard.url" placeholder="完整 URL（可选，覆盖 UID 拼接）" class="board-input" />
+              <div class="add-board-actions">
+                <button class="btn-primary-sm" @click="addBoard" :disabled="!newBoard.title">确认添加</button>
+                <button class="btn-ghost-sm" @click="showAddBoard = false">取消</button>
+              </div>
+            </div>
+
+            <!-- 看板列表 -->
+            <div class="boards-list">
+              <div v-for="b in grafanaBoards" :key="b.id" class="board-row">
+                <span class="board-icon">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+                </span>
+                <span class="board-title">{{ b.title }}</span>
+                <span class="board-uid" v-if="b.uid">{{ b.uid }}</span>
+                <span class="board-tag" v-if="b.custom">自定义</span>
+                <a v-if="b.url" :href="b.url" target="_blank" class="board-link" title="在新标签打开">↗</a>
+                <button v-if="b.custom" class="board-del" @click="removeBoard(b.id)" title="删除">×</button>
+              </div>
+              <div v-if="!grafanaBoards.length" class="boards-empty">暂无看板，请先配置 Grafana 地址</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -260,6 +297,11 @@ const saveNote  = ref('')
 const saving    = ref(false)
 const copied    = ref(false)
 
+// Grafana 看板管理
+const grafanaBoards = ref([])
+const showAddBoard  = ref(false)
+const newBoard = reactive({ title: '', uid: '', url: '' })
+
 const form = reactive({
   prometheus_url:           '',
   prometheus_username:      '',
@@ -318,12 +360,44 @@ function applySettings(s) {
   form.feishu_callback_public_base_url = s.feishu_callback_public_base_url || ''
 }
 
+async function loadGrafanaBoards() {
+  try {
+    const data = await api.observabilityGrafanaBoards()
+    grafanaBoards.value = data.boards || []
+  } catch (e) {
+    // non-fatal
+  }
+}
+
+async function addBoard() {
+  if (!newBoard.title) return
+  try {
+    await api.addGrafanaBoard({ title: newBoard.title, uid: newBoard.uid, url: newBoard.url })
+    newBoard.title = ''; newBoard.uid = ''; newBoard.url = ''
+    showAddBoard.value = false
+    await loadGrafanaBoards()
+  } catch (e) {
+    alert('添加失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+  }
+}
+
+async function removeBoard(id) {
+  if (!confirm('确认删除该看板？')) return
+  try {
+    await api.deleteGrafanaBoard(id)
+    await loadGrafanaBoards()
+  } catch (e) {
+    alert('删除失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+  }
+}
+
 onMounted(async () => {
   try {
     applySettings(await api.getSettings())
   } catch (e) {
     loadError.value = '加载配置失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误')
   }
+  loadGrafanaBoards()
 })
 
 async function testConn(type) {
@@ -360,6 +434,7 @@ async function saveSettings() {
     const r = await api.saveSettings({ ...form })
     saveNote.value = r.note || '保存成功'
     applySettings(await api.getSettings())
+    loadGrafanaBoards()
   } catch (e) {
     saveNote.value = '保存失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误')
   } finally {
@@ -488,5 +563,71 @@ async function saveSettings() {
   margin-bottom: 14px; padding: 10px 14px;
   background: rgba(56,139,253,.08); border: 1px solid rgba(56,139,253,.2);
   border-radius: var(--radius); color: var(--accent); font-size: 13px;
+}
+
+/* Grafana board management */
+.boards-section { margin-top: 14px; }
+.boards-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.boards-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+.btn-sm {
+  padding: 4px 10px; font-size: 11px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text-secondary); cursor: pointer; transition: all 0.12s;
+}
+.btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+.add-board-form {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px; margin-bottom: 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.board-input {
+  width: 100%; padding: 6px 10px; font-size: 12px;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text-primary); outline: none;
+  box-sizing: border-box;
+}
+.board-input:focus { border-color: var(--accent); }
+.add-board-actions { display: flex; gap: 8px; }
+.btn-primary-sm {
+  padding: 5px 12px; font-size: 12px; border-radius: 5px;
+  border: none; background: var(--accent); color: #fff; cursor: pointer;
+}
+.btn-primary-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-ghost-sm {
+  padding: 5px 12px; font-size: 12px; border-radius: 5px;
+  border: 1px solid var(--border); background: none;
+  color: var(--text-secondary); cursor: pointer;
+}
+.boards-list { display: flex; flex-direction: column; gap: 4px; }
+.board-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 12px;
+}
+.board-icon { color: #f88600; flex-shrink: 0; }
+.board-title { font-weight: 500; color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-uid { font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); flex-shrink: 0; }
+.board-tag {
+  padding: 1px 6px; font-size: 10px; border-radius: 3px;
+  background: rgba(248,134,0,.12); color: #f88600; flex-shrink: 0;
+}
+.board-link { color: var(--accent); text-decoration: none; font-size: 13px; flex-shrink: 0; }
+.board-link:hover { opacity: 0.75; }
+.board-del {
+  width: 20px; height: 20px; border-radius: 4px; border: none;
+  background: rgba(248,81,73,.1); color: var(--error); cursor: pointer;
+  font-size: 14px; line-height: 1; flex-shrink: 0; display: flex;
+  align-items: center; justify-content: center;
+}
+.board-del:hover { background: rgba(248,81,73,.2); }
+.boards-empty { font-size: 12px; color: var(--text-tertiary); padding: 8px 0; text-align: center; }
+code {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--accent);
 }
 </style>

@@ -79,6 +79,12 @@ export const api = {
   swGetMetrics:     (params)             => http.get('/sw/metrics', { params }),
   swGetEndpointTopN:(params)             => http.get('/sw/endpoint-topn', { params }),
   swTest:           ()                   => http.get('/sw/test'),
+  // 可观测性总览
+  observabilityOverview: (params) => http.get('/observability/overview', { params }),
+  // Grafana 看板管理
+  observabilityGrafanaBoards: () => http.get('/observability/grafana/boards'),
+  addGrafanaBoard: (data) => http.post('/observability/grafana/boards', data),
+  deleteGrafanaBoard: (id) => http.delete(`/observability/grafana/boards/${id}`),
   // 主机分组
   listGroups:    ()         => http.get('/groups'),
   createGroup:   (data)     => http.post('/groups', data),

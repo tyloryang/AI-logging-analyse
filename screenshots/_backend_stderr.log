@@ -1,0 +1,17 @@
+D:\python3-12-9\Lib\site-packages\pydantic\_internal\_fields.py:161: UserWarning: Field "model_id" has conflict with protected namespace "model_".
+
+You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+  warnings.warn(
+INFO:     Started server process [4528]
+INFO:     Waiting for application startup.
+INFO:apscheduler.scheduler:Adding job tentatively -- it will be properly scheduled when the scheduler starts
+INFO:apscheduler.scheduler:Added job "scheduled_report_job" to job store "default"
+INFO:apscheduler.scheduler:Scheduler started
+INFO:main:[scheduler] 定时推送已启动，cron='0 7 * * *'，渠道=['feishu']
+WARNING:main:[report_store] 元数据同步失败（不影响启动）: name 'REPORTS_DIR' is not defined
+INFO:     Application startup complete.
+ERROR:    [Errno 10048] error while attempting to bind on address ('0.0.0.0', 8000): [winerror 10048] 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。
+INFO:     Waiting for application shutdown.
+INFO:main:[scheduler] 定时推送已停止
+INFO:apscheduler.scheduler:Scheduler has been shut down
+INFO:     Application shutdown complete.

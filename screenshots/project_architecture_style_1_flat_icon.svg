@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xml:lang="zh-CN" viewBox="0 0 1560 1000" width="2400" height="1538">
+  <style>
+    text { font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif; }
+  </style>
+  <defs>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%"><feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#111827" flood-opacity="0.08"/></filter>
+    <marker id="arrow-main" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-external" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#ea580c"/>
+    </marker>
+    <marker id="arrow-ai" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrow-storage" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#059669"/>
+    </marker>
+    <marker id="arrow-async" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1560" height="1000" fill="#ffffff"/>
+  <text x="44" y="54" fill="#111827" font-size="22" font-weight="800">AI Ops 智能运维平台 · 项目架构图</text>
+  <text x="44" y="82" fill="#6b7280" font-size="13">风格 1 · Flat Icon ｜ Vue 3 + FastAPI + LangGraph + Loki / Prometheus / SkyWalking + 独立飞书回调服务</text>
+  <rect x="50" y="120" width="300" height="800" rx="10" fill="#ffffff" fill-opacity="0" stroke="#e5e7eb" stroke-opacity="0.75" stroke-width="1" stroke-dasharray="7,5"/>
+  <text x="66" y="144" fill="#6b7280" font-size="12" font-weight="700" letter-spacing="0.06em">入口与部署层</text>
+  <rect x="390" y="120" width="520" height="550" rx="10" fill="#ffffff" fill-opacity="0" stroke="#e5e7eb" stroke-opacity="0.75" stroke-width="1" stroke-dasharray="7,5"/>
+  <text x="406" y="144" fill="#6b7280" font-size="12" font-weight="700" letter-spacing="0.06em">FastAPI 后端与 AI 自动化</text>
+  <rect x="970" y="120" width="530" height="550" rx="10" fill="#ffffff" fill-opacity="0" stroke="#e5e7eb" stroke-opacity="0.75" stroke-width="1" stroke-dasharray="7,5"/>
+  <text x="986" y="144" fill="#6b7280" font-size="12" font-weight="700" letter-spacing="0.06em">可观测与外部系统</text>
+  <rect x="360" y="740" width="1140" height="170" rx="10" fill="#ffffff" fill-opacity="0" stroke="#e5e7eb" stroke-opacity="0.75" stroke-width="1" stroke-dasharray="7,5"/>
+  <text x="376" y="764" fill="#6b7280" font-size="12" font-weight="700" letter-spacing="0.06em">数据、记忆与报表持久化</text>
+  <g id="node-browser">
+    <rect x="90" y="165" width="220" height="82" rx="10" fill="#eff6ff" fill-opacity="1.0" stroke="#bfdbfe" stroke-width="1.4" filter="url(#shadow)"/>
+    <circle cx="108" cy="184" r="5" fill="#bfdbfe"/>
+    <text x="106" y="196" fill="#111827" font-size="15" font-weight="700">Vue 3 前端</text>
+    <text x="106" y="218" fill="#6b7280" font-size="12" font-weight="400">看板 / APM / SSH</text>
+  </g>
+  <g id="node-nginx">
+    <rect x="90" y="315" width="220" height="74" rx="10" fill="#fff7ed" fill-opacity="1.0" stroke="#fed7aa" stroke-width="1.4"/>
+    <circle cx="108" cy="334" r="5" fill="#fed7aa"/>
+    <text x="106" y="346" fill="#111827" font-size="15" font-weight="700">Nginx 静态站点</text>
+    <text x="106" y="368" fill="#6b7280" font-size="12" font-weight="400">Vite 构建 + /api 代理</text>
+  </g>
+  <g id="node-feishu_event">
+    <rect x="90" y="465" width="220" height="78" rx="10" fill="#eff6ff" fill-opacity="1.0" stroke="#bfdbfe" stroke-width="1.4" filter="url(#shadow)"/>
+    <circle cx="108" cy="484" r="5" fill="#bfdbfe"/>
+    <text x="106" y="496" fill="#111827" font-size="15" font-weight="700">飞书事件入口</text>
+    <text x="106" y="518" fill="#6b7280" font-size="12" font-weight="400">消息 / URL Challenge</text>
+  </g>
+  <g id="node-deploy">
+    <rect x="90" y="635" width="220" height="74" rx="10" fill="#fefce8" fill-opacity="1.0" stroke="#fde68a" stroke-width="1.4"/>
+    <circle cx="108" cy="654" r="5" fill="#fde68a"/>
+    <text x="106" y="666" fill="#111827" font-size="15" font-weight="700">部署形态</text>
+    <text x="106" y="688" fill="#6b7280" font-size="12" font-weight="400">Docker Compose / K8s</text>
+  </g>
+  <g id="node-api">
+    <rect x="440" y="165" width="240" height="88" rx="10" fill="#ffffff" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4" filter="url(#shadow)"/>
+    <circle cx="458" cy="184" r="5" fill="#d1d5db"/>
+    <text x="456" y="196" fill="#111827" font-size="15" font-weight="700">FastAPI 主服务</text>
+    <text x="456" y="218" fill="#6b7280" font-size="12" font-weight="400">路由 + CORS + 生命周期</text>
+  </g>
+  <g id="node-feishu_cb">
+    <rect x="690" y="165" width="185" height="88" rx="10" fill="#ffffff" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4" filter="url(#shadow)"/>
+    <circle cx="708" cy="184" r="5" fill="#d1d5db"/>
+    <text x="706" y="196" fill="#111827" font-size="15" font-weight="700">飞书回调服务</text>
+    <text x="706" y="218" fill="#6b7280" font-size="12" font-weight="400">独立 IP / 端口</text>
+  </g>
+  <g id="node-auth">
+    <rect x="430" y="330" width="180" height="78" rx="10" fill="#ffffff" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4" filter="url(#shadow)"/>
+    <circle cx="448" cy="349" r="5" fill="#d1d5db"/>
+    <text x="446" y="361" fill="#111827" font-size="15" font-weight="700">Auth / RBAC</text>
+    <text x="446" y="383" fill="#6b7280" font-size="12" font-weight="400">会话 + 审批 + 审计</text>
+  </g>
+  <g id="node-routers">
+    <rect x="670" y="330" width="210" height="78" rx="10" fill="#ffffff" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4" filter="url(#shadow)"/>
+    <circle cx="688" cy="349" r="5" fill="#d1d5db"/>
+    <text x="686" y="361" fill="#111827" font-size="15" font-weight="700">业务 Routers</text>
+    <text x="686" y="383" fill="#6b7280" font-size="12" font-weight="400">日志 / 主机 / 报告 / 链路</text>
+  </g>
+  <g id="node-agent">
+    <rect x="430" y="510" width="220" height="88" rx="10" fill="#faf5ff" fill-opacity="1.0" stroke="#d8b4fe" stroke-width="1.4" filter="url(#shadow)"/>
+    <circle cx="448" cy="529" r="5" fill="#d8b4fe"/>
+    <text x="446" y="541" fill="#111827" font-size="15" font-weight="700">LangGraph Agent</text>
+    <text x="446" y="563" fill="#6b7280" font-size="12" font-weight="400">ReAct + 工具 + SSE</text>
+  </g>
+  <g id="node-scheduler">
+    <rect x="670" y="510" width="210" height="88" rx="10" fill="#f0fdfa" fill-opacity="1.0" stroke="#99f6e4" stroke-width="1.4"/>
+    <circle cx="688" cy="529" r="5" fill="#99f6e4"/>
+    <text x="686" y="541" fill="#111827" font-size="15" font-weight="700">APScheduler</text>
+    <text x="686" y="563" fill="#6b7280" font-size="12" font-weight="400">日报 / 巡检 cron</text>
+  </g>
+  <g id="node-loki">
+    <rect x="1010" y="160" width="180" height="70" rx="10" fill="#f0fdf4" fill-opacity="1.0" stroke="#bbf7d0" stroke-width="1.4"/>
+    <circle cx="1028" cy="179" r="5" fill="#bbf7d0"/>
+    <text x="1026" y="191" fill="#111827" font-size="15" font-weight="700">Loki</text>
+    <text x="1026" y="213" fill="#6b7280" font-size="12" font-weight="400">日志查询 / LogQL</text>
+  </g>
+  <g id="node-prom">
+    <rect x="1260" y="160" width="200" height="70" rx="10" fill="#f0fdf4" fill-opacity="1.0" stroke="#bbf7d0" stroke-width="1.4"/>
+    <circle cx="1278" cy="179" r="5" fill="#bbf7d0"/>
+    <text x="1276" y="191" fill="#111827" font-size="15" font-weight="700">Prometheus</text>
+    <text x="1276" y="213" fill="#6b7280" font-size="12" font-weight="400">指标 / 主机发现</text>
+  </g>
+  <g id="node-sky">
+    <rect x="1010" y="330" width="180" height="70" rx="10" fill="#f0fdf4" fill-opacity="1.0" stroke="#bbf7d0" stroke-width="1.4"/>
+    <circle cx="1028" cy="349" r="5" fill="#bbf7d0"/>
+    <text x="1026" y="361" fill="#111827" font-size="15" font-weight="700">SkyWalking</text>
+    <text x="1026" y="383" fill="#6b7280" font-size="12" font-weight="400">APM 链路追踪</text>
+  </g>
+  <g id="node-remote">
+    <rect x="1260" y="330" width="200" height="70" rx="10" fill="#f0fdf4" fill-opacity="1.0" stroke="#bbf7d0" stroke-width="1.4"/>
+    <circle cx="1278" cy="349" r="5" fill="#bbf7d0"/>
+    <text x="1276" y="361" fill="#111827" font-size="15" font-weight="700">远程主机</text>
+    <text x="1276" y="383" fill="#6b7280" font-size="12" font-weight="400">SSH / MySQL 慢日志</text>
+  </g>
+  <g id="node-ai">
+    <rect x="1010" y="510" width="180" height="75" rx="10" fill="#f0fdf4" fill-opacity="1.0" stroke="#bbf7d0" stroke-width="1.4"/>
+    <circle cx="1028" cy="529" r="5" fill="#bbf7d0"/>
+    <text x="1026" y="541" fill="#111827" font-size="15" font-weight="700">AI Provider</text>
+    <text x="1026" y="563" fill="#6b7280" font-size="12" font-weight="400">Qwen / Claude / OpenAI</text>
+  </g>
+  <g id="node-notify">
+    <rect x="1260" y="510" width="200" height="75" rx="10" fill="#f0fdf4" fill-opacity="1.0" stroke="#bbf7d0" stroke-width="1.4"/>
+    <circle cx="1278" cy="529" r="5" fill="#bbf7d0"/>
+    <text x="1276" y="541" fill="#111827" font-size="15" font-weight="700">飞书 / 钉钉</text>
+    <text x="1276" y="563" fill="#6b7280" font-size="12" font-weight="400">报告推送 + 对话回复</text>
+  </g>
+  <g id="node-redis">
+    <rect x="390" y="790" width="160" height="72" rx="10" fill="#f9fafb" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4"/>
+    <circle cx="408" cy="809" r="5" fill="#d1d5db"/>
+    <text x="406" y="821" fill="#111827" font-size="15" font-weight="700">Redis</text>
+    <text x="406" y="843" fill="#6b7280" font-size="12" font-weight="400">Session / 失败计数</text>
+  </g>
+  <g id="node-sqldb">
+    <rect x="590" y="790" width="175" height="72" rx="10" fill="#f9fafb" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4"/>
+    <circle cx="608" cy="809" r="5" fill="#d1d5db"/>
+    <text x="606" y="821" fill="#111827" font-size="15" font-weight="700">SQL DB</text>
+    <text x="606" y="843" fill="#6b7280" font-size="12" font-weight="400">SQLite / MySQL / PG</text>
+  </g>
+  <g id="node-reports">
+    <rect x="805" y="790" width="160" height="72" rx="10" fill="#f9fafb" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4"/>
+    <circle cx="823" cy="809" r="5" fill="#d1d5db"/>
+    <text x="821" y="821" fill="#111827" font-size="15" font-weight="700">Reports</text>
+    <text x="821" y="843" fill="#6b7280" font-size="12" font-weight="400">JSON / Excel</text>
+  </g>
+  <g id="node-milvus">
+    <rect x="1005" y="790" width="180" height="72" rx="10" fill="#f9fafb" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4"/>
+    <circle cx="1023" cy="809" r="5" fill="#d1d5db"/>
+    <text x="1021" y="821" fill="#111827" font-size="15" font-weight="700">Milvus Memory</text>
+    <text x="1021" y="843" fill="#6b7280" font-size="12" font-weight="400">相似事件检索</text>
+  </g>
+  <g id="node-checkpoint">
+    <rect x="1225" y="790" width="190" height="72" rx="10" fill="#f9fafb" fill-opacity="1.0" stroke="#d1d5db" stroke-width="1.4"/>
+    <circle cx="1243" cy="809" r="5" fill="#d1d5db"/>
+    <text x="1241" y="821" fill="#111827" font-size="15" font-weight="700">Checkpointer</text>
+    <text x="1241" y="843" fill="#6b7280" font-size="12" font-weight="400">SQLite / MemorySaver</text>
+  </g>
+  <path d="M 200,247 L 200,315" fill="none" stroke="#2563eb" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-main)"/>
+  <rect x="213.0" y="268.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="244" y="283" fill="#2563eb" font-size="12" font-weight="600" text-anchor="middle">加载应用</text>
+  <path d="M 310,352 L 370,352 L 370,209 L 440,209" fill="none" stroke="#2563eb" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-main)"/>
+  <rect x="302.5" y="266.0" width="119" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="362" y="281" fill="#2563eb" font-size="12" font-weight="600" text-anchor="middle">HTTP / SSE / WS</text>
+  <path d="M 310,504 L 360,504 L 360,108 L 782,108 L 782,165" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-async)"/>
+  <rect x="525.5" y="90.0" width="73" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="562" y="105" fill="#6b7280" font-size="12" font-weight="600" text-anchor="middle">POST 事件</text>
+  <path d="M 782,253 L 930,253 L 930,476 L 540,476 L 540,510" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-async)" stroke-dasharray="6,4"/>
+  <rect x="897.0" y="350.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="928" y="365" fill="#6b7280" font-size="12" font-weight="600" text-anchor="middle">消息入队</text>
+  <path d="M 520,253 L 520,330" fill="none" stroke="#2563eb" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-main)"/>
+  <rect x="536.0" y="277.0" width="38" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="555" y="292" fill="#2563eb" font-size="12" font-weight="600" text-anchor="middle">认证</text>
+  <path d="M 620,253 L 620,296 L 775,296 L 775,330" fill="none" stroke="#2563eb" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-main)"/>
+  <rect x="669.0" y="273.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="700" y="288" fill="#2563eb" font-size="12" font-weight="600" text-anchor="middle">路由分发</text>
+  <path d="M 880,356 L 930,356 L 930,195 L 1010,195" fill="none" stroke="#ea580c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-external)"/>
+  <rect x="907.5" y="255.0" width="49" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="932" y="270" fill="#ea580c" font-size="12" font-weight="600" text-anchor="middle">LogQL</text>
+  <path d="M 880,370 L 940,370 L 940,118 L 1360,118 L 1360,160" fill="none" stroke="#ea580c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-external)"/>
+  <rect x="1122.0" y="100.0" width="56" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="1150" y="115" fill="#ea580c" font-size="12" font-weight="600" text-anchor="middle">PromQL</text>
+  <path d="M 880,385 L 950,385 L 950,365 L 1010,365" fill="none" stroke="#ea580c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-external)"/>
+  <rect x="929.5" y="397.0" width="49" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="954" y="412" fill="#ea580c" font-size="12" font-weight="600" text-anchor="middle">Trace</text>
+  <path d="M 880,400 L 940,400 L 940,442 L 1360,442 L 1360,400" fill="none" stroke="#ea580c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-external)"/>
+  <rect x="1082.5" y="423.0" width="105" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="1135" y="438" fill="#ea580c" font-size="12" font-weight="600" text-anchor="middle">SSH / SlowLog</text>
+  <path d="M 540,598 L 540,682 L 1100,682 L 1100,585" fill="none" stroke="#7c3aed" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-ai)"/>
+  <rect x="782.0" y="660.0" width="66" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="815" y="675" fill="#7c3aed" font-size="12" font-weight="600" text-anchor="middle">LLM 调用</text>
+  <path d="M 600,598 L 600,716 L 1360,716 L 1360,585" fill="none" stroke="#7c3aed" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-ai)"/>
+  <rect x="949.0" y="694.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="980" y="709" fill="#7c3aed" font-size="12" font-weight="600" text-anchor="middle">对话回复</text>
+  <path d="M 880,554 L 940,554 L 940,632 L 1360,632 L 1360,585" fill="none" stroke="#ea580c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-external)" stroke-dasharray="6,4"/>
+  <rect x="1114.0" y="610.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="1145" y="625" fill="#ea580c" font-size="12" font-weight="600" text-anchor="middle">定时推送</text>
+  <path d="M 430,369 L 370,369 L 370,728 L 470,728 L 470,790" fill="none" stroke="#059669" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-storage)" stroke-dasharray="6,4"/>
+  <rect x="356.5" y="545.0" width="63" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="388" y="560" fill="#059669" font-size="12" font-weight="600" text-anchor="middle">Session</text>
+  <path d="M 880,369 L 925,369 L 925,728 L 678,728 L 678,790" fill="none" stroke="#059669" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-storage)" stroke-dasharray="6,4"/>
+  <rect x="900.5" y="595.0" width="35" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="918" y="610" fill="#059669" font-size="12" font-weight="600" text-anchor="middle">ORM</text>
+  <path d="M 775,598 L 775,708 L 885,708 L 885,790" fill="none" stroke="#059669" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-storage)" stroke-dasharray="6,4"/>
+  <rect x="805.0" y="686.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="836" y="701" fill="#059669" font-size="12" font-weight="600" text-anchor="middle">生成报表</text>
+  <path d="M 540,598 L 540,710 L 1095,710 L 1095,790" fill="none" stroke="#059669" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-storage)" stroke-dasharray="6,4"/>
+  <rect x="799.0" y="688.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="830" y="703" fill="#059669" font-size="12" font-weight="600" text-anchor="middle">记忆读写</text>
+  <path d="M 600,598 L 600,732 L 1320,732 L 1320,790" fill="none" stroke="#059669" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-storage)" stroke-dasharray="6,4"/>
+  <rect x="1085.0" y="710.0" width="50" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="1110" y="725" fill="#059669" font-size="12" font-weight="600" text-anchor="middle">检查点</text>
+  <path d="M 310,672 L 370,672 L 370,650 L 770,650 L 770,598" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-async)" stroke-dasharray="6,4"/>
+  <rect x="534.0" y="628.0" width="62" height="20" rx="5" fill="#ffffff" fill-opacity="0.96"/>
+  <text x="565" y="643" fill="#6b7280" font-size="12" font-weight="600" text-anchor="middle">部署编排</text>
+  <rect x="30" y="918" width="610" height="48" rx="10" fill="#ffffff" fill-opacity="0.96" stroke="#e5e7eb" stroke-opacity="0.45"/>
+  <line x1="44" y1="940" x2="78" y2="940" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow-main)"/>
+  <text x="86" y="944" fill="#6b7280" font-size="12">主请求 / SSE / WebSocket</text>
+  <line x1="188" y1="940" x2="222" y2="940" stroke="#ea580c" stroke-width="2" marker-end="url(#arrow-external)"/>
+  <text x="230" y="944" fill="#6b7280" font-size="12">外部查询 / 推送</text>
+  <line x1="332" y1="940" x2="366" y2="940" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow-ai)"/>
+  <text x="374" y="944" fill="#6b7280" font-size="12">AI 推理 / 工具调用</text>
+  <line x1="476" y1="940" x2="510" y2="940" stroke="#059669" stroke-width="2" marker-end="url(#arrow-storage)"/>
+  <text x="518" y="944" fill="#6b7280" font-size="12">存储 / 记忆读写</text>
+  <text x="1520" y="968" fill="#6b7280" font-size="11" text-anchor="end">输出文件：screenshots/project_architecture_style_1_flat_icon</text>
+</svg>
