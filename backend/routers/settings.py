@@ -72,6 +72,19 @@ class SettingsPayload(BaseModel):
     feishu_callback_host: str = "0.0.0.0"
     feishu_callback_port: int | str | None = 8001
     feishu_callback_public_base_url: str = ""
+    k8s_kubeconfig: str = ""
+    ansible_base_dir: str = ""
+    # 多云凭证
+    aliyun_access_key_id: str = ""
+    aliyun_access_key_secret: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = ""
+    tencent_secret_id: str = ""
+    tencent_secret_key: str = ""
+    huawei_access_key_id: str = ""
+    huawei_secret_access_key: str = ""
+    huawei_project_id: str = ""
 
 
 class TestPayload(BaseModel):
@@ -110,6 +123,17 @@ async def get_settings():
         "feishu_callback_public_base_url": os.getenv(
             "FEISHU_CALLBACK_PUBLIC_BASE_URL", ""
         ),
+        # 多云凭证状态
+        "aliyun_access_key_id": os.getenv("ALIYUN_ACCESS_KEY_ID", ""),
+        "aliyun_access_key_secret_set": bool(os.getenv("ALIYUN_ACCESS_KEY_SECRET", "")),
+        "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID", ""),
+        "aws_secret_access_key_set": bool(os.getenv("AWS_SECRET_ACCESS_KEY", "")),
+        "aws_region": os.getenv("AWS_REGION", ""),
+        "tencent_secret_id": os.getenv("TENCENT_SECRET_ID", ""),
+        "tencent_secret_key_set": bool(os.getenv("TENCENT_SECRET_KEY", "")),
+        "huawei_access_key_id": os.getenv("HUAWEI_ACCESS_KEY_ID", ""),
+        "huawei_secret_access_key_set": bool(os.getenv("HUAWEI_SECRET_ACCESS_KEY", "")),
+        "huawei_project_id": os.getenv("HUAWEI_PROJECT_ID", ""),
     }
 
 
@@ -143,7 +167,7 @@ async def update_settings(body: SettingsPayload):
     if body.prometheus_password:
         existing["prometheus_password"] = body.prometheus_password
 
-    if body.grafana_url is not None:
+    if body.grafana_url:
         existing["grafana_url"] = body.grafana_url
     if body.grafana_api_key:
         existing["grafana_api_key"] = body.grafana_api_key
@@ -175,6 +199,32 @@ async def update_settings(body: SettingsPayload):
     existing["feishu_callback_host"] = callback_host
     existing["feishu_callback_port"] = callback_port
     existing["feishu_callback_public_base_url"] = callback_public_base_url
+
+    if body.k8s_kubeconfig is not None:
+        existing["k8s_kubeconfig"] = body.k8s_kubeconfig
+    if body.ansible_base_dir is not None:
+        existing["ansible_base_dir"] = body.ansible_base_dir
+
+    # 多云凭证
+    _cloud_fields = [
+        ("aliyun_access_key_id", "ALIYUN_ACCESS_KEY_ID"),
+        ("aliyun_access_key_secret", "ALIYUN_ACCESS_KEY_SECRET"),
+        ("aws_access_key_id", "AWS_ACCESS_KEY_ID"),
+        ("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+        ("aws_region", "AWS_REGION"),
+        ("tencent_secret_id", "TENCENT_SECRET_ID"),
+        ("tencent_secret_key", "TENCENT_SECRET_KEY"),
+        ("huawei_access_key_id", "HUAWEI_ACCESS_KEY_ID"),
+        ("huawei_secret_access_key", "HUAWEI_SECRET_ACCESS_KEY"),
+        ("huawei_project_id", "HUAWEI_PROJECT_ID"),
+    ]
+    for field, env_key in _cloud_fields:
+        val = getattr(body, field, "") or ""
+        if val:
+            existing[field] = val
+            os.environ[env_key] = val
+        elif field in existing:
+            os.environ[env_key] = existing[field]
 
     _save(existing)
 
@@ -222,16 +272,22 @@ async def update_settings(body: SettingsPayload):
     # Grafana / SkyWalking URL 热更新（直接写环境变量，observability 路由每次请求时读取）
     new_grafana_url = existing.get("grafana_url", os.getenv("GRAFANA_URL", ""))
     new_sw_url = existing.get("skywalking_oap_url", os.getenv("SKYWALKING_OAP_URL", "http://localhost:12800"))
-    if new_grafana_url:
+    if new_grafana_url and new_grafana_url != os.getenv("GRAFANA_URL", ""):
         os.environ["GRAFANA_URL"] = new_grafana_url
         hot_reloaded.append("grafana_url")
+    elif new_grafana_url:
+        os.environ["GRAFANA_URL"] = new_grafana_url  # 确保进程环境变量始终同步
     new_grafana_api_key = existing.get("grafana_api_key", "")
-    if new_grafana_api_key:
+    if new_grafana_api_key and new_grafana_api_key != os.getenv("GRAFANA_API_KEY", ""):
         os.environ["GRAFANA_API_KEY"] = new_grafana_api_key
         hot_reloaded.append("grafana_api_key")
-    if new_sw_url:
+    elif new_grafana_api_key:
+        os.environ["GRAFANA_API_KEY"] = new_grafana_api_key  # 确保进程环境变量始终同步
+    if new_sw_url and new_sw_url != os.getenv("SKYWALKING_OAP_URL", ""):
         os.environ["SKYWALKING_OAP_URL"] = new_sw_url
         hot_reloaded.append("skywalking_oap_url")
+    elif new_sw_url:
+        os.environ["SKYWALKING_OAP_URL"] = new_sw_url
 
     new_ai_provider = existing.get("ai_provider", os.getenv("AI_PROVIDER", "anthropic"))
     new_ai_base_url = existing.get("ai_base_url", os.getenv("AI_BASE_URL", ""))
@@ -340,3 +396,26 @@ async def test_loki(body: TestPayload):
             return {"ok": response.status_code == 200, "status": response.status_code}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@router.get("/api/settings/test/k8s")
+async def test_k8s():
+    """测试 Kubernetes 连接，返回节点数。"""
+    try:
+        from routers.kubernetes import _get_client, _resolve_kubeconfig
+        kubeconfig = _resolve_kubeconfig()
+        core_v1, _ = _get_client()
+        nodes = core_v1.list_node(timeout_seconds=8)
+        return {
+            "ok": True,
+            "kubeconfig": kubeconfig,
+            "node_count": len(nodes.items),
+            "nodes": [n.metadata.name for n in nodes.items],
+        }
+    except Exception as exc:
+        from routers.kubernetes import _resolve_kubeconfig
+        try:
+            kc = _resolve_kubeconfig()
+        except Exception:
+            kc = "unknown"
+        return {"ok": False, "kubeconfig": kc, "error": str(exc)}

@@ -255,44 +255,75 @@ async def _send_text(message_id: str, text: str) -> None:
         logger.warning("[feishu_bot] 回复消息失败: %s", data)
 
 
+async def _invoke_via_cli(text: str, session_key: str) -> str:
+    """通过 aiops_cli.py subprocess 调用，兼容 Claude Code CLI 模式。"""
+    import sys
+    cli_path = os.path.join(os.path.dirname(__file__), "..", "aiops_cli.py")
+    cli_path = os.path.normpath(cli_path)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, cli_path,
+        "--session", session_key,
+        text,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"aiops_cli 返回错误 (rc={proc.returncode}): {err[:400]}")
+    return stdout.decode("utf-8", errors="replace").strip()
+
+
+async def _invoke_via_langgraph(text: str, session_key: str) -> str:
+    """直接调用 LangGraph（进程内，性能更优）。"""
+    from langchain_core.messages import HumanMessage
+    from agent.graph import build_graph
+    from routers.agent import _get_checkpointer
+
+    checkpointer = await _get_checkpointer()
+    graph = build_graph("chat", checkpointer)
+    config = {
+        "configurable": {"thread_id": session_key},
+        "recursion_limit": 40,
+    }
+
+    full_text = ""
+    async for event in graph.astream_events(
+        {"messages": [HumanMessage(content=text)]},
+        config=config,
+        version="v2",
+    ):
+        if event.get("event") != "on_chat_model_stream":
+            continue
+
+        chunk = event.get("data", {}).get("chunk")
+        if chunk is None or not getattr(chunk, "content", None):
+            continue
+
+        raw_content = chunk.content
+        parts = raw_content if isinstance(raw_content, list) else [raw_content]
+        for part in parts:
+            if isinstance(part, str):
+                full_text += part
+            elif isinstance(part, Mapping) and part.get("type") == "text":
+                full_text += str(part.get("text") or "")
+
+    return full_text.strip()
+
+
 async def _process_message(message_id: str, text: str, session_key: str) -> None:
     lock = _get_session_lock(session_key)
     async with lock:
         try:
-            from langchain_core.messages import HumanMessage
+            # FEISHU_USE_CLI=1 → subprocess 模式（隔离性好，便于调试）
+            # 默认进程内直调 LangGraph（性能更佳）
+            use_cli = os.getenv("FEISHU_USE_CLI", "").strip() == "1"
+            if use_cli:
+                logger.info("[feishu_bot] 使用 aiops_cli subprocess 模式 session=%s", session_key)
+                reply = await _invoke_via_cli(text, session_key)
+            else:
+                reply = await _invoke_via_langgraph(text, session_key)
 
-            from agent.graph import build_graph
-            from routers.agent import _get_checkpointer
-
-            checkpointer = await _get_checkpointer()
-            graph = build_graph("chat", checkpointer)
-            config = {
-                "configurable": {"thread_id": session_key},
-                "recursion_limit": 40,
-            }
-
-            full_text = ""
-            async for event in graph.astream_events(
-                {"messages": [HumanMessage(content=text)]},
-                config=config,
-                version="v2",
-            ):
-                if event.get("event") != "on_chat_model_stream":
-                    continue
-
-                chunk = event.get("data", {}).get("chunk")
-                if chunk is None or not getattr(chunk, "content", None):
-                    continue
-
-                raw_content = chunk.content
-                parts = raw_content if isinstance(raw_content, list) else [raw_content]
-                for part in parts:
-                    if isinstance(part, str):
-                        full_text += part
-                    elif isinstance(part, Mapping) and part.get("type") == "text":
-                        full_text += str(part.get("text") or "")
-
-            reply = full_text.strip()
             if not reply:
                 logger.warning("[feishu_bot] AI 返回空文本，跳过回复 session=%s", session_key)
                 return

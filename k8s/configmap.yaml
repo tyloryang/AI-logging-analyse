@@ -9,6 +9,7 @@ data:
   LOKI_PASSWORD: ""
 
   PROMETHEUS_URL: "http://192.168.9.221:24404"
+  GRAFANA_URL: "http://192.168.9.221:30300"
 
   AI_PROVIDER: "openai"
   AI_BASE_URL: "https://api.codexzh.com/v1"

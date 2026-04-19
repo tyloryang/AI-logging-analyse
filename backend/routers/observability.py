@@ -426,6 +426,19 @@ async def delete_grafana_board(board_id: str):
 # Grafana 自动发现：调用 Grafana HTTP API 获取全部看板
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _read_grafana_settings() -> tuple[str, str]:
+    """直接从 settings.json 读取 grafana_url 和 grafana_api_key，比 env 更实时。"""
+    settings_file = Path(__file__).resolve().parent.parent / "data" / "settings.json"
+    try:
+        d = json.loads(settings_file.read_text(encoding="utf-8"))
+        base    = d.get("grafana_url", "").strip().rstrip("/")
+        api_key = d.get("grafana_api_key", "").strip()
+        return base, api_key
+    except Exception:
+        return (os.getenv("GRAFANA_URL", "") or "").strip().rstrip("/"), \
+               (os.getenv("GRAFANA_API_KEY", "") or "").strip()
+
+
 @router.get("/grafana/discover")
 async def discover_grafana_boards():
     """
@@ -434,15 +447,7 @@ async def discover_grafana_boards():
     """
     import httpx
 
-    # 先刷新环境变量，确保通过 settings 页面保存的 key 立即生效
-    try:
-        from runtime_env import refresh_runtime_settings_env
-        refresh_runtime_settings_env()
-    except Exception:
-        pass
-
-    base    = (os.getenv("GRAFANA_URL", "") or "").strip().rstrip("/")
-    api_key = (os.getenv("GRAFANA_API_KEY", "") or "").strip()
+    base, api_key = _read_grafana_settings()
 
     if not base:
         return {"boards": [], "error": "未配置 GRAFANA_URL，请先在系统配置中填写 Grafana 地址", "grafana_url": ""}
@@ -510,14 +515,7 @@ async def test_grafana_connection():
     """诊断 Grafana 连通性，返回详细状态（供排查自动发现失败时使用）"""
     import httpx
 
-    try:
-        from runtime_env import refresh_runtime_settings_env
-        refresh_runtime_settings_env()
-    except Exception:
-        pass
-
-    base    = (os.getenv("GRAFANA_URL", "") or "").strip().rstrip("/")
-    api_key = (os.getenv("GRAFANA_API_KEY", "") or "").strip()
+    base, api_key = _read_grafana_settings()
 
     result = {
         "grafana_url":   base,
@@ -570,3 +568,166 @@ async def test_grafana_connection():
             result["search_error"] = str(e)
 
     return result
+
+
+# ── Grafana 反向代理 ──────────────────────────────────────────────────────────
+# 前端 iframe 指向 /api/grafana-proxy/<path>，后端透明转发并注入 API Key。
+# 这样浏览器不需要登录 Grafana，认证完全由后端承担。
+
+from fastapi import Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response as _Response
+import re as _re
+
+
+@router.websocket("/grafana-proxy/{gpath:path}")
+async def grafana_ws_proxy(websocket: WebSocket, gpath: str):
+    """WebSocket 代理：转发 Grafana Live (/api/live/ws) 连接"""
+    import websockets as _ws
+
+    base, api_key = _read_grafana_settings()
+    if not base:
+        await websocket.close(code=1011, reason="GRAFANA_URL 未配置")
+        return
+
+    qs = websocket.url.query
+    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    target = f"{ws_base}/{gpath}" + (f"?{qs}" if qs else "")
+
+    extra_headers = {}
+    if api_key:
+        token = api_key if api_key.startswith("Bearer ") else f"Bearer {api_key}"
+        extra_headers["Authorization"] = token
+
+    await websocket.accept()
+    try:
+        async with _ws.connect(target, additional_headers=extra_headers, ssl=None) as upstream:
+            async def _up():
+                try:
+                    async for msg in upstream:
+                        if isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except Exception:
+                    pass
+
+            async def _down():
+                try:
+                    async for msg in websocket.iter_bytes():
+                        await upstream.send(msg)
+                except WebSocketDisconnect:
+                    pass
+                except Exception:
+                    pass
+
+            await asyncio.gather(_up(), _down())
+    except Exception as e:
+        logger.debug("[grafana-ws] upstream error: %s", e)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@router.api_route(
+    "/grafana-proxy/{gpath:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def grafana_proxy(gpath: str, request: Request):
+    base, api_key = _read_grafana_settings()
+
+    if not base:
+        return _Response(content="GRAFANA_URL 未配置", status_code=503)
+
+    qs = request.url.query
+    target_url = f"{base}/{gpath}" + (f"?{qs}" if qs else "")
+
+    forward_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in ("host", "origin", "referer", "authorization", "cookie")
+    }
+    if api_key:
+        token = api_key if api_key.startswith("Bearer ") else f"Bearer {api_key}"
+        forward_headers["Authorization"] = token
+
+    body = await request.body()
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30, verify=False, follow_redirects=True) as client:
+            resp = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=forward_headers,
+                content=body or None,
+            )
+    except Exception as e:
+        return _Response(content=str(e), status_code=502)
+
+    skip_headers = {"transfer-encoding", "content-encoding", "content-length",
+                    "x-frame-options", "content-security-policy"}
+    resp_headers = {
+        k: v for k, v in resp.headers.items()
+        if k.lower() not in skip_headers
+    }
+
+    content = resp.content
+    content_type = resp.headers.get("content-type", "")
+    proxy_base = "/api/observability/grafana-proxy"
+
+    if "text/html" in content_type:
+        text = content.decode("utf-8", errors="replace")
+
+        # ① 重写 Grafana boot data 中的 appSubUrl / appUrl
+        #    appSubUrl 告诉 Grafana SPA 它的客户端路由根路径，必须与代理前缀一致
+        #    否则 SPA 会把 /api/observability/grafana-proxy/d/xxx 当成未知路由报 404
+        grafana_origin_esc = _re.escape(base)
+        text = _re.sub(
+            r'"appSubUrl"\s*:\s*"[^"]*"',
+            f'"appSubUrl":"{proxy_base}"',
+            text,
+        )
+        text = _re.sub(
+            rf'"appUrl"\s*:\s*"[^"]*"',
+            f'"appUrl":"{proxy_base}/"',
+            text,
+        )
+
+        # ② 注入 <base href> + fetch/XHR 拦截脚本，放在 <head> 最前面
+        #    <base href> 让 HTML 中的相对路径资源走代理
+        #    fetch/XHR 拦截让 SPA 运行时的数据 API 请求也走代理
+        head_inject = f"""<base href="{proxy_base}/">
+<script>
+(function(){{
+  var _pb={json.dumps(proxy_base)};
+  function _rw(u){{
+    if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(_pb))
+      return _pb+u;
+    return u;
+  }}
+  var _f=window.fetch;
+  window.fetch=function(u,o){{return _f.call(this,_rw(u),o);}};
+  var _xo=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(m,u){{
+    arguments[1]=_rw(u);return _xo.apply(this,arguments);
+  }};
+}})();
+</script>"""
+        if "<head>" in text:
+            text = text.replace("<head>", "<head>" + head_inject, 1)
+        elif "<Head>" in text:
+            text = text.replace("<Head>", "<Head>" + head_inject, 1)
+        else:
+            text = head_inject + text
+
+        content = text.encode("utf-8")
+        resp_headers["content-type"] = "text/html; charset=utf-8"
+
+    return _Response(
+        content=content,
+        status_code=resp.status_code,
+        headers=resp_headers,
+        media_type=content_type or None,
+    )

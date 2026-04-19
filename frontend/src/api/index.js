@@ -52,6 +52,7 @@ export const api = {
   saveSettings:   (data) => http.put('/settings', data),
   testPrometheus: (data) => http.post('/settings/test/prometheus', data),
   testLoki:       (data) => http.post('/settings/test/loki', data),
+  testK8s:        ()     => http.get('/settings/test/k8s'),
   // 认证
   getMe:        () => http.get('/auth/me'),
   login:        (data) => http.post('/auth/login', data),
@@ -99,6 +100,52 @@ export const api = {
   },
   generateInspectGroups:     ()        => http.post('/report/inspect/generate-groups'),
   downloadInspectExcel:      (id)      => `/api/report/inspect/${id}/excel`,
+  // Kubernetes
+  k8sSummary:       ()           => http.get('/k8s/summary'),
+  k8sNodes:         ()           => http.get('/k8s/nodes'),
+  k8sPods:          (ns)         => http.get('/k8s/pods',        { params: ns ? { namespace: ns } : {} }),
+  k8sDeployments:   (ns)         => http.get('/k8s/deployments', { params: ns ? { namespace: ns } : {} }),
+  k8sServices:      (ns)         => http.get('/k8s/services',    { params: ns ? { namespace: ns } : {} }),
+  k8sNamespaces:    ()           => http.get('/k8s/namespaces'),
+  // Ansible 任务中心
+  ansibleTasks:     ()           => http.get('/ansible/tasks'),
+  ansibleCreateTask:(data)       => http.post('/ansible/tasks', data),
+  ansibleGetTask:   (id)         => http.get(`/ansible/tasks/${id}`),
+  ansibleDeleteTask:(id)         => http.delete(`/ansible/tasks/${id}`),
+  ansibleCrons:     ()           => http.get('/ansible/crons'),
+  ansibleCreateCron:(data)       => http.post('/ansible/crons', data),
+  ansibleUpdateCron:(id, data)   => http.put(`/ansible/crons/${id}`, data),
+  ansibleDeleteCron:(id)         => http.delete(`/ansible/crons/${id}`),
+  ansibleRunCron:   (id)         => http.post(`/ansible/crons/${id}/run`),
+  ansiblePlaybooks: ()           => http.get('/ansible/playbooks'),
+  // 事件墙
+  listEvents:       (params)     => http.get('/events',       { params }),
+  eventStats:       ()           => http.get('/events/stats'),
+  // 中间件
+  middlewareSummary:   ()        => http.get('/middleware/summary'),
+  middlewareInstances: ()        => http.get('/middleware/instances'),
+  middlewareMetrics:   (type)    => http.get(`/middleware/metrics/${type}`),
+  // 工单系统
+  listTickets:      (params)     => http.get('/tickets',              { params }),
+  createTicket:     (data)       => http.post('/tickets', data),
+  getTicket:        (id)         => http.get(`/tickets/${id}`),
+  updateTicket:     (id, data)   => http.put(`/tickets/${id}`, data),
+  deleteTicket:     (id)         => http.delete(`/tickets/${id}`),
+  approveTicket:    (id, comment) => http.post(`/tickets/${id}/approve`, null, { params: { comment } }),
+  rejectTicket:     (id, comment) => http.post(`/tickets/${id}/reject`,  null, { params: { comment } }),
+  doneTicket:       (id, comment) => http.post(`/tickets/${id}/done`,    null, { params: { comment } }),
+  ticketStats:      ()           => http.get('/tickets/stats/summary'),
+  // Elasticsearch
+  esClusters:       ()           => http.get('/es/clusters'),
+  esAddCluster:     (data)       => http.post('/es/clusters', data),
+  esUpdateCluster:  (id, data)   => http.put(`/es/clusters/${id}`, data),
+  esDeleteCluster:  (id)         => http.delete(`/es/clusters/${id}`),
+  esTestCluster:    (id)         => http.get(`/es/clusters/${id}/test`),
+  esOverview:       (id)         => http.get(`/es/clusters/${id}/overview`),
+  esIndices:        (id)         => http.get(`/es/clusters/${id}/indices`),
+  esNodes:          (id)         => http.get(`/es/clusters/${id}/nodes`),
+  esShards:         (id, idx)    => http.get(`/es/clusters/${id}/shards`, { params: idx ? { index: idx } : {} }),
+  esProxy:          (id, method, path, body) => http.request({ method, url: `/es/clusters/${id}/proxy/${path}`, data: body }),
 }
 
 /** 流式 SSE 工具 */

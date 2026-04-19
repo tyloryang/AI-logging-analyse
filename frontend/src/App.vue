@@ -11,12 +11,14 @@
           <component :is="Component" />
         </keep-alive>
       </main>
+      <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant'" />
     </div>
   </router-view>
 </template>
 
 <script setup>
 import Sidebar from './components/Sidebar.vue'
+import AIOpsAssistantFloat from './components/AIOpsAssistantFloat.vue'
 </script>
 
 <style scoped>

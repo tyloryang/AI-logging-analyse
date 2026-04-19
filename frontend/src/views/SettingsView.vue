@@ -306,6 +306,164 @@
 
     </div>
 
+    <!-- 运维工具 -->
+    <div class="settings-grid" style="margin-top:16px">
+
+      <!-- Kubernetes -->
+      <div class="card settings-section">
+        <div class="section-head">
+          <div class="section-title">
+            <span class="section-icon k8s">K8s</span>
+            Kubernetes 容器管理
+          </div>
+          <span class="conn-badge" :class="k8sTestResult === true ? 'ok' : k8sTestResult === false ? 'err' : 'idle'">
+            <span class="badge-dot"></span>
+            {{ k8sTestResult === true ? '连接正常' : k8sTestResult === false ? '连接失败' : '未测试' }}
+          </span>
+        </div>
+        <div class="field-group">
+          <div class="field-row">
+            <div class="field" style="flex:1">
+              <label>kubeconfig 文件路径</label>
+              <div class="input-row">
+                <input v-model="form.k8s_kubeconfig"
+                       placeholder="留空自动查找（优先用 backend/data/kubeconfig）" />
+                <button class="btn btn-sm" :disabled="testingK8s" @click="testK8s" style="white-space:nowrap">
+                  {{ testingK8s ? '测试中...' : '测试连接' }}
+                </button>
+              </div>
+              <div class="field-hint">
+                推荐：直接把 kubeconfig 文件放到 <code>backend/data/kubeconfig</code>，留空即可自动识别，无需填路径。
+              </div>
+              <div v-if="k8sTestMsg" class="test-msg" :class="k8sTestResult ? 'ok' : 'err'">
+                {{ k8sTestMsg }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ansible -->
+      <div class="card settings-section">
+        <div class="section-head">
+          <div class="section-title">
+            <span class="section-icon ansible">A</span>
+            Ansible 主机任务
+          </div>
+          <span class="conn-badge" :class="form.ansible_base_dir ? 'ok' : 'idle'">
+            <span class="badge-dot"></span>
+            {{ form.ansible_base_dir ? '已配置' : '未配置' }}
+          </span>
+        </div>
+        <div class="field-group">
+          <div class="field-row">
+            <div class="field" style="flex:1">
+              <label>Playbook 根目录</label>
+              <input v-model="form.ansible_base_dir"
+                     placeholder="如 /opt/ansible 或留空使用 ANSIBLE_BASE_DIR 环境变量" />
+              <div class="field-hint">该目录下的 .yml / .yaml 文件会被自动识别为可选 Playbook</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 多云管理 -->
+      <div class="card settings-section cloud-section">
+        <div class="section-head">
+          <div class="section-title">
+            <span class="section-icon cloud">☁</span>
+            多云管理
+          </div>
+          <span class="conn-badge" :class="anyCloudConfigured ? 'ok' : 'idle'">
+            <span class="badge-dot"></span>
+            {{ anyCloudConfigured ? '已配置' : '未配置' }}
+          </span>
+        </div>
+        <div class="field-group">
+
+          <!-- 阿里云 -->
+          <div class="cloud-provider-title">
+            <span class="provider-dot aliyun"></span>阿里云 Aliyun
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Access Key ID</label>
+              <input v-model="form.aliyun_access_key_id" placeholder="LTAI5t..." />
+            </div>
+            <div class="field">
+              <label>Access Key Secret{{ settings.aliyun_access_key_secret_set ? '（已设置）' : '' }}</label>
+              <input v-model="form.aliyun_access_key_secret" type="password"
+                     :placeholder="settings.aliyun_access_key_secret_set ? '留空不修改' : '输入 Secret'" />
+            </div>
+          </div>
+
+          <!-- AWS -->
+          <div class="cloud-provider-title" style="margin-top:6px">
+            <span class="provider-dot aws"></span>Amazon Web Services (AWS)
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Access Key ID</label>
+              <input v-model="form.aws_access_key_id" placeholder="AKIA..." />
+            </div>
+            <div class="field">
+              <label>Secret Access Key{{ settings.aws_secret_access_key_set ? '（已设置）' : '' }}</label>
+              <input v-model="form.aws_secret_access_key" type="password"
+                     :placeholder="settings.aws_secret_access_key_set ? '留空不修改' : '输入 Secret'" />
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>默认 Region</label>
+              <input v-model="form.aws_region" placeholder="ap-east-1" />
+            </div>
+            <div class="field"></div>
+          </div>
+
+          <!-- 腾讯云 -->
+          <div class="cloud-provider-title" style="margin-top:6px">
+            <span class="provider-dot tencent"></span>腾讯云 Tencent Cloud
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>SecretId</label>
+              <input v-model="form.tencent_secret_id" placeholder="AKIDxxxx..." />
+            </div>
+            <div class="field">
+              <label>SecretKey{{ settings.tencent_secret_key_set ? '（已设置）' : '' }}</label>
+              <input v-model="form.tencent_secret_key" type="password"
+                     :placeholder="settings.tencent_secret_key_set ? '留空不修改' : '输入 SecretKey'" />
+            </div>
+          </div>
+
+          <!-- 华为云 -->
+          <div class="cloud-provider-title" style="margin-top:6px">
+            <span class="provider-dot huawei"></span>华为云 HUAWEI Cloud
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Access Key ID (AK)</label>
+              <input v-model="form.huawei_access_key_id" placeholder="输入 AK" />
+            </div>
+            <div class="field">
+              <label>Secret Access Key (SK){{ settings.huawei_secret_access_key_set ? '（已设置）' : '' }}</label>
+              <input v-model="form.huawei_secret_access_key" type="password"
+                     :placeholder="settings.huawei_secret_access_key_set ? '留空不修改' : '输入 SK'" />
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Project ID</label>
+              <input v-model="form.huawei_project_id" placeholder="0cd2..."  />
+            </div>
+            <div class="field"></div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
     <!-- 保存按钮 -->
     <div class="save-row">
       <button class="btn btn-primary" @click="saveSettings" :disabled="saving">
@@ -354,13 +512,37 @@ const form = reactive({
   feishu_callback_host:     '0.0.0.0',
   feishu_callback_port:     8001,
   feishu_callback_public_base_url: '',
+  k8s_kubeconfig:           '',
+  ansible_base_dir:         '',
+  // 多云凭证
+  aliyun_access_key_id:     '',
+  aliyun_access_key_secret: '',
+  aws_access_key_id:        '',
+  aws_secret_access_key:    '',
+  aws_region:               '',
+  tencent_secret_id:        '',
+  tencent_secret_key:       '',
+  huawei_access_key_id:     '',
+  huawei_secret_access_key: '',
+  huawei_project_id:        '',
 })
 
 const testing     = reactive({ prometheus: false, loki: false })
 const testResults = reactive({ prometheus: null, loki: null })  // null | true | false
 
 const testingGrafana    = ref(false)
-const grafanaTestResult = ref(null)   // null | { ok, count, version, error }
+const grafanaTestResult = ref(null)
+
+const testingK8s  = ref(false)
+const k8sTestResult = ref(null)   // null | true | false
+const k8sTestMsg  = ref('')
+
+const anyCloudConfigured = computed(() =>
+  !!(form.aliyun_access_key_id || settings.value?.aliyun_access_key_secret_set ||
+     form.aws_access_key_id    || settings.value?.aws_secret_access_key_set ||
+     form.tencent_secret_id    || settings.value?.tencent_secret_key_set ||
+     form.huawei_access_key_id || settings.value?.huawei_secret_access_key_set)
+)
 
 const promStatus     = computed(() => testResults.prometheus === null ? 'idle' : testResults.prometheus ? 'ok' : 'err')
 const lokiStatus     = computed(() => testResults.loki === null ? 'idle' : testResults.loki ? 'ok' : 'err')
@@ -391,6 +573,14 @@ function applySettings(s) {
   form.ai_provider = s.ai_provider || 'anthropic'
   form.ai_base_url = s.ai_base_url || ''
   form.ai_model = s.ai_model || ''
+  form.k8s_kubeconfig    = s.k8s_kubeconfig    || ''
+  form.ansible_base_dir  = s.ansible_base_dir  || ''
+  form.aliyun_access_key_id     = s.aliyun_access_key_id     || ''
+  form.aws_access_key_id        = s.aws_access_key_id        || ''
+  form.aws_region               = s.aws_region               || ''
+  form.tencent_secret_id        = s.tencent_secret_id        || ''
+  form.huawei_access_key_id     = s.huawei_access_key_id     || ''
+  form.huawei_project_id        = s.huawei_project_id        || ''
   form.feishu_bot_app_id = s.feishu_bot_app_id || ''
   form.feishu_callback_host = s.feishu_callback_host || '0.0.0.0'
   form.feishu_callback_port = Number(s.feishu_callback_port) || 8001
@@ -495,6 +685,24 @@ async function copyWebhook() {
   }
 }
 
+async function testK8s() {
+  testingK8s.value = true
+  k8sTestResult.value = null
+  k8sTestMsg.value = ''
+  try {
+    const r = await api.testK8s()
+    k8sTestResult.value = r.ok
+    k8sTestMsg.value = r.ok
+      ? `连接成功，共 ${r.node_count} 个节点：${(r.nodes || []).join(', ')} （kubeconfig: ${r.kubeconfig}）`
+      : `连接失败：${r.error}（kubeconfig: ${r.kubeconfig}）`
+  } catch (e) {
+    k8sTestResult.value = false
+    k8sTestMsg.value = '请求失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  } finally {
+    testingK8s.value = false
+  }
+}
+
 async function saveSettings() {
   saving.value = true
   saveNote.value = ''
@@ -539,7 +747,10 @@ async function saveSettings() {
 .section-icon.loki    { background: rgba(251,191,36,0.15); color: #d97706; }
 .section-icon.ai      { background: var(--accent-dim); color: var(--accent); }
 .section-icon.feishu  { background: rgba(0,186,113,0.15); color: #00ba71; }
-.section-icon.grafana { background: rgba(248,134,0,0.15); color: #f88600; }
+.section-icon.grafana  { background: rgba(248,134,0,0.15); color: #f88600; }
+.section-icon.k8s     { background: rgba(50,130,246,0.15); color: #3282f6; font-size:10px; }
+.section-icon.ansible { background: rgba(238,0,0,0.12);    color: #e00000; }
+.section-icon.cloud   { background: rgba(14,165,233,0.12); color: #0ea5e9; font-size:15px; line-height:1; }
 
 .conn-badge {
   display: flex; align-items: center; gap: 6px;
@@ -714,6 +925,22 @@ async function saveSettings() {
 }
 .test-icon { font-size: 13px; font-weight: 700; }
 .test-version { font-weight: 400; color: var(--text-tertiary); }
+/* 多云配置 */
+.cloud-section { grid-column: 1 / -1; }
+.cloud-provider-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  padding: 4px 0; border-top: 1px dashed var(--border-light); margin-top: 2px;
+}
+.cloud-provider-title:first-of-type { border-top: none; margin-top: 0; }
+.provider-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.provider-dot.aliyun  { background: #ff6a00; }
+.provider-dot.aws     { background: #f90; }
+.provider-dot.tencent { background: #0052d9; }
+.provider-dot.huawei  { background: #c7000b; }
+
 code {
   background: var(--surface-2); border: 1px solid var(--border);
   border-radius: 3px; padding: 1px 5px;

@@ -1,11 +1,11 @@
 ---
-# Grafana 部署 — 启用 allow_embedding（AIOps 平台 iframe 嵌入必需）
-# kubectl apply -f k8s/grafana.yaml
+# Grafana deployment for iframe embedding inside the AIOps frontend.
+# Browser URL: http://192.168.9.221:30300
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana
-  namespace: monitoring          # 与项目其他组件保持同一命名空间，按实际修改
+  namespace: monitoring
   labels:
     app: grafana
 spec:
@@ -24,10 +24,16 @@ spec:
           ports:
             - containerPort: 3000
           env:
-            # ── 关键配置：允许 iframe 嵌入 ──────────────────────────────
+            - name: GF_SERVER_ROOT_URL
+              value: "http://192.168.9.221:30300"
             - name: GF_SECURITY_ALLOW_EMBEDDING
               value: "true"
-            # ── 管理员账号（建议改成 Secret 引用）─────────────────────
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Viewer"
+            - name: GF_AUTH_ANONYMOUS_HIDE_VERSION
+              value: "true"
             - name: GF_SECURITY_ADMIN_USER
               valueFrom:
                 secretKeyRef:
@@ -40,14 +46,6 @@ spec:
                   name: grafana-secret
                   key: admin-password
                   optional: true
-            # ── 根 URL（与 Ingress 保持一致）──────────────────────────
-            - name: GF_SERVER_ROOT_URL
-              value: "http://grafana.example.com"   # 按实际修改
-            # ── 匿名访问（内网只读场景可开启）─────────────────────────
-            # - name: GF_AUTH_ANONYMOUS_ENABLED
-            #   value: "true"
-            # - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-            #   value: "Viewer"
           volumeMounts:
             - name: grafana-storage
               mountPath: /var/lib/grafana
@@ -97,15 +95,13 @@ metadata:
 spec:
   selector:
     app: grafana
+  type: NodePort
   ports:
     - port: 3000
       targetPort: 3000
-      nodePort: 30300       # NodePort 访问：http://<node-ip>:30300
-  type: NodePort
+      nodePort: 30300
 
 ---
-# 管理员密码 Secret（按需修改 base64 值）
-# echo -n "admin" | base64  →  YWRtaW4=
 apiVersion: v1
 kind: Secret
 metadata:
@@ -113,5 +109,5 @@ metadata:
   namespace: monitoring
 type: Opaque
 data:
-  admin-user: YWRtaW4=         # admin
-  admin-password: YWRtaW4=     # admin  ← 生产环境请更换强密码
+  admin-user: YWRtaW4=
+  admin-password: YWRtaW4=

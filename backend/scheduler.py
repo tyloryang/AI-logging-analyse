@@ -136,12 +136,38 @@ async def _send_group_inspect_notifications(inspect_results: list[dict]) -> None
         if not has_alert:
             logger.info("[scheduler] 分组 '%s' 全部主机正常，跳过推送", group["name"])
             continue
+
+        # 生成分组维度的 AI 分析
+        ai_text = ""
+        total = len(results)
+        normal_cnt = sum(1 for r in results if r.get("overall") == "normal")
+        warning_cnt = sum(1 for r in results if r.get("overall") == "warning")
+        critical_cnt = sum(1 for r in results if r.get("overall") == "critical")
+        group_summary = {
+            "total": total, "normal": normal_cnt,
+            "warning": warning_cnt, "critical": critical_cnt,
+            "group_name": group["name"],
+        }
+        try:
+            ai_parts: list[str] = []
+            async for chunk in analyzer.generate_inspection_summary(results, group_summary):
+                ai_parts.append(chunk)
+            ai_text = "".join(ai_parts).strip()
+            logger.info("[scheduler] 分组 '%s' AI 分析生成完毕（%d 字符）", group["name"], len(ai_text))
+        except Exception as e:
+            logger.warning("[scheduler] 分组 '%s' AI 分析失败，降级为规则摘要: %s", group["name"], e)
+            ai_text = (
+                f"本次巡检分组「{group['name']}」共 {total} 台主机，"
+                f"正常 {normal_cnt} 台、警告 {warning_cnt} 台、严重 {critical_cnt} 台。"
+            )
+
         if group.get("feishu_webhook"):
             res = await send_feishu_group_inspect(
                 group_name=group["name"],
                 results=results,
                 webhook_url=group["feishu_webhook"],
                 keyword=group.get("feishu_keyword", ""),
+                ai_text=ai_text,
             )
             logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group["name"], res)
 
@@ -212,8 +238,9 @@ async def scheduled_report_job() -> None:
 
     except Exception as exc:
         logger.exception("[scheduler] 定时日报任务异常")
-        # ── 优化 8：定时任务失败发送告警 ──────────────────────────────
-        _err_msg = f"⚠️ 定时报告任务失败：{exc}"
+        # repr(exc) 保留异常类型名，避免 asyncio.TimeoutError 等无消息异常显示为空
+        _exc_desc = repr(exc) if not str(exc) else f"{type(exc).__name__}: {exc}"
+        _err_msg = f"⚠️ 定时报告任务失败：{_exc_desc}"
         err_report = {
             "title": "定时报告生成失败",
             "health_score": 0,

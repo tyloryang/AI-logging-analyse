@@ -8,14 +8,16 @@ export const THEMES = [
 const STORAGE_KEY = 'aiops-theme'
 
 function applyTheme(id) {
-  if (id === 'light') {
-    document.documentElement.setAttribute('data-theme', 'light')
+  if (id === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark')
   } else {
     document.documentElement.removeAttribute('data-theme')
   }
 }
 
-const currentTheme = ref(localStorage.getItem(STORAGE_KEY) || 'light')
+// 旧版存的是 'dark' 表示无 attribute，新版反过来——迁移一次
+const _stored = localStorage.getItem(STORAGE_KEY)
+const currentTheme = ref(_stored || 'light')
 applyTheme(currentTheme.value)
 
 export function useTheme() {
