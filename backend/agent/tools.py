@@ -323,6 +323,233 @@ async def search_daily_reports(keyword: str = "", days: int = 30, limit: int = 8
         return f"搜索历史日报失败：{e}"
 
 
+# ── Kubernetes 工具 ────────────────────────────────────────────────────────────
+
+@tool
+async def get_k8s_summary() -> str:
+    """查询 Kubernetes 集群总览：节点数、Pod 数、Deployment 数、命名空间列表。
+    用户询问 k8s 状态、集群情况、容器平台状态时使用。"""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("http://localhost:8000/api/k8s/summary",
+                                 cookies={"session": "internal"})
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            d = r.json()
+        lines = [
+            "**K8s 集群总览**",
+            f"节点数：{d.get('nodes', '?')}",
+            f"Pod 总数：{d.get('pods', '?')}",
+            f"Deployment 数：{d.get('deployments', '?')}",
+            f"Service 数：{d.get('services', '?')}",
+            f"命名空间：{', '.join(d.get('namespaces', [])[:10]) or '无'}",
+        ]
+        return "\n".join(lines)
+    except Exception as exc:
+        # 直接调用 kubernetes 客户端
+        try:
+            from routers.kubernetes import _get_client
+            core_v1, apps_v1 = _get_client()
+            nodes = core_v1.list_node(timeout_seconds=8)
+            pods  = core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
+            deps  = apps_v1.list_deployment_for_all_namespaces(timeout_seconds=8)
+            ns    = core_v1.list_namespace(timeout_seconds=8)
+            lines = [
+                "**K8s 集群总览**",
+                f"节点数：{len(nodes.items)}",
+                f"Pod 总数：{len(pods.items)}",
+                f"Deployment 数：{len(deps.items)}",
+                f"命名空间：{', '.join(n.metadata.name for n in ns.items[:10])}",
+            ]
+            return "\n".join(lines)
+        except Exception as e2:
+            return f"K8s 连接失败：{e2}（请在系统配置中检查 kubeconfig）"
+
+
+@tool
+async def get_k8s_pods(namespace: str = "") -> str:
+    """查询 Kubernetes Pod 列表及运行状态。
+    namespace=命名空间（空=全部命名空间）。
+    用户询问某个命名空间的 Pod 状态、哪些 Pod 异常/重启时使用。"""
+    try:
+        from routers.kubernetes import _get_client
+        core_v1, _ = _get_client()
+        if namespace:
+            pods = core_v1.list_namespaced_pod(namespace, timeout_seconds=8)
+        else:
+            pods = core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
+
+        if not pods.items:
+            return f"命名空间 {namespace or '全部'} 下无 Pod"
+
+        lines = [f"**Pod 列表**（{namespace or '全部命名空间'}，共 {len(pods.items)} 个）\n"]
+        # 优先展示非 Running 的
+        items = sorted(pods.items, key=lambda p: (p.status.phase == "Running", p.metadata.name))
+        for p in items[:30]:
+            ns   = p.metadata.namespace
+            name = p.metadata.name
+            phase = p.status.phase or "?"
+            restarts = sum(
+                cs.restart_count for cs in (p.status.container_statuses or [])
+            )
+            flag = "" if phase == "Running" else "⚠️ "
+            lines.append(f"{flag}[{ns}] {name}  状态:{phase}  重启:{restarts}次")
+        if len(pods.items) > 30:
+            lines.append(f"...（共 {len(pods.items)} 个，仅展示前 30 个）")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"查询 Pod 失败：{e}"
+
+
+@tool
+async def get_k8s_nodes() -> str:
+    """查询 Kubernetes 节点列表及状态（CPU/内存分配、是否就绪）。
+    用户询问节点健康状态、节点资源时使用。"""
+    try:
+        from routers.kubernetes import _get_client
+        core_v1, _ = _get_client()
+        nodes = core_v1.list_node(timeout_seconds=8)
+        if not nodes.items:
+            return "集群无节点"
+        lines = [f"**节点列表**（共 {len(nodes.items)} 个）\n"]
+        for n in nodes.items:
+            name   = n.metadata.name
+            ready  = next(
+                (c.status for c in n.status.conditions if c.type == "Ready"),
+                "Unknown"
+            )
+            cpu    = n.status.capacity.get("cpu", "?")
+            mem    = n.status.capacity.get("memory", "?")
+            flag   = "" if ready == "True" else "⚠️ "
+            lines.append(f"{flag}{name}  Ready:{ready}  CPU:{cpu}  内存:{mem}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"查询节点失败：{e}"
+
+
+# ── 中间件工具 ─────────────────────────────────────────────────────────────────
+
+@tool
+async def get_middleware_summary() -> str:
+    """查询中间件总览：MySQL / Redis / Kafka / Elasticsearch 等实例数量和健康状态。
+    用户询问中间件状态、数据库状态、消息队列状态时使用。"""
+    try:
+        from routers.middleware import middleware_summary
+        data = await middleware_summary()
+        if not data:
+            return "暂无中间件数据（Prometheus 中未发现中间件 target）"
+        lines = ["**中间件总览**\n"]
+        for item in data:
+            icon = item.get("icon", "")
+            label = item.get("label", item.get("type", "?"))
+            total = item.get("total", "?")
+            up = item.get("up", "?")
+            status_icon = "🟢" if item.get("up") == item.get("total") else "🔴"
+            lines.append(f"{status_icon} {icon} {label} — {up}/{total} 实例正常")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"查询中间件失败：{exc}"
+
+
+@tool
+async def get_middleware_instances(middleware_type: str = "") -> str:
+    """查询具体中间件实例列表及连接信息。
+    middleware_type = mysql / redis / kafka / elasticsearch / 留空=全部。
+    用户询问某类中间件的实例详情时使用。"""
+    try:
+        from routers.middleware import list_instances
+        instances = await list_instances()
+        if middleware_type:
+            instances = [i for i in instances if i.get("type", "").lower() == middleware_type.lower()]
+        if not instances:
+            return f"未找到{'类型：' + middleware_type + ' 的' if middleware_type else '任何'}中间件实例"
+        lines = [f"**中间件实例列表**（{middleware_type or '全部'}，共 {len(instances)} 个）\n"]
+        for inst in instances[:20]:
+            status = "🟢 正常" if inst.get("status") == "up" else "🔴 异常"
+            lines.append(
+                f"{status} [{inst.get('label', inst.get('type',''))}] "
+                f"{inst.get('instance','')}  job:{inst.get('job','?')}"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"查询中间件实例失败：{exc}"
+
+
+# ── MCP 工具调用 ───────────────────────────────────────────────────────────────
+
+@tool
+async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
+    """调用已配置的 MCP（Model Context Protocol）工具执行操作。
+    mcp_name=MCP 名称（如 'Prometheus MCP'、'Redis MCP'），
+    action=要执行的动作或接口路径（如 'query' / '/metrics'），
+    params=JSON 格式参数字符串（如 '{"query":"up"}'）。
+    使用前先确认 MCP 已在智能体配置中启用。"""
+    import json as _json
+    try:
+        # 读取 agent_config 找到对应 MCP
+        cfg_file = os.path.join(os.path.dirname(__file__), "..", "data", "agent_config.json")
+        with open(cfg_file, encoding="utf-8") as f:
+            cfg = _json.load(f)
+
+        mcp = next(
+            (m for m in cfg.get("mcps", [])
+             if m.get("name", "").lower() == mcp_name.lower() and m.get("enabled")),
+            None,
+        )
+        if not mcp:
+            enabled_names = [m["name"] for m in cfg.get("mcps", []) if m.get("enabled")]
+            return (
+                f"MCP '{mcp_name}' 未找到或未启用。\n"
+                f"当前已启用的 MCP：{', '.join(enabled_names) or '无'}"
+            )
+
+        mcp_type = mcp.get("type", "http")
+        url      = mcp.get("url", "").rstrip("/")
+
+        if mcp_type == "http":
+            try:
+                body = _json.loads(params) if params.strip() else {}
+            except Exception:
+                body = {"query": params}
+
+            endpoint = url + ("/" + action.lstrip("/") if action else "")
+            import httpx
+            async with httpx.AsyncClient(timeout=12) as client:
+                resp = await client.post(endpoint, json=body)
+                resp.raise_for_status()
+                result = resp.text[:2000]
+            return f"**MCP [{mcp['name']}] 返回结果**\n{result}"
+
+        else:
+            return f"MCP 类型 '{mcp_type}' 暂不支持在线调用（仅支持 http 类型）"
+
+    except FileNotFoundError:
+        return "agent_config.json 不存在，请先在智能体配置页面保存配置"
+    except Exception as exc:
+        return f"调用 MCP 失败：{exc}"
+
+
+@tool
+async def list_available_mcps() -> str:
+    """列出当前已配置并启用的 MCP 工具列表，用于了解可用的 MCP 能力后再决定调用哪个。"""
+    import json as _json
+    try:
+        cfg_file = os.path.join(os.path.dirname(__file__), "..", "data", "agent_config.json")
+        with open(cfg_file, encoding="utf-8") as f:
+            cfg = _json.load(f)
+        mcps = cfg.get("mcps", [])
+        enabled = [m for m in mcps if m.get("enabled")]
+        if not enabled:
+            return "当前无已启用的 MCP，请在智能体配置页面添加并启用 MCP"
+        lines = [f"**已启用 MCP（共 {len(enabled)} 个）**\n"]
+        for m in enabled:
+            lines.append(f"- {m['name']}  类型:{m.get('type','?')}  地址:{m.get('url','?')}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"读取 MCP 配置失败：{exc}"
+
+
 ALL_TOOLS = [
     recall_similar_incidents,
     search_daily_reports,
@@ -332,4 +559,14 @@ ALL_TOOLS = [
     get_host_metrics,
     inspect_all_hosts,
     query_recent_logs,
+    # K8s
+    get_k8s_summary,
+    get_k8s_pods,
+    get_k8s_nodes,
+    # 中间件
+    get_middleware_summary,
+    get_middleware_instances,
+    # MCP
+    list_available_mcps,
+    call_mcp_tool,
 ]
