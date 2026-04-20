@@ -506,22 +506,47 @@ async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
         mcp_type = mcp.get("type", "http")
         url      = mcp.get("url", "").rstrip("/")
 
-        if mcp_type == "http":
-            try:
-                body = _json.loads(params) if params.strip() else {}
-            except Exception:
-                body = {"query": params}
+        try:
+            body = _json.loads(params) if params.strip() else {}
+        except Exception:
+            body = {"query": params}
 
+        import httpx
+
+        if mcp_type == "http":
             endpoint = url + ("/" + action.lstrip("/") if action else "")
-            import httpx
             async with httpx.AsyncClient(timeout=12) as client:
                 resp = await client.post(endpoint, json=body)
                 resp.raise_for_status()
                 result = resp.text[:2000]
             return f"**MCP [{mcp['name']}] 返回结果**\n{result}"
 
+        elif mcp_type == "sse":
+            # SSE MCP 协议：POST /messages 发送请求，从 SSE 流读取响应
+            # 标准 MCP SSE 服务器结构：GET /sse (SSE stream), POST /messages (send)
+            base = url
+            if base.endswith("/sse"):
+                base = base[:-4]  # 去掉 /sse 得到 base URL
+
+            # 构造 JSON-RPC 请求
+            rpc_body = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": action or "tools/list",
+                "params": body,
+            }
+            messages_url = base.rstrip("/") + "/messages"
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(messages_url, json=rpc_body)
+                if resp.status_code == 404:
+                    # 有些 SSE MCP 直接在 /sse 上接收 POST
+                    resp = await client.post(url, json=rpc_body)
+                resp.raise_for_status()
+                result = resp.text[:2000]
+            return f"**MCP [{mcp['name']}] (SSE) 返回结果**\n{result}"
+
         else:
-            return f"MCP 类型 '{mcp_type}' 暂不支持在线调用（仅支持 http 类型）"
+            return f"MCP 类型 '{mcp_type}' 暂不支持在线调用（支持 http / sse 类型）"
 
     except FileNotFoundError:
         return "agent_config.json 不存在，请先在智能体配置页面保存配置"
@@ -543,7 +568,9 @@ async def list_available_mcps() -> str:
             return "当前无已启用的 MCP，请在智能体配置页面添加并启用 MCP"
         lines = [f"**已启用 MCP（共 {len(enabled)} 个）**\n"]
         for m in enabled:
-            lines.append(f"- {m['name']}  类型:{m.get('type','?')}  地址:{m.get('url','?')}")
+            t = m.get('type', '?')
+            callable_mark = "" if t in ("http", "sse") else " [不支持在线调用]"
+            lines.append(f"- {m['name']}  类型:{t}  地址:{m.get('url','?')}{callable_mark}")
         return "\n".join(lines)
     except Exception as exc:
         return f"读取 MCP 配置失败：{exc}"

@@ -149,9 +149,10 @@
           <input v-model="newMcp.name" class="form-input" placeholder="名称，如：Redis MCP" style="flex:1" />
           <select v-model="newMcp.type" class="form-input" style="width:90px">
             <option value="http">HTTP</option>
+            <option value="sse">SSE</option>
             <option value="stdio">Stdio</option>
           </select>
-          <input v-model="newMcp.url" class="form-input" placeholder="地址，如：localhost:6379" style="flex:2" />
+          <input v-model="newMcp.url" class="form-input" placeholder="地址，如：http://192.168.9.226:8000/sse" style="flex:2" />
           <button class="btn btn-primary btn-sm" @click="addMcp">确认添加</button>
           <button class="btn btn-outline btn-sm" @click="showAddMcp = false">取消</button>
         </div>
