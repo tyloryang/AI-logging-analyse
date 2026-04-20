@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -174,21 +175,46 @@ async def list_mcps():
     return {"data": cfg.get("mcps", [])}
 
 
+async def _ping_mcp(mcp_type: str, url: str) -> bool:
+    """尝试连通 MCP，返回是否在线。"""
+    if mcp_type == "stdio":
+        return True  # stdio 无法远程探测，默认认为在线
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url)
+            return resp.status_code < 500
+    except Exception:
+        return False
+
+
 @router.post("/mcps")
 async def add_mcp(body: McpCreate):
     cfg = _load()
     mcps = cfg.setdefault("mcps", [])
+    ok = await _ping_mcp(body.type, body.url)
     new_mcp = {
         "id":      str(uuid.uuid4())[:8],
         "name":    body.name,
         "type":    body.type,
         "url":     body.url,
         "enabled": body.enabled,
-        "ok":      False,
+        "ok":      ok,
     }
     mcps.append(new_mcp)
     _save(cfg)
     return new_mcp
+
+
+@router.post("/mcps/{mcp_id}/ping")
+async def ping_mcp(mcp_id: str):
+    """手动刷新单个 MCP 连通状态。"""
+    cfg = _load()
+    for m in cfg.get("mcps", []):
+        if m["id"] == mcp_id:
+            m["ok"] = await _ping_mcp(m.get("type", "http"), m.get("url", ""))
+            _save(cfg)
+            return {"ok": m["ok"]}
+    raise HTTPException(status_code=404, detail="MCP 不存在")
 
 
 @router.delete("/mcps/{mcp_id}")

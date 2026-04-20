@@ -172,6 +172,7 @@
                 {{ m.ok ? '正常' : '离线' }}
               </td>
               <td>
+                <button class="action-link" style="color:var(--accent);margin-right:8px" @click="pingMcp(m)">检测</button>
                 <button class="action-link" @click="removeMcp(m.id)">删除</button>
               </td>
             </tr>
@@ -466,6 +467,16 @@ async function removeMcp(id) {
     showToast('✓ 已删除')
   } catch (e) {
     showToast(`❌ 删除失败：${e.message}`)
+  }
+}
+
+async function pingMcp(m) {
+  try {
+    const r = await apiFetch(`/api/agent-config/mcps/${m.id}/ping`, { method: 'POST' })
+    m.ok = r.ok
+    showToast(r.ok ? `✓ ${m.name} 连通正常` : `${m.name} 无法连通`)
+  } catch (e) {
+    showToast(`❌ 检测失败：${e.message}`)
   }
 }
 
