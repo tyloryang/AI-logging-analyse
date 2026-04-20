@@ -58,8 +58,8 @@ const routes = [
   { path: '/aiops/alerts',    component: () => import('../views/AlertCenterView.vue'),    name: 'aiops-alerts' },
   { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
   { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
-  { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),            name: 'aiops-assistant', meta: { module: 'agent' } },
-  { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'),        name: 'aiops-config',    meta: { module: 'agent' } },
+  { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),     name: 'aiops-assistant' },
+  { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'), name: 'aiops-config' },
 
   // ── 管理页 ────────────────────────────────────────────────────
   { path: '/profile',     component: () => import('../views/ProfileView.vue'),  name: 'profile' },
