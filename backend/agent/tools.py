@@ -330,41 +330,39 @@ async def get_k8s_summary() -> str:
     """查询 Kubernetes 集群总览：节点数、Pod 数、Deployment 数、命名空间列表。
     用户询问 k8s 状态、集群情况、容器平台状态时使用。"""
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get("http://localhost:8000/api/k8s/summary",
-                                 cookies={"session": "internal"})
-            if r.status_code != 200:
-                raise RuntimeError(f"HTTP {r.status_code}")
-            d = r.json()
+        from routers.kubernetes import _get_client
+        core_v1, apps_v1 = _get_client()
+        nodes = core_v1.list_node(timeout_seconds=8)
+        pods  = core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
+        deps  = apps_v1.list_deployment_for_all_namespaces(timeout_seconds=8)
+        ns    = core_v1.list_namespace(timeout_seconds=8)
+
+        total_nodes = len(nodes.items)
+        ready_nodes = sum(
+            1 for n in nodes.items
+            if any(c.type == "Ready" and c.status == "True" for c in n.status.conditions)
+        )
+        total_pods   = len(pods.items)
+        running_pods = sum(1 for p in pods.items if (p.status.phase or "") == "Running")
+        total_deps   = len(deps.items)
+        ready_deps   = sum(
+            1 for d in deps.items
+            if (d.status.ready_replicas or 0) >= (d.spec.replicas or 1)
+        )
+        ns_names = [n.metadata.name for n in ns.items]
+
+        def _icon(ok, total): return "[正常]" if ok == total else f"[{total-ok}个异常]"
+
         lines = [
             "**K8s 集群总览**",
-            f"节点数：{d.get('nodes', '?')}",
-            f"Pod 总数：{d.get('pods', '?')}",
-            f"Deployment 数：{d.get('deployments', '?')}",
-            f"Service 数：{d.get('services', '?')}",
-            f"命名空间：{', '.join(d.get('namespaces', [])[:10]) or '无'}",
+            f"节点：{ready_nodes}/{total_nodes} 就绪 {_icon(ready_nodes, total_nodes)}",
+            f"Pod：{running_pods}/{total_pods} 运行中 {_icon(running_pods, total_pods)}",
+            f"Deployment：{ready_deps}/{total_deps} 就绪 {_icon(ready_deps, total_deps)}",
+            f"命名空间：{', '.join(ns_names[:12]) or '无'}",
         ]
         return "\n".join(lines)
-    except Exception as exc:
-        # 直接调用 kubernetes 客户端
-        try:
-            from routers.kubernetes import _get_client
-            core_v1, apps_v1 = _get_client()
-            nodes = core_v1.list_node(timeout_seconds=8)
-            pods  = core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
-            deps  = apps_v1.list_deployment_for_all_namespaces(timeout_seconds=8)
-            ns    = core_v1.list_namespace(timeout_seconds=8)
-            lines = [
-                "**K8s 集群总览**",
-                f"节点数：{len(nodes.items)}",
-                f"Pod 总数：{len(pods.items)}",
-                f"Deployment 数：{len(deps.items)}",
-                f"命名空间：{', '.join(n.metadata.name for n in ns.items[:10])}",
-            ]
-            return "\n".join(lines)
-        except Exception as e2:
-            return f"K8s 连接失败：{e2}（请在系统配置中检查 kubeconfig）"
+    except Exception as e:
+        return f"K8s 连接失败：{e}（请检查系统配置中的 kubeconfig）"
 
 
 @tool
@@ -393,7 +391,7 @@ async def get_k8s_pods(namespace: str = "") -> str:
             restarts = sum(
                 cs.restart_count for cs in (p.status.container_statuses or [])
             )
-            flag = "" if phase == "Running" else "⚠️ "
+            flag = "" if phase == "Running" else "[异常] "
             lines.append(f"{flag}[{ns}] {name}  状态:{phase}  重启:{restarts}次")
         if len(pods.items) > 30:
             lines.append(f"...（共 {len(pods.items)} 个，仅展示前 30 个）")
@@ -421,7 +419,7 @@ async def get_k8s_nodes() -> str:
             )
             cpu    = n.status.capacity.get("cpu", "?")
             mem    = n.status.capacity.get("memory", "?")
-            flag   = "" if ready == "True" else "⚠️ "
+            flag   = "" if ready == "True" else "[异常] "
             lines.append(f"{flag}{name}  Ready:{ready}  CPU:{cpu}  内存:{mem}")
         return "\n".join(lines)
     except Exception as e:
@@ -445,8 +443,9 @@ async def get_middleware_summary() -> str:
             label = item.get("label", item.get("type", "?"))
             total = item.get("total", "?")
             up = item.get("up", "?")
-            status_icon = "🟢" if item.get("up") == item.get("total") else "🔴"
-            lines.append(f"{status_icon} {icon} {label} — {up}/{total} 实例正常")
+            ok = item.get("up") == item.get("total")
+            status_mark = "[正常]" if ok else "[异常]"
+            lines.append(f"{status_mark} {icon} {label} — {up}/{total} 实例正常")
         return "\n".join(lines)
     except Exception as exc:
         return f"查询中间件失败：{exc}"
@@ -466,7 +465,7 @@ async def get_middleware_instances(middleware_type: str = "") -> str:
             return f"未找到{'类型：' + middleware_type + ' 的' if middleware_type else '任何'}中间件实例"
         lines = [f"**中间件实例列表**（{middleware_type or '全部'}，共 {len(instances)} 个）\n"]
         for inst in instances[:20]:
-            status = "🟢 正常" if inst.get("status") == "up" else "🔴 异常"
+            status = "[正常]" if inst.get("status") == "up" else "[异常]"
             lines.append(
                 f"{status} [{inst.get('label', inst.get('type',''))}] "
                 f"{inst.get('instance','')}  job:{inst.get('job','?')}"
