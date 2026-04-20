@@ -274,6 +274,18 @@ async def _invoke_via_cli(text: str, session_key: str) -> str:
     return stdout.decode("utf-8", errors="replace").strip()
 
 
+_ES_KEYWORDS = (
+    "elasticsearch", "opensearch", "es集群", "es索引", "索引", "分片", "快照",
+    "list_indices", "cluster_health", "delete_index", "search_documents",
+)
+
+def _detect_mode(text: str) -> str:
+    lower = text.lower()
+    if any(kw in lower for kw in _ES_KEYWORDS):
+        return "es_ops"
+    return "chat"
+
+
 async def _invoke_via_langgraph(text: str, session_key: str) -> str:
     """直接调用 LangGraph（进程内，性能更优）。"""
     from langchain_core.messages import HumanMessage
@@ -281,7 +293,9 @@ async def _invoke_via_langgraph(text: str, session_key: str) -> str:
     from routers.agent import _get_checkpointer
 
     checkpointer = await _get_checkpointer()
-    graph = build_graph("chat", checkpointer)
+    mode = _detect_mode(text)
+    logger.info("[feishu_bot] 检测到模式: %s (session=%s)", mode, session_key)
+    graph = build_graph(mode, checkpointer)
     config = {
         "configurable": {"thread_id": session_key},
         "recursion_limit": 40,
