@@ -53,9 +53,11 @@ const routes = [
   { path: '/tools/report',  component: () => import('../views/AnalysisReport.vue'), name: 'tools-report',  meta: { module: 'report' } },
   { path: '/tools/metrics', component: () => import('../views/MetricsMonitor.vue'), name: 'tools-metrics', meta: { module: 'metrics' } },
 
-  // ── 11. AIOps ─────────────────────────────────────────────────
-  { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),     name: 'aiops-assistant', meta: { module: 'agent' } },
-  { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'), name: 'aiops-config',    meta: { module: 'agent' } },
+  // ── 11. AIOps 智能运维 ────────────────────────────────────────
+  { path: '/aiops/fault',     component: () => import('../views/FaultDashboardView.vue'), name: 'aiops-fault' },
+  { path: '/aiops/alerts',    component: () => import('../views/AlertCenterView.vue'),    name: 'aiops-alerts' },
+  { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),            name: 'aiops-assistant', meta: { module: 'agent' } },
+  { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'),        name: 'aiops-config',    meta: { module: 'agent' } },
 
   // ── 管理页 ────────────────────────────────────────────────────
   { path: '/profile',     component: () => import('../views/ProfileView.vue'),  name: 'profile' },

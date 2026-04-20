@@ -40,6 +40,7 @@ from routers.events import router as events_router
 from routers.middleware import router as middleware_router
 from routers.tickets import router as tickets_router
 from routers.elasticsearch import router as es_router
+from routers.alerts import router as alerts_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ app.include_router(events_router)
 app.include_router(middleware_router)
 app.include_router(tickets_router)
 app.include_router(es_router)
+app.include_router(alerts_router)
 
 
 if __name__ == "__main__":

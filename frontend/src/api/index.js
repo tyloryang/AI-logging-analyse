@@ -135,6 +135,12 @@ export const api = {
   rejectTicket:     (id, comment) => http.post(`/tickets/${id}/reject`,  null, { params: { comment } }),
   doneTicket:       (id, comment) => http.post(`/tickets/${id}/done`,    null, { params: { comment } }),
   ticketStats:      ()           => http.get('/tickets/stats/summary'),
+  // 告警中心
+  alertWebhook:       (data)  => http.post('/alerts/webhook', data),
+  alertGroups:        (params) => http.get('/alerts/groups', { params }),
+  alertGroup:         (id)    => http.get(`/alerts/groups/${id}`),
+  alertUpdateStatus:  (id, data) => http.put(`/alerts/groups/${id}/status`, data),
+  alertStats:         ()      => http.get('/alerts/stats'),
   // Elasticsearch
   esClusters:       ()           => http.get('/es/clusters'),
   esAddCluster:     (data)       => http.post('/es/clusters', data),

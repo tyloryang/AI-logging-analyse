@@ -175,10 +175,12 @@ const MENU = [
   { id: 'events', icon: 'event',  label: '事件墙',   to: '/events' },
   { id: 'tools',  icon: 'tools',  label: '工具市场', to: '/tools' },
   {
-    id: 'aiops', icon: 'aiops', label: 'AIOps',
+    id: 'aiops', icon: 'aiops', label: 'AIOps 智能运维',
     children: [
-      { label: '智能助手', to: '/aiops/assistant', module: 'agent' },
-      { label: '智能配置', to: '/aiops/config',    module: 'agent' },
+      { label: '🔴 故障大盘', to: '/aiops/fault' },
+      { label: '🔔 告警中心', to: '/aiops/alerts' },
+      { label: '🧠 智能助手', to: '/aiops/assistant', module: 'agent' },
+      { label: '⚙ 智能配置',  to: '/aiops/config',    module: 'agent' },
     ],
   },
 ]
