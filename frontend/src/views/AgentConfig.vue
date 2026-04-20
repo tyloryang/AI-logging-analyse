@@ -395,7 +395,7 @@ async function saveConfig() {
     await apiFetch('/api/agent-config/behaviors', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ behaviors: behaviors.map(b => ({ key: b.key, enabled: b.enabled })) }),
+      body: JSON.stringify({ behaviors: behaviors.value.map(b => ({ key: b.key, enabled: b.enabled })) }),
     })
     showToast('✓ 配置已保存')
     await loadStats()
