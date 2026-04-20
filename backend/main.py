@@ -41,6 +41,7 @@ from routers.middleware import router as middleware_router
 from routers.tickets import router as tickets_router
 from routers.elasticsearch import router as es_router
 from routers.alerts import router as alerts_router
+from routers.rca import router as rca_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,6 +63,16 @@ async def lifespan(app: FastAPI):
         id="daily_report",
         replace_existing=True,
     )
+
+    # 异常检测：每 5 分钟执行一次
+    from services.anomaly_detector import run_detection
+    scheduler.add_job(
+        run_detection,
+        CronTrigger(minute="*/5"),
+        id="anomaly_detection",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "[scheduler] 定时推送已启动，cron='%s'，渠道=%s",
@@ -150,6 +161,7 @@ app.include_router(middleware_router)
 app.include_router(tickets_router)
 app.include_router(es_router)
 app.include_router(alerts_router)
+app.include_router(rca_router)
 
 
 if __name__ == "__main__":

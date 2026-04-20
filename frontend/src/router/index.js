@@ -56,6 +56,8 @@ const routes = [
   // ── 11. AIOps 智能运维 ────────────────────────────────────────
   { path: '/aiops/fault',     component: () => import('../views/FaultDashboardView.vue'), name: 'aiops-fault' },
   { path: '/aiops/alerts',    component: () => import('../views/AlertCenterView.vue'),    name: 'aiops-alerts' },
+  { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
+  { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
   { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),            name: 'aiops-assistant', meta: { module: 'agent' } },
   { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'),        name: 'aiops-config',    meta: { module: 'agent' } },
 

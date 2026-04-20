@@ -135,6 +135,13 @@ export const api = {
   rejectTicket:     (id, comment) => http.post(`/tickets/${id}/reject`,  null, { params: { comment } }),
   doneTicket:       (id, comment) => http.post(`/tickets/${id}/done`,    null, { params: { comment } }),
   ticketStats:      ()           => http.get('/tickets/stats/summary'),
+  // 根因分析
+  rcaStream:       (data)  => `/api/rca/analyze/stream`,
+  rcaTrigger:      (data)  => http.post('/rca/analyze', data),
+  rcaResults:      (limit) => http.get('/rca/results', { params: { limit } }),
+  rcaResult:       (id)    => http.get(`/rca/results/${id}`),
+  rcaAnomalies:    (limit) => http.get('/rca/anomalies', { params: { limit } }),
+  rcaDetect:       ()      => http.post('/rca/anomalies/detect'),
   // 告警中心
   alertWebhook:       (data)  => http.post('/alerts/webhook', data),
   alertGroups:        (params) => http.get('/alerts/groups', { params }),

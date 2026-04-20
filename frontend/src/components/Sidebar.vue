@@ -179,7 +179,9 @@ const MENU = [
     children: [
       { label: '🔴 故障大盘', to: '/aiops/fault' },
       { label: '🔔 告警中心', to: '/aiops/alerts' },
-      { label: '🧠 智能助手', to: '/aiops/assistant', module: 'agent' },
+      { label: '🧠 根因分析', to: '/aiops/rca' },
+      { label: '📊 异常检测', to: '/aiops/anomaly' },
+      { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
       { label: '⚙ 智能配置',  to: '/aiops/config',    module: 'agent' },
     ],
   },
