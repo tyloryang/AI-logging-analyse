@@ -555,6 +555,54 @@ async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
 
 
 @tool
+async def list_mcp_tools(mcp_name: str) -> str:
+    """列出指定 MCP 服务器支持的工具（actions）清单，调用前先用此工具发现可用操作。
+    mcp_name=MCP 名称（如 'ES MCP'）。"""
+    import json as _json
+    import httpx
+    try:
+        cfg_file = os.path.join(os.path.dirname(__file__), "..", "data", "agent_config.json")
+        with open(cfg_file, encoding="utf-8") as f:
+            cfg = _json.load(f)
+        mcp = next(
+            (m for m in cfg.get("mcps", [])
+             if m.get("name", "").lower() == mcp_name.lower() and m.get("enabled")),
+            None,
+        )
+        if not mcp:
+            return f"MCP '{mcp_name}' 未找到或未启用"
+
+        mcp_type = mcp.get("type", "http")
+        url = mcp.get("url", "").rstrip("/")
+        base = url[:-4] if url.endswith("/sse") else url
+
+        rpc_body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            if mcp_type == "sse":
+                resp = await client.post(base.rstrip("/") + "/messages", json=rpc_body)
+                if resp.status_code == 404:
+                    resp = await client.post(url, json=rpc_body)
+            else:
+                resp = await client.post(base + "/tools/list", json={})
+            resp.raise_for_status()
+            data = resp.json()
+
+        tools = data.get("result", {}).get("tools", data.get("tools", []))
+        if not tools:
+            return f"MCP [{mcp_name}] 返回工具列表为空，原始响应：{resp.text[:500]}"
+
+        lines = [f"**MCP [{mcp_name}] 可用工具（共 {len(tools)} 个）**\n"]
+        for t in tools:
+            name = t.get("name", "?")
+            desc = t.get("description", "")
+            lines.append(f"- {name}：{desc}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"获取 MCP 工具列表失败：{exc}"
+
+
+@tool
 async def list_available_mcps() -> str:
     """列出当前已配置并启用的 MCP 工具列表，用于了解可用的 MCP 能力后再决定调用哪个。"""
     import json as _json
@@ -594,5 +642,6 @@ ALL_TOOLS = [
     get_middleware_instances,
     # MCP
     list_available_mcps,
+    list_mcp_tools,
     call_mcp_tool,
 ]

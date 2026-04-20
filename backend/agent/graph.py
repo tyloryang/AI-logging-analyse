@@ -66,7 +66,12 @@ SYSTEM_PROMPTS = {
         "- 用户指定时间范围时：'最近N分钟' → 传 minutes=N；'最近N小时' → 传 hours=N；minutes 参数优先于 hours\n"
         "- 用户问'k8s/集群/pod/节点状态' → 调用 get_k8s_summary，细节用 get_k8s_pods / get_k8s_nodes\n"
         "- 用户问'中间件/mysql/redis/kafka 状态' → 调用 get_middleware_summary，细节用 get_middleware_instances\n"
-        "- 用户要查询/操作 MCP 工具 → 先调用 list_available_mcps 确认可用 MCP，再调用 call_mcp_tool\n\n"
+        "- 用户要查询/操作 MCP 工具 → 先调用 list_available_mcps 确认可用 MCP，再调用 call_mcp_tool\n"
+        "- 用户问 ES/Elasticsearch 相关问题（索引、分片、查询、集群健康等）→ "
+        "① 调用 list_available_mcps 确认是否有 ES MCP；"
+        "② 有则调用 list_mcp_tools(mcp_name='ES MCP') 获取可用工具列表；"
+        "③ 再调用 call_mcp_tool(mcp_name='ES MCP', action=<工具名>, params=<JSON>) 执行查询。"
+        "若无 ES MCP，则用内置 Loki 日志工具查询 ES 相关日志辅助分析。\n\n"
         "【限制】慢查询 SQL 报告、告警规则配置不在工具范围，遇到此类请求直接告知用户。\n\n"
         "根据用户问题按需调用工具，用简洁中文回答，工具调用结束后直接给出结论。"
     ),
