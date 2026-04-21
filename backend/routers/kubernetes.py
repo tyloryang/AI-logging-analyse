@@ -1016,12 +1016,19 @@ async def ws_k8s_exec(
     shell: str = Query("/bin/sh"),
 ):
     """WebSocket 容器终端：桥接 kubectl exec 到浏览器 xterm.js。
-    首条消息后直接透传输入；发送 \\x1b[RESIZE:cols,rows] 触发终端 resize。
+
+    输入直接透传；发送 \\x1b[RESIZE:cols,rows] 触发终端 resize。
+    所有阻塞的 kubernetes.stream 调用均在 ThreadPoolExecutor 中运行，
+    不阻塞 asyncio 事件循环。
     """
     import asyncio
+    import json as _json
     import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     await ws.accept()
 
+    # ── 1. 建立 exec 连接（阻塞，放入线程池）──────────────────────
     try:
         from kubernetes import client as k8s_client
         from kubernetes.stream import stream as k8s_stream
@@ -1036,7 +1043,7 @@ async def ws_k8s_exec(
         if container:
             exec_kwargs["container"] = container
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         exec_resp = await loop.run_in_executor(
             None,
             lambda: k8s_stream(
@@ -1045,49 +1052,58 @@ async def ws_k8s_exec(
             ),
         )
     except Exception as exc:
-        await ws.send_text(f"\x1b[31m连接失败: {exc}\x1b[0m\r\n")
-        await ws.close()
+        try:
+            await ws.send_text(f"\x1b[31m连接失败: {exc}\x1b[0m\r\n")
+            await ws.close()
+        except Exception:
+            pass
         return
 
-    await ws.send_text(f"\x1b[32m已连接到 {pod}/{container or '<default>'}\x1b[0m\r\n")
+    await ws.send_text(
+        f"\x1b[32m已连接到 {pod}/{container or '<default>'}\x1b[0m\r\n"
+    )
 
-    output_q: asyncio.Queue = asyncio.Queue()
+    # 专用线程池：exec 读写均在此执行，与事件循环隔离
+    _exec_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="k8s_exec")
+    output_q: asyncio.Queue[str | None] = asyncio.Queue(maxsize=256)
+    _stop = asyncio.Event()
 
-    def _reader():
+    # ── 2. 后台线程：持续读取 stdout/stderr → 放入队列 ────────────
+    def _reader() -> None:
         try:
-            while exec_resp.is_open():
-                exec_resp.update(timeout=0.15)
-                for peek, read in (
+            while exec_resp.is_open() and not _stop.is_set():
+                # timeout=0.5：减少空转，最大延迟 500ms 可接受
+                exec_resp.update(timeout=0.5)
+                for peek_fn, read_fn in (
                     (exec_resp.peek_stdout, exec_resp.read_stdout),
                     (exec_resp.peek_stderr, exec_resp.read_stderr),
                 ):
-                    if peek():
-                        data = read()
-                        if data:
-                            loop.call_soon_threadsafe(output_q.put_nowait, data)
+                    if peek_fn():
+                        chunk = read_fn()
+                        if chunk:
+                            loop.call_soon_threadsafe(output_q.put_nowait, chunk)
         except Exception:
             pass
         finally:
             loop.call_soon_threadsafe(output_q.put_nowait, None)
 
-    threading.Thread(target=_reader, daemon=True).start()
+    reader_future = _exec_pool.submit(_reader)
 
-    async def _send():
-        while True:
-            data = await output_q.get()
-            if data is None:
-                break
-            try:
-                await ws.send_text(data)
-            except Exception:
-                break
+    # ── 3. 协程：从队列取数据发给浏览器 ────────────────────────────
+    async def _forward_output() -> None:
         try:
-            await ws.close()
+            while True:
+                chunk = await output_q.get()
+                if chunk is None:
+                    break
+                await ws.send_text(chunk)
         except Exception:
             pass
+        finally:
+            _stop.set()
 
-    async def _recv():
-        import json as _json
+    # ── 4. 协程：接收浏览器输入，阻塞写操作放入线程池 ──────────────
+    async def _forward_input() -> None:
         try:
             while True:
                 msg = await ws.receive_text()
@@ -1096,18 +1112,46 @@ async def ws_k8s_exec(
                     if len(parts) == 2:
                         try:
                             cols, rows = int(parts[0]), int(parts[1])
-                            resize_msg = _json.dumps({"Width": cols, "Height": rows})
-                            exec_resp.write_channel(4, resize_msg)
+                            resize_payload = _json.dumps({"Width": cols, "Height": rows})
+                            await loop.run_in_executor(
+                                _exec_pool,
+                                lambda p=resize_payload: exec_resp.write_channel(4, p),
+                            )
                         except Exception:
                             pass
                 else:
-                    exec_resp.write_stdin(msg)
+                    await loop.run_in_executor(
+                        _exec_pool,
+                        lambda m=msg: exec_resp.write_stdin(m),
+                    )
         except Exception:
             pass
         finally:
-            try:
-                exec_resp.close()
-            except Exception:
-                pass
+            _stop.set()
 
-    await asyncio.gather(_send(), _recv())
+    # ── 5. 并发运行，任意一方结束则取消另一方 ───────────────────────
+    t_out = asyncio.create_task(_forward_output())
+    t_in  = asyncio.create_task(_forward_input())
+
+    def _cancel_peer(done_task: asyncio.Task) -> None:
+        peer = t_in if done_task is t_out else t_out
+        if not peer.done():
+            peer.cancel()
+
+    t_out.add_done_callback(_cancel_peer)
+    t_in.add_done_callback(_cancel_peer)
+
+    try:
+        await asyncio.gather(t_out, t_in, return_exceptions=True)
+    finally:
+        _stop.set()
+        try:
+            exec_resp.close()
+        except Exception:
+            pass
+        reader_future.cancel()
+        _exec_pool.shutdown(wait=False)
+        try:
+            await ws.close()
+        except Exception:
+            pass
