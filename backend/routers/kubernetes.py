@@ -7,7 +7,7 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, WebSocket
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -1002,3 +1002,112 @@ async def cluster_summary(cluster_id: str = Query("", description="集群 ID")):
     except Exception as exc:
         logger.warning("[k8s] summary failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
+
+
+# ── Container Exec WebSocket ──────────────────────────────────────────────────
+
+@router.websocket("/exec")
+async def ws_k8s_exec(
+    ws: WebSocket,
+    cluster_id: str = Query(None),
+    namespace: str = Query("default"),
+    pod: str = Query(...),
+    container: str = Query(""),
+    shell: str = Query("/bin/sh"),
+):
+    """WebSocket 容器终端：桥接 kubectl exec 到浏览器 xterm.js。
+    首条消息后直接透传输入；发送 \\x1b[RESIZE:cols,rows] 触发终端 resize。
+    """
+    import asyncio
+    import threading
+    await ws.accept()
+
+    try:
+        from kubernetes import client as k8s_client
+        from kubernetes.stream import stream as k8s_stream
+
+        api_client = _get_api_client(cluster_id or None)
+        v1 = k8s_client.CoreV1Api(api_client)
+        exec_kwargs: dict = dict(
+            command=[shell],
+            stderr=True, stdin=True, stdout=True, tty=True,
+            _preload_content=False,
+        )
+        if container:
+            exec_kwargs["container"] = container
+
+        loop = asyncio.get_event_loop()
+        exec_resp = await loop.run_in_executor(
+            None,
+            lambda: k8s_stream(
+                v1.connect_get_namespaced_pod_exec,
+                pod, namespace, **exec_kwargs,
+            ),
+        )
+    except Exception as exc:
+        await ws.send_text(f"\x1b[31m连接失败: {exc}\x1b[0m\r\n")
+        await ws.close()
+        return
+
+    await ws.send_text(f"\x1b[32m已连接到 {pod}/{container or '<default>'}\x1b[0m\r\n")
+
+    output_q: asyncio.Queue = asyncio.Queue()
+
+    def _reader():
+        try:
+            while exec_resp.is_open():
+                exec_resp.update(timeout=0.15)
+                for peek, read in (
+                    (exec_resp.peek_stdout, exec_resp.read_stdout),
+                    (exec_resp.peek_stderr, exec_resp.read_stderr),
+                ):
+                    if peek():
+                        data = read()
+                        if data:
+                            loop.call_soon_threadsafe(output_q.put_nowait, data)
+        except Exception:
+            pass
+        finally:
+            loop.call_soon_threadsafe(output_q.put_nowait, None)
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+    async def _send():
+        while True:
+            data = await output_q.get()
+            if data is None:
+                break
+            try:
+                await ws.send_text(data)
+            except Exception:
+                break
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+    async def _recv():
+        import json as _json
+        try:
+            while True:
+                msg = await ws.receive_text()
+                if msg.startswith("\x1b[RESIZE:"):
+                    parts = msg[9:].split(",")
+                    if len(parts) == 2:
+                        try:
+                            cols, rows = int(parts[0]), int(parts[1])
+                            resize_msg = _json.dumps({"Width": cols, "Height": rows})
+                            exec_resp.write_channel(4, resize_msg)
+                        except Exception:
+                            pass
+                else:
+                    exec_resp.write_stdin(msg)
+        except Exception:
+            pass
+        finally:
+            try:
+                exec_resp.close()
+            except Exception:
+                pass
+
+    await asyncio.gather(_send(), _recv())

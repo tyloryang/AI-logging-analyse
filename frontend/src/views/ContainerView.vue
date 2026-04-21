@@ -238,6 +238,12 @@
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('pod', pod)">详情</button>
                     <button class="action-btn" @click="openResourceLogs('pod', pod)">日志</button>
+                    <button
+                      class="action-btn exec-btn"
+                      :disabled="pod.status !== 'Running'"
+                      :title="pod.status !== 'Running' ? 'Pod 未 Running，无法进入终端' : '进入容器终端'"
+                      @click="openExecModal(pod)"
+                    >终端</button>
                   </div>
                 </td>
               </tr>
@@ -560,12 +566,42 @@
         </div>
       </div>
     </div>
+    <!-- Container Exec 终端弹窗 -->
+    <div v-if="showExecModal" class="exec-modal-mask" @click.self="closeExecModal">
+      <div class="exec-modal-card">
+        <div class="exec-modal-header">
+          <div class="exec-modal-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            容器终端
+            <span class="exec-meta">{{ execMeta.pod }}</span>
+            <span v-if="execMeta.container" class="exec-meta dim">/ {{ execMeta.container }}</span>
+          </div>
+          <div class="exec-controls">
+            <select v-model="execContainer" class="exec-select" @change="restartExec" :disabled="execConnected">
+              <option v-for="c in execMeta.containers" :key="c.name" :value="c.name">{{ c.name }}</option>
+            </select>
+            <select v-model="execShell" class="exec-select" :disabled="execConnected">
+              <option value="/bin/sh">sh</option>
+              <option value="/bin/bash">bash</option>
+            </select>
+            <button class="exec-btn-sm" @click="restartExec" :disabled="execConnecting">
+              {{ execConnecting ? '连接中...' : execConnected ? '重连' : '连接' }}
+            </button>
+            <button class="exec-btn-sm close" @click="closeExecModal">✕</button>
+          </div>
+        </div>
+        <div class="exec-term-wrap" ref="execTermEl"></div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, nextTick, watch } from 'vue'
 import { api } from '../api/index.js'
+import { Terminal } from 'xterm'
+import { FitAddon } from 'xterm-addon-fit'
+import 'xterm/css/xterm.css'
 
 const TABS = [
   { id: 'pods', label: 'Pods' },
@@ -1016,6 +1052,118 @@ onMounted(async () => {
   await loadClusters()
   await fetchAll()
 })
+
+// ── Container Exec ────────────────────────────────────────────────────────────
+const showExecModal  = ref(false)
+const execConnected  = ref(false)
+const execConnecting = ref(false)
+const execContainer  = ref('')
+const execShell      = ref('/bin/sh')
+const execTermEl     = ref(null)
+const execMeta       = reactive({ pod: '', namespace: '', container: '', containers: [] })
+
+let _execTerm    = null
+let _execFitAddon = null
+let _execWs      = null
+let _execResizeOb = null
+
+function _destroyExec() {
+  _execWs?.close()
+  _execWs = null
+  _execResizeOb?.disconnect()
+  _execResizeOb = null
+  if (_execTerm) { _execTerm.dispose(); _execTerm = null }
+  _execFitAddon = null
+  execConnected.value  = false
+  execConnecting.value = false
+}
+
+async function openExecModal(pod) {
+  execMeta.pod       = pod.name
+  execMeta.namespace = pod.namespace
+  execMeta.containers = pod.containers || []
+  execMeta.container = pod.containers?.[0]?.name || ''
+  execContainer.value = execMeta.container
+  showExecModal.value = true
+  await nextTick()
+  await _startExec()
+}
+
+function closeExecModal() {
+  _destroyExec()
+  showExecModal.value = false
+}
+
+async function restartExec() {
+  _destroyExec()
+  await nextTick()
+  await _startExec()
+}
+
+async function _startExec() {
+  if (!execTermEl.value) return
+  execConnecting.value = true
+
+  _execTerm = new Terminal({
+    theme: { background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff' },
+    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    fontSize: 13, lineHeight: 1.4, cursorBlink: true,
+    scrollback: 3000,
+  })
+  _execFitAddon = new FitAddon()
+  _execTerm.loadAddon(_execFitAddon)
+  _execTerm.open(execTermEl.value)
+  await nextTick()
+  _execFitAddon.fit()
+
+  _execResizeOb = new ResizeObserver(() => {
+    requestAnimationFrame(() => {
+      _execFitAddon?.fit()
+      const d = _execFitAddon?.proposeDimensions?.()
+      if (d && _execWs?.readyState === WebSocket.OPEN)
+        _execWs.send(`\x1b[RESIZE:${d.cols},${d.rows}]`)
+    })
+  })
+  _execResizeOb.observe(execTermEl.value)
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const cont  = execContainer.value || execMeta.container
+  const qs    = new URLSearchParams({
+    cluster_id: activeClusterId.value || '',
+    namespace:  execMeta.namespace,
+    pod:        execMeta.pod,
+    container:  cont,
+    shell:      execShell.value,
+  })
+  _execWs = new WebSocket(`${proto}://${location.host}/api/k8s/exec?${qs}`)
+
+  _execWs.onopen = () => {
+    execConnected.value  = true
+    execConnecting.value = false
+    const d = _execFitAddon?.proposeDimensions?.()
+    if (d) _execWs.send(`\x1b[RESIZE:${d.cols},${d.rows}]`)
+  }
+  _execWs.onmessage = (e) => _execTerm?.write(e.data)
+  _execWs.onclose   = () => {
+    execConnected.value  = false
+    execConnecting.value = false
+    _execTerm?.writeln('\r\n\x1b[90m连接已断开\x1b[0m')
+  }
+  _execWs.onerror   = () => {
+    execConnected.value  = false
+    execConnecting.value = false
+    _execTerm?.writeln('\r\n\x1b[31mWebSocket 连接错误\x1b[0m')
+  }
+  _execTerm.onData((data) => {
+    if (_execWs?.readyState === WebSocket.OPEN) _execWs.send(data)
+  })
+  _execTerm.onResize(({ cols, rows }) => {
+    if (_execWs?.readyState === WebSocket.OPEN)
+      _execWs.send(`\x1b[RESIZE:${cols},${rows}]`)
+  })
+}
+
+onBeforeUnmount(() => { _destroyExec() })
 </script>
 
 <style scoped>
@@ -1372,5 +1520,87 @@ onMounted(async () => {
   .detail-modal-card,
   .log-modal-card { width: calc(100vw - 24px); }
   .log-toolbar { grid-template-columns: 1fr; }
+  .exec-modal-card { width: 100vw; height: 100vh; border-radius: 0; }
 }
+
+/* ── Container Exec Terminal ─────────────────────────────────── */
+.exec-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1400;
+}
+.exec-modal-card {
+  width: min(1100px, calc(100vw - 48px));
+  height: min(660px, calc(100vh - 80px));
+  background: #0d1117;
+  border: 1px solid rgba(48, 54, 61, 0.8);
+  border-radius: 12px;
+  box-shadow: 0 32px 100px rgba(1, 4, 9, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.exec-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.8);
+  background: #161b22;
+  flex-shrink: 0;
+  gap: 12px;
+}
+.exec-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+.exec-meta { color: #58a6ff; font-family: monospace; font-size: 12px; }
+.exec-meta.dim { color: #8b949e; }
+.exec-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.exec-select {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(48, 54, 61, 0.9);
+  background: #0d1117;
+  color: #c9d1d9;
+  font-size: 12px;
+  cursor: pointer;
+}
+.exec-btn-sm {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(48, 54, 61, 0.9);
+  background: #21262d;
+  color: #c9d1d9;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s;
+}
+.exec-btn-sm:hover:not(:disabled) { background: #30363d; }
+.exec-btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+.exec-btn-sm.close { color: #f85149; border-color: rgba(248, 81, 73, 0.3); }
+.exec-btn-sm.close:hover { background: rgba(248, 81, 73, 0.12); }
+.exec-term-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0 0 4px;
+}
+.exec-term-wrap :deep(.xterm) { height: 100%; }
+.exec-term-wrap :deep(.xterm-viewport) { overflow-y: auto !important; }
+.action-btn.exec-btn { color: #58a6ff; }
+.action-btn.exec-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 </style>
