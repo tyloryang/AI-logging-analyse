@@ -220,15 +220,14 @@ def _get_llm():
         from langchain_openai import ChatOpenAI
         enable_thinking_env = os.getenv("AI_ENABLE_THINKING", "0").lower()
         enable_thinking = enable_thinking_env in ("1", "true", "yes")
-        # OpenAI-compatible 代理需通过 model_kwargs 透传 enable_thinking
-        model_kwargs: dict = {"enable_thinking": enable_thinking}
+        # openai SDK 不认识 enable_thinking，通过 extra_body 透传给代理
         return ChatOpenAI(
             base_url=base_url,
             api_key=api_key,
             model=model,
             max_tokens=4096,
             http_async_client=httpx.AsyncClient(trust_env=False),
-            model_kwargs=model_kwargs,
+            extra_body={"enable_thinking": enable_thinking},
         )
 
     # 默认 Anthropic
