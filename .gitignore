@@ -1,13 +1,26 @@
-# 环境变量与密钥（含敏感信息，禁止提交）
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+.ssh_key
+*.pem
+*.key
 backend/.env
 backend/.env.local
 backend/.ssh_key
 backend/cmdb_hosts.json
 backend/ssh_credentials.json
-backend/reports/
-backend/data/
 config/
 test_spawn.cmd
+
+# Runtime data
+backend/data/
+backend/reports/
+reports/
+*.db
+*.db-shm
+*.db-wal
 
 # Python
 __pycache__/
@@ -22,15 +35,29 @@ env/
 dist/
 build/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Node / Vue
-frontend/node_modules/
+# Node / frontend / CLI
+node_modules/
+**/node_modules/
 frontend/dist/
 frontend/.vite/
-frontend/package-lock.json
+cli/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Claude Code
+# Generated screenshots and local process logs
+screenshots/*.log
+screenshots/_*_pids.txt
+screenshots/_*.txt
+
+# Local AI / tool state
+.agent/
 .claude/
+github-export/
 
 # IDE
 .idea/
@@ -41,4 +68,6 @@ frontend/package-lock.json
 # OS
 .DS_Store
 Thumbs.db
-.agent/
+
+# Keep intentionally versioned sample logs
+!backend/templateslowlog/*.log

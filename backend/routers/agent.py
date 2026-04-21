@@ -12,9 +12,11 @@ from pydantic import BaseModel
 from sqlalchemy import select, delete as sa_delete
 
 from agent.graph import build_graph
+from agent.external_executor import get_agent_executor, run_configured_executor
 from auth.deps import current_user
 from auth.models import AgentConversation, User
 from db import AsyncSessionLocal
+from agent.ops_quick_actions import detect_mode, get_quick_reply, quick_actions_enabled
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -106,10 +108,31 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
     response_parts: list[str] = []   # 累积 AI 文本，用于事后写入 Milvus
 
     try:
+        resolved_mode = detect_mode(message) if mode == "chat" else mode
+        executor_mode = get_agent_executor("API")
+        if executor_mode != "langgraph":
+            logger.info("[agent] 使用外部执行器: %s", executor_mode)
+            thread_id = conv_id or f"anon-{resolved_mode}"
+            result = await run_configured_executor(message, thread_id, channel="api")
+            response_parts.append(result)
+            yield _sse("token", text=result)
+            yield _sse("done")
+            return
+
+        quick_reply = (
+            await get_quick_reply(message)
+            if quick_actions_enabled("AIOPS") and resolved_mode in {"es_ops", "k8s_ops"}
+            else None
+        )
+        if quick_reply:
+            yield _sse("token", text=quick_reply)
+            yield _sse("done")
+            return
+
         checkpointer = await _get_checkpointer()
-        graph = build_graph(mode, checkpointer=checkpointer)
+        graph = build_graph(resolved_mode, checkpointer=checkpointer)
         input_state = {"messages": [HumanMessage(content=message)]}
-        thread_id = f"{conv_id}:{mode}" if conv_id else f"anon-{mode}"
+        thread_id = f"{conv_id}:{resolved_mode}" if conv_id else f"anon-{resolved_mode}"
         config = {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": 40,
@@ -179,7 +202,7 @@ async def _stream_graph(mode: str, message: str, conv_id: str = ""):
     # 后台保存到 Milvus
     if len(clean_text) > 10:
         asyncio.create_task(_save_incident(
-            mode, message, clean_text,
+            resolved_mode, message, clean_text,
             affected_services=structured.get("affected_services", ""),
             root_cause=structured.get("root_cause", ""),
             resolution=structured.get("resolution", ""),

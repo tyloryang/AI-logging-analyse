@@ -82,14 +82,22 @@
 
           <!-- 日志流专有控件 -->
           <template v-if="activeTab === 'logs'">
-            <select v-model="levelFilter" class="time-select" @change="loadLogs">
+            <select v-model="levelFilter" class="time-select" @change="onLevelChange">
               <option value="">全部级别</option>
               <option value="error">ERROR</option>
               <option value="warn">WARN</option>
+              <option value="info">INFO</option>
+              <option value="debug">DEBUG</option>
             </select>
+            <button
+              class="btn"
+              :class="incidentOnly ? 'btn-incident-active' : 'btn-outline'"
+              @click="toggleIncident"
+              title="仅显示 ERROR/WARN 及含 error/exception/timeout 等关键字的日志"
+            >⚡ 仅事件</button>
             <button class="btn btn-outline" @click="loadLogs" :disabled="loadingLogs">
               <span v-if="loadingLogs" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-              <span v-else>🔄</span>实时查询
+              <span v-else>🔄</span>查询
             </button>
             <button class="btn btn-primary" @click="startAIAnalysis" :disabled="analyzingAI">
               <span v-if="analyzingAI" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
@@ -147,23 +155,119 @@
 
       <!-- ── 日志流 ── -->
       <div v-show="activeTab === 'logs'" class="log-container">
-        <div v-if="loadingLogs && !logs.length" class="empty-state">
+        <div v-if="loadingLogs && !filteredLogs.length" class="empty-state">
           <div class="spinner"></div><p>加载日志中...</p>
         </div>
-        <div v-else-if="!logs.length" class="empty-state">
+        <div v-else-if="!filteredLogs.length" class="empty-state">
           <span class="icon">📭</span><p>暂无日志数据</p>
         </div>
-        <div v-else class="log-lines">
-          <div
-            v-for="(log, i) in logs" :key="i"
-            class="log-line" :class="logClass(log.line)"
-          >
-            <span class="log-ts">{{ log.timestamp }}</span>
-            <span class="log-svc" v-if="!selectedService">{{ log.labels.app || log.labels.job || '?' }}</span>
-            <span class="log-text">{{ log.line }}</span>
+        <template v-else>
+          <!-- 统计栏 -->
+          <div class="log-stats-bar">
+            <span class="log-stat-item">
+              共 <strong>{{ filteredLogs.length }}</strong> 条
+              <span v-if="filteredLogs.length !== logs.length" class="log-stat-filtered">（过滤后）</span>
+            </span>
+            <span class="log-stat-sep">·</span>
+            <span v-for="(cnt, lvl) in levelStats" :key="lvl" class="log-stat-item">
+              <span class="lvl-dot" :class="'lvl-' + lvl"></span>{{ lvl.toUpperCase() }} {{ cnt }}
+            </span>
+          </div>
+          <!-- 表格 -->
+          <div class="log-table-wrap">
+            <table class="log-table">
+              <colgroup>
+                <col style="width:168px">
+                <col style="width:72px">
+                <col style="width:130px">
+                <col>
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>级别</th>
+                  <th>服务</th>
+                  <th>内容</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(log, i) in pagedLogs" :key="i"
+                  class="log-row" :class="logRowClass(log.line)"
+                  @click="openDetail(log)"
+                >
+                  <td class="col-ts">{{ log.timestamp }}</td>
+                  <td class="col-lvl">
+                    <span class="lvl-badge" :class="'lvl-badge-' + extractLevel(log.line)">
+                      {{ extractLevel(log.line).toUpperCase() }}
+                    </span>
+                  </td>
+                  <td class="col-svc">{{ log.labels?.app || log.labels?.job || selectedService || '—' }}</td>
+                  <td class="col-msg">{{ log.line }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- 分页 -->
+          <div class="log-pagination">
+            <span class="pg-info">第 {{ currentPage }} / {{ totalPages }} 页，每页 {{ pageSize }} 条</span>
+            <div class="pg-btns">
+              <button class="pg-btn" :disabled="currentPage <= 1" @click="currentPage = 1">«</button>
+              <button class="pg-btn" :disabled="currentPage <= 1" @click="currentPage--">‹</button>
+              <span
+                v-for="p in pageNumbers" :key="p"
+                class="pg-num" :class="{ active: p === currentPage, ellipsis: p === '…' }"
+                @click="p !== '…' && (currentPage = p)"
+              >{{ p }}</span>
+              <button class="pg-btn" :disabled="currentPage >= totalPages" @click="currentPage++">›</button>
+              <button class="pg-btn" :disabled="currentPage >= totalPages" @click="currentPage = totalPages">»</button>
+            </div>
+            <select class="pg-size-sel" v-model.number="pageSize" @change="currentPage = 1">
+              <option :value="20">20 条/页</option>
+              <option :value="50">50 条/页</option>
+              <option :value="100">100 条/页</option>
+            </select>
+          </div>
+        </template>
+      </div>
+
+      <!-- 日志详情抽屉 -->
+      <transition name="drawer-slide">
+        <div v-if="detailLog" class="log-detail-drawer" @click.self="detailLog = null">
+          <div class="drawer-panel">
+            <div class="drawer-header">
+              <span>日志详情</span>
+              <button class="drawer-close" @click="detailLog = null">✕</button>
+            </div>
+            <div class="drawer-body">
+              <div class="drawer-row">
+                <span class="drawer-label">时间</span>
+                <span class="drawer-val">{{ detailLog.timestamp }}</span>
+              </div>
+              <div class="drawer-row">
+                <span class="drawer-label">级别</span>
+                <span class="lvl-badge" :class="'lvl-badge-' + extractLevel(detailLog.line)">
+                  {{ extractLevel(detailLog.line).toUpperCase() }}
+                </span>
+              </div>
+              <div class="drawer-row">
+                <span class="drawer-label">服务</span>
+                <span class="drawer-val">{{ detailLog.labels?.app || detailLog.labels?.job || selectedService || '—' }}</span>
+              </div>
+              <div v-if="detailLog.labels && Object.keys(detailLog.labels).length" class="drawer-row">
+                <span class="drawer-label">标签</span>
+                <div class="drawer-tags">
+                  <span v-for="(v, k) in detailLog.labels" :key="k" class="drawer-tag">{{ k }}=<em>{{ v }}</em></span>
+                </div>
+              </div>
+              <div class="drawer-row drawer-row-full">
+                <span class="drawer-label">内容</span>
+                <pre class="drawer-content">{{ detailLog.line }}</pre>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      </transition>
 
       <!-- ── 模板聚合 ── -->
       <div v-show="activeTab === 'templates'" class="template-container">
@@ -472,6 +576,93 @@ const loadingLogs  = ref(false)
 const analyzingAI  = ref(false)
 const aiContent    = ref('')
 
+// 仅事件过滤
+const incidentOnly = ref(false)
+const INCIDENT_KEYWORDS = ['error', 'exception', 'fail', 'timeout', 'refused', 'panic', 'oom', 'fatal', 'traceback']
+
+// 分页
+const currentPage = ref(1)
+const pageSize    = ref(50)
+
+// 详情抽屉
+const detailLog   = ref(null)
+
+// 提取日志级别
+function extractLevel(line) {
+  const l = (line || '').toLowerCase()
+  if (/\berror\b|exception|fatal|panic|traceback/.test(l)) return 'error'
+  if (/\bwarn(ing)?\b/.test(l))                            return 'warn'
+  if (/\binfo\b/.test(l))                                  return 'info'
+  if (/\bdebug\b/.test(l))                                 return 'debug'
+  return 'other'
+}
+
+function logRowClass(line) {
+  const lvl = extractLevel(line)
+  if (lvl === 'error') return 'row-error'
+  if (lvl === 'warn')  return 'row-warn'
+  return ''
+}
+
+const filteredLogs = computed(() => {
+  let list = logs.value
+  // 前端 incidentOnly 过滤（已从后端拿全量，在前端二次过滤）
+  if (incidentOnly.value) {
+    list = list.filter(log => {
+      const l = (log.line || '').toLowerCase()
+      return /\berror\b|exception|fatal|panic|\bwarn\b/.test(l) ||
+             INCIDENT_KEYWORDS.some(kw => l.includes(kw))
+    })
+  }
+  return list
+})
+
+const levelStats = computed(() => {
+  const stats = {}
+  for (const log of filteredLogs.value) {
+    const lvl = extractLevel(log.line)
+    stats[lvl] = (stats[lvl] || 0) + 1
+  }
+  return stats
+})
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredLogs.value.length / pageSize.value)))
+
+const pagedLogs = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredLogs.value.slice(start, start + pageSize.value)
+})
+
+const pageNumbers = computed(() => {
+  const total = totalPages.value
+  const cur   = currentPage.value
+  const pages = []
+  if (total <= 7) {
+    for (let i = 1; i <= total; i++) pages.push(i)
+  } else {
+    pages.push(1)
+    if (cur > 3)          pages.push('…')
+    for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) pages.push(i)
+    if (cur < total - 2)  pages.push('…')
+    pages.push(total)
+  }
+  return pages
+})
+
+function toggleIncident() {
+  incidentOnly.value = !incidentOnly.value
+  currentPage.value = 1
+}
+
+function openDetail(log) {
+  detailLog.value = log
+}
+
+function onLevelChange() {
+  currentPage.value = 1
+  loadLogs()
+}
+
 // ── 模板聚合 AI ───────────────────────────
 const tplAiContent  = ref('')
 const analyzingTplAI = ref(false)
@@ -544,6 +735,7 @@ async function loadServices() {
 async function loadLogs() {
   loadingLogs.value = true
   logs.value = []
+  currentPage.value = 1
   try {
     const r = await api.getLogs({
       service:  selectedService.value || undefined,
@@ -910,22 +1102,169 @@ onMounted(() => {
 .dot2 { animation-delay: .2s !important; }
 .dot3 { animation-delay: .4s !important; }
 
-/* 日志列表 */
-.log-container { flex: 1; overflow-y: auto; }
-.log-lines { font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 12px; }
-.log-line {
-  display: flex; gap: 10px; padding: 4px 16px;
-  border-bottom: 1px solid rgba(46,49,80,.4);
-  transition: background .1s;
+/* 日志列表容器 */
+.log-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* 统计栏 */
+.log-stats-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 16px; font-size: 12px; color: var(--text-muted);
+  background: var(--bg-base); border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-.log-line:hover         { background: var(--bg-hover); }
-.log-line.level-error   { background: var(--log-error); }
-.log-line.level-warn    { background: var(--log-warn); }
-.log-ts   { color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
-.log-svc  { color: var(--accent-hover); white-space: nowrap; flex-shrink: 0; min-width: 140px; }
-.log-text { color: var(--text-secondary); word-break: break-all; }
-.level-error .log-text  { color: #fca5a5; }
-.level-warn  .log-text  { color: #fcd34d; }
+.log-stat-sep { opacity: .4; }
+.log-stat-filtered { color: var(--accent); margin-left: 3px; }
+.log-stat-item { display: flex; align-items: center; gap: 4px; }
+.lvl-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.lvl-error { background: #f87171; }
+.lvl-warn  { background: #fb923c; }
+.lvl-info  { background: #60a5fa; }
+.lvl-debug { background: #6b7280; }
+.lvl-other { background: #6b7280; }
+
+/* 表格区 */
+.log-table-wrap {
+  flex: 1; overflow-y: auto;
+  font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 12px;
+}
+.log-table {
+  width: 100%; border-collapse: collapse; table-layout: fixed;
+}
+.log-table thead {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg-card);
+}
+.log-table th {
+  padding: 7px 12px; text-align: left;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  color: var(--text-muted); border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.log-row {
+  cursor: pointer; transition: background .1s;
+  border-bottom: 1px solid rgba(46,49,80,.35);
+}
+.log-row:hover    { background: var(--bg-hover); }
+.log-row.row-error { background: var(--log-error); }
+.log-row.row-warn  { background: var(--log-warn); }
+.log-row td { padding: 5px 12px; vertical-align: top; }
+.col-ts  { color: var(--text-muted); white-space: nowrap; font-size: 11px; }
+.col-svc { color: var(--accent-hover); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.col-msg { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-error .col-msg { color: #fca5a5; }
+.row-warn  .col-msg { color: #fcd34d; }
+
+/* 级别徽章 */
+.lvl-badge {
+  display: inline-block; padding: 1px 7px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  white-space: nowrap;
+}
+.lvl-badge-error { background: rgba(248,113,113,.15); color: #f87171; border: 1px solid rgba(248,113,113,.3); }
+.lvl-badge-warn  { background: rgba(251,146,60,.15);  color: #fb923c; border: 1px solid rgba(251,146,60,.3); }
+.lvl-badge-info  { background: rgba(96,165,250,.15);  color: #60a5fa; border: 1px solid rgba(96,165,250,.3); }
+.lvl-badge-debug { background: rgba(107,114,128,.15); color: #9ca3af; border: 1px solid rgba(107,114,128,.3); }
+.lvl-badge-other { background: rgba(107,114,128,.12); color: #9ca3af; border: 1px solid rgba(107,114,128,.2); }
+
+/* 仅事件按钮 */
+.btn-incident-active {
+  background: rgba(251,191,36,.15);
+  border: 1px solid rgba(251,191,36,.5);
+  color: #fbbf24;
+  padding: 5px 12px; border-radius: 6px; font-size: 12px;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+}
+
+/* 分页 */
+.log-pagination {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-top: 1px solid var(--border);
+  background: var(--bg-card); flex-shrink: 0;
+  font-size: 12px; color: var(--text-muted); flex-wrap: wrap;
+}
+.pg-info { flex: 1; min-width: 120px; }
+.pg-btns { display: flex; align-items: center; gap: 2px; }
+.pg-btn {
+  width: 28px; height: 28px; border: 1px solid var(--border);
+  background: var(--bg-base); color: var(--text-muted);
+  border-radius: 5px; cursor: pointer; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .12s;
+}
+.pg-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.pg-btn:disabled { opacity: .35; cursor: not-allowed; }
+.pg-num {
+  min-width: 28px; height: 28px; padding: 0 5px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 5px;
+  font-size: 12px; cursor: pointer; color: var(--text-muted);
+  transition: all .12s;
+}
+.pg-num:not(.ellipsis):hover { background: var(--bg-hover); color: var(--text-primary); }
+.pg-num.active { background: var(--accent-dim); color: var(--accent); border-color: rgba(99,102,241,.3); font-weight: 600; }
+.pg-num.ellipsis { cursor: default; }
+.pg-size-sel {
+  background: var(--bg-base); border: 1px solid var(--border);
+  color: var(--text-muted); padding: 3px 6px; border-radius: 5px;
+  font-size: 11px; cursor: pointer;
+}
+
+/* 日志详情抽屉 */
+.log-detail-drawer {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(0,0,0,.45); display: flex; justify-content: flex-end;
+}
+.drawer-panel {
+  width: min(560px, 90vw); height: 100%;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  box-shadow: -4px 0 24px rgba(0,0,0,.4);
+}
+.drawer-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+  flex-shrink: 0;
+}
+.drawer-close {
+  background: none; border: none; color: var(--text-muted);
+  font-size: 14px; cursor: pointer; padding: 4px;
+}
+.drawer-close:hover { color: var(--text-primary); }
+.drawer-body { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.drawer-row { display: flex; align-items: flex-start; gap: 12px; }
+.drawer-row-full { flex-direction: column; gap: 6px; }
+.drawer-label {
+  width: 44px; flex-shrink: 0; font-size: 11px; font-weight: 600;
+  color: var(--text-muted); padding-top: 2px; text-align: right;
+}
+.drawer-val { font-size: 13px; color: var(--text-primary); word-break: break-all; }
+.drawer-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.drawer-tag {
+  font-size: 11px; padding: 2px 8px;
+  background: var(--bg-base); border: 1px solid var(--border);
+  border-radius: 9999px; color: var(--text-muted);
+}
+.drawer-tag em { color: var(--accent-hover); font-style: normal; }
+.drawer-content {
+  margin: 0; padding: 12px 14px;
+  background: var(--bg-base); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 12px; font-family: 'Consolas', monospace;
+  color: var(--text-secondary); line-height: 1.7;
+  word-break: break-all; white-space: pre-wrap;
+  max-height: 60vh; overflow-y: auto;
+}
+
+/* 抽屉动画 */
+.drawer-slide-enter-active, .drawer-slide-leave-active {
+  transition: all .2s ease;
+}
+.drawer-slide-enter-from .drawer-panel, .drawer-slide-leave-to .drawer-panel {
+  transform: translateX(100%);
+}
+.drawer-slide-enter-from, .drawer-slide-leave-to { background: transparent; }
 
 /* ── 模板聚合 ── */
 .template-container { flex: 1; overflow-y: auto; padding: 12px 16px; }

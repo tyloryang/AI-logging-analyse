@@ -156,6 +156,24 @@
           <button class="btn btn-primary btn-sm" @click="addMcp">确认添加</button>
           <button class="btn btn-outline btn-sm" @click="showAddMcp = false">取消</button>
         </div>
+        <div v-if="editingMcpId" class="add-form add-form-edit">
+          <span class="form-chip">编辑 MCP</span>
+          <input v-model="editingMcp.name" class="form-input" placeholder="名称" style="flex:1" />
+          <select v-model="editingMcp.type" class="form-input" style="width:90px">
+            <option value="http">HTTP</option>
+            <option value="sse">SSE</option>
+            <option value="stdio">Stdio</option>
+          </select>
+          <input v-model="editingMcp.url" class="form-input" placeholder="地址" style="flex:2" />
+          <label class="inline-toggle">
+            <span>启用</span>
+            <button class="toggle-switch sm" type="button" :class="{ on: editingMcp.enabled }" @click="editingMcp.enabled = !editingMcp.enabled">
+              <span class="toggle-thumb"></span>
+            </button>
+          </label>
+          <button class="btn btn-primary btn-sm" @click="saveMcp">保存修改</button>
+          <button class="btn btn-outline btn-sm" @click="cancelEditMcp">取消</button>
+        </div>
         <table>
           <thead>
             <tr>
@@ -170,9 +188,12 @@
               <td>
                 <span class="status-dot" :class="m.ok ? 'ok' : 'err'"></span>
                 {{ m.ok ? '正常' : '离线' }}
+                <span class="mcp-enabled-tag" :class="{ off: !m.enabled }">{{ m.enabled ? '已启用' : '已停用' }}</span>
               </td>
               <td>
-                <button class="action-link" style="color:var(--accent);margin-right:8px" @click="pingMcp(m)">检测</button>
+                <button class="action-link" style="color:var(--warning)" @click="toggleMcp(m)">{{ m.enabled ? '停用' : '启用' }}</button>
+                <button class="action-link" style="color:var(--accent)" @click="startEditMcp(m)">编辑</button>
+                <button class="action-link" style="color:var(--accent)" @click="pingMcp(m)">检测</button>
                 <button class="action-link" @click="removeMcp(m.id)">删除</button>
               </td>
             </tr>

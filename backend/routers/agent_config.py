@@ -59,6 +59,7 @@ _DEFAULT_CONFIG = {
         {"id": "2", "name": "Redis MCP",       "type": "stdio", "url": "localhost:6379",            "enabled": True,  "ok": True},
         {"id": "3", "name": "Nacos MCP",       "type": "http",  "url": "http://localhost:8848",     "enabled": False, "ok": False},
         {"id": "4", "name": "MySQL MCP",       "type": "stdio", "url": "localhost:3306",            "enabled": True,  "ok": True},
+        {"id": "5", "name": "K8S MCP",         "type": "sse",   "url": "http://localhost:8002",     "enabled": False, "ok": False},
     ],
     "skills": [
         {"id": "1", "icon": "🔍", "name": "主机巡检",          "desc": "自动巡检所有主机 CPU/内存/磁盘，生成异常报告",   "tags": ["Ansible", "Prometheus"], "enabled": True},
@@ -69,11 +70,12 @@ _DEFAULT_CONFIG = {
         {"id": "6", "icon": "📦", "name": "日志打包",          "desc": "收集并打包指定时间段的服务日志",                "tags": ["Loki", "S3"],            "enabled": True},
     ],
     "behaviors": [
-        {"key": "rag",    "name": "主动检索增强",  "desc": "AI 将主动查询日志、指标等数据后再回答",         "enabled": True},
-        {"key": "auto",   "name": "自动执行动作",  "desc": "允许 AI 在无需确认时直接调用 Skill 执行",      "enabled": False},
-        {"key": "trace",  "name": "链路追踪关联",  "desc": "自动关联 SkyWalking Trace 进行根因分析",      "enabled": True},
-        {"key": "alert",  "name": "告警实时感知",  "desc": "接收告警推送，AI 可主动发起分析",              "enabled": True},
-        {"key": "report", "name": "生成巡检报告",  "desc": "巡检完成后自动汇总为结构化 Markdown 报告",    "enabled": False},
+        {"key": "rag",        "name": "主动检索增强",  "desc": "AI 将主动查询日志、指标等数据后再回答",                        "enabled": True},
+        {"key": "auto",       "name": "自动执行动作",  "desc": "允许 AI 在无需确认时直接调用 Skill 执行",                     "enabled": False},
+        {"key": "trace",      "name": "链路追踪关联",  "desc": "自动关联 SkyWalking Trace 进行根因分析",                     "enabled": True},
+        {"key": "alert",      "name": "告警实时感知",  "desc": "接收告警推送，AI 可主动发起分析",                             "enabled": True},
+        {"key": "report",     "name": "生成巡检报告",  "desc": "巡检完成后自动汇总为结构化 Markdown 报告",                   "enabled": False},
+        {"key": "show_trace", "name": "显示执行轨迹",  "desc": "飞书回复中展示 ReAct 工具调用步骤（关闭则只返回最终结果）",  "enabled": False},
     ],
     "models": [
         {"id": "claude-opus",   "name": "claude-opus-4-6",  "provider": "Anthropic", "active": True},
@@ -89,9 +91,34 @@ def _load() -> dict:
     if _CONFIG_FILE.exists():
         try:
             data = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+            mutated = False
             # 迁移：旧版本无 sa 字段时，填充默认值
             if "sa" not in data:
                 data["sa"] = json.loads(json.dumps(_DEFAULT_CONFIG["sa"]))
+                mutated = True
+            if not any(
+                any(keyword in str(item.get("name", "")).lower() for keyword in ("k8s", "kubernetes", "kube"))
+                for item in data.get("mcps", [])
+            ):
+                k8s_default = next(
+                    (
+                        item
+                        for item in _DEFAULT_CONFIG["mcps"]
+                        if str(item.get("name", "")).lower() == "k8s mcp"
+                    ),
+                    None,
+                )
+                if k8s_default:
+                    data.setdefault("mcps", []).append(json.loads(json.dumps(k8s_default)))
+                    mutated = True
+            # 迁移：补充新行为开关（旧配置文件缺少时自动追加）
+            existing_keys = {b["key"] for b in data.get("behaviors", [])}
+            for b in _DEFAULT_CONFIG["behaviors"]:
+                if b["key"] not in existing_keys:
+                    data.setdefault("behaviors", []).append(json.loads(json.dumps(b)))
+                    mutated = True
+
+            if mutated:
                 _save(data)
             return data
         except Exception as e:
@@ -169,6 +196,13 @@ class McpCreate(BaseModel):
     enabled: bool = True
 
 
+class McpUpdate(BaseModel):
+    name:    Optional[str] = None
+    type:    Optional[str] = None
+    url:     Optional[str] = None
+    enabled: Optional[bool] = None
+
+
 @router.get("/mcps")
 async def list_mcps():
     cfg = _load()
@@ -229,15 +263,32 @@ async def delete_mcp(mcp_id: str):
     return {"ok": True}
 
 
-class McpToggle(BaseModel):
-    enabled: bool
-
 @router.put("/mcps/{mcp_id}")
-async def update_mcp(mcp_id: str, body: McpToggle):
+async def update_mcp(mcp_id: str, body: McpUpdate):
     cfg = _load()
     for m in cfg.get("mcps", []):
         if m["id"] == mcp_id:
-            m["enabled"] = body.enabled
+            payload = body.model_dump(exclude_none=True)
+            if "name" in payload:
+                name = str(payload["name"]).strip()
+                if not name:
+                    raise HTTPException(status_code=400, detail="MCP 名称不能为空")
+                m["name"] = name
+            if "type" in payload:
+                mcp_type = str(payload["type"]).strip().lower()
+                if mcp_type not in {"http", "sse", "stdio"}:
+                    raise HTTPException(status_code=400, detail="MCP 类型仅支持 http / sse / stdio")
+                m["type"] = mcp_type
+            if "url" in payload:
+                url = str(payload["url"]).strip()
+                if not url:
+                    raise HTTPException(status_code=400, detail="MCP 地址不能为空")
+                m["url"] = url
+            if "enabled" in payload:
+                m["enabled"] = bool(payload["enabled"])
+
+            if "type" in payload or "url" in payload:
+                m["ok"] = await _ping_mcp(m.get("type", "http"), m.get("url", ""))
             _save(cfg)
             return m
     raise HTTPException(status_code=404, detail="MCP 不存在")

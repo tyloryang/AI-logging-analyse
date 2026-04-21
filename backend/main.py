@@ -19,8 +19,8 @@ from db import engine, Base, AsyncSessionLocal
 from auth.router import router as auth_router
 from auth.admin_router import router as admin_router
 from auth import service as auth_service
-from state import SCHEDULE_CRON, SCHEDULE_CHANNELS
-from scheduler import scheduled_report_job
+from state import SCHEDULE_CRON, SCHEDULE_CHANNELS, REPORTS_DIR
+from scheduler import scheduled_report_job, run_group_schedule_job
 from routers.logs import router as logs_router
 from routers.reports import router as reports_router
 from routers.hosts import router as hosts_router
@@ -70,6 +70,14 @@ async def lifespan(app: FastAPI):
         run_detection,
         CronTrigger(minute="*/5"),
         id="anomaly_detection",
+        replace_existing=True,
+    )
+
+    # 分组定时巡检：每分钟检查各组配置的推送时间
+    scheduler.add_job(
+        run_group_schedule_job,
+        CronTrigger(minute="*"),
+        id="group_schedule",
         replace_existing=True,
     )
 

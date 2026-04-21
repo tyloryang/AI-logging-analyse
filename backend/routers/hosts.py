@@ -268,7 +268,7 @@ async def notify_groups_inspect(req: NotifyGroupsRequest):
     """将巡检结果按分组推送到飞书/钉钉（手动巡检后按需触发）"""
     try:
         from scheduler import _send_group_inspect_notifications
-        await _send_group_inspect_notifications(req.results)
+        await _send_group_inspect_notifications(req.results, force=True)
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

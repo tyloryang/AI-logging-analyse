@@ -108,8 +108,12 @@ async def _build_slowlog_report() -> dict | None:
     return report
 
 
-async def _send_group_inspect_notifications(inspect_results: list[dict]) -> None:
-    """按主机分组，将巡检结果分别推送到对应分组的飞书群。"""
+async def _send_group_inspect_notifications(
+    inspect_results: list[dict], force: bool = False
+) -> None:
+    """按主机分组推送巡检结果到各组飞书群。
+    force=True 时忽略 schedule_enabled，适用于手动触发。
+    """
     groups = load_groups()
     if not groups:
         return
@@ -129,12 +133,11 @@ async def _send_group_inspect_notifications(inspect_results: list[dict]) -> None
 
     for group in groups:
         gid = group["id"]
+        if not force and not group.get("schedule_enabled"):
+            continue
         results = group_results.get(gid, [])
         if not results:
-            continue
-        has_alert = any(r.get("overall") != "normal" for r in results)
-        if not has_alert:
-            logger.info("[scheduler] 分组 '%s' 全部主机正常，跳过推送", group["name"])
+            logger.info("[scheduler] 分组 '%s' 无关联主机，跳过推送", group["name"])
             continue
 
         # 生成分组维度的 AI 分析
@@ -170,6 +173,67 @@ async def _send_group_inspect_notifications(inspect_results: list[dict]) -> None
                 ai_text=ai_text,
             )
             logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group["name"], res)
+
+
+async def run_group_schedule_job() -> None:
+    """每分钟检查各分组的定时推送计划，到点则巡检对应主机并推送。"""
+    from datetime import datetime
+    now_hhmm = datetime.now().strftime("%H:%M")
+    groups = load_groups()
+    due_groups = [
+        g for g in groups
+        if g.get("schedule_enabled") and g.get("schedule_time", "") == now_hhmm
+    ]
+    if not due_groups:
+        return
+
+    cmdb = load_cmdb()
+    for group in due_groups:
+        gid = group["id"]
+        instances = [inst for inst, meta in cmdb.items() if meta.get("group") == gid]
+        if not instances:
+            logger.info("[group_schedule] 分组 '%s' 无关联主机，跳过", group["name"])
+            continue
+
+        logger.info("[group_schedule] 分组 '%s' 开始巡检 %d 台主机", group["name"], len(instances))
+        try:
+            results = await prom.inspect_hosts(instances=instances)
+        except Exception as e:
+            logger.warning("[group_schedule] 分组 '%s' 巡检失败: %s", group["name"], e)
+            continue
+
+        total    = len(results)
+        normal   = sum(1 for r in results if r.get("overall") == "normal")
+        warning  = sum(1 for r in results if r.get("overall") == "warning")
+        critical = sum(1 for r in results if r.get("overall") == "critical")
+        group_summary = {
+            "total": total, "normal": normal,
+            "warning": warning, "critical": critical,
+            "group_name": group["name"],
+        }
+
+        ai_text = ""
+        try:
+            ai_parts: list[str] = []
+            async for chunk in analyzer.generate_inspection_summary(results, group_summary):
+                ai_parts.append(chunk)
+            ai_text = "".join(ai_parts).strip()
+        except Exception as e:
+            logger.warning("[group_schedule] 分组 '%s' AI 分析失败: %s", group["name"], e)
+            ai_text = (
+                f"分组「{group['name']}」共 {total} 台主机，"
+                f"正常 {normal} 台、警告 {warning} 台、严重 {critical} 台。"
+            )
+
+        if group.get("feishu_webhook"):
+            res = await send_feishu_group_inspect(
+                group_name=group["name"],
+                results=results,
+                webhook_url=group["feishu_webhook"],
+                keyword=group.get("feishu_keyword", ""),
+                ai_text=ai_text,
+            )
+            logger.info("[group_schedule] 分组 '%s' 飞书推送: %s", group["name"], res)
 
 
 async def scheduled_report_job() -> None:

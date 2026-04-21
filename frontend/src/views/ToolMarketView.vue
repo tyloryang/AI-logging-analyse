@@ -72,14 +72,45 @@ const TOOLS = [
 </script>
 
 <style scoped>
-.tool-market { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-main, #0d1117); color: var(--text-primary, #e6edf3); }
-.page-header { padding: 16px 20px 12px; border-bottom: 1px solid rgba(255,255,255,0.07); flex-shrink: 0; }
-.header-left h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
-.subtitle { font-size: 12px; color: var(--text-muted, #6e7681); }
+.tool-market {
+  --market-page-bg: #f6f8fb;
+  --market-surface: #ffffff;
+  --market-surface-soft: #f8fafc;
+  --market-border: #e5e7eb;
+  --market-text: #0f172a;
+  --market-text-muted: #64748b;
+  --market-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--market-page-bg);
+  color: var(--market-text);
+}
+.page-header { padding: 16px 20px 12px; border-bottom: 1px solid var(--market-border); flex-shrink: 0; background: var(--market-page-bg); }
+.header-left h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; color: var(--market-text); }
+.subtitle { font-size: 12px; color: var(--market-text-muted); }
 
 .tools-grid { padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; overflow: auto; }
-.tool-card { display: flex; align-items: center; gap: 14px; background: var(--bg-card, #161b22); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 18px; text-decoration: none; color: var(--text-primary); transition: border-color .15s, background .15s, transform .15s; }
-.tool-card:hover { border-color: rgba(255,255,255,0.18); background: rgba(255,255,255,0.02); transform: translateY(-1px); }
+.tool-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--market-surface);
+  border: 1px solid var(--market-border);
+  border-radius: 14px;
+  padding: 18px;
+  text-decoration: none;
+  color: var(--market-text);
+  box-shadow: var(--market-shadow);
+  transition: border-color .15s, background .15s, transform .15s, box-shadow .15s;
+}
+.tool-card:hover {
+  border-color: rgba(9,105,218,0.24);
+  background: var(--market-surface-soft);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+}
 
 .tool-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .tool-icon.green  { background: rgba(63,185,80,0.15);  color: #3fb950; }
@@ -90,8 +121,8 @@ const TOOLS = [
 .tool-icon.yellow { background: rgba(210,153,34,0.15); color: #d29922; }
 
 .tool-body { flex: 1; min-width: 0; }
-.tool-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
-.tool-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
-.tool-arrow { color: var(--text-muted); opacity: 0; transition: opacity .15s; }
-.tool-card:hover .tool-arrow { opacity: 1; color: var(--accent); }
+.tool-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--market-text); }
+.tool-desc { font-size: 11.5px; color: var(--market-text-muted); line-height: 1.5; }
+.tool-arrow { color: var(--market-text-muted); opacity: 0; transition: opacity .15s, color .15s; }
+.tool-card:hover .tool-arrow { opacity: 1; color: var(--accent, #0969da); }
 </style>

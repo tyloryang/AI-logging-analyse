@@ -1,13 +1,77 @@
 """LangGraph Agent 工具集 — 封装 Loki / Prometheus 客户端"""
+import asyncio
+import concurrent.futures
 import glob
 import json
 import os
+import re
 from datetime import datetime
 
 from langchain_core.tools import tool
 from state import loki, prom
 
 _REPORTS_DIR = os.path.join(os.path.dirname(__file__), "..", "reports")
+
+
+def _call_sse_mcp_sync(sse_url: str, method: str, params: dict) -> list:
+    """在全新事件循环中同步执行 SSE MCP 调用，避免 anyio TaskGroup 与外层 asyncio 冲突。"""
+    async def _inner():
+        from mcp.client.sse import sse_client
+        from mcp import ClientSession
+        async with sse_client(sse_url) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(method, params)
+        return result.content or []
+
+    return asyncio.run(_inner())
+
+
+def _list_sse_mcp_tools_sync(sse_url: str) -> list:
+    """在全新事件循环中同步列出 SSE MCP 工具，避免 anyio TaskGroup 冲突。"""
+    async def _inner():
+        from mcp.client.sse import sse_client
+        from mcp import ClientSession
+        async with sse_client(sse_url) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resp = await session.list_tools()
+        return resp.tools
+
+    return asyncio.run(_inner())
+
+
+def _normalize_sse_url(sse_url: str) -> str:
+    url = sse_url.rstrip("/")
+    if not url.endswith("/sse"):
+        return f"{url}/sse"
+    return url
+
+
+def _mcp_content_to_text(content: list) -> str:
+    parts = []
+    for item in content:
+        text = getattr(item, "text", None) or str(item)
+        parts.append(text)
+    return "\n".join(parts) if parts else "(无返回内容)"
+
+
+async def _call_sse_mcp_raw(sse_url: str, method: str, params: dict) -> str:
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        content = await loop.run_in_executor(
+            pool, lambda: _call_sse_mcp_sync(_normalize_sse_url(sse_url), method, params)
+        )
+    return _mcp_content_to_text(content)
+
+
+async def _call_sse_mcp(mcp_name: str, sse_url: str, method: str, params: dict) -> str:
+    """通过 MCP SDK 正确调用 SSE 类型的 MCP 服务器（线程隔离，避免 TaskGroup 冲突）。"""
+    try:
+        output = await _call_sse_mcp_raw(sse_url, method, params)
+        return f"**MCP [{mcp_name}] 返回结果**\n{output[:3000]}"
+    except Exception as exc:
+        return f"SSE MCP 调用失败：{exc}"
 
 
 @tool
@@ -429,6 +493,86 @@ async def get_k8s_nodes() -> str:
 # ── 中间件工具 ─────────────────────────────────────────────────────────────────
 
 @tool
+async def get_k8s_namespaces() -> str:
+    """查询 Kubernetes 命名空间列表。"""
+    try:
+        from routers.kubernetes import list_namespaces
+
+        namespaces = await list_namespaces()
+        if not namespaces:
+            return "当前集群没有命名空间数据"
+
+        lines = [f"**命名空间列表**（共 {len(namespaces)} 个）\n"]
+        for item in namespaces[:30]:
+            lines.append(
+                f"{item.get('name', '?')}  状态:{item.get('status', '?')}  创建:{item.get('age', '?')}"
+            )
+        if len(namespaces) > 30:
+            lines.append(f"... 共 {len(namespaces)} 个，仅展示前 30 个")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"查询命名空间失败：{exc}"
+
+
+@tool
+async def get_k8s_deployments(namespace: str = "") -> str:
+    """查询 Kubernetes Deployment 列表及就绪状态。namespace=命名空间（空=全部）。"""
+    try:
+        from routers.kubernetes import list_deployments
+
+        deployments = await list_deployments(namespace)
+        if not deployments:
+            return f"命名空间 {namespace or '全部'} 下无 Deployment"
+
+        lines = [
+            f"**Deployment 列表**（{namespace or '全部命名空间'}，共 {len(deployments)} 个）\n"
+        ]
+        items = sorted(
+            deployments,
+            key=lambda item: (
+                item.get("status") == "Ready",
+                item.get("namespace", ""),
+                item.get("name", ""),
+            ),
+        )
+        for item in items[:30]:
+            flag = "" if item.get("status") == "Ready" else "[异常] "
+            lines.append(
+                f"{flag}[{item.get('namespace', '?')}] {item.get('name', '?')}  "
+                f"状态:{item.get('status', '?')}  副本:{item.get('ready', 0)}/{item.get('desired', 0)}"
+            )
+        if len(deployments) > 30:
+            lines.append(f"... 共 {len(deployments)} 个，仅展示前 30 个")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"查询 Deployment 失败：{exc}"
+
+
+@tool
+async def get_k8s_services(namespace: str = "") -> str:
+    """查询 Kubernetes Service 列表及暴露端口。namespace=命名空间（空=全部）。"""
+    try:
+        from routers.kubernetes import list_services
+
+        services = await list_services(namespace)
+        if not services:
+            return f"命名空间 {namespace or '全部'} 下无 Service"
+
+        lines = [f"**Service 列表**（{namespace or '全部命名空间'}，共 {len(services)} 个）\n"]
+        for item in services[:30]:
+            ports = ",".join(item.get("ports", []) or []) or "-"
+            lines.append(
+                f"[{item.get('namespace', '?')}] {item.get('name', '?')}  "
+                f"类型:{item.get('type', '?')}  ClusterIP:{item.get('clusterIP', '-') or '-'}  端口:{ports}"
+            )
+        if len(services) > 30:
+            lines.append(f"... 共 {len(services)} 个，仅展示前 30 个")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"查询 Service 失败：{exc}"
+
+
+@tool
 async def get_middleware_summary() -> str:
     """查询中间件总览：MySQL / Redis / Kafka / Elasticsearch 等实例数量和健康状态。
     用户询问中间件状态、数据库状态、消息队列状态时使用。"""
@@ -477,6 +621,108 @@ async def get_middleware_instances(middleware_type: str = "") -> str:
 
 # ── MCP 工具调用 ───────────────────────────────────────────────────────────────
 
+def _is_es_mcp(name: str) -> bool:
+    lower = name.lower()
+    return "es" in lower or "elastic" in lower or "opensearch" in lower
+
+
+def _format_es_indices_result(raw: str, pattern: str = "*", limit: int = 80) -> str:
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return raw[:3000]
+
+    if not isinstance(data, list):
+        return raw[:3000]
+    if not data:
+        return f"ES 未找到匹配 '{pattern}' 的索引"
+
+    health_counts: dict[str, int] = {}
+    for item in data:
+        if isinstance(item, dict):
+            health = str(item.get("health") or "unknown")
+            health_counts[health] = health_counts.get(health, 0) + 1
+
+    health_text = "，".join(f"{k}:{v}" for k, v in sorted(health_counts.items()))
+    lines = [
+        f"**MCP [ES MCP] 索引列表**（pattern={pattern}，共 {len(data)} 个，{health_text}）",
+        "",
+        f"{'索引名':<46} {'健康':>7} {'状态':>7} {'文档数':>10} {'大小':>10} {'主分片':>6} {'副本':>4}",
+        "-" * 98,
+    ]
+    for item in data[:limit]:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"{str(item.get('index', '')):<46} "
+            f"{str(item.get('health', '?')):>7} "
+            f"{str(item.get('status', '?')):>7} "
+            f"{str(item.get('docs.count', '0')):>10} "
+            f"{str(item.get('store.size', '?')):>10} "
+            f"{str(item.get('pri', '?')):>6} "
+            f"{str(item.get('rep', '?')):>4}"
+        )
+    if len(data) > limit:
+        lines.append(f"... 仅展示前 {limit} 个，剩余 {len(data) - limit} 个可用更精确 pattern 过滤。")
+    return "\n".join(lines)
+
+
+async def _call_es_mcp_list_indices(mcp_name: str, url: str, body: dict) -> str:
+    pattern = str(body.get("pattern") or body.get("index") or body.get("name") or "*").strip() or "*"
+    raw = await _call_sse_mcp_raw(
+        url,
+        "general_api_request",
+        {
+            "method": "GET",
+            "path": f"/_cat/indices/{pattern}",
+            "params": {
+                "format": "json",
+                "s": "index",
+                "h": "index,health,status,docs.count,store.size,pri,rep",
+            },
+        },
+    )
+    return _format_es_indices_result(raw, pattern=pattern)
+
+
+def _find_enabled_mcp(
+    keywords: tuple[str, ...],
+    preferred_names: tuple[str, ...] = (),
+) -> dict | None:
+    cfg_file = os.path.join(os.path.dirname(__file__), "..", "data", "agent_config.json")
+    try:
+        with open(cfg_file, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return None
+
+    preferred_map = {name.lower(): idx for idx, name in enumerate(preferred_names)}
+    matches = [
+        item
+        for item in cfg.get("mcps", [])
+        if item.get("enabled")
+        and any(keyword.lower() in str(item.get("name", "")).lower() for keyword in keywords)
+    ]
+    if not matches:
+        return None
+
+    def _score(item: dict) -> tuple[int, int, str]:
+        name = str(item.get("name", ""))
+        lower = name.lower()
+        preferred_rank = preferred_map.get(lower, len(preferred_map) + 1)
+        keyword_rank = min(
+            (
+                idx
+                for idx, keyword in enumerate(keywords)
+                if keyword.lower() in lower
+            ),
+            default=len(keywords) + 1,
+        )
+        return (preferred_rank, keyword_rank, name)
+
+    return sorted(matches, key=_score)[0]
+
+
 @tool
 async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
     """调用已配置的 MCP（Model Context Protocol）工具执行操作。
@@ -522,28 +768,9 @@ async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
             return f"**MCP [{mcp['name']}] 返回结果**\n{result}"
 
         elif mcp_type == "sse":
-            # SSE MCP 协议：POST /messages 发送请求，从 SSE 流读取响应
-            # 标准 MCP SSE 服务器结构：GET /sse (SSE stream), POST /messages (send)
-            base = url
-            if base.endswith("/sse"):
-                base = base[:-4]  # 去掉 /sse 得到 base URL
-
-            # 构造 JSON-RPC 请求
-            rpc_body = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": action or "tools/list",
-                "params": body,
-            }
-            messages_url = base.rstrip("/") + "/messages"
-            async with httpx.AsyncClient(timeout=20) as client:
-                resp = await client.post(messages_url, json=rpc_body)
-                if resp.status_code == 404:
-                    # 有些 SSE MCP 直接在 /sse 上接收 POST
-                    resp = await client.post(url, json=rpc_body)
-                resp.raise_for_status()
-                result = resp.text[:2000]
-            return f"**MCP [{mcp['name']}] (SSE) 返回结果**\n{result}"
+            if _is_es_mcp(mcp["name"]) and action in ("list_indices", "cat_indices"):
+                return await _call_es_mcp_list_indices(mcp["name"], url, body)
+            return await _call_sse_mcp(mcp["name"], url, action, body)
 
         else:
             return f"MCP 类型 '{mcp_type}' 暂不支持在线调用（支持 http / sse 类型）"
@@ -552,6 +779,25 @@ async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
         return "agent_config.json 不存在，请先在智能体配置页面保存配置"
     except Exception as exc:
         return f"调用 MCP 失败：{exc}"
+
+
+@tool
+async def call_k8s_mcp(action: str, params: str = "{}") -> str:
+    """调用已启用的 Kubernetes / K8S MCP。
+    action=工具名，例如 list_pods / list_nodes / list_namespaces / list_deployments / list_services。"""
+    mcp = _find_enabled_mcp(
+        keywords=("k8s", "kubernetes", "kube"),
+        preferred_names=("K8S MCP", "Kubernetes MCP"),
+    )
+    if not mcp:
+        return "未找到已启用的 K8S MCP，请先在智能体配置中添加并启用名称包含 K8S / Kubernetes / Kube 的 MCP。"
+    return await call_mcp_tool.ainvoke(
+        {
+            "mcp_name": str(mcp.get("name", "")),
+            "action": action,
+            "params": params,
+        }
+    )
 
 
 @tool
@@ -574,32 +820,48 @@ async def list_mcp_tools(mcp_name: str) -> str:
 
         mcp_type = mcp.get("type", "http")
         url = mcp.get("url", "").rstrip("/")
-        base = url[:-4] if url.endswith("/sse") else url
 
-        rpc_body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        if mcp_type == "sse":
+            try:
+                loop = asyncio.get_event_loop()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    raw_tools = await loop.run_in_executor(
+                        pool, lambda: _list_sse_mcp_tools_sync(_normalize_sse_url(url))
+                    )
+                tools = [{"name": t.name, "description": t.description or ""} for t in raw_tools]
+            except Exception as e:
+                return f"获取 SSE MCP 工具列表失败：{e}"
+        else:
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url + "/tools/list", json={})
+                resp.raise_for_status()
+                data = resp.json()
+            tools = data.get("result", {}).get("tools", data.get("tools", []))
 
-        async with httpx.AsyncClient(timeout=10) as client:
-            if mcp_type == "sse":
-                resp = await client.post(base.rstrip("/") + "/messages", json=rpc_body)
-                if resp.status_code == 404:
-                    resp = await client.post(url, json=rpc_body)
-            else:
-                resp = await client.post(base + "/tools/list", json={})
-            resp.raise_for_status()
-            data = resp.json()
-
-        tools = data.get("result", {}).get("tools", data.get("tools", []))
         if not tools:
-            return f"MCP [{mcp_name}] 返回工具列表为空，原始响应：{resp.text[:500]}"
+            return f"MCP [{mcp_name}] 工具列表为空"
 
         lines = [f"**MCP [{mcp_name}] 可用工具（共 {len(tools)} 个）**\n"]
         for t in tools:
-            name = t.get("name", "?")
-            desc = t.get("description", "")
+            name = t.get("name", "?") if isinstance(t, dict) else t
+            desc = t.get("description", "") if isinstance(t, dict) else ""
             lines.append(f"- {name}：{desc}")
         return "\n".join(lines)
     except Exception as exc:
         return f"获取 MCP 工具列表失败：{exc}"
+
+
+@tool
+async def list_k8s_mcp_tools() -> str:
+    """列出已启用 Kubernetes / K8S MCP 支持的工具。"""
+    mcp = _find_enabled_mcp(
+        keywords=("k8s", "kubernetes", "kube"),
+        preferred_names=("K8S MCP", "Kubernetes MCP"),
+    )
+    if not mcp:
+        return "未找到已启用的 K8S MCP，请先在智能体配置中添加并启用名称包含 K8S / Kubernetes / Kube 的 MCP。"
+    return await list_mcp_tools.ainvoke({"mcp_name": str(mcp.get("name", ""))})
 
 
 @tool
@@ -624,6 +886,150 @@ async def list_available_mcps() -> str:
         return f"读取 MCP 配置失败：{exc}"
 
 
+def _es_base_url() -> str:
+    """从环境变量或配置文件读取 ES 地址，默认 http://192.168.9.226:9200"""
+    url = os.getenv("ES_URL", "").strip().rstrip("/")
+    if url:
+        return url
+    try:
+        cfg_file = os.path.join(os.path.dirname(__file__), "..", "data", "agent_config.json")
+        with open(cfg_file, encoding="utf-8") as f:
+            cfg = json.load(f)
+        for m in cfg.get("mcps", []):
+            if "es" in m.get("name", "").lower() and m.get("enabled"):
+                raw = m.get("url", "")
+                # MCP 地址推导 ES 地址：去掉 /sse 后缀，端口 8000 → 9200
+                raw = re.sub(r'/sse$', '', raw)
+                raw = re.sub(r':8000', ':9200', raw)
+                return raw.rstrip("/")
+    except Exception:
+        pass
+    return "http://192.168.9.226:9200"
+
+
+@tool
+async def es_list_indices(pattern: str = "*") -> str:
+    """列出 Elasticsearch 索引。pattern=索引名模式（支持通配符，默认 * 列全部）。
+    返回索引名、文档数、存储大小、健康状态等。"""
+    import httpx
+    base = _es_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{base}/_cat/indices/{pattern}",
+                params={"format": "json", "s": "index", "h": "index,health,status,docs.count,store.size,pri,rep"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        if not data:
+            return f"ES 未找到匹配 '{pattern}' 的索引"
+        lines = [f"**Elasticsearch 索引列表（共 {len(data)} 个）**\n"]
+        lines.append(f"{'索引名':<40} {'健康':>6} {'状态':>6} {'文档数':>10} {'大小':>8} {'主分片':>6} {'副本':>4}")
+        lines.append("-" * 85)
+        for idx in data:
+            lines.append(
+                f"{idx.get('index',''):<40} "
+                f"{idx.get('health','?'):>6} "
+                f"{idx.get('status','?'):>6} "
+                f"{idx.get('docs.count','0'):>10} "
+                f"{idx.get('store.size','?'):>8} "
+                f"{idx.get('pri','?'):>6} "
+                f"{idx.get('rep','?'):>4}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"查询 ES 索引失败：{e}"
+
+
+@tool
+async def es_cluster_health() -> str:
+    """获取 Elasticsearch 集群健康状态，包括节点数、分片数、未分配分片等关键指标。"""
+    import httpx
+    base = _es_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            h = (await client.get(f"{base}/_cluster/health", params={"format": "json"})).json()
+            s = (await client.get(f"{base}/_cluster/stats",  params={"format": "json"})).json()
+        status_icon = {"green": "[正常]", "yellow": "[警告]", "red": "[异常]"}.get(h.get("status", ""), "[未知]")
+        lines = [
+            f"**ES 集群健康 {status_icon}**",
+            f"集群名称  : {h.get('cluster_name')}",
+            f"状态      : {h.get('status')}",
+            f"节点总数  : {h.get('number_of_nodes')}  数据节点: {h.get('number_of_data_nodes')}",
+            f"分片      : 活跃主分片 {h.get('active_primary_shards')} / 活跃总分片 {h.get('active_shards')}",
+            f"未分配分片: {h.get('unassigned_shards')}",
+            f"初始化中  : {h.get('initializing_shards')}",
+            f"索引数    : {s.get('indices', {}).get('count', '?')}",
+            f"文档总数  : {s.get('indices', {}).get('docs', {}).get('count', '?')}",
+            f"存储总量  : {s.get('indices', {}).get('store', {}).get('size_in_bytes', 0) // 1024 // 1024} MB",
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"查询 ES 集群状态失败：{e}"
+
+
+@tool
+async def es_search(index: str, query: str = "", size: int = 10, fields: str = "") -> str:
+    """在 Elasticsearch 中搜索文档。
+    index=索引名（必填），query=查询关键词（空则返回最新文档），
+    size=返回条数（默认10，最大50），fields=指定返回字段（逗号分隔，空则返回全部）。"""
+    import httpx
+    base = _es_base_url()
+    size = min(size, 50)
+    body: dict = {"size": size, "sort": [{"@timestamp": {"order": "desc"}}]}
+    if query:
+        body["query"] = {"query_string": {"query": query}}
+    else:
+        body["query"] = {"match_all": {}}
+    if fields:
+        body["_source"] = [f.strip() for f in fields.split(",")]
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(f"{base}/{index}/_search", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        hits = data.get("hits", {})
+        total = hits.get("total", {})
+        total_count = total.get("value", 0) if isinstance(total, dict) else total
+        docs = hits.get("hits", [])
+        lines = [f"**ES [{index}] 搜索结果**  总命中: {total_count} 条，返回 {len(docs)} 条\n"]
+        for doc in docs:
+            src = doc.get("_source", {})
+            ts = src.get("@timestamp", src.get("timestamp", ""))
+            msg = str(src)[:300]
+            lines.append(f"[{ts}] {msg}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ES 搜索失败：{e}"
+
+
+@tool
+async def es_get_index_mapping(index: str) -> str:
+    """获取 Elasticsearch 索引的字段映射（mapping），了解索引结构和字段类型。
+    index=索引名（必填）。"""
+    import httpx
+    base = _es_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base}/{index}/_mapping")
+            resp.raise_for_status()
+            data = resp.json()
+        props = {}
+        for idx_data in data.values():
+            props.update(idx_data.get("mappings", {}).get("properties", {}))
+        if not props:
+            return f"索引 [{index}] 无 mapping 信息"
+        lines = [f"**索引 [{index}] 字段映射（共 {len(props)} 个字段）**\n"]
+        for field, info in list(props.items())[:50]:
+            ftype = info.get("type", "object")
+            lines.append(f"  {field}: {ftype}")
+        if len(props) > 50:
+            lines.append(f"  ... 共 {len(props)} 个字段，仅展示前 50 个")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"获取 ES mapping 失败：{e}"
+
+
 ALL_TOOLS = [
     recall_similar_incidents,
     search_daily_reports,
@@ -637,11 +1043,21 @@ ALL_TOOLS = [
     get_k8s_summary,
     get_k8s_pods,
     get_k8s_nodes,
+    get_k8s_namespaces,
+    get_k8s_deployments,
+    get_k8s_services,
     # 中间件
     get_middleware_summary,
     get_middleware_instances,
+    # ES 直连工具（绕过 MCP，直接查询 ES HTTP API）
+    es_list_indices,
+    es_cluster_health,
+    es_search,
+    es_get_index_mapping,
     # MCP
     list_available_mcps,
+    list_k8s_mcp_tools,
     list_mcp_tools,
+    call_k8s_mcp,
     call_mcp_tool,
 ]

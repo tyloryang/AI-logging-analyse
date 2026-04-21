@@ -24,6 +24,8 @@ class GroupCreateRequest(BaseModel):
     feishu_keyword: Optional[str] = ""
     dingtalk_webhook: Optional[str] = ""
     dingtalk_keyword: Optional[str] = ""
+    schedule_enabled: bool = False
+    schedule_time: Optional[str] = "08:00"  # HH:MM
 
 
 class GroupUpdateRequest(BaseModel):
@@ -32,6 +34,8 @@ class GroupUpdateRequest(BaseModel):
     feishu_keyword: Optional[str] = None
     dingtalk_webhook: Optional[str] = None
     dingtalk_keyword: Optional[str] = None
+    schedule_enabled: Optional[bool] = None
+    schedule_time: Optional[str] = None
 
 
 @router.get("/api/groups")
@@ -65,6 +69,8 @@ async def create_group(body: GroupCreateRequest):
         "feishu_keyword": body.feishu_keyword or "",
         "dingtalk_webhook": body.dingtalk_webhook or "",
         "dingtalk_keyword": body.dingtalk_keyword or "",
+        "schedule_enabled": body.schedule_enabled,
+        "schedule_time": body.schedule_time or "08:00",
     }
     groups.append(new_group)
     save_groups(groups)
@@ -90,6 +96,10 @@ async def update_group(group_id: str, body: GroupUpdateRequest):
         val = getattr(body, field)
         if val is not None:
             group[field] = val
+    if body.schedule_enabled is not None:
+        group["schedule_enabled"] = body.schedule_enabled
+    if body.schedule_time is not None:
+        group["schedule_time"] = body.schedule_time
     save_groups(groups)
     logger.info("[groups] 更新分组: %s (%s)", group["name"], group_id)
     return {"ok": True, "data": group}

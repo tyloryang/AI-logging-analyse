@@ -324,6 +324,7 @@
             <div class="group-item-name">{{ g.name }}</div>
             <div class="group-item-meta">
               <span class="group-host-count">{{ g.host_count || 0 }} 台主机</span>
+              <span v-if="g.schedule_enabled" class="group-badge schedule">定时</span>
               <span v-if="g.feishu_webhook" class="group-badge feishu">飞书</span>
               <span v-if="g.dingtalk_webhook" class="group-badge dingtalk">钉钉</span>
             </div>
@@ -357,8 +358,23 @@
               <label>钉钉关键词</label>
               <input v-model="groupForm.dingtalk_keyword" placeholder="如：运维" />
             </div>
+            <div class="edit-row" style="margin-top:12px">
+              <label>定时巡检推送</label>
+              <div class="schedule-row">
+                <label class="toggle-switch">
+                  <input type="checkbox" v-model="groupForm.schedule_enabled" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <span class="toggle-state-label">{{ groupForm.schedule_enabled ? '已开启' : '已关闭' }}</span>
+                <template v-if="groupForm.schedule_enabled">
+                  <span class="schedule-at">每天</span>
+                  <input type="time" v-model="groupForm.schedule_time" class="time-input" />
+                  <span class="schedule-at">执行巡检并推送</span>
+                </template>
+              </div>
+            </div>
             <div class="group-form-note">
-              💡 主机巡检日报执行时，有告警的主机将按分组推送到各自的飞书/钉钉群
+              💡 开启后每天在指定时间自动巡检此分组主机并推送完整报告，不论是否有告警
             </div>
             <div style="display:flex;gap:8px;margin-top:12px">
               <button class="btn btn-primary" style="flex:1" @click="saveGroup" :disabled="groupSaving">
@@ -597,7 +613,7 @@ function labelHue(key) {
 const groups         = ref([])
 const selectedGroup  = ref(null)
 const groupSaving    = ref(false)
-const groupForm      = reactive({ visible: false, id: '', name: '', feishu_webhook: '', feishu_keyword: '', dingtalk_webhook: '', dingtalk_keyword: '' })
+const groupForm      = reactive({ visible: false, id: '', name: '', feishu_webhook: '', feishu_keyword: '', dingtalk_webhook: '', dingtalk_keyword: '', schedule_enabled: false, schedule_time: '08:00' })
 
 // CMDB 列表：按分组筛选（分组多时可搜索）
 const groupFilter = ref('')
@@ -617,24 +633,28 @@ const groupHosts = computed(() => {
 
 function selectGroup(g) {
   selectedGroup.value = g
-  groupForm.id              = g.id
-  groupForm.name            = g.name
-  groupForm.feishu_webhook  = g.feishu_webhook || ''
-  groupForm.feishu_keyword  = g.feishu_keyword || ''
+  groupForm.id               = g.id
+  groupForm.name             = g.name
+  groupForm.feishu_webhook   = g.feishu_webhook || ''
+  groupForm.feishu_keyword   = g.feishu_keyword || ''
   groupForm.dingtalk_webhook = g.dingtalk_webhook || ''
   groupForm.dingtalk_keyword = g.dingtalk_keyword || ''
-  groupForm.visible         = true
+  groupForm.schedule_enabled = !!g.schedule_enabled
+  groupForm.schedule_time    = g.schedule_time || '08:00'
+  groupForm.visible          = true
 }
 
 function startCreateGroup() {
-  selectedGroup.value       = null
-  groupForm.id              = ''
-  groupForm.name            = ''
-  groupForm.feishu_webhook  = ''
-  groupForm.feishu_keyword  = ''
+  selectedGroup.value        = null
+  groupForm.id               = ''
+  groupForm.name             = ''
+  groupForm.feishu_webhook   = ''
+  groupForm.feishu_keyword   = ''
   groupForm.dingtalk_webhook = ''
   groupForm.dingtalk_keyword = ''
-  groupForm.visible         = true
+  groupForm.schedule_enabled = false
+  groupForm.schedule_time    = '08:00'
+  groupForm.visible          = true
 }
 
 async function loadGroups() {
@@ -654,6 +674,8 @@ async function saveGroup() {
       feishu_keyword: groupForm.feishu_keyword,
       dingtalk_webhook: groupForm.dingtalk_webhook,
       dingtalk_keyword: groupForm.dingtalk_keyword,
+      schedule_enabled: groupForm.schedule_enabled,
+      schedule_time: groupForm.schedule_time || '08:00',
     }
     if (groupForm.id) {
       await api.updateGroup(groupForm.id, payload)
@@ -1696,6 +1718,33 @@ onBeforeUnmount(() => {
 .group-badge { font-size: 10px; padding: 1px 5px; border-radius: 10px; font-weight: 500; }
 .group-badge.feishu { background: rgba(50,195,120,.15); color: #32c378; }
 .group-badge.dingtalk { background: rgba(82,130,255,.15); color: #5282ff; }
+.group-badge.schedule { background: rgba(234,179,8,.15); color: #e6a23c; }
+
+/* Toggle switch */
+.schedule-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.toggle-switch { display: inline-flex; align-items: center; cursor: pointer; user-select: none; flex-shrink: 0; }
+.toggle-switch input[type=checkbox] { display: none; }
+.toggle-slider {
+  width: 36px; height: 20px; border-radius: 10px;
+  background: var(--border); position: relative; flex-shrink: 0;
+  transition: background .2s;
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--accent, #5282ff); }
+.toggle-slider::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; transition: left .2s;
+}
+.toggle-switch input:checked + .toggle-slider::after { left: 19px; }
+.toggle-state-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.schedule-at { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.time-input {
+  width: 100px; height: 28px; padding: 0 8px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg-hover); color: var(--text-primary);
+  font-size: 13px; font-family: inherit;
+}
+.time-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(82,130,255,.15); }
 .group-form-note {
   font-size: 11px; color: var(--text-muted); background: var(--bg-hover);
   border-radius: 6px; padding: 8px 10px; margin-top: 8px; line-height: 1.5;
