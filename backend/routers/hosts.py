@@ -261,15 +261,52 @@ class InspectExcelRequest(BaseModel):
 
 class NotifyGroupsRequest(BaseModel):
     results: list
+    summary: dict = {}
+    ai_text: str = ""
+    group_id: str = ""
 
 
 @router.post("/api/hosts/inspect/notify-groups")
 async def notify_groups_inspect(req: NotifyGroupsRequest):
-    """将巡检结果按分组推送到飞书/钉钉（手动巡检后按需触发）"""
+    """将巡检结果按分组推送到飞书（手动巡检后按需触发）"""
     try:
         from scheduler import _send_group_inspect_notifications
-        await _send_group_inspect_notifications(req.results, force=True)
-        return {"ok": True}
+        results = await _send_group_inspect_notifications(
+            req.results,
+            force=True,
+            group_id=(req.group_id or "").strip(),
+        )
+        sent = [item for item in results if item.get("push", {}).get("ok")]
+        failed = [item for item in results if item.get("push") and not item.get("push", {}).get("ok")]
+        skipped = [item for item in results if item.get("skipped")]
+        target_group_name = next(
+            (
+                item.get("group_name") or item.get("group_id")
+                for item in results
+                if item.get("group_name") or item.get("group_id")
+            ),
+            (req.group_id or "").strip(),
+        )
+        if sent:
+            message = f"已推送分组「{target_group_name}」到飞书" if req.group_id else f"已推送 {len(sent)} 个分组到飞书"
+            if failed:
+                message += f"，{len(failed)} 个分组失败"
+        else:
+            message = (
+                f"分组「{target_group_name}」没有成功推送，请检查巡检数据和飞书 Webhook 配置"
+                if req.group_id else
+                "没有成功推送的分组，请检查分组主机和飞书 Webhook 配置"
+            )
+        return {
+            "ok": bool(sent),
+            "message": message,
+            "summary": {
+                "sent": len(sent),
+                "failed": len(failed),
+                "skipped": len(skipped),
+            },
+            "results": results,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

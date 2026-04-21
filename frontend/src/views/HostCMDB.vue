@@ -80,12 +80,12 @@
           <button
             v-if="inspectResults.length && !inspecting && groups.length"
             class="btn btn-outline"
-            :disabled="notifyingGroups"
-            @click="notifyGroups"
-            title="将告警主机按分组推送到飞书/钉钉"
+            :disabled="notifyingGroups || !inspectGroupId"
+            @click="notifyGroups()"
+            :title="inspectGroupId ? '将当前选中分组的巡检结果推送到飞书' : '请先选择一个分组后再推送'"
           >
             <span v-if="notifyingGroups" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-            <span v-else>📤</span> 按分组推送
+            <span v-else>📤</span> 推送当前分组
           </button>
           <button
             v-if="inspectResults.length && !inspecting"
@@ -234,6 +234,9 @@
             {{ inspectSummary.group_name || '全部主机' }}
           </span>
           <span class="inspect-scope-stat">共 {{ inspectSummary.total }} 台 · 正常 {{ inspectSummary.normal }} · 警告 {{ inspectSummary.warning }} · 严重 {{ inspectSummary.critical }}</span>
+        </div>
+        <div v-if="inspectNotifyMessage" class="inspect-notify-msg" :class="inspectNotifyStatus">
+          {{ inspectNotifyMessage }}
         </div>
         <!-- AI 分析总结卡片（流式显示） -->
         <div v-if="inspectAiSummary || inspectAiStreaming" class="inspect-ai-card" :class="{ streaming: inspectAiStreaming }">
@@ -562,6 +565,8 @@ const inspectAiSummary = ref('')
 const inspectAiProvider = ref('')
 const inspectAiFallback = ref(false)
 const inspectError = ref('')
+const inspectNotifyMessage = ref('')
+const inspectNotifyStatus = ref('info')
 const inspectGroupId  = ref('')   // 当前选中的巡检分组（空=全部）
 
 const editForm = reactive({ owner: '', env: '', role: '', notes: '', group: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
@@ -1035,13 +1040,42 @@ function switchToInspect() {
 }
 
 async function notifyGroups(resultsOverride = null) {
-  const results = resultsOverride ?? inspectResults.value
+  const results = Array.isArray(resultsOverride) ? resultsOverride : inspectResults.value
   if (notifyingGroups.value || !results?.length) return
+  if (!inspectGroupId.value) {
+    inspectNotifyStatus.value = 'warning'
+    inspectNotifyMessage.value = '请先选择要推送的主机分组。'
+    alert(inspectNotifyMessage.value)
+    return
+  }
   notifyingGroups.value = true
+  inspectNotifyStatus.value = 'info'
+  const currentGroup = groups.value.find(item => item.id === inspectGroupId.value)
+  const currentGroupName = currentGroup?.name || inspectSummary.value?.group_name || inspectGroupId.value
+  inspectNotifyMessage.value = `正在推送分组「${currentGroupName}」到飞书，请稍候...`
   try {
-    await api.notifyInspectGroups({ results })
+    const resp = await api.notifyInspectGroups({
+      results,
+      summary: inspectSummary.value || {},
+      ai_text: inspectAiSummary.value || '',
+      group_id: inspectGroupId.value,
+    })
+    const items = resp?.results || []
+    const sent = items.filter(item => item?.push?.ok)
+    const failed = items.filter(item => item?.push && !item.push.ok)
+    const skipped = items.filter(item => item?.skipped)
+    if (sent.length) {
+      const hostTotal = sent.reduce((sum, item) => sum + (Number(item.hosts) || 0), 0)
+      inspectNotifyStatus.value = failed.length ? 'warning' : 'success'
+      inspectNotifyMessage.value = `分组「${currentGroupName}」已推送，涉及 ${hostTotal} 台主机${failed.length ? `，${failed.length} 次发送失败` : ''}${skipped.length ? `，${skipped.length} 次跳过` : ''}。`
+    } else {
+      inspectNotifyStatus.value = 'warning'
+      inspectNotifyMessage.value = resp?.message || skipped.map(item => `${item.group_name || item.group_id}：${item.reason}`).filter(Boolean).join('；') || `分组「${currentGroupName}」没有可推送的巡检数据，请检查分组主机和飞书 Webhook 配置。`
+    }
   } catch (e) {
-    alert('按分组推送失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+    inspectNotifyStatus.value = 'error'
+    inspectNotifyMessage.value = '按分组推送失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误')
+    alert(inspectNotifyMessage.value)
   } finally {
     notifyingGroups.value = false
   }
@@ -1055,6 +1089,7 @@ async function runInspect() {
   inspectAiFallback.value = false
   inspectAiStreaming.value = false
   inspectError.value = ''
+  inspectNotifyMessage.value = ''
 
   try {
     const url = inspectGroupId.value
@@ -1380,6 +1415,30 @@ onBeforeUnmount(() => {
 .inspect-scope-badge.all { background: rgba(100,180,255,.15); color: #64b4ff; }
 .inspect-scope-badge.group { background: rgba(103,194,58,.15); color: #67c23a; }
 .inspect-scope-stat { color: var(--text-muted); margin-left: 4px; }
+.inspect-notify-msg {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(88,166,255,.28);
+  background: rgba(88,166,255,.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.inspect-notify-msg.success {
+  border-color: rgba(34,197,94,.35);
+  background: rgba(34,197,94,.10);
+  color: var(--success);
+}
+.inspect-notify-msg.warning {
+  border-color: rgba(234,179,8,.35);
+  background: rgba(234,179,8,.10);
+  color: var(--warning);
+}
+.inspect-notify-msg.error {
+  border-color: rgba(239,68,68,.35);
+  background: rgba(239,68,68,.10);
+  color: var(--error);
+}
 
 .inspect-ai-card {
   background: linear-gradient(180deg, rgba(88,166,255,.08), rgba(88,166,255,.03));

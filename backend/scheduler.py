@@ -109,15 +109,20 @@ async def _build_slowlog_report() -> dict | None:
 
 
 async def _send_group_inspect_notifications(
-    inspect_results: list[dict], force: bool = False
-) -> None:
+    inspect_results: list[dict], force: bool = False, group_id: str = ""
+) -> list[dict]:
     """按主机分组推送巡检结果到各组飞书群。
     force=True 时忽略 schedule_enabled，适用于手动触发。
     """
     groups = load_groups()
     if not groups:
-        return
+        return [{"skipped": True, "reason": "未配置主机分组"}]
     cmdb = load_cmdb()
+    notify_results: list[dict] = []
+    if group_id:
+        groups = [group for group in groups if group.get("id") == group_id]
+        if not groups:
+            return [{"group_id": group_id, "skipped": True, "reason": "分组不存在"}]
 
     inst_to_group: dict[str, str] = {
         inst: meta.get("group", "")
@@ -127,17 +132,39 @@ async def _send_group_inspect_notifications(
 
     group_results: dict[str, list[dict]] = {}
     for r in inspect_results:
-        gid = inst_to_group.get(r.get("instance", ""), "")
+        gid = r.get("group") or inst_to_group.get(r.get("instance", ""), "")
         if gid:
             group_results.setdefault(gid, []).append(r)
 
     for group in groups:
         gid = group["id"]
+        group_name = group.get("name", gid)
         if not force and not group.get("schedule_enabled"):
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "skipped": True,
+                "reason": "未启用定时推送",
+            })
             continue
         results = group_results.get(gid, [])
         if not results:
-            logger.info("[scheduler] 分组 '%s' 无关联主机，跳过推送", group["name"])
+            logger.info("[scheduler] 分组 '%s' 无关联主机，跳过推送", group_name)
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "skipped": True,
+                "reason": "该分组无本次巡检主机",
+            })
+            continue
+        if not group.get("feishu_webhook"):
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "skipped": True,
+                "reason": "未配置飞书 Webhook",
+            })
             continue
 
         # 生成分组维度的 AI 分析
@@ -149,30 +176,37 @@ async def _send_group_inspect_notifications(
         group_summary = {
             "total": total, "normal": normal_cnt,
             "warning": warning_cnt, "critical": critical_cnt,
-            "group_name": group["name"],
+            "group_name": group_name,
         }
         try:
             ai_parts: list[str] = []
             async for chunk in analyzer.generate_inspection_summary(results, group_summary):
                 ai_parts.append(chunk)
             ai_text = "".join(ai_parts).strip()
-            logger.info("[scheduler] 分组 '%s' AI 分析生成完毕（%d 字符）", group["name"], len(ai_text))
+            logger.info("[scheduler] 分组 '%s' AI 分析生成完毕（%d 字符）", group_name, len(ai_text))
         except Exception as e:
-            logger.warning("[scheduler] 分组 '%s' AI 分析失败，降级为规则摘要: %s", group["name"], e)
+            logger.warning("[scheduler] 分组 '%s' AI 分析失败，降级为规则摘要: %s", group_name, e)
             ai_text = (
-                f"本次巡检分组「{group['name']}」共 {total} 台主机，"
+                f"本次巡检分组「{group_name}」共 {total} 台主机，"
                 f"正常 {normal_cnt} 台、警告 {warning_cnt} 台、严重 {critical_cnt} 台。"
             )
 
-        if group.get("feishu_webhook"):
-            res = await send_feishu_group_inspect(
-                group_name=group["name"],
-                results=results,
-                webhook_url=group["feishu_webhook"],
-                keyword=group.get("feishu_keyword", ""),
-                ai_text=ai_text,
-            )
-            logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group["name"], res)
+        res = await send_feishu_group_inspect(
+            group_name=group_name,
+            results=results,
+            webhook_url=group["feishu_webhook"],
+            keyword=group.get("feishu_keyword", ""),
+            ai_text=ai_text,
+        )
+        logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group_name, res)
+        notify_results.append({
+            "group_id": gid,
+            "group_name": group_name,
+            "hosts": len(results),
+            "push": res,
+        })
+
+    return notify_results
 
 
 async def run_group_schedule_job() -> None:
