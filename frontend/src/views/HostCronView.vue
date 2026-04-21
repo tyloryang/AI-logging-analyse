@@ -193,9 +193,9 @@ onMounted(() => { fetchCrons(); fetchPlaybooks() })
 .empty { text-align: center; color: var(--text-muted); padding: 40px !important; }
 
 .name-cell { font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cron-code { font-family: 'JetBrains Mono', monospace; background: rgba(56,139,253,0.08); color: #388bfd; border: 1px solid rgba(56,139,253,0.2); padding: 2px 7px; border-radius: 5px; font-size: 11px; }
+.cron-code { font-family: 'Cascadia Code', 'Consolas', monospace; background: rgba(56,139,253,0.08); color: #388bfd; border: 1px solid rgba(56,139,253,0.2); padding: 2px 7px; border-radius: 5px; font-size: 11px; }
 .cron-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
-.cron-hint code { font-family: 'JetBrains Mono', monospace; color: #388bfd; }
+.cron-hint code { font-family: 'Cascadia Code', 'Consolas', monospace; color: #388bfd; }
 
 .toggle-switch { padding: 2px 10px; border-radius: 10px; font-size: 10.5px; font-weight: 500; cursor: pointer; user-select: none; }
 .toggle-switch.on  { background: rgba(63,185,80,0.15);  color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
@@ -212,7 +212,7 @@ onMounted(() => { fetchCrons(); fetchPlaybooks() })
 .btn-icon.edit:hover { color: #388bfd; background: rgba(56,139,253,0.1); }
 .btn-icon.del:hover  { color: #f85149; background: rgba(248,81,73,0.1); }
 
-.mono  { font-family: 'JetBrains Mono', monospace; }
+.mono  { font-family: 'Cascadia Code', 'Consolas', monospace; }
 .small { font-size: 11px; }
 .muted { color: var(--text-muted, #6e7681); }
 
@@ -226,6 +226,6 @@ onMounted(() => { fetchCrons(); fetchPlaybooks() })
 .form-row label { font-size: 11.5px; color: var(--text-muted); font-weight: 500; }
 .form-input, .form-textarea { background: var(--bg-main, #0d1117); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; color: var(--text-primary); padding: 7px 10px; font-size: 12px; outline: none; }
 .form-input:focus, .form-textarea:focus { border-color: var(--accent); }
-.form-textarea { resize: vertical; min-height: 60px; font-family: 'JetBrains Mono', monospace; }
+.form-textarea { resize: vertical; min-height: 60px; font-family: 'Cascadia Code', 'Consolas', monospace; }
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); cursor: pointer; }
 </style>

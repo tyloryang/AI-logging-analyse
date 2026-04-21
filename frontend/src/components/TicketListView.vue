@@ -304,7 +304,7 @@ onMounted(fetchTickets)
 .btn-icon.done:hover { color: #388bfd; background: rgba(56,139,253,0.1); }
 .btn-icon.del:hover  { color: #f85149; background: rgba(248,81,73,0.1); }
 
-.mono  { font-family: 'JetBrains Mono', monospace; }
+.mono  { font-family: 'Cascadia Code', 'Consolas', monospace; }
 .small { font-size: 11px; }
 .muted { color: var(--ticket-text-muted); }
 

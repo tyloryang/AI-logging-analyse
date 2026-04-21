@@ -203,7 +203,7 @@ onUnmounted(() => clearInterval(_timer))
 .status-badge.cancelled{ background: rgba(210,153,34,0.15);  color: #d29922; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
 
-.mono  { font-family: 'JetBrains Mono', monospace; }
+.mono  { font-family: 'Cascadia Code', 'Consolas', monospace; }
 .small { font-size: 11px; }
 .muted { color: var(--text-muted, #6e7681); }
 .col-warn { color: #d29922; font-weight: 500; }
@@ -220,6 +220,6 @@ onUnmounted(() => clearInterval(_timer))
 .form-row label { font-size: 11.5px; color: var(--text-muted); font-weight: 500; }
 .form-input, .form-textarea { background: var(--bg-main, #0d1117); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; color: var(--text-primary); padding: 7px 10px; font-size: 12px; outline: none; }
 .form-input:focus, .form-textarea:focus { border-color: var(--accent); }
-.form-textarea { resize: vertical; min-height: 60px; font-family: 'JetBrains Mono', monospace; }
-.output-pre { background: #0a0c10; border-radius: 8px; padding: 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.7; color: #c9d1d9; white-space: pre-wrap; word-break: break-all; min-height: 200px; max-height: 55vh; overflow: auto; margin: 0; }
+.form-textarea { resize: vertical; min-height: 60px; font-family: 'Cascadia Code', 'Consolas', monospace; }
+.output-pre { background: #0a0c10; border-radius: 8px; padding: 14px; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; line-height: 1.7; color: #c9d1d9; white-space: pre-wrap; word-break: break-all; min-height: 200px; max-height: 55vh; overflow: auto; margin: 0; }
 </style>

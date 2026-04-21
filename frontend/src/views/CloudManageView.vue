@@ -140,5 +140,5 @@ const activeCloudObj = computed(() => CLOUDS.find(c => c.id === activeCloud.valu
 .region-table tr:hover td { background: var(--bg-hover); }
 .ok   { color: var(--success); }
 .muted { color: var(--text-muted); }
-.mono  { font-family: 'JetBrains Mono', monospace; }
+.mono  { font-family: 'Cascadia Code', 'Consolas', monospace; }
 </style>

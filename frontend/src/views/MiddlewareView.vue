@@ -1126,7 +1126,7 @@ onMounted(fetchAll)
 }
 
 .mono {
-  font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+  font-family: 'Cascadia Code', 'Consolas', 'Cascadia Code', monospace;
 }
 
 .muted {

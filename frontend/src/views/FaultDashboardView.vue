@@ -185,7 +185,7 @@ onUnmounted(() => clearInterval(timer))
 .stat-card.active  { border-left-color: var(--accent); }
 .stat-card.resolved  { border-left-color: var(--success); }
 .stat-card.suppressed { border-left-color: var(--text-muted); }
-.stat-num  { font-size: 28px; font-weight: 700; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+.stat-num  { font-size: 28px; font-weight: 700; color: var(--text-primary); font-family: 'Cascadia Code', 'Consolas', monospace; }
 .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 
 .filter-row { display: flex; gap: 8px; }
@@ -193,7 +193,7 @@ onUnmounted(() => clearInterval(timer))
 
 .sev-badge {
   display: inline-flex; align-items: center; padding: 2px 8px;
-  border-radius: 3px; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
+  border-radius: 3px; font-size: 11px; font-weight: 600; font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .sev-badge.critical, .sev-badge.error { background: rgba(207,34,46,.1); color: var(--error); }
 .sev-badge.warning { background: rgba(154,103,0,.1); color: var(--warning); }
@@ -227,7 +227,7 @@ onUnmounted(() => clearInterval(timer))
 .drawer-section { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border-light); }
 .raw-alert-item { background: var(--bg-surface); border-radius: var(--radius); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
 .raw-labels { display: flex; flex-wrap: wrap; gap: 4px; }
-.label-chip { font-size: 11px; background: var(--accent-dim); color: var(--accent); padding: 1px 6px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; }
+.label-chip { font-size: 11px; background: var(--accent-dim); color: var(--accent); padding: 1px 6px; border-radius: 3px; font-family: 'Cascadia Code', 'Consolas', monospace; }
 .raw-time { font-size: 11px; color: var(--text-muted); }
 
 .slide-enter-active, .slide-leave-active { transition: transform .2s ease; }

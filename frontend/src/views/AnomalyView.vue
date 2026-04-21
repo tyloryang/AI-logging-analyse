@@ -201,7 +201,7 @@ onMounted(load)
 .anomaly-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sev-badge {
   font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 3px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .sev-badge.p0 { background: rgba(207,34,46,.1); color: var(--error); }
 .sev-badge.p1 { background: rgba(154,103,0,.1); color: var(--warning); }
@@ -217,7 +217,7 @@ onMounted(load)
 .metrics-row { display: flex; gap: 20px; flex-wrap: wrap; }
 .metric-item { display: flex; flex-direction: column; gap: 2px; }
 .metric-label { font-size: 11px; color: var(--text-muted); }
-.metric-value { font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+.metric-value { font-size: 18px; font-weight: 700; font-family: 'Cascadia Code', 'Consolas', monospace; }
 .metric-value.p0 { color: var(--error); }
 .metric-value.p1 { color: var(--warning); }
 .metric-value.p2 { color: var(--accent); }

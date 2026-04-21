@@ -1126,7 +1126,7 @@ onMounted(() => {
 /* 表格区 */
 .log-table-wrap {
   flex: 1; overflow-y: auto;
-  font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 12px;
+  font-family: 'Consolas', 'Cascadia Code', 'Consolas', monospace; font-size: 12px;
 }
 .log-table {
   width: 100%; border-collapse: collapse; table-layout: fixed;
@@ -1295,7 +1295,7 @@ onMounted(() => {
 .tpl-bar { height: 100%; background: linear-gradient(90deg, var(--error), #f97316); border-radius: 3px; transition: width .4s; }
 
 .tpl-pattern {
-  font-family: 'Consolas', 'JetBrains Mono', monospace;
+  font-family: 'Consolas', 'Cascadia Code', 'Consolas', monospace;
   font-size: 13px;
   color: var(--text-primary);
   background: var(--bg-base);
@@ -1552,7 +1552,7 @@ onMounted(() => {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-family: 'Consolas', 'JetBrains Mono', monospace;
+  font-family: 'Consolas', 'Cascadia Code', 'Consolas', monospace;
   font-size: 12px;
 }
 
@@ -1573,7 +1573,7 @@ onMounted(() => {
 }
 .trace-span-list {
   max-height: 400px; overflow-y: auto;
-  font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 11px;
+  font-family: 'Consolas', 'Cascadia Code', 'Consolas', monospace; font-size: 11px;
 }
 .trace-span-row {
   display: flex; align-items: flex-start; gap: 8px;

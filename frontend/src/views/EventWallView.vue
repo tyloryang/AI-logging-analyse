@@ -268,7 +268,7 @@ onUnmounted(() => clearInterval(_timer))
 .detail-section label { display: block; font-size: 11px; font-weight: 600; color: var(--eventwall-text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 5px; }
 .detail-section p { font-size: 12.5px; margin: 0; color: var(--eventwall-text); }
 .detail-pre {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   font-size: 11px;
   line-height: 1.7;
   background: var(--eventwall-surface-soft);
@@ -281,6 +281,6 @@ onUnmounted(() => clearInterval(_timer))
   color: #334155;
 }
 .label-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 11.5px; }
-.label-key { color: var(--eventwall-text-muted); font-family: 'JetBrains Mono', monospace; }
+.label-key { color: var(--eventwall-text-muted); font-family: 'Cascadia Code', 'Consolas', monospace; }
 .label-val { color: var(--eventwall-text); word-break: break-all; }
 </style>

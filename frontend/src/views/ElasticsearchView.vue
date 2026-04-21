@@ -724,7 +724,7 @@ th { text-align: left; padding: 8px 12px; font-size: 10.5px; font-weight: 600; c
 td { padding: 7px 12px; border-bottom: 1px solid var(--border-light); font-size: 12.5px; }
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: var(--bg-hover); }
-.td-mono { font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11.5px; }
+.td-mono { font-family: 'Cascadia Code', 'Consolas', 'Cascadia Code', monospace; font-size: 11.5px; }
 .td-link { color: var(--accent); cursor: pointer; }
 .td-link:hover { text-decoration: underline; }
 .empty { text-align: center; padding: 30px; color: var(--text-muted); }
@@ -755,14 +755,14 @@ tr:hover td { background: var(--bg-hover); }
 .query-left, .query-right { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow: hidden; }
 .editor-wrap { flex: 1; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
 .editor-header { padding: 6px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
-textarea.editor { flex: 1; background: transparent; border: none; outline: none; padding: 10px 12px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; resize: none; min-height: 0; }
+textarea.editor { flex: 1; background: transparent; border: none; outline: none; padding: 10px 12px; color: var(--text-primary); font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; line-height: 1.7; resize: none; min-height: 0; }
 .result-content { flex: 1; overflow: auto; padding: 10px 12px; min-height: 0; }
-pre.json-out { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: var(--text-primary); margin: 0; }
+pre.json-out { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: var(--text-primary); margin: 0; }
 .q-history { display: flex; align-items: center; gap: 6px; flex-shrink: 0; overflow-x: auto; }
-.q-hist-item { font-size: 10.5px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; cursor: pointer; white-space: nowrap; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+.q-hist-item { font-size: 10.5px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; cursor: pointer; white-space: nowrap; color: var(--text-secondary); font-family: 'Cascadia Code', 'Consolas', monospace; }
 .q-hist-item:hover { border-color: var(--accent); color: var(--accent); }
 .query-method { background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; color: var(--text-primary); font-size: 12px; cursor: pointer; outline: none; }
-.query-path { flex: 1; background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 12px; outline: none; }
+.query-path { flex: 1; background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; color: var(--text-primary); font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; outline: none; }
 .query-path:focus { border-color: var(--accent); }
 
 /* Buttons */
@@ -791,7 +791,7 @@ pre.json-out { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line
 .form-input { width: 100%; background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text-primary); font-size: 13px; outline: none; transition: .2s; }
 .form-input:focus { border-color: var(--accent); }
 .form-input::placeholder { color: var(--text-muted); }
-.form-input-mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+.form-input-mono { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; }
 select.form-input option { background: var(--bg-card); }
 .form-row { display: flex; gap: 10px; }
 .form-row .form-group { flex: 1; }

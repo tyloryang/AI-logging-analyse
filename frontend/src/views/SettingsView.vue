@@ -846,7 +846,7 @@ async function saveSettings() {
   width: 26px; height: 26px; border-radius: 6px;
   display: flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .section-icon.prom    { background: rgba(232,93,15,0.15); color: #e85d0f; }
 .section-icon.loki    { background: rgba(251,191,36,0.15); color: #d97706; }
@@ -894,7 +894,7 @@ async function saveSettings() {
 }
 .webhook-url {
   flex: 1; font-size: 12px; color: var(--text-secondary);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   word-break: break-all; background: none; border: none; padding: 0;
 }
 
@@ -926,7 +926,7 @@ async function saveSettings() {
 .guide-step code {
   font-size: 11px; padding: 1px 5px;
   background: rgba(0,186,113,0.12); border-radius: 3px;
-  color: #00ba71; font-family: 'JetBrains Mono', monospace;
+  color: #00ba71; font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .guide-step strong { color: var(--text-primary); }
 .step-num {

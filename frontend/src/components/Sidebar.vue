@@ -170,10 +170,19 @@ const MENU = [
       { label: '日志中心', to: '/observability/logs',    module: 'log' },
       { label: '链路追踪', to: '/observability/trace',   module: 'skywalking' },
       { label: '告警中心', to: '/observability/alerts',  module: 'alert' },
+      { label: '分析报告', to: '/tools/report',          module: 'report' },
     ],
   },
   { id: 'events', icon: 'event',  label: '事件墙',   to: '/events' },
-  { id: 'tools',  icon: 'tools',  label: '工具市场', to: '/tools' },
+  {
+    id: 'tools', icon: 'tools', label: '工具市场',
+    children: [
+      { label: '工具概览',   to: '/tools' },
+      { label: 'SSH 终端',   to: '/tools/ssh',     module: 'ssh' },
+      { label: '慢日志分析', to: '/tools/slowlog',  module: 'slowlog' },
+      { label: '指标监控',   to: '/tools/metrics',  module: 'metrics' },
+    ],
+  },
   {
     id: 'aiops', icon: 'aiops', label: 'AIOps 智能运维',
     children: [
@@ -193,6 +202,7 @@ const openGroups = reactive({
   ticket:     false,
   middleware: false,
   obs:        true,
+  tools:      false,
   aiops:      false,
 })
 
@@ -265,7 +275,7 @@ const ICONS = {
   box-shadow: 0 2px 8px rgba(56,139,253,0.35);
 }
 .logo-texts { display: flex; flex-direction: column; gap: 1px; }
-.logo-text  { font-family: 'JetBrains Mono','Cascadia Code',monospace; font-size: 13px; font-weight: 700; color: var(--text-sidebar-active,#fff); letter-spacing:.03em; line-height:1.2; }
+.logo-text  { font-family: 'Cascadia Code', 'Consolas','Cascadia Code',monospace; font-size: 13px; font-weight: 700; color: var(--text-sidebar-active,#fff); letter-spacing:.03em; line-height:1.2; }
 .logo-accent { color: var(--accent); }
 .logo-sub   { font-size: 9px; font-weight: 600; color: var(--accent); letter-spacing:.12em; line-height:1; opacity:.8; }
 

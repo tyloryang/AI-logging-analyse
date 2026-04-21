@@ -655,7 +655,7 @@ onMounted(async () => {
 .stat-num {
   font-size: 26px; font-weight: 700;
   color: var(--accent);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   line-height: 1.1;
 }
 .stat-zero { color: var(--text-muted); }

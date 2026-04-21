@@ -178,7 +178,7 @@ onMounted(load)
   margin-bottom: 16px;
 }
 .webhook-tip code {
-  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px;
   color: var(--accent); background: none; border: none; padding: 0;
 }
 .copy-btn {
@@ -238,7 +238,7 @@ onMounted(load)
 .raw-labels { display: flex; flex-wrap: wrap; gap: 4px; }
 .label-chip {
   font-size: 11px; background: var(--accent-dim); color: var(--accent);
-  padding: 1px 6px; border-radius: 3px; font-family: 'JetBrains Mono', monospace;
+  padding: 1px 6px; border-radius: 3px; font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .raw-desc { font-size: 12px; color: var(--text-secondary); }
 .raw-time { font-size: 11px; color: var(--text-muted); }

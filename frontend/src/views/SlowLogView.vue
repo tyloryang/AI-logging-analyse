@@ -969,14 +969,14 @@ tr:last-child td{border-bottom:none} tr:hover td{background:var(--bg-hover)}
 .col-sev{width:28px} .col-time{width:140px;font-size:11px} .col-qt{width:90px} .col-rows{width:80px} .col-user{width:140px} .col-sql{max-width:0}
 .sev-dot{display:inline-block;width:7px;height:7px;border-radius:50%}
 .sev-dot.critical{background:var(--error);box-shadow:0 0 4px var(--error)} .sev-dot.warning{background:var(--warning)} .sev-dot.info{background:var(--success)}
-.qt-badge{padding:2px 7px;border-radius:3px;font-weight:600;font-family:'JetBrains Mono',monospace;font-size:11px}
+.qt-badge{padding:2px 7px;border-radius:3px;font-weight:600;font-family:'Cascadia Code', 'Consolas',monospace;font-size:11px}
 .qt-badge.critical{background:rgba(248,81,73,.15);color:var(--error)} .qt-badge.warning{background:rgba(210,153,34,.15);color:var(--warning)} .qt-badge.info{background:rgba(63,185,80,.12);color:var(--success)}
-.sql-brief{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:480px;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;font-size:11px}
+.sql-brief{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:480px;color:var(--text-secondary);font-family:'Cascadia Code', 'Consolas',monospace;font-size:11px}
 .detail-row td{background:var(--bg-surface)!important;padding:0}
 .detail-box{padding:12px 14px}
 .detail-meta{display:flex;gap:14px;font-size:11px;color:var(--text-muted);margin-bottom:8px}
 .alert-tag{color:var(--error);font-weight:600}
-.sql-full{background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;max-height:200px;overflow-y:auto;margin:0}
+.sql-full{background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-family:'Cascadia Code', 'Consolas',monospace;font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-all;max-height:200px;overflow-y:auto;margin:0}
 .pagination{display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--border-light);font-size:12px;color:var(--text-muted)}
 .pagination button{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius);padding:2px 10px;color:var(--text-primary);cursor:pointer;font-size:14px}
 .pagination button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)} .pagination button:disabled{opacity:.4;cursor:not-allowed}
@@ -993,19 +993,19 @@ tr:last-child td{border-bottom:none} tr:hover td{background:var(--bg-hover)}
 .ci-sev{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .ci-sev.critical{background:var(--error);box-shadow:0 0 5px var(--error)} .ci-sev.warning{background:var(--warning)} .ci-sev.info{background:var(--success)}
 .ci-count{font-size:12px;font-weight:600;color:var(--accent);min-width:48px}
-.ci-time{display:flex;align-items:center;gap:5px;font-size:12px;flex:1} .ci-time strong{color:var(--error);font-family:'JetBrains Mono',monospace}
+.ci-time{display:flex;align-items:center;gap:5px;font-size:12px;flex:1} .ci-time strong{color:var(--error);font-family:'Cascadia Code', 'Consolas',monospace}
 .ci-rows{font-size:11px;color:var(--text-muted);display:flex;gap:4px;align-items:center}
 .ci-label{font-size:10px;color:var(--text-muted)} .ci-sep{color:var(--border)}
 .ci-alert{font-size:11px;color:var(--warning);font-weight:600}
 .ci-chevron{transition:transform .2s;color:var(--text-muted);flex-shrink:0} .ci-chevron.open{transform:rotate(180deg)}
 .ci-template{display:flex;align-items:flex-start;gap:8px;padding:6px 16px 10px 56px;background:rgba(0,0,0,.15)}
 .ci-tpl-label{font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;padding-top:2px}
-.ci-tpl-sql{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary);word-break:break-all;white-space:pre-wrap;line-height:1.5}
+.ci-tpl-sql{font-family:'Cascadia Code', 'Consolas',monospace;font-size:11px;color:var(--text-secondary);word-break:break-all;white-space:pre-wrap;line-height:1.5}
 .ci-samples{padding:10px 16px 14px 56px;background:var(--bg-surface)}
 .ci-sample-title{font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
 .ci-sample{margin-bottom:10px;border-left:2px solid var(--border);padding-left:10px} .ci-sample:last-child{margin-bottom:0}
 .ci-sample-meta{display:flex;align-items:center;gap:10px;font-size:11px;margin-bottom:5px;flex-wrap:wrap}
-.ci-sample-sql{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-all;max-height:150px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin:0}
+.ci-sample-sql{font-family:'Cascadia Code', 'Consolas',monospace;font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-all;max-height:150px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin:0}
 .ci-critical .ci-header{border-left:3px solid var(--error)} .ci-warning .ci-header{border-left:3px solid var(--warning)} .ci-info .ci-header{border-left:3px solid transparent}
 
 /* ── Spinners ─────────────────────────────────────────────────────── */
@@ -1013,5 +1013,5 @@ tr:last-child td{border-bottom:none} tr:hover td{background:var(--bg-hover)}
 .spinner-xs2{width:10px;height:10px;border:2px solid rgba(255,255,255,.2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty-hint{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:60px 20px;color:var(--text-muted);font-size:13px}
-.mono{font-family:'JetBrains Mono',monospace} .text-muted{color:var(--text-muted)}
+.mono{font-family:'Cascadia Code', 'Consolas',monospace} .text-muted{color:var(--text-muted)}
 </style>

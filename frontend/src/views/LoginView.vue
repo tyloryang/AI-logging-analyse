@@ -100,7 +100,7 @@ async function handleLogin() {
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 .brand-text {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   font-size: 15px; font-weight: 700;
   color: var(--text-primary);
   letter-spacing: .08em;

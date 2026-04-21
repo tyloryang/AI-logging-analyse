@@ -919,7 +919,7 @@ function handleEvent(data, msg) {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .tool-name { font-weight: 600; color: var(--text-primary); }
-.tool-params { color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.tool-params { color: var(--text-muted); font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; }
 .tool-pending-text { color: var(--warning); font-style: italic; }
 .tool-expand-btn { margin-left: auto; color: var(--text-muted); font-size: 11px; }
 
@@ -930,7 +930,7 @@ function handleEvent(data, msg) {
 }
 .tool-output pre {
   margin: 0;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   font-size: 11px;
   color: var(--text-secondary);
   white-space: pre-wrap;
@@ -1075,7 +1075,7 @@ function handleEvent(data, msg) {
   background: rgba(56,139,253,0.12);
   color: var(--accent);
   border: 1px solid rgba(56,139,253,0.25);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .exec-badge {
   display: inline-flex; align-items: center; gap: 4px;
@@ -1182,7 +1182,7 @@ function handleEvent(data, msg) {
 }
 .ai-content :deep(.ai-li-dot) { color: var(--accent); font-weight: 700; }
 .ai-content :deep(.ai-code) {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   font-size: 11px; padding: 1px 5px;
   background: var(--bg-surface); border-radius: 3px;
   color: var(--accent);
@@ -1193,7 +1193,7 @@ function handleEvent(data, msg) {
   font-size: 9px; padding: 1px 5px;
   border-radius: 3px; background: var(--accent-dim);
   color: var(--accent); font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   white-space: nowrap;
 }
 </style>

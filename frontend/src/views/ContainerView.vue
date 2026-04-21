@@ -1106,7 +1106,7 @@ async function _startExec() {
 
   _execTerm = new Terminal({
     theme: { background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff' },
-    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    fontFamily: "'Cascadia Code', 'Consolas', 'Fira Code', monospace",
     fontSize: 13, lineHeight: 1.4, cursorBlink: true,
     scrollback: 3000,
   })
@@ -1388,7 +1388,7 @@ onBeforeUnmount(() => { _destroyExec() })
 .k8s-table tr:hover td { background: var(--bg-hover); }
 .empty { text-align: center; color: var(--text-muted); padding: 40px !important; }
 
-.name-cell { font-weight: 500; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name-cell { font-weight: 500; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11.5px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ns-tag { background: var(--accent-dim); border: 1px solid var(--border-accent); color: var(--accent); padding: 1px 6px; border-radius: 10px; font-size: 10.5px; }
 .role-tag { background: rgba(154,103,0,0.1); border: 1px solid rgba(154,103,0,0.2); color: var(--warning); padding: 1px 6px; border-radius: 10px; font-size: 10.5px; }
 .svc-type { padding: 1px 6px; border-radius: 10px; font-size: 10.5px; }
@@ -1417,7 +1417,7 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 .action-btn:hover { border-color: var(--border-accent); color: var(--accent); background: var(--accent-dim); }
 
-.mono { font-family: 'JetBrains Mono', monospace; }
+.mono { font-family: 'Cascadia Code', 'Consolas', monospace; }
 .small { font-size: 11px; }
 .muted { color: var(--text-muted); }
 .col-warn { color: var(--warning); font-weight: 500; }
@@ -1473,7 +1473,7 @@ onBeforeUnmount(() => { _destroyExec() })
   padding: 14px 16px;
   min-height: 320px;
   color: var(--text-primary);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   font-size: 11.5px;
   line-height: 1.65;
   white-space: pre-wrap;

@@ -209,7 +209,7 @@ function _makeTerminal() {
   return new Terminal({
     cursorBlink: true,
     fontSize: 13,
-    fontFamily: '"JetBrains Mono", "Cascadia Code", "Fira Code", "Microsoft YaHei UI", "PingFang SC", "Noto Sans Mono CJK SC", Menlo, Monaco, monospace',
+    fontFamily: '"Cascadia Code", "Consolas", "Fira Code", "Microsoft YaHei UI", "PingFang SC", "Noto Sans Mono CJK SC", Menlo, Monaco, monospace',
     theme: {
       background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff',
       selectionBackground: '#264f78',
@@ -600,6 +600,6 @@ onBeforeUnmount(() => {
 }
 .cred-info { display: flex; flex-direction: column; gap: 2px; }
 .cred-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
-.cred-detail { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+.cred-detail { font-size: 11px; color: var(--text-muted); font-family: 'Cascadia Code', 'Consolas', monospace; }
 .cred-actions { display: flex; gap: 6px; }
 </style>

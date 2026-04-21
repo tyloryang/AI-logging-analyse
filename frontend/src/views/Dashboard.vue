@@ -506,7 +506,7 @@ onMounted(() => {
 .stat-card.stat-warn  { border-color: rgba(210,153,34,0.3); }
 .stat-num {
   font-size: 32px; font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   color: var(--text-primary); line-height: 1;
 }
 .num-alert   { color: var(--error); }
@@ -537,7 +537,7 @@ onMounted(() => {
   background: var(--accent-dim);
   color: var(--accent);
   border: 1px solid rgba(56,139,253,0.25);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .ai-analyze-input-row { display: flex; gap: 8px; }
 .ai-analyze-input {
@@ -583,7 +583,7 @@ onMounted(() => {
 }
 .ai-analyze-result :deep(.li-dot) { color: var(--accent); font-weight: 700; }
 .ai-analyze-result :deep(.inline-code) {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
   font-size: 11px; padding: 1px 5px;
   background: var(--bg-card); border-radius: 3px; color: var(--accent);
 }
@@ -679,7 +679,7 @@ onMounted(() => {
 }
 .obs-table tbody tr:hover td { background: var(--bg-hover); }
 .text-muted { color: var(--text-muted) !important; }
-.mono { font-family: 'JetBrains Mono', monospace; font-size: 11px !important; }
+.mono { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px !important; }
 
 .svc-tag {
   font-size: 11px; padding: 2px 7px;
@@ -725,7 +725,7 @@ onMounted(() => {
 .topo-sub   { font-size: 10px; color: var(--text-muted); }
 .topo-count {
   font-size: 18px; font-weight: 700; color: var(--text-secondary);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 .count-alert { color: var(--error); }
 
