@@ -144,7 +144,7 @@ const MENU = [
       { label: '主机申请', to: '/hosts/apply' },
     ],
   },
-  { id: 'cloud', icon: 'cloud', label: '多云管理', to: '/cloud' },
+  // { id: 'cloud', icon: 'cloud', label: '多云管理', to: '/cloud' },
   {
     id: 'ticket', icon: 'ticket', label: '工单系统',
     children: [

@@ -428,8 +428,8 @@
         </div>
       </div>
 
-      <!-- 多云管理 -->
-      <div class="card settings-section cloud-section">
+      <!-- 多云管理（已隐藏）-->
+      <div v-if="false" class="card settings-section cloud-section">
         <div class="section-head">
           <div class="section-title">
             <span class="section-icon cloud">☁</span>

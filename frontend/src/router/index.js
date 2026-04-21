@@ -20,8 +20,8 @@ const routes = [
   { path: '/hosts/cron',   component: () => import('../views/HostCronView.vue'),    name: 'host-cron' },
   { path: '/hosts/apply',  component: () => import('../views/HostApplyView.vue'),   name: 'host-apply' },
 
-  // ── 4. 多云管理 ───────────────────────────────────────────────
-  { path: '/cloud', component: () => import('../views/CloudManageView.vue'), name: 'cloud' },
+  // ── 4. 多云管理（已隐藏）─────────────────────────────────────
+  // { path: '/cloud', component: () => import('../views/CloudManageView.vue'), name: 'cloud' },
 
   // ── 5. 工单系统 ───────────────────────────────────────────────
   { path: '/tickets/deploy',   component: () => import('../views/TicketDeployView.vue'),   name: 'ticket-deploy' },
