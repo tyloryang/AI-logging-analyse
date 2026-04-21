@@ -208,11 +208,64 @@
             <label>Base URL</label>
             <input v-model="form.ai_base_url" placeholder="http://192.168.x.x:8000/v1" />
           </div>
+          <div class="field" v-if="form.ai_provider === 'openai'">
+            <label class="checkbox-line">
+              <input v-model="form.ai_enable_thinking" type="checkbox" />
+              开启 Thinking 模式（仅部分模型支持，如 QwQ；Qwen3 等默认应关闭）
+            </label>
+          </div>
           <div class="field">
             <label>API Key{{ settings.ai_api_key_set ? '（已设置）' : '' }}</label>
-            <input v-model="form.ai_api_key" type="password" :placeholder="settings.ai_api_key_set ? '留空不修改' : '输入 API Key'" />
+            <div class="input-row">
+              <input v-model="form.ai_api_key" type="password" :placeholder="settings.ai_api_key_set ? '留空不修改' : '输入 API Key'" />
+              <button class="btn btn-outline btn-sm" @click="testAI" :disabled="testingAI">
+                {{ testingAI ? '测试中...' : '测试连接' }}
+              </button>
+            </div>
+            <div v-if="aiTestResult !== null" class="conn-test-result" :class="aiTestResult ? 'ok' : 'err'">
+              {{ aiTestMsg }}
+            </div>
           </div>
-          <p class="field-hint">AI 配置修改后需重启服务才能生效</p>
+          <div class="feishu-security-title">
+            <span class="security-label">Agent 执行器</span>
+            <span class="security-hint">可切换为外部 Claude Code / Codex CLI 执行 ReAct</span>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>执行模式</label>
+              <select v-model="form.agent_executor">
+                <option value="langgraph">内置 LangGraph ReAct</option>
+                <option value="aiops_cli">本项目 aiops_cli 子进程</option>
+                <option value="external_cli">外部 Agent CLI（Claude Code / Codex）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>超时时间（秒）</label>
+              <input v-model.number="form.agent_external_timeout" type="number" min="30" placeholder="240" />
+            </div>
+          </div>
+          <template v-if="form.agent_executor === 'external_cli'">
+            <div class="field-row">
+              <div class="field">
+                <label>CLI 命令</label>
+                <input v-model="form.agent_external_command" placeholder="留空自动寻找 claude；或填写 claude / codex / 完整路径" />
+              </div>
+              <div class="field">
+                <label>CLI 参数</label>
+                <input v-model="form.agent_external_args" placeholder="-p" />
+              </div>
+            </div>
+            <div class="field">
+              <label>工作目录</label>
+              <input v-model="form.agent_external_workdir" placeholder="留空默认项目根目录 D:\\loki-log-analyse" />
+            </div>
+            <label class="checkbox-line">
+              <input v-model="form.agent_external_use_stdin" type="checkbox" />
+              通过 stdin 传入问题（默认作为最后一个命令参数传入）
+            </label>
+            <p class="field-hint">示例：Claude Code 可用命令 `claude`、参数 `-p`；切到外部 CLI 后，飞书和右侧 AI 助手都会走该执行器。</p>
+          </template>
+          <p class="field-hint">AI 模型配置会热更新；外部 CLI 模式依赖本机已安装对应命令。</p>
         </div>
       </div>
 
@@ -241,6 +294,14 @@
               <input v-model="form.feishu_bot_app_secret" type="password"
                      :placeholder="settings.feishu_bot_app_secret_set ? '留空不修改' : '输入 App Secret'" />
             </div>
+          </div>
+
+          <div class="field">
+            <label class="checkbox-line">
+              <input v-model="form.feishu_require_mention" type="checkbox" />
+              群聊仅在 @ 机器人后回复
+            </label>
+            <p class="field-hint">开启后可避免机器人响应群内所有消息；关闭后，群聊里不 @ 也会处理 Jenkins / K8s / ES 等问题。</p>
           </div>
 
           <!-- 安全配置：Encrypt Key / Verify Token -->
@@ -505,10 +566,18 @@ const form = reactive({
   ai_base_url:              '',
   ai_model:                 '',
   ai_api_key:               '',
+  ai_enable_thinking:       false,
+  agent_executor:           'langgraph',
+  agent_external_command:   '',
+  agent_external_args:      '-p',
+  agent_external_use_stdin: false,
+  agent_external_timeout:   240,
+  agent_external_workdir:   '',
   feishu_bot_app_id:        '',
   feishu_bot_app_secret:    '',
   feishu_bot_encrypt_key:   '',
   feishu_bot_verify_token:  '',
+  feishu_require_mention:   true,
   feishu_callback_host:     '0.0.0.0',
   feishu_callback_port:     8001,
   feishu_callback_public_base_url: '',
@@ -536,6 +605,10 @@ const grafanaTestResult = ref(null)
 const testingK8s  = ref(false)
 const k8sTestResult = ref(null)   // null | true | false
 const k8sTestMsg  = ref('')
+
+const testingAI   = ref(false)
+const aiTestResult = ref(null)    // null | true | false
+const aiTestMsg   = ref('')
 
 const anyCloudConfigured = computed(() =>
   !!(form.aliyun_access_key_id || settings.value?.aliyun_access_key_secret_set ||
@@ -573,6 +646,13 @@ function applySettings(s) {
   form.ai_provider = s.ai_provider || 'anthropic'
   form.ai_base_url = s.ai_base_url || ''
   form.ai_model = s.ai_model || ''
+  form.ai_enable_thinking = !!s.ai_enable_thinking
+  form.agent_executor = s.agent_executor || 'langgraph'
+  form.agent_external_command = s.agent_external_command || ''
+  form.agent_external_args = s.agent_external_args || '-p'
+  form.agent_external_use_stdin = !!s.agent_external_use_stdin
+  form.agent_external_timeout = Number(s.agent_external_timeout) || 240
+  form.agent_external_workdir = s.agent_external_workdir || ''
   form.k8s_kubeconfig    = s.k8s_kubeconfig    || ''
   form.ansible_base_dir  = s.ansible_base_dir  || ''
   form.aliyun_access_key_id     = s.aliyun_access_key_id     || ''
@@ -582,6 +662,7 @@ function applySettings(s) {
   form.huawei_access_key_id     = s.huawei_access_key_id     || ''
   form.huawei_project_id        = s.huawei_project_id        || ''
   form.feishu_bot_app_id = s.feishu_bot_app_id || ''
+  form.feishu_require_mention = s.feishu_require_mention !== false
   form.feishu_callback_host = s.feishu_callback_host || '0.0.0.0'
   form.feishu_callback_port = Number(s.feishu_callback_port) || 8001
   form.feishu_callback_public_base_url = s.feishu_callback_public_base_url || ''
@@ -703,6 +784,30 @@ async function testK8s() {
   }
 }
 
+async function testAI() {
+  testingAI.value = true
+  aiTestResult.value = null
+  aiTestMsg.value = ''
+  try {
+    const payload = {
+      provider: form.ai_provider,
+      base_url: form.ai_base_url,
+      model: form.ai_model,
+      api_key: form.ai_api_key,
+    }
+    const r = await api.testAI(payload)
+    aiTestResult.value = r.ok
+    aiTestMsg.value = r.ok
+      ? `连接成功（${r.elapsed_ms} ms）模型：${r.model}，回答：${r.reply || '(空)'}`
+      : `连接失败（HTTP ${r.status || ''}）：${r.error || '未知错误'}`
+  } catch (e) {
+    aiTestResult.value = false
+    aiTestMsg.value = '请求失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  } finally {
+    testingAI.value = false
+  }
+}
+
 async function saveSettings() {
   saving.value = true
   saveNote.value = ''
@@ -773,6 +878,14 @@ async function saveSettings() {
 .input-row { display: flex; gap: 8px; }
 .input-row input { flex: 1; }
 .field-hint { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.checkbox-line input { width: auto; }
 
 .webhook-url-row {
   display: flex; align-items: center; gap: 8px;
@@ -921,6 +1034,16 @@ async function saveSettings() {
   background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.25); color: var(--success);
 }
 .grafana-test-result.err {
+  background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.25); color: var(--error);
+}
+.conn-test-result {
+  margin-top: 6px; padding: 6px 10px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; word-break: break-all;
+}
+.conn-test-result.ok  {
+  background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.25); color: var(--success);
+}
+.conn-test-result.err {
   background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.25); color: var(--error);
 }
 .test-icon { font-size: 13px; font-weight: 700; }

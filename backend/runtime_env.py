@@ -26,13 +26,21 @@ _SETTINGS_ENV_MAPPING = {
     "ai_provider": "AI_PROVIDER",
     "ai_base_url": "AI_BASE_URL",
     "ai_model": "AI_MODEL",
+    "ai_enable_thinking": "AI_ENABLE_THINKING",
     "feishu_bot_app_id": "FEISHU_BOT_APP_ID",
     "feishu_bot_app_secret": "FEISHU_BOT_APP_SECRET",
     "feishu_bot_encrypt_key": "FEISHU_BOT_ENCRYPT_KEY",
     "feishu_bot_verify_token": "FEISHU_BOT_VERIFY_TOKEN",
+    "feishu_require_mention": "FEISHU_REQUIRE_MENTION",
     "feishu_callback_host": "FEISHU_CALLBACK_HOST",
     "feishu_callback_port": "FEISHU_CALLBACK_PORT",
     "feishu_callback_public_base_url": "FEISHU_CALLBACK_PUBLIC_BASE_URL",
+    "agent_executor": "AIOPS_AGENT_EXECUTOR",
+    "agent_external_command": "AIOPS_EXTERNAL_AGENT_COMMAND",
+    "agent_external_args": "AIOPS_EXTERNAL_AGENT_ARGS",
+    "agent_external_use_stdin": "AIOPS_EXTERNAL_AGENT_USE_STDIN",
+    "agent_external_timeout": "AIOPS_EXTERNAL_AGENT_TIMEOUT",
+    "agent_external_workdir": "AIOPS_EXTERNAL_AGENT_WORKDIR",
 }
 
 
