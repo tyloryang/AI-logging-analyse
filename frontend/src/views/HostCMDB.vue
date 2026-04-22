@@ -100,6 +100,7 @@
               <th>平台</th>
               <th>操作系统</th>
               <th>配置</th>
+              <th>运行状态</th>
               <th class="th-sort" @click="setSort('env')">环境<span class="sort-icon">{{ sortKey==='env'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
               <th>用途</th>
               <th>负责人</th>
@@ -110,19 +111,41 @@
           </thead>
           <tbody>
             <tr v-for="h in sortedHosts" :key="h.id" @click="selectHost(h)">
-              <td><span class="status-dot" :class="h.status"></span><span class="status-text">{{ statusLabel(h.status) }}</span></td>
-              <td class="hostname-cell">
-                <span class="hostname">{{ h.hostname }}</span>
-                <span v-if="h.ssh_saved" class="ssh-badge" title="已配置 SSH 凭证">SSH</span>
+              <td>
+                <div class="status-cell">
+                  <span class="status-line"><span class="status-dot" :class="h.status"></span><span class="status-text">{{ statusLabel(h.status) }}</span></span>
+                  <span v-if="hostSyncState(h.id)?.statusMsg" class="field-sync" :class="syncStatusClass(h.id)">
+                    {{ hostSyncState(h.id)?.statusMsg }}
+                  </span>
+                </div>
+              </td>
+              <td class="hostname-cell" :class="{ 'field-updated': isSyncedField(h.id, 'hostname') }">
+                <div class="hostname-stack">
+                  <span class="hostname-line">
+                    <span class="hostname">{{ h.hostname }}</span>
+                    <span v-if="h.ssh_saved" class="ssh-badge" title="已配置 SSH 凭证">SSH</span>
+                  </span>
+                </div>
               </td>
               <td class="mono">{{ h.ip }}</td>
               <td><span class="platform-badge" :class="h.platform?.toLowerCase()">{{ h.platform || '-' }}</span></td>
-              <td class="small-text">{{ h.os_version || '-' }}</td>
-              <td class="small-text">
-                <span v-if="h.cpu_cores">{{ h.cpu_cores }}C</span>
-                <span v-if="h.cpu_cores && h.memory_gb"> / </span>
-                <span v-if="h.memory_gb">{{ h.memory_gb }}G</span>
-                <span v-if="!h.cpu_cores && !h.memory_gb">-</span>
+              <td class="small-text" :class="{ 'field-updated': isSyncedField(h.id, 'os_version') }">
+                <div class="field-cell">{{ h.os_version || '-' }}</div>
+              </td>
+              <td class="small-text" :class="{ 'field-updated': isSyncedField(h.id, ['cpu_cores', 'memory_gb', 'disk_gb']) }">
+                <div class="field-cell">
+                  <span v-if="h.cpu_cores">{{ h.cpu_cores }}C</span>
+                  <span v-if="h.cpu_cores && h.memory_gb"> / </span>
+                  <span v-if="h.memory_gb">{{ h.memory_gb }}G</span>
+                  <span v-if="!h.cpu_cores && !h.memory_gb">-</span>
+                </div>
+              </td>
+              <td class="small-text" :class="{ 'field-updated': isSyncedField(h.id, runtimeSyncKeys) }">
+                <div class="runtime-cell">
+                  <span>CPU {{ pctText(h.cpu_usage_pct) }}</span>
+                  <span>内存 {{ pctText(h.memory_usage_pct) }}</span>
+                  <span>负载 {{ valueText(h.load5) }}</span>
+                </div>
               </td>
               <td><span class="env-badge" :class="h.env">{{ envLabel(h.env) }}</span></td>
               <td class="small-text">{{ h.role || '-' }}</td>
@@ -257,14 +280,52 @@
         <div class="detail-row"><span class="dl">CPU核心</span><span class="dv">{{ selectedHost.cpu_cores ? selectedHost.cpu_cores + ' 核' : '-' }}</span></div>
         <div class="detail-row"><span class="dl">内存</span><span class="dv">{{ selectedHost.memory_gb ? selectedHost.memory_gb + ' GB' : '-' }}</span></div>
         <div class="detail-row"><span class="dl">磁盘</span><span class="dv">{{ selectedHost.disk_gb ? selectedHost.disk_gb + ' GB' : '-' }}</span></div>
+        <div class="detail-section-title">自动状态</div>
+        <div class="metric-grid">
+          <div class="metric-tile" :class="usageClass(selectedHost.cpu_usage_pct)">
+            <span>CPU 使用率</span><b>{{ pctText(selectedHost.cpu_usage_pct) }}</b>
+          </div>
+          <div class="metric-tile" :class="usageClass(selectedHost.memory_usage_pct)">
+            <span>内存使用率</span><b>{{ pctText(selectedHost.memory_usage_pct) }}</b>
+          </div>
+          <div class="metric-tile">
+            <span>5分钟负载</span><b>{{ valueText(selectedHost.load5) }}</b>
+          </div>
+          <div class="metric-tile">
+            <span>运行时长</span><b>{{ uptimeText(selectedHost) }}</b>
+          </div>
+          <div class="metric-tile">
+            <span>磁盘 I/O</span><b>读 {{ rateText(selectedHost.disk_io_read_bps) }} / 写 {{ rateText(selectedHost.disk_io_write_bps) }}</b>
+          </div>
+          <div class="metric-tile">
+            <span>网络带宽</span><b>入 {{ rateText(selectedHost.network_rx_bps) }} / 出 {{ rateText(selectedHost.network_tx_bps) }}</b>
+          </div>
+          <div class="metric-tile">
+            <span>TCP 连接数</span><b>{{ valueText(selectedHost.tcp_connections) }}</b>
+          </div>
+          <div class="metric-tile" :class="{ warn: Number(selectedHost.tcp_time_wait || 0) > 1000 }">
+            <span>TCP TIME_WAIT</span><b>{{ valueText(selectedHost.tcp_time_wait) }}</b>
+          </div>
+        </div>
+        <div v-if="displayDisks(selectedHost).length" class="disk-status-list">
+          <div v-for="disk in displayDisks(selectedHost)" :key="disk.mount" class="disk-status-item">
+            <div class="disk-status-head">
+              <span>磁盘 {{ disk.mount }}</span>
+              <b :class="usageClass(disk.used_pct)">{{ pctText(disk.used_pct) }}</b>
+            </div>
+            <div class="disk-bar"><i :class="usageClass(disk.used_pct)" :style="{ width: clampPct(disk.used_pct) + '%' }"></i></div>
+            <div class="disk-status-meta">{{ gbText(disk.used_gb) }} / {{ gbText(disk.size_gb) }}，剩余 {{ gbText(disk.avail_gb) }}</div>
+          </div>
+        </div>
+        <div v-if="selectedHost.metrics_updated_at" class="detail-row"><span class="dl">状态时间</span><span class="dv small-text">{{ selectedHost.metrics_updated_at }}</span></div>
         <div class="detail-row"><span class="dl">状态</span><span class="dv">{{ statusLabel(selectedHost.status) }}</span></div>
         <div class="detail-row"><span class="dl">环境</span><span class="dv">{{ envLabel(selectedHost.env) }}</span></div>
         <div class="detail-row"><span class="dl">用途</span><span class="dv">{{ selectedHost.role || '-' }}</span></div>
         <div class="detail-row"><span class="dl">负责人</span><span class="dv">{{ selectedHost.owner || '-' }}</span></div>
         <div class="detail-row"><span class="dl">机房</span><span class="dv">{{ selectedHost.datacenter || '-' }}</span></div>
-        <div class="detail-row"><span class="dl">SSH 端口</span><span class="dv">{{ selectedHost.ssh_port }}</span></div>
-        <div class="detail-row"><span class="dl">SSH 用户</span><span class="dv">{{ selectedHost.ssh_user || '-' }}</span></div>
-        <div class="detail-row"><span class="dl">SSH 凭证</span><span class="dv">{{ selectedHost.ssh_saved ? '已配置' : '未配置' }}</span></div>
+        <div class="detail-row"><span class="dl">SSH 端口</span><span class="dv">{{ selectedHost.credential_id ? (selectedHost.credential_port || selectedHost.ssh_port || 22) : selectedHost.ssh_port }}</span></div>
+        <div class="detail-row"><span class="dl">SSH 用户</span><span class="dv">{{ selectedHost.credential_id ? (selectedHost.credential_username || selectedHost.ssh_user || '-') : (selectedHost.ssh_user || '-') }}</span></div>
+        <div class="detail-row"><span class="dl">SSH 凭证</span><span class="dv">{{ credentialDisplay(selectedHost) }}</span></div>
         <div class="detail-row"><span class="dl">备注</span><span class="dv">{{ selectedHost.notes || '-' }}</span></div>
         <div v-if="selectedHost.labels && Object.keys(selectedHost.labels).length" class="detail-row">
           <span class="dl">标签</span>
@@ -274,7 +335,9 @@
         </div>
         <div class="detail-row"><span class="dl">录入时间</span><span class="dv small-text">{{ selectedHost.created_at }}</span></div>
         <div class="detail-row"><span class="dl">更新时间</span><span class="dv small-text">{{ selectedHost.updated_at }}</span></div>
-        <div v-if="syncMsg" class="sync-msg" :class="syncOk ? 'ok' : 'err'">{{ syncMsg }}</div>
+        <div v-if="selectedHostSyncState?.statusMsg" class="sync-msg" :class="selectedHostSyncState?.ok === false ? 'err' : 'ok'">
+          <span v-if="selectedHostSyncState?.statusMsg">{{ selectedHostSyncState.statusMsg }}</span>
+        </div>
         <div class="detail-actions">
           <button class="btn btn-primary" style="width:100%;margin-bottom:6px" @click="openEdit(selectedHost)">编辑主机</button>
           <button class="btn btn-sync" style="width:100%;margin-bottom:6px" :disabled="syncingId === selectedHost.id" @click="syncHost(selectedHost)">
@@ -395,15 +458,24 @@
             </div>
             <div class="form-row">
               <div class="form-group">
-                <label>SSH 密码 <span class="form-hint">{{ editingHost ? '（留空保持不变）' : '' }}</span></label>
-                <input v-model="hostForm.ssh_password" type="password" placeholder="输入密码加密存储" autocomplete="new-password" />
+                <label>SSH 密码 <span class="form-hint">{{ hostForm.credential_id ? '（已使用凭证库）' : editingHost ? '（留空保持不变）' : '' }}</span></label>
+                <input
+                  v-model="hostForm.ssh_password"
+                  type="password"
+                  :placeholder="hostForm.credential_id ? '已关联凭证库，无需输入密码' : '输入密码加密存储'"
+                  :disabled="!!hostForm.credential_id"
+                  autocomplete="new-password"
+                />
               </div>
               <div class="form-group">
                 <label>或关联凭证</label>
-                <select v-model="hostForm.credential_id">
+                <select v-model="hostForm.credential_id" @change="onCredentialChange">
                   <option value="">不使用凭证库</option>
-                  <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }}</option>
+                  <option v-for="c in credentials" :key="c.id" :value="c.id">{{ credentialOptionLabel(c) }}</option>
                 </select>
+                <span class="credential-hint">
+                  {{ hostForm.credential_id ? '保存后同步系统信息和 SSH 连接会自动使用该凭证。' : '选择凭证后不用再为此主机重复输入密码。' }}
+                </span>
               </div>
             </div>
 
@@ -515,6 +587,7 @@ const sortAsc     = ref(true)
 const selectedHost = ref(null)
 
 const groupMap = computed(() => Object.fromEntries(groups.value.map(g => [g.id, g.name])))
+const credentialMap = computed(() => Object.fromEntries(credentials.value.map(c => [c.id, c])))
 
 const countByStatus = (s) => hosts.value.filter(h => h.status === s).length
 
@@ -571,7 +644,7 @@ async function loadGroups() {
 async function loadCredentials() {
   try {
     const res = await api.listCredentials()
-    credentials.value = res || []
+    credentials.value = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : [])
   } catch {}
 }
 
@@ -588,6 +661,83 @@ function envLabel(e) {
 }
 function inspectStatusLabel(s) {
   return { normal: '正常', warning: '警告', critical: '严重' }[s] || s
+}
+function valueText(v) {
+  if (v === null || v === undefined || v === '') return '-'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
+}
+function pctText(v) {
+  if (v === null || v === undefined || v === '') return '-'
+  const n = Number(v)
+  return Number.isFinite(n) ? `${n.toFixed(1)}%` : '-'
+}
+function gbText(v) {
+  if (v === null || v === undefined || v === '') return '-'
+  const n = Number(v)
+  return Number.isFinite(n) ? `${n.toFixed(1)}GB` : '-'
+}
+function rateText(v) {
+  const n = Number(v || 0)
+  if (!Number.isFinite(n) || n <= 0) return '0B/s'
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  let value = n
+  let idx = 0
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024
+    idx += 1
+  }
+  return `${value >= 10 || idx === 0 ? value.toFixed(0) : value.toFixed(1)}${units[idx]}`
+}
+function usageClass(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return ''
+  if (n >= 90) return 'crit'
+  if (n >= 80) return 'warn'
+  return 'ok'
+}
+function clampPct(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(100, n))
+}
+function uptimeText(host) {
+  if (host?.uptime_text) return host.uptime_text
+  const seconds = Number(host?.uptime_seconds)
+  if (!Number.isFinite(seconds) || seconds < 0) return '-'
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  return `${days ? `${days}天` : ''}${hours || days ? `${hours}小时` : ''}${minutes}分钟`
+}
+function displayDisks(host) {
+  const disks = Array.isArray(host?.disk_usage) ? [...host.disk_usage] : []
+  const priority = ['/', '/boot', '/boot/efi', '/data']
+  disks.sort((a, b) => {
+    const ai = priority.indexOf(a.mount)
+    const bi = priority.indexOf(b.mount)
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+    return String(a.mount || '').localeCompare(String(b.mount || ''))
+  })
+  return disks
+}
+function credentialOptionLabel(c) {
+  if (!c) return ''
+  const username = c.username || 'root'
+  const port = c.port || 22
+  return `${c.name}（${username}@${port}）`
+}
+function credentialDisplay(host) {
+  if (!host?.credential_id) return host?.ssh_saved ? '已配置主机密码' : '未配置'
+  const c = credentialMap.value[host.credential_id]
+  if (c) return `凭证库：${credentialOptionLabel(c)}`
+  if (host.credential_name) {
+    const username = host.credential_username || host.ssh_user || 'root'
+    const port = host.credential_port || host.ssh_port || 22
+    return `凭证库：${host.credential_name}（${username}@${port}）`
+  }
+  return `凭证库：${host.credential_id}`
 }
 
 // ── 添加/编辑主机 ─────────────────────────────────────────────────────────────
@@ -653,11 +803,21 @@ function openEdit(h) {
   showHostModal.value = true
 }
 
+function onCredentialChange() {
+  const c = credentialMap.value[hostForm.credential_id]
+  if (!c) return
+  hostForm.ssh_user = c.username || hostForm.ssh_user || 'root'
+  hostForm.ssh_port = c.port || hostForm.ssh_port || 22
+  hostForm.ssh_password = ''
+}
+
 async function saveHost() {
   hostFormError.value = ''
   if (!hostForm.ip.trim()) { hostFormError.value = 'IP 地址不能为空'; return }
   saving.value = true
   const payload = { ...hostForm, labels: parseLabels(labelsText.value) }
+  if (payload.credential_id) payload.ssh_password = ''
+  else if (editingHost.value && !payload.ssh_password) delete payload.ssh_password
   if (!payload.cpu_cores) payload.cpu_cores = null
   if (!payload.memory_gb) payload.memory_gb = null
   if (!payload.disk_gb) payload.disk_gb = null
@@ -700,24 +860,68 @@ async function doDelete() {
 
 // ── SSH 同步系统信息 ──────────────────────────────────────────────────────────
 const syncingId = ref('')
-const syncMsg   = ref('')
-const syncOk    = ref(false)
+const syncStates = reactive({})
+
+function hostSyncState(hostId) {
+  return syncStates[hostId] || null
+}
+
+const selectedHostSyncState = computed(() => {
+  const hostId = selectedHost.value?.id
+  return hostId ? syncStates[hostId] || null : null
+})
+
+const runtimeSyncKeys = [
+  'cpu_usage_pct',
+  'memory_usage_pct',
+  'load5',
+  'uptime_seconds',
+  'uptime_text',
+  'disk_io_read_bps',
+  'disk_io_write_bps',
+  'network_rx_bps',
+  'network_tx_bps',
+  'tcp_connections',
+  'tcp_time_wait',
+  'disk_usage',
+  'metrics_updated_at',
+]
+
+function syncStatusClass(hostId) {
+  return syncStates[hostId]?.ok === false ? 'err' : 'ok'
+}
+
+function isSyncedField(hostId, keys) {
+  const state = syncStates[hostId]
+  if (!state?.ok || !state.updatedKeys?.length) return false
+  const fieldKeys = Array.isArray(keys) ? keys : [keys]
+  return fieldKeys.some(key => state.updatedKeys.includes(key))
+}
+
+function mergeSyncedHost(hostId, syncedHost, updated) {
+  const patch = syncedHost || updated || {}
+  const index = hosts.value.findIndex(item => item.id === hostId)
+  if (index >= 0) {
+    hosts.value[index] = { ...hosts.value[index], ...patch }
+  }
+  if (selectedHost.value?.id === hostId) {
+    selectedHost.value = { ...selectedHost.value, ...patch }
+  }
+}
 
 async function syncHost(h) {
   syncingId.value = h.id
-  syncMsg.value = ''
-  syncOk.value = false
+  syncStates[h.id] = { statusMsg: '同步中...', updatedKeys: [], ok: true }
   try {
     const res = await api.syncHost(h.id)
     const updated = res.updated || {}
-    const parts = []
-    if (updated.os_version)  parts.push(`OS: ${updated.os_version}`)
-    if (updated.cpu_cores)   parts.push(`CPU: ${updated.cpu_cores}核`)
-    if (updated.memory_gb)   parts.push(`内存: ${updated.memory_gb}G`)
-    if (updated.disk_gb)     parts.push(`磁盘: ${updated.disk_gb}G`)
-    if (updated.hostname)    parts.push(`主机名: ${updated.hostname}`)
-    syncMsg.value = parts.length ? `已同步：${parts.join(' / ')}` : '同步完成'
-    syncOk.value = true
+    mergeSyncedHost(h.id, res.host, updated)
+    const updatedKeys = Object.keys(updated).filter(key => updated[key] !== undefined)
+    syncStates[h.id] = {
+      statusMsg: updatedKeys.length ? '同步完成，字段已回填' : '同步完成（无字段变化）',
+      updatedKeys,
+      ok: true,
+    }
     // 刷新列表
     await loadHosts()
     // 如果右侧面板是这台主机，更新
@@ -725,8 +929,11 @@ async function syncHost(h) {
       selectedHost.value = hosts.value.find(x => x.id === h.id) || selectedHost.value
     }
   } catch (e) {
-    syncMsg.value = '同步失败：' + (typeof e === 'string' ? e : '请检查 SSH 密码和网络连通性')
-    syncOk.value = false
+    syncStates[h.id] = {
+      statusMsg: '同步失败：' + (typeof e === 'string' ? e : '请检查 SSH 密码和网络连通性'),
+      updatedKeys: [],
+      ok: false,
+    }
   } finally {
     syncingId.value = ''
   }
@@ -734,11 +941,13 @@ async function syncHost(h) {
 
 // ── SSH 跳转 ──────────────────────────────────────────────────────────────────
 function openSSH(h) {
-  sessionStorage.setItem('ssh_prefill', JSON.stringify({
-    host: h.ip, port: h.ssh_port || 22, username: h.ssh_user || 'root',
-    credential_id: h.credential_id || '',
-  }))
-  router.push('/tools/ssh')
+  router.push({
+    path: '/tools/ssh',
+    query: {
+      instance: h.ip,
+      ...(h.credential_id ? { credential_id: h.credential_id } : {}),
+    },
+  })
 }
 
 // ── 巡检 ─────────────────────────────────────────────────────────────────────
@@ -963,11 +1172,18 @@ async function deleteGroup(g) {
 .th-sort { cursor: pointer; user-select: none; }
 .th-sort:hover { color: var(--text-primary); }
 .sort-icon { font-size: 10px; margin-left: 3px; opacity: 0.6; }
-.hostname-cell { display: flex; align-items: center; gap: 5px; }
+.hostname-cell { white-space: normal; }
+.hostname-stack, .field-cell, .status-cell { display: flex; flex-direction: column; gap: 3px; white-space: normal; }
+.hostname-line, .status-line { display: inline-flex; align-items: center; gap: 5px; }
 .hostname { font-weight: 500; }
 .ssh-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: rgba(56,139,253,.15); color: var(--accent); }
 .mono { font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; }
 .small-text { font-size: 12px; color: var(--text-muted); }
+.runtime-cell { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; white-space: normal; }
+.field-sync { display: inline-block; max-width: 180px; padding: 2px 6px; border-radius: 6px; font-size: 11px; line-height: 1.35; white-space: normal; word-break: break-word; }
+.field-sync.ok { background: rgba(63,185,80,.12); color: var(--success); }
+.field-sync.err { background: rgba(248,81,73,.12); color: var(--error); }
+.field-updated { background: rgba(63,185,80,.08); box-shadow: inset 2px 0 0 var(--success); }
 .action-cell { display: flex; gap: 4px; }
 
 /* 状态 */
@@ -1002,7 +1218,7 @@ async function deleteGroup(g) {
 .btn-sync { background: rgba(56,139,253,.12); color: var(--accent); border-color: var(--accent); }
 .btn-sync:hover { background: rgba(56,139,253,.22); }
 .btn-xs { padding: 2px 7px; font-size: 11px; }
-.sync-msg { font-size: 12px; padding: 5px 10px; border-radius: 5px; }
+.sync-msg { display: flex; flex-direction: column; gap: 4px; font-size: 12px; padding: 5px 10px; border-radius: 5px; }
 .sync-msg.ok { background: rgba(63,185,80,.12); color: var(--success); }
 .sync-msg.err { background: rgba(248,81,73,.12); color: var(--error); }
 
@@ -1013,13 +1229,30 @@ async function deleteGroup(g) {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* 详情面板 */
-.detail-panel { width: 280px; flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.detail-panel { width: 360px; flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
 .detail-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border); }
 .detail-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
 .detail-row { display: flex; gap: 6px; font-size: 12px; }
 .dl { color: var(--text-muted); min-width: 64px; flex-shrink: 0; }
 .dv { color: var(--text-primary); word-break: break-all; }
 .detail-actions { margin-top: 8px; }
+.detail-section-title { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.metric-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.metric-tile { padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); font-size: 12px; }
+.metric-tile span { display: block; color: var(--text-muted); margin-bottom: 3px; }
+.metric-tile b { color: var(--text-primary); font-weight: 600; word-break: break-all; }
+.metric-tile.ok b, .disk-status-head b.ok { color: var(--success); }
+.metric-tile.warn b, .disk-status-head b.warn { color: var(--warning); }
+.metric-tile.crit b, .disk-status-head b.crit { color: var(--error); }
+.disk-status-list { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
+.disk-status-item { padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); }
+.disk-status-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.disk-status-head span { color: var(--text-primary); font-weight: 600; }
+.disk-bar { height: 5px; margin: 6px 0; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
+.disk-bar i { display: block; height: 100%; border-radius: inherit; background: var(--success); }
+.disk-bar i.warn { background: var(--warning); }
+.disk-bar i.crit { background: var(--error); }
+.disk-status-meta { color: var(--text-muted); font-size: 11px; }
 .label-chip-detail { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--bg-hover); margin-right: 3px; }
 .close-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; }
 
@@ -1092,6 +1325,7 @@ async function deleteGroup(g) {
 .form-group.required label::after { content: ' *'; color: var(--error); }
 .form-group label { font-size: 12px; color: var(--text-muted); }
 .form-hint { font-weight: 400; font-style: italic; }
+.credential-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 .form-group input, .form-group select, .form-group textarea { padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 100%; box-sizing: border-box; }
 .form-group textarea { resize: vertical; font-family: inherit; }
 .form-error { color: var(--error); font-size: 12px; margin-top: 6px; padding: 6px 10px; background: rgba(248,81,73,.08); border-radius: 5px; }

@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from state import load_groups, save_groups, load_cmdb
+from state import load_groups, save_groups, load_hosts_list, save_hosts_list
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -42,11 +42,10 @@ class GroupUpdateRequest(BaseModel):
 async def list_groups():
     """获取所有分组（附带每组主机数量）"""
     groups = load_groups()
-    cmdb = load_cmdb()
-    # 统计每组主机数量
+    hosts = load_hosts_list()
     count: dict[str, int] = {}
-    for meta in cmdb.values():
-        gid = meta.get("group", "")
+    for h in hosts:
+        gid = h.get("group", "")
         if gid:
             count[gid] = count.get(gid, 0) + 1
     for g in groups:
@@ -114,15 +113,14 @@ async def delete_group(group_id: str):
         raise HTTPException(status_code=404, detail="分组不存在")
     groups = [g for g in groups if g["id"] != group_id]
     save_groups(groups)
-    # 清除 CMDB 中对该分组的引用
-    from state import load_cmdb, save_cmdb
-    cmdb = load_cmdb()
+    # 清除主机列表中对该分组的引用
+    hosts = load_hosts_list()
     changed = False
-    for inst in cmdb:
-        if cmdb[inst].get("group") == group_id:
-            cmdb[inst]["group"] = ""
+    for h in hosts:
+        if h.get("group") == group_id:
+            h["group"] = ""
             changed = True
     if changed:
-        save_cmdb(cmdb)
+        save_hosts_list(hosts)
     logger.info("[groups] 删除分组: %s (%s)，已清除主机关联", group["name"], group_id)
     return {"ok": True}

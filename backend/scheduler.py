@@ -10,7 +10,7 @@ from state import (
     DINGTALK_WEBHOOK, DINGTALK_KEYWORD,
     APP_URL, SCHEDULE_CHANNELS,
     load_slowlog_targets,
-    load_groups, load_cmdb,
+    load_groups, load_cmdb, load_hosts_list,
 )
 from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
 from report_builder import (
@@ -117,17 +117,17 @@ async def _send_group_inspect_notifications(
     groups = load_groups()
     if not groups:
         return [{"skipped": True, "reason": "未配置主机分组"}]
-    cmdb = load_cmdb()
     notify_results: list[dict] = []
     if group_id:
         groups = [group for group in groups if group.get("id") == group_id]
         if not groups:
             return [{"group_id": group_id, "skipped": True, "reason": "分组不存在"}]
 
+    hosts = load_hosts_list()
     inst_to_group: dict[str, str] = {
-        inst: meta.get("group", "")
-        for inst, meta in cmdb.items()
-        if meta.get("group")
+        f"{h['ip']}:9100": h.get("group", "")
+        for h in hosts
+        if h.get("ip") and h.get("group")
     }
 
     group_results: dict[str, list[dict]] = {}
@@ -221,10 +221,10 @@ async def run_group_schedule_job() -> None:
     if not due_groups:
         return
 
-    cmdb = load_cmdb()
+    hosts_all = load_hosts_list()
     for group in due_groups:
         gid = group["id"]
-        instances = [inst for inst, meta in cmdb.items() if meta.get("group") == gid]
+        instances = [f"{h['ip']}:9100" for h in hosts_all if h.get("group") == gid and h.get("ip")]
         if not instances:
             logger.info("[group_schedule] 分组 '%s' 无关联主机，跳过", group["name"])
             continue

@@ -40,7 +40,7 @@
       <div v-show="showConnForm" class="conn-form">
         <select class="ssh-input" @change="onSelectHost($event.target.value)" :value="form.instance">
           <option value="">选择主机...</option>
-          <option v-for="h in hosts" :key="h.instance" :value="h.instance">
+          <option v-for="h in hosts" :key="hostKey(h)" :value="hostKey(h)">
             {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' ✓' : '' }}
           </option>
         </select>
@@ -77,7 +77,7 @@
               <label>主机</label>
               <select class="ssh-input" @change="onSelectHost($event.target.value)" :value="form.instance">
                 <option value="">选择主机...</option>
-                <option v-for="h in hosts" :key="h.instance" :value="h.instance">
+                <option v-for="h in hosts" :key="hostKey(h)" :value="hostKey(h)">
                   {{ h.hostname || h.ip }} ({{ h.ip }}){{ (h.ssh_saved || h.credential_id) ? ' ✓' : '' }}
                 </option>
               </select>
@@ -200,6 +200,14 @@ const _meta    = {}  // { [id]: { term, fitAddon, ws, resizeObserver } }
 const _termEls = {}  // { [id]: HTMLElement }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+function hostKey(h) {
+  return h?.instance || h?.ip || h?.id || ''
+}
+
+function findHost(key) {
+  return hosts.value.find(h => hostKey(h) === key)
+}
+
 function setTermRef(id, el) {
   if (el) _termEls[id] = el
   else delete _termEls[id]
@@ -342,7 +350,7 @@ async function doConnect() {
     return
   }
   const id = `sess_${Date.now()}`
-  const h = hosts.value.find(x => x.instance === form.instance)
+  const h = findHost(form.instance)
   const label = h ? (h.hostname || h.ip) : form.host
   sessions.value.push({
     id, label,
@@ -361,13 +369,13 @@ async function doConnect() {
 
 // ── Form helpers ──────────────────────────────────────────────────────────────
 function onSelectHost(instance) {
-  const h = hosts.value.find(x => x.instance === instance)
+  const h = findHost(instance)
   if (!h) { form.instance = ''; return }
   form.host         = h.ip
   form.port         = h.ssh_port || 22
   form.username     = h.ssh_user || 'root'
   form.password     = ''
-  form.instance     = h.instance
+  form.instance     = hostKey(h)
   form.useSaved     = !!(h.ssh_saved || h.credential_id)
   form.credentialId = h.credential_id || ''
   if (h.credential_id) {
@@ -387,7 +395,7 @@ function onSelectCredential() {
 async function loadCredentials() {
   try {
     const r = await api.listCredentials()
-    credentials.value = r.data
+    credentials.value = Array.isArray(r?.data) ? r.data : (Array.isArray(r) ? r : [])
   } catch (e) { console.error('加载凭证失败', e) }
 }
 
@@ -441,9 +449,12 @@ onMounted(async () => {
     // Auto-connect if navigated from CMDB with ?instance=xxx
     const { instance, credential_id } = route.query
     if (instance) {
-      onSelectHost(instance)
-      if (credential_id) form.credentialId = credential_id
-      const h = hosts.value.find(x => x.instance === instance)
+      onSelectHost(String(instance))
+      if (credential_id) {
+        form.credentialId = String(credential_id)
+        onSelectCredential()
+      }
+      const h = findHost(String(instance))
       if (h && (h.ssh_saved || h.credential_id || credential_id)) {
         await nextTick()
         doConnect()

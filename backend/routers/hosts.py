@@ -4,6 +4,7 @@
 """
 import json
 import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -31,6 +32,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _NOW = lambda: datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+        return value if value > 0 else default
+    except Exception:
+        logger.warning("[hosts] 环境变量 %s=%r 不是有效数字，使用默认值 %s", name, raw, default)
+        return default
+
+
+_HOST_SYNC_SSH_CONNECT_TIMEOUT = _env_float("HOST_SYNC_SSH_CONNECT_TIMEOUT", 12.0)
+_HOST_SYNC_SSH_COMMAND_TIMEOUT = _env_float("HOST_SYNC_SSH_COMMAND_TIMEOUT", 20.0)
 
 # ── 主机 CRUD ──────────────────────────────────────────────────────────────────
 
@@ -82,11 +99,18 @@ class HostUpdateRequest(BaseModel):
 async def list_hosts():
     """获取所有手动录入的主机列表。"""
     hosts = load_hosts_list()
+    credentials = {c.get("id"): c for c in load_credentials()}
     # 脱敏：不返回加密密码
     safe = []
     for h in hosts:
         entry = dict(h)
-        entry["ssh_saved"] = bool(entry.pop("ssh_password", ""))
+        credential_id = entry.get("credential_id", "")
+        entry["ssh_saved"] = bool(entry.pop("ssh_password", "")) or bool(credential_id)
+        if credential_id and credential_id in credentials:
+            cred = credentials[credential_id]
+            entry["credential_name"] = cred.get("name", credential_id)
+            entry["credential_username"] = cred.get("username", "")
+            entry["credential_port"] = cred.get("port", 22)
         safe.append(entry)
     return {"data": safe, "total": len(safe)}
 
@@ -116,7 +140,7 @@ async def create_host(body: HostCreateRequest):
         "group":        body.group,
         "ssh_port":     body.ssh_port,
         "ssh_user":     body.ssh_user,
-        "ssh_password": encrypt_password(body.ssh_password) if body.ssh_password else "",
+        "ssh_password": "" if body.credential_id else (encrypt_password(body.ssh_password) if body.ssh_password else ""),
         "credential_id": body.credential_id,
         "notes":        body.notes,
         "labels":       body.labels,
@@ -126,7 +150,7 @@ async def create_host(body: HostCreateRequest):
     hosts.append(entry)
     save_hosts_list(hosts)
     result = dict(entry)
-    result["ssh_saved"] = bool(result.pop("ssh_password", ""))
+    result["ssh_saved"] = bool(result.pop("ssh_password", "")) or bool(result.get("credential_id"))
     return result
 
 
@@ -145,13 +169,15 @@ async def update_host(host_id: str, body: HostUpdateRequest):
         val = getattr(body, f)
         if val is not None:
             host[f] = val
-    if body.ssh_password is not None:
+    if host.get("credential_id"):
+        host["ssh_password"] = ""
+    elif body.ssh_password:
         host["ssh_password"] = encrypt_password(body.ssh_password) if body.ssh_password else ""
     host["updated_at"] = _NOW()
     hosts[idx] = host
     save_hosts_list(hosts)
     result = dict(host)
-    result["ssh_saved"] = bool(result.pop("ssh_password", ""))
+    result["ssh_saved"] = bool(result.pop("ssh_password", "")) or bool(result.get("credential_id"))
     return result
 
 
@@ -181,21 +207,91 @@ DISK_KB=$(df / 2>/dev/null | awk 'NR==2{print $2}')
 [ -z "$DISK_KB" ] && DISK_KB=0
 HN=$(hostname -s 2>/dev/null)
 [ -z "$HN" ] && HN=$(hostname 2>/dev/null)
+
+cpu_snapshot() {
+  awk '/^cpu /{print $2" "$3" "$4" "$5" "$6" "$7" "$8" "$9}' /proc/stat 2>/dev/null
+}
+net_snapshot() {
+  awk 'NR>2 {gsub(":","",$1); if ($1!="lo") {rx+=$2; tx+=$10}} END{print rx+0" "tx+0}' /proc/net/dev 2>/dev/null
+}
+diskio_snapshot() {
+  awk '$3 ~ /^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+|nvme[0-9]+n[0-9]+)$/ {r+=$6; w+=$10} END{print (r+0)*512" "(w+0)*512}' /proc/diskstats 2>/dev/null
+}
+
+CPU_A=$(cpu_snapshot)
+NET_A=$(net_snapshot)
+DIO_A=$(diskio_snapshot)
+sleep 1
+CPU_B=$(cpu_snapshot)
+NET_B=$(net_snapshot)
+DIO_B=$(diskio_snapshot)
+
+CPU_USAGE=$(awk -v a="$CPU_A" -v b="$CPU_B" 'BEGIN{
+  split(a,x); split(b,y);
+  idle1=x[4]+x[5]; idle2=y[4]+y[5];
+  for(i=1;i<=8;i++){total1+=x[i]; total2+=y[i]}
+  dt=total2-total1; di=idle2-idle1;
+  if(dt>0) printf "%.1f", (dt-di)*100/dt; else print "";
+}')
+MEM_USAGE=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{if(t>0) printf "%.1f", (t-a)*100/t; else print ""}' /proc/meminfo 2>/dev/null)
+LOAD5=$(awk '{print $2}' /proc/loadavg 2>/dev/null)
+UPTIME_SECONDS=$(awk '{printf "%.0f", $1}' /proc/uptime 2>/dev/null)
+NET_RX_BPS=$(awk -v a="$NET_A" -v b="$NET_B" 'BEGIN{split(a,x); split(b,y); v=y[1]-x[1]; print v>0?v:0}')
+NET_TX_BPS=$(awk -v a="$NET_A" -v b="$NET_B" 'BEGIN{split(a,x); split(b,y); v=y[2]-x[2]; print v>0?v:0}')
+DIO_READ_BPS=$(awk -v a="$DIO_A" -v b="$DIO_B" 'BEGIN{split(a,x); split(b,y); v=y[1]-x[1]; print v>0?v:0}')
+DIO_WRITE_BPS=$(awk -v a="$DIO_A" -v b="$DIO_B" 'BEGIN{split(a,x); split(b,y); v=y[2]-x[2]; print v>0?v:0}')
+
+if command -v ss >/dev/null 2>&1; then
+  TCP_CONN=$(ss -ant 2>/dev/null | awk 'NR>1{c++}END{print c+0}')
+  TCP_TIME_WAIT=$(ss -ant state time-wait 2>/dev/null | awk 'NR>1{c++}END{print c+0}')
+elif command -v netstat >/dev/null 2>&1; then
+  TCP_CONN=$(netstat -ant 2>/dev/null | awk 'NR>2{c++}END{print c+0}')
+  TCP_TIME_WAIT=$(netstat -ant 2>/dev/null | awk '$NF=="TIME_WAIT"{c++}END{print c+0}')
+else
+  TCP_CONN=$(awk 'FNR>1{c++}END{print c+0}' /proc/net/tcp /proc/net/tcp6 2>/dev/null)
+  TCP_TIME_WAIT=$(awk 'FNR>1 && $4=="06"{c++}END{print c+0}' /proc/net/tcp /proc/net/tcp6 2>/dev/null)
+fi
+
 echo "OS_VER=${OS}"
 echo "CPU_CORES=${CPU}"
 echo "MEM_KB=${MEM_KB}"
 echo "DISK_KB=${DISK_KB}"
 echo "HOSTNAME=${HN}"
+echo "CPU_USAGE_PCT=${CPU_USAGE}"
+echo "MEM_USAGE_PCT=${MEM_USAGE}"
+echo "LOAD5=${LOAD5}"
+echo "UPTIME_SECONDS=${UPTIME_SECONDS}"
+echo "DISK_IO_READ_BPS=${DIO_READ_BPS}"
+echo "DISK_IO_WRITE_BPS=${DIO_WRITE_BPS}"
+echo "NETWORK_RX_BPS=${NET_RX_BPS}"
+echo "NETWORK_TX_BPS=${NET_TX_BPS}"
+echo "TCP_CONNECTIONS=${TCP_CONN}"
+echo "TCP_TIME_WAIT=${TCP_TIME_WAIT}"
+df -P -k -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {
+  pct=$5; gsub("%","",pct);
+  printf "DISK_USAGE=%s|%s|%s|%s|%s\n", $6, $2, $3, $4, pct
+}'
 """
 
 
-def _ssh_error_msg(e: Exception) -> str:
+def _is_ssh_timeout(e: Exception) -> bool:
+    name = type(e).__name__
+    return isinstance(e, (TimeoutError, asyncio.TimeoutError)) or name == "TimeoutError"
+
+
+def _ssh_error_msg(e: Exception, host: dict | None = None) -> str:
     """把 asyncssh / asyncio 异常转为对用户友好的中文提示。"""
     import asyncssh as _assh
     name = type(e).__name__
     msg  = str(e).strip()
-    if isinstance(e, (TimeoutError, asyncio.TimeoutError)) or name == "TimeoutError":
-        return "连接超时，请检查主机 IP 是否可达、SSH 端口是否开放"
+    if _is_ssh_timeout(e):
+        target = ""
+        if host:
+            target = f"（{host.get('ip') or '-'}:{host.get('ssh_port') or 22}）"
+        return (
+            f"SSH 连接超时{target}，请检查主机 IP 是否可达、SSH 端口是否开放；"
+            f"当前连接超时 {_HOST_SYNC_SSH_CONNECT_TIMEOUT:g}s，可通过 HOST_SYNC_SSH_CONNECT_TIMEOUT 调整"
+        )
     if isinstance(e, _assh.PermissionDenied):
         return "SSH 认证失败，请检查用户名和密码是否正确"
     if isinstance(e, _assh.ConnectionLost):
@@ -211,6 +307,35 @@ def _ssh_error_msg(e: Exception) -> str:
     if isinstance(e, ValueError):
         return msg or name
     return f"{name}：{msg}" if msg else name
+
+
+def _to_int(value: str) -> int | None:
+    try:
+        return int(float(value.strip()))
+    except Exception:
+        return None
+
+
+def _to_float(value: str) -> float | None:
+    try:
+        return round(float(value.strip()), 1)
+    except Exception:
+        return None
+
+
+def _format_uptime(seconds: int | None) -> str:
+    if seconds is None or seconds < 0:
+        return ""
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}天")
+    if hours or days:
+        parts.append(f"{hours}小时")
+    parts.append(f"{minutes}分钟")
+    return "".join(parts)
 
 
 async def _ssh_sync(host: dict) -> dict:
@@ -229,6 +354,7 @@ async def _ssh_sync(host: dict) -> dict:
         cred = next((c for c in creds if c.get("id") == cred_id), None)
         if cred:
             username = cred.get("username", username)
+            port = int(cred.get("port") or port)
             raw = cred.get("password", "")
             if raw:
                 try:
@@ -252,14 +378,15 @@ async def _ssh_sync(host: dict) -> dict:
 
     connect_kwargs = dict(
         host=ip, port=port, username=username, password=password,
-        known_hosts=None, connect_timeout=8,
+        known_hosts=None, connect_timeout=_HOST_SYNC_SSH_CONNECT_TIMEOUT,
     )
 
     async with asyncssh.connect(**connect_kwargs) as conn:
-        result = await conn.run(_SYNC_SCRIPT_SHELL, timeout=15)
+        result = await conn.run(_SYNC_SCRIPT_SHELL, timeout=_HOST_SYNC_SSH_COMMAND_TIMEOUT)
         output = result.stdout or ""
 
     info: dict = {}
+    disk_usage: list[dict] = []
     for line in output.splitlines():
         line = line.strip()
         if line.startswith("OS_VER="):
@@ -267,26 +394,86 @@ async def _ssh_sync(host: dict) -> dict:
             if v:
                 info["os_version"] = v
         elif line.startswith("CPU_CORES="):
-            try:
-                info["cpu_cores"] = int(line[10:].strip())
-            except Exception:
-                pass
+            value = _to_int(line[10:])
+            if value is not None:
+                info["cpu_cores"] = value
         elif line.startswith("MEM_KB="):
-            try:
-                kb = int(line[7:].strip())
+            kb = _to_int(line[7:])
+            if kb is not None:
                 info["memory_gb"] = round(kb / 1024 / 1024, 1) if kb > 0 else None
-            except Exception:
-                pass
         elif line.startswith("DISK_KB="):
-            try:
-                kb = int(line[8:].strip())
+            kb = _to_int(line[8:])
+            if kb is not None:
                 info["disk_gb"] = round(kb / 1024 / 1024, 1) if kb > 0 else None
-            except Exception:
-                pass
         elif line.startswith("HOSTNAME="):
             v = line[9:].strip()
             if v:
                 info["hostname"] = v
+        elif line.startswith("CPU_USAGE_PCT="):
+            value = _to_float(line[14:])
+            if value is not None:
+                info["cpu_usage_pct"] = value
+        elif line.startswith("MEM_USAGE_PCT="):
+            value = _to_float(line[14:])
+            if value is not None:
+                info["memory_usage_pct"] = value
+        elif line.startswith("LOAD5="):
+            value = _to_float(line[6:])
+            if value is not None:
+                info["load5"] = value
+        elif line.startswith("UPTIME_SECONDS="):
+            value = _to_int(line[15:])
+            if value is not None:
+                info["uptime_seconds"] = value
+                info["uptime_text"] = _format_uptime(value)
+        elif line.startswith("DISK_IO_READ_BPS="):
+            value = _to_int(line[17:])
+            if value is not None:
+                info["disk_io_read_bps"] = value
+        elif line.startswith("DISK_IO_WRITE_BPS="):
+            value = _to_int(line[18:])
+            if value is not None:
+                info["disk_io_write_bps"] = value
+        elif line.startswith("NETWORK_RX_BPS="):
+            value = _to_int(line[15:])
+            if value is not None:
+                info["network_rx_bps"] = value
+        elif line.startswith("NETWORK_TX_BPS="):
+            value = _to_int(line[15:])
+            if value is not None:
+                info["network_tx_bps"] = value
+        elif line.startswith("TCP_CONNECTIONS="):
+            value = _to_int(line[16:])
+            if value is not None:
+                info["tcp_connections"] = value
+        elif line.startswith("TCP_TIME_WAIT="):
+            value = _to_int(line[14:])
+            if value is not None:
+                info["tcp_time_wait"] = value
+        elif line.startswith("DISK_USAGE="):
+            parts = line[11:].split("|")
+            if len(parts) == 5:
+                mount, size_kb_raw, used_kb_raw, avail_kb_raw, pct_raw = parts
+                size_kb = _to_int(size_kb_raw)
+                used_kb = _to_int(used_kb_raw)
+                avail_kb = _to_int(avail_kb_raw)
+                pct = _to_float(pct_raw)
+                if mount and size_kb is not None and used_kb is not None:
+                    disk_usage.append({
+                        "mount": mount,
+                        "size_gb": round(size_kb / 1024 / 1024, 1),
+                        "used_gb": round(used_kb / 1024 / 1024, 1),
+                        "avail_gb": round((avail_kb or 0) / 1024 / 1024, 1),
+                        "used_pct": pct,
+                    })
+
+    if disk_usage:
+        info["disk_usage"] = disk_usage
+    if any(k in info for k in (
+        "cpu_usage_pct", "memory_usage_pct", "load5", "disk_usage",
+        "disk_io_read_bps", "network_rx_bps", "tcp_connections", "uptime_seconds",
+    )):
+        info["metrics_updated_at"] = _NOW()
 
     return info
 
@@ -302,9 +489,16 @@ async def sync_host_info(host_id: str):
     try:
         info = await _ssh_sync(host)
     except Exception as e:
-        logger.warning("[sync] 主机 %s (%s) 同步失败: %s: %s",
-                       host.get("hostname"), host.get("ip"), type(e).__name__, e)
-        raise HTTPException(status_code=400, detail=_ssh_error_msg(e))
+        detail = _ssh_error_msg(e, host)
+        logger.warning(
+            "[sync] 主机 %s (%s:%s) 同步失败: %s; raw=%r",
+            host.get("hostname"),
+            host.get("ip"),
+            host.get("ssh_port") or 22,
+            detail,
+            e,
+        )
+        raise HTTPException(status_code=408 if _is_ssh_timeout(e) else 400, detail=detail)
 
     if not info:
         raise HTTPException(status_code=400, detail="SSH 连接成功但未获取到系统信息，请确认 shell 可正常执行")
@@ -318,7 +512,7 @@ async def sync_host_info(host_id: str):
     save_hosts_list(hosts)
 
     result = dict(host)
-    result["ssh_saved"] = bool(result.pop("ssh_password", ""))
+    result["ssh_saved"] = bool(result.pop("ssh_password", "")) or bool(result.get("credential_id"))
     return {"ok": True, "updated": info, "host": result}
 
 
