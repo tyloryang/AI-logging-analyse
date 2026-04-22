@@ -189,6 +189,30 @@ echo "HOSTNAME=${HN}"
 """
 
 
+def _ssh_error_msg(e: Exception) -> str:
+    """把 asyncssh / asyncio 异常转为对用户友好的中文提示。"""
+    import asyncssh as _assh
+    name = type(e).__name__
+    msg  = str(e).strip()
+    if isinstance(e, (TimeoutError, asyncio.TimeoutError)) or name == "TimeoutError":
+        return "连接超时，请检查主机 IP 是否可达、SSH 端口是否开放"
+    if isinstance(e, _assh.PermissionDenied):
+        return "SSH 认证失败，请检查用户名和密码是否正确"
+    if isinstance(e, _assh.ConnectionLost):
+        return "SSH 连接中断"
+    if isinstance(e, _assh.DisconnectError):
+        return f"SSH 断开连接：{msg or name}"
+    if isinstance(e, OSError):
+        if "refused" in msg.lower() or "111" in msg:
+            return "SSH 连接被拒绝，请检查目标主机 SSH 服务是否运行"
+        if "network" in msg.lower() or "unreachable" in msg.lower():
+            return "网络不可达，请检查网络连接"
+        return f"网络错误：{msg or name}"
+    if isinstance(e, ValueError):
+        return msg or name
+    return f"{name}：{msg}" if msg else name
+
+
 async def _ssh_sync(host: dict) -> dict:
     """通过 SSH 连接主机，读取系统基本信息，返回可更新字段 dict。"""
     import asyncssh
@@ -197,18 +221,10 @@ async def _ssh_sync(host: dict) -> dict:
     port     = int(host.get("ssh_port") or 22)
     username = host.get("ssh_user") or "root"
 
-    # 解密密码
-    password = None
-    enc_pw = host.get("ssh_password", "")
-    if enc_pw:
-        try:
-            password = decrypt_password(enc_pw)
-        except Exception:
-            pass
-
     # 凭证库优先
+    password = None
     cred_id = host.get("credential_id", "")
-    if cred_id and not password:
+    if cred_id:
         creds = load_credentials()
         cred = next((c for c in creds if c.get("id") == cred_id), None)
         if cred:
@@ -220,14 +236,23 @@ async def _ssh_sync(host: dict) -> dict:
                 except Exception:
                     password = raw
 
+    # 主机自身密码
+    if not password:
+        enc_pw = host.get("ssh_password", "")
+        if enc_pw:
+            try:
+                password = decrypt_password(enc_pw)
+            except Exception:
+                pass
+
     if not ip:
         raise ValueError("主机没有配置 IP")
     if not password:
-        raise ValueError("主机没有配置 SSH 密码或关联凭证")
+        raise ValueError("主机未配置 SSH 密码，请先在编辑页面填写 SSH 密码或关联凭证")
 
     connect_kwargs = dict(
         host=ip, port=port, username=username, password=password,
-        known_hosts=None, connect_timeout=10,
+        known_hosts=None, connect_timeout=8,
     )
 
     async with asyncssh.connect(**connect_kwargs) as conn:
@@ -277,7 +302,9 @@ async def sync_host_info(host_id: str):
     try:
         info = await _ssh_sync(host)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"SSH 同步失败：{e}")
+        logger.warning("[sync] 主机 %s (%s) 同步失败: %s: %s",
+                       host.get("hostname"), host.get("ip"), type(e).__name__, e)
+        raise HTTPException(status_code=400, detail=_ssh_error_msg(e))
 
     if not info:
         raise HTTPException(status_code=400, detail="SSH 连接成功但未获取到系统信息，请确认 shell 可正常执行")
