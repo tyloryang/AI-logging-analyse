@@ -298,9 +298,9 @@
           <form @submit.prevent="saveHost">
             <div class="form-section-title">基本信息</div>
             <div class="form-row">
-              <div class="form-group required">
-                <label>主机名</label>
-                <input v-model="hostForm.hostname" placeholder="e.g. web-01" required />
+              <div class="form-group">
+                <label>主机名 <span class="form-hint">（选填，留空自动用 IP）</span></label>
+                <input v-model="hostForm.hostname" placeholder="e.g. web-01" />
               </div>
               <div class="form-group required">
                 <label>IP 地址</label>
@@ -655,7 +655,6 @@ function openEdit(h) {
 
 async function saveHost() {
   hostFormError.value = ''
-  if (!hostForm.hostname.trim()) { hostFormError.value = '主机名不能为空'; return }
   if (!hostForm.ip.trim()) { hostFormError.value = 'IP 地址不能为空'; return }
   saving.value = true
   const payload = { ...hostForm, labels: parseLabels(labelsText.value) }
@@ -705,13 +704,9 @@ const syncMsg   = ref('')
 const syncOk    = ref(false)
 
 async function syncHost(h) {
-  if (!h.ssh_saved && !h.credential_id) {
-    syncMsg.value = '请先配置 SSH 密码或关联凭证'
-    syncOk.value = false
-    return
-  }
   syncingId.value = h.id
   syncMsg.value = ''
+  syncOk.value = false
   try {
     const res = await api.syncHost(h.id)
     const updated = res.updated || {}

@@ -35,7 +35,7 @@ _NOW = lambda: datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 # ── 主机 CRUD ──────────────────────────────────────────────────────────────────
 
 class HostCreateRequest(BaseModel):
-    hostname:      str
+    hostname:      str = ""   # 可选，留空时自动用 IP 填充
     ip:            str
     platform:      str = "Linux"        # Linux / Windows / Network / Other
     os_version:    str = ""
@@ -101,7 +101,7 @@ async def create_host(body: HostCreateRequest):
     now = _NOW()
     entry: dict = {
         "id":           str(uuid.uuid4()),
-        "hostname":     body.hostname,
+        "hostname":     body.hostname.strip() or body.ip,  # 留空时用 IP
         "ip":           body.ip,
         "platform":     body.platform,
         "os_version":   body.os_version,
@@ -168,69 +168,19 @@ async def delete_host(host_id: str):
 
 # ── SSH 同步系统信息 ─────────────────────────────────────────────────────────
 
-_SYNC_SCRIPT = """
-python3 - <<'PYEOF' 2>/dev/null || python - <<'PYEOF' 2>/dev/null
-import subprocess, json, os, platform
-
-def run(cmd):
-    try:
-        return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=5).decode().strip()
-    except Exception:
-        return ""
-
-info = {}
-
-# OS 版本
-os_release = run("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'\"' -f2")
-if not os_release:
-    os_release = run("lsb_release -d 2>/dev/null | cut -f2")
-if not os_release:
-    os_release = run("uname -sr")
-info["os_version"] = os_release
-
-# CPU 核心数
-cpu_cores = run("nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null")
-try:
-    info["cpu_cores"] = int(cpu_cores)
-except Exception:
-    pass
-
-# 内存 GB
-mem_kb = run("grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}'")
-try:
-    info["memory_gb"] = round(int(mem_kb) / 1024 / 1024, 1)
-except Exception:
-    pass
-
-# 磁盘 GB（根分区）
-disk_kb = run("df / 2>/dev/null | tail -1 | awk '{print $2}'")
-try:
-    info["disk_gb"] = round(int(disk_kb) / 1024 / 1024, 1)
-except Exception:
-    pass
-
-# 主机名
-info["hostname"] = run("hostname -s 2>/dev/null || hostname")
-
-print(json.dumps(info))
-PYEOF
-"""
-
 _SYNC_SCRIPT_SHELL = r"""
-set -e
-INFO="{}"
-
-# OS 版本
-OS=$(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || lsb_release -d 2>/dev/null | cut -f2 || uname -sr)
-# CPU
-CPU=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 0)
-# 内存 KB → GB
-MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
-# 磁盘 KB → GB (根分区)
-DISK_KB=$(df / 2>/dev/null | tail -1 | awk '{print $2}' || echo 0)
-# 主机名
-HN=$(hostname -s 2>/dev/null || hostname)
-
+OS=$(grep -m1 PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2)
+[ -z "$OS" ] && OS=$(lsb_release -d 2>/dev/null | awk -F'\t' '{print $2}')
+[ -z "$OS" ] && OS=$(uname -sr 2>/dev/null)
+CPU=$(nproc 2>/dev/null)
+[ -z "$CPU" ] && CPU=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
+[ -z "$CPU" ] && CPU=0
+MEM_KB=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
+[ -z "$MEM_KB" ] && MEM_KB=0
+DISK_KB=$(df / 2>/dev/null | awk 'NR==2{print $2}')
+[ -z "$DISK_KB" ] && DISK_KB=0
+HN=$(hostname -s 2>/dev/null)
+[ -z "$HN" ] && HN=$(hostname 2>/dev/null)
 echo "OS_VER=${OS}"
 echo "CPU_CORES=${CPU}"
 echo "MEM_KB=${MEM_KB}"
