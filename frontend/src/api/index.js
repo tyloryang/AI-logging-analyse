@@ -28,11 +28,14 @@ export const api = {
   listReports:    () => http.get('/report/list'),
   getReport:      (id) => http.get(`/report/${id}`),
   notifyReport:   (id, channels) => http.post(`/report/${id}/notify`, { channels }),
-  // CMDB / 主机
+  // CMDB / 主机（手动录入）
   getHosts:       () => http.get('/hosts'),
-  updateHost:     (instance, data) => http.put(`/hosts/${instance}`, data),
-  inspectHosts:   () => http.get('/hosts/inspect'),
-  inspectHost:    (instance) => http.get(`/hosts/${instance}/inspect`),
+  createHost:     (data) => http.post('/hosts', data),
+  updateHost:     (id, data) => http.put(`/hosts/${id}`, data),
+  deleteHost:     (id) => http.delete(`/hosts/${id}`),
+  syncHost:       (id) => http.post(`/hosts/${id}/sync`),
+  inspectHosts:   (groupId) => http.get('/hosts/inspect', { params: groupId ? { group_id: groupId } : {} }),
+  inspectHost:    (id) => http.get(`/hosts/${id}/inspect`),
   notifyInspectGroups: (data) => http.post('/hosts/inspect/notify-groups', data),
   // SSH 凭证库
   listCredentials:   () => http.get('/ssh/credentials'),
@@ -162,6 +165,19 @@ export const api = {
   alertGroup:         (id)    => http.get(`/alerts/groups/${id}`),
   alertUpdateStatus:  (id, data) => http.put(`/alerts/groups/${id}/status`, data),
   alertStats:         ()      => http.get('/alerts/stats'),
+  // Jenkins CI/CD
+  jenkinsGetConfig:     ()           => http.get('/jenkins/config'),
+  jenkinsSaveConfig:    (data)       => http.put('/jenkins/config', data),
+  jenkinsTest:          ()           => http.get('/jenkins/test'),
+  jenkinsGetJobs:       ()           => http.get('/jenkins/jobs'),
+  jenkinsSearchJobs:    (q)          => http.get('/jenkins/jobs/search', { params: { q } }),
+  jenkinsGetBuildInfo:  (job, build) => http.get(`/jenkins/jobs/${encodeURIComponent(job)}/builds/${build}`),
+  jenkinsGetBuildLogs:  (job, build, lines) => http.get(`/jenkins/jobs/${encodeURIComponent(job)}/builds/${build}/logs`, { params: { lines } }),
+  jenkinsGetTests:      (job, build) => http.get(`/jenkins/jobs/${encodeURIComponent(job)}/builds/${build}/tests`),
+  jenkinsGetRunning:    ()           => http.get('/jenkins/running'),
+  jenkinsGetQueue:      ()           => http.get('/jenkins/queue'),
+  jenkinsBuild:         (data)       => http.post('/jenkins/build', data),
+  jenkinsCancelQueue:   (queue_id)   => http.post('/jenkins/queue/cancel', { queue_id }),
   // Elasticsearch
   esClusters:       ()           => http.get('/es/clusters'),
   esAddCluster:     (data)       => http.post('/es/clusters', data),

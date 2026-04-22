@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -95,14 +96,94 @@ clusterer = LogClusterer()
 
 # ── CMDB / 凭证辅助函数 ───────────────────────────────────────────────────────
 
-def load_cmdb() -> dict:
+def load_hosts_list() -> list[dict]:
+    """新格式：主机列表（手动录入，UUID 主键）。"""
     if CMDB_FILE.exists():
-        return json.loads(CMDB_FILE.read_text(encoding="utf-8"))
-    return {}
+        try:
+            data = json.loads(CMDB_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                # 确保每条记录都有 id
+                changed = False
+                for h in data:
+                    if not h.get("id"):
+                        h["id"] = str(uuid.uuid4())
+                        changed = True
+                if changed:
+                    CMDB_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                return data
+            # 兼容旧 dict 格式：自动迁移为列表并回写，确保 ID 稳定
+            now = __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            # 用户主动录入的字段（与 Prometheus 自动发现区别）
+            _user_fields = {"owner", "group", "role", "ssh_user", "ssh_password", "notes"}
+            # 先处理"命名主机"（key 不含冒号且不是 undefined），再处理 ip:port 条目
+            items = list(data.items())
+            named   = [(k, v) for k, v in items if ":" not in k and k not in ("undefined",)]
+            ported  = [(k, v) for k, v in items if ":" in k]
+            ordered = named + ported
+            result: list[dict] = []
+            seen_ips: set[str] = set()
+            for instance, meta in ordered:
+                if instance == "undefined":
+                    continue
+                host = dict(meta)
+                ip = host.get("ip") or instance.split(":")[0]
+                if not ip or ip == "undefined":
+                    continue
+                # 跳过重复 IP（命名主机优先，port 条目排后，所以命名主机不会被覆盖）
+                if ip in seen_ips:
+                    continue
+                # 过滤纯 Prometheus 发现节点（只有 ip 字段，无任何用户信息）
+                has_user_info = any(host.get(f) for f in _user_fields)
+                is_named = ":" not in instance
+                if not has_user_info and not is_named:
+                    continue
+                seen_ips.add(ip)
+                host["ip"] = ip
+                host.setdefault("id", str(uuid.uuid4()))
+                # 使用 key 作为 hostname（如果 key 是有意义的名字）
+                if is_named and instance not in (ip, "undefined"):
+                    host.setdefault("hostname", instance)
+                else:
+                    host.setdefault("hostname", ip)
+                host.setdefault("platform", "Linux")
+                host.setdefault("status", "active")
+                host.setdefault("env", host.get("env") or "production")
+                host.setdefault("created_at", now)
+                host.setdefault("updated_at", now)
+                result.append(host)
+            # 回写 list 格式，ID 固定下来
+            CMDB_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("[CMDB] 旧格式自动迁移完成，共 %d 台主机", len(result))
+            return result
+        except Exception as exc:
+            logger.warning("[CMDB] load_hosts_list 异常: %s", exc)
+    return []
+
+
+def save_hosts_list(hosts: list[dict]) -> None:
+    CMDB_FILE.write_text(json.dumps(hosts, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_cmdb() -> dict:
+    """向后兼容：返回以 ip 为键的 dict，供 SSH/慢日志/报告等模块使用。"""
+    hosts = load_hosts_list()
+    return {h["ip"]: h for h in hosts if h.get("ip")}
 
 
 def save_cmdb(data: dict) -> None:
-    CMDB_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    """向后兼容写入（仅供旧代码路径使用，新代码请用 save_hosts_list）。"""
+    hosts = load_hosts_list()
+    host_map = {h["ip"]: h for h in hosts if h.get("ip")}
+    for ip, meta in data.items():
+        if ip in host_map:
+            host_map[ip].update(meta)
+        else:
+            entry = dict(meta)
+            entry.setdefault("id", str(uuid.uuid4()))
+            entry.setdefault("ip", ip)
+            entry.setdefault("hostname", ip)
+            host_map[ip] = entry
+    save_hosts_list(list(host_map.values()))
 
 
 def load_credentials() -> list[dict]:

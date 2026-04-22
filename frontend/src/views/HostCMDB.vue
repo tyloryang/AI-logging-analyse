@@ -7,16 +7,16 @@
         <div class="stat-label">主机总数</div>
       </div>
       <div class="stat-card ok">
-        <div class="stat-val">{{ countByState('up') }}</div>
+        <div class="stat-val">{{ countByStatus('active') }}</div>
         <div class="stat-label">在线</div>
       </div>
       <div class="stat-card warn">
-        <div class="stat-val">{{ inspectSummary.warning }}</div>
-        <div class="stat-label">警告</div>
+        <div class="stat-val">{{ countByStatus('maintenance') }}</div>
+        <div class="stat-label">维护中</div>
       </div>
       <div class="stat-card error">
-        <div class="stat-val">{{ inspectSummary.critical }}</div>
-        <div class="stat-label">严重</div>
+        <div class="stat-val">{{ countByStatus('offline') }}</div>
+        <div class="stat-label">离线</div>
       </div>
     </div>
 
@@ -24,43 +24,36 @@
     <div class="toolbar">
       <div class="toolbar-left">
         <div class="tab-group">
-          <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">
-            主机 CMDB
-          </button>
-          <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">
-            巡检报告
-          </button>
-          <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
-            分组管理
-          </button>
-          <RouterLink to="/ssh" class="tab-btn ssh-link">
-            SSH 终端 →
-          </RouterLink>
+          <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">主机 CMDB</button>
+          <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">巡检报告</button>
+          <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">分组管理</button>
+          <RouterLink to="/tools/ssh" class="tab-btn ssh-link">SSH 终端 →</RouterLink>
         </div>
       </div>
       <div class="toolbar-right">
-        <button class="btn btn-outline" @click="loadHosts" :disabled="loading">
+        <input v-if="tab === 'cmdb'" v-model="search" class="search-input" placeholder="搜索主机名/IP/负责人..." />
+        <template v-if="tab === 'cmdb'">
+          <select v-model="envFilter" class="filter-select">
+            <option value="">全部环境</option>
+            <option value="production">生产</option>
+            <option value="staging">预发</option>
+            <option value="development">开发</option>
+            <option value="testing">测试</option>
+            <option value="dr">容灾</option>
+          </select>
+          <select v-model="groupFilter" class="filter-select">
+            <option value="">全部分组</option>
+            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+          </select>
+          <button class="btn btn-primary" @click="openAdd">+ 添加主机</button>
+        </template>
+        <button class="btn btn-outline" @click="tab === 'cmdb' ? loadHosts() : (tab === 'groups' ? loadGroups() : null)" :disabled="loading">
           <span v-if="loading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-          <span v-else>🔄</span> 刷新
+          <span v-else>↺</span> 刷新
         </button>
-        <!-- 列设置 -->
-        <div v-if="tab === 'cmdb'" class="col-picker-wrap">
-          <button class="btn btn-outline" @click.stop="showColPicker = !showColPicker">⚙ 列设置</button>
-          <div v-if="showColPicker" class="col-picker-dropdown" @click.stop>
-            <div class="col-picker-title">显示列</div>
-            <label v-for="col in optionalColumns" :key="col.key" class="col-picker-item">
-              <input type="checkbox" :checked="visibleCols.has(col.key)" @change="toggleCol(col.key)" />
-              {{ col.label }}
-            </label>
-          </div>
-        </div>
+        <!-- 巡检操作按钮 -->
         <template v-if="tab === 'inspect'">
-          <select
-            v-model="inspectGroupId"
-            class="inspect-group-select"
-            :disabled="inspecting || inspectAiStreaming"
-            title="选择分组后只巡检该组主机"
-          >
+          <select v-model="inspectGroupId" class="filter-select" :disabled="inspecting">
             <option value="">全部主机</option>
             <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.host_count || 0 }}台）</option>
           </select>
@@ -68,31 +61,16 @@
             <span v-if="inspecting" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>🔍</span> {{ inspectGroupId ? '巡检此分组' : '执行巡检' }}
           </button>
-          <button
-            v-if="inspectResults.length && !inspecting"
-            class="btn btn-ai"
-            :disabled="inspectAiStreaming"
-            @click="runInspectAI"
-          >
+          <button v-if="inspectResults.length && !inspecting" class="btn btn-ai" :disabled="inspectAiStreaming" @click="runInspectAI">
             <span v-if="inspectAiStreaming" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>🤖</span> AI分析
           </button>
-          <button
-            v-if="inspectResults.length && !inspecting && groups.length"
-            class="btn btn-outline"
-            :disabled="notifyingGroups || !inspectGroupId"
-            @click="notifyGroups()"
-            :title="inspectGroupId ? '将当前选中分组的巡检结果推送到飞书' : '请先选择一个分组后再推送'"
-          >
+          <button v-if="inspectResults.length && !inspecting && groups.length" class="btn btn-outline"
+            :disabled="notifyingGroups || !inspectGroupId" @click="notifyGroups()">
             <span v-if="notifyingGroups" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>📤</span> 推送当前分组
           </button>
-          <button
-            v-if="inspectResults.length && !inspecting"
-            class="btn btn-excel"
-            :disabled="excelDownloading"
-            @click="downloadInspectExcel"
-          >
+          <button v-if="inspectResults.length && !inspecting" class="btn btn-excel" :disabled="excelDownloading" @click="downloadInspectExcel">
             <span v-if="excelDownloading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>📥</span> 下载 Excel
           </button>
@@ -100,134 +78,83 @@
       </div>
     </div>
 
-    <!-- 内容区（左：三个 tab 内容；右：详情栏） -->
     <div class="content-row">
     <div class="content-main">
 
     <!-- CMDB 主机表 -->
     <div v-show="tab === 'cmdb'" class="cmdb-tab-wrap">
-      <!-- 标签筛选栏（在滚动区外，不影响 sticky 表头） -->
-      <div v-if="allLabelKeys.length" class="label-filter-bar">
-        <span class="label-filter-title">标签筛选：</span>
-        <div class="label-filter-tags">
-          <template v-for="key in allLabelKeys" :key="key">
-            <div class="label-filter-group">
-              <span class="label-key-name">{{ key }}</span>
-              <button
-                v-for="val in labelValuesByKey(key)" :key="val"
-                class="label-filter-chip"
-                :class="{ active: isLabelFilterActive(key, val) }"
-                @click="toggleLabelFilter(key, val)"
-              >{{ val }}</button>
-            </div>
-          </template>
-          <button v-if="labelFilters.size" class="label-filter-clear" @click="labelFilters.clear(); labelFilters = new Map(labelFilters)">✕ 清除</button>
-        </div>
-      </div>
-
-      <!-- 分组筛选 -->
-      <div v-if="groups.length" class="group-filter-bar">
-        <span class="label-filter-title">分组：</span>
-        <input
-          v-model="groupSearch"
-          class="group-filter-search"
-          placeholder="搜索分组..."
-        />
-        <button class="label-filter-chip" :class="{ active: groupFilter === '' }" @click="groupFilter = ''">全部（{{ hosts.length }}）</button>
-        <button
-          v-for="g in filteredGroupsForFilter" :key="g.id"
-          class="label-filter-chip"
-          :class="{ active: groupFilter === g.id }"
-          @click="groupFilter = groupFilter === g.id ? '' : g.id"
-        >{{ g.name }}（{{ g.host_count || 0 }}）</button>
-      </div>
-
-      <!-- 表格滚动区 -->
       <div class="table-wrap">
-      <div v-if="loading && !hosts.length" class="empty-state">
-        <div class="spinner"></div><p>发现主机中...</p>
+        <div v-if="loading && !hosts.length" class="empty-state">
+          <div class="spinner"></div><p>加载主机列表...</p>
+        </div>
+        <div v-else-if="!hosts.length" class="empty-state">
+          <span class="icon">🖥️</span>
+          <p>暂无主机<br><small style="color:var(--text-muted)">点击「+ 添加主机」手动录入</small></p>
+        </div>
+        <table v-else class="host-table">
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th class="th-sort" @click="setSort('hostname')">主机名<span class="sort-icon">{{ sortKey==='hostname'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
+              <th class="th-sort" @click="setSort('ip')">IP<span class="sort-icon">{{ sortKey==='ip'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
+              <th>平台</th>
+              <th>操作系统</th>
+              <th>配置</th>
+              <th class="th-sort" @click="setSort('env')">环境<span class="sort-icon">{{ sortKey==='env'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
+              <th>用途</th>
+              <th>负责人</th>
+              <th>机房</th>
+              <th>分组</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="h in sortedHosts" :key="h.id" @click="selectHost(h)">
+              <td><span class="status-dot" :class="h.status"></span><span class="status-text">{{ statusLabel(h.status) }}</span></td>
+              <td class="hostname-cell">
+                <span class="hostname">{{ h.hostname }}</span>
+                <span v-if="h.ssh_saved" class="ssh-badge" title="已配置 SSH 凭证">SSH</span>
+              </td>
+              <td class="mono">{{ h.ip }}</td>
+              <td><span class="platform-badge" :class="h.platform?.toLowerCase()">{{ h.platform || '-' }}</span></td>
+              <td class="small-text">{{ h.os_version || '-' }}</td>
+              <td class="small-text">
+                <span v-if="h.cpu_cores">{{ h.cpu_cores }}C</span>
+                <span v-if="h.cpu_cores && h.memory_gb"> / </span>
+                <span v-if="h.memory_gb">{{ h.memory_gb }}G</span>
+                <span v-if="!h.cpu_cores && !h.memory_gb">-</span>
+              </td>
+              <td><span class="env-badge" :class="h.env">{{ envLabel(h.env) }}</span></td>
+              <td class="small-text">{{ h.role || '-' }}</td>
+              <td class="small-text">{{ h.owner || '-' }}</td>
+              <td class="small-text">{{ h.datacenter || '-' }}</td>
+              <td><span v-if="h.group && groupMap[h.group]" class="group-badge-inline">{{ groupMap[h.group] }}</span><span v-else>-</span></td>
+              <td class="action-cell" @click.stop>
+                <button class="btn btn-outline btn-xs" @click="openEdit(h)" title="编辑">✏</button>
+                <button class="btn btn-outline btn-xs" @click="openSSH(h)" title="SSH 连接">>_</button>
+                <button class="btn btn-sync btn-xs" :disabled="syncingId === h.id" @click="syncHost(h)" title="同步系统信息">
+                  <span v-if="syncingId === h.id" class="spinner" style="width:11px;height:11px;border-width:1.5px"></span>
+                  <span v-else>⟳</span>
+                </button>
+                <button class="btn btn-danger btn-xs" @click="confirmDelete(h)" title="删除">✕</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <div v-else-if="error" class="empty-state">
-        <span class="icon">⚠️</span>
-        <p style="color:var(--error)">{{ error }}</p>
-        <p style="color:var(--text-muted);font-size:12px">请检查 .env 中 PROMETHEUS_URL 配置</p>
-      </div>
-      <div v-else-if="!hosts.length" class="empty-state">
-        <span class="icon">🖥️</span><p>未发现主机<br><small style="color:var(--text-muted)">请确认 Prometheus 已配置 node_exporter targets</small></p>
-      </div>
-      <table v-if="hosts.length" class="host-table">
-        <thead>
-          <tr>
-            <th class="th-sort" @click="setSort('state')">状态<span class="sort-icon">{{ sortKey==='state' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('hostname')">主机名<span class="sort-icon">{{ sortKey==='hostname' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th class="th-sort" @click="setSort('ip')">IP<span class="sort-icon">{{ sortKey==='ip' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('job')" class="th-sort" @click="setSort('job')">Job<span class="sort-icon">{{ sortKey==='job' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('cpu')" class="th-sort" @click="setSort('cpu')">CPU%<span class="sort-icon">{{ sortKey==='cpu' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('mem')" class="th-sort" @click="setSort('mem')">内存%<span class="sort-icon">{{ sortKey==='mem' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('disk')" class="th-sort" @click="setSort('disk')">磁盘(/)<span class="sort-icon">{{ sortKey==='disk' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('disk_read')" class="th-sort" @click="setSort('disk_read')">I/O(R/W)<span class="sort-icon">{{ sortKey==='disk_read' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('net_recv')" class="th-sort" @click="setSort('net_recv')">网络(↓/↑)<span class="sort-icon">{{ sortKey==='net_recv' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('tcp_estab')" class="th-sort" @click="setSort('tcp_estab')">TCP<span class="sort-icon">{{ sortKey==='tcp_estab' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('load5')" class="th-sort" @click="setSort('load5')">负载<span class="sort-icon">{{ sortKey==='load5' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th v-if="visibleCols.has('uptime')" class="th-sort" @click="setSort('uptime')">运行时长<span class="sort-icon">{{ sortKey==='uptime' ? (sortAsc?'↑':'↓') : '⇅' }}</span></th>
-            <th>操作</th>
-            <th v-if="visibleCols.has('labels') && allLabelKeys.length">标签</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="h in sortedHosts" :key="h.instance" @click="selectHost(h)">
-            <td><span class="dot" :class="h.state === 'up' ? 'ok' : 'err'"></span></td>
-            <td class="hostname">
-              {{ h.hostname || h.instance }}
-              <span v-if="h.group && groupMap[h.group]" class="group-badge-inline">{{ groupMap[h.group] }}</span>
-            </td>
-            <td>{{ h.ip }}</td>
-            <td v-if="visibleCols.has('job')" class="small-text">{{ h.job || '-' }}</td>
-            <td v-if="visibleCols.has('cpu')" :class="usageClass(h.metrics.cpu_usage)">{{ fmt(h.metrics.cpu_usage, '%') }}</td>
-            <td v-if="visibleCols.has('mem')" :class="usageClass(h.metrics.mem_usage)">{{ fmt(h.metrics.mem_usage, '%') }}</td>
-            <td v-if="visibleCols.has('disk')" :class="usageClass(rootDiskUsage(h))">
-              {{ fmt(rootDiskUsage(h), '%') }}
-              <span v-if="maxDiskPartition(h)" class="disk-mount">{{ maxDiskPartition(h).mountpoint }}</span>
-            </td>
-            <td v-if="visibleCols.has('disk_read')" class="small-text">{{ fmtIO(h.metrics) }}</td>
-            <td v-if="visibleCols.has('net_recv')" class="small-text">{{ fmtNet(h.metrics) }}</td>
-            <td v-if="visibleCols.has('tcp_estab')" class="small-text">{{ fmtTcp(h.metrics) }}</td>
-            <td v-if="visibleCols.has('load5')">{{ h.metrics.load5 != null ? h.metrics.load5.toFixed(2) : '-' }}</td>
-            <td v-if="visibleCols.has('uptime')">{{ fmtUptime(h.metrics.uptime_seconds) }}</td>
-            <td class="action-cell" @click.stop>
-              <button class="btn btn-outline btn-xs" @click="openSSH(h)" title="SSH 连接">>_</button>
-            </td>
-            <td v-if="visibleCols.has('labels') && allLabelKeys.length" class="label-cell">
-              <div class="label-chips-wrap">
-                <span
-                  v-for="(val, key) in h.custom_labels" :key="key"
-                  class="label-chip"
-                  :style="{ '--label-hue': labelHue(key) }"
-                  @click.stop="toggleLabelFilter(key, val)"
-                >{{ key }}=<b>{{ val }}</b></span>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      </div><!-- /table-wrap -->
-    </div><!-- /cmdb-tab-wrap -->
+    </div>
 
     <!-- 巡检报告 -->
     <div v-show="tab === 'inspect'" class="inspect-wrap">
-      <div v-if="inspecting" class="empty-state">
-        <div class="spinner"></div><p>巡检中，请稍候...</p>
-      </div>
+      <div v-if="inspecting" class="empty-state"><div class="spinner"></div><p>巡检中，请稍候...</p></div>
       <div v-else-if="inspectError" class="empty-state">
-        <span class="icon">⚠️</span>
-        <p style="color:var(--error)">{{ inspectError }}</p>
+        <span class="icon">⚠️</span><p style="color:var(--error)">{{ inspectError }}</p>
         <button class="btn btn-outline" style="margin-top:10px" @click="runInspect">重试</button>
       </div>
-      <div v-else-if="!inspectResults.length && !inspectAiStreaming" class="empty-state">
-        <span class="icon">🔍</span><p>点击「执行巡检」开始</p>
+      <div v-else-if="!inspectResults.length" class="empty-state">
+        <span class="icon">🔍</span><p>点击「执行巡检」开始<br><small style="color:var(--text-muted)">巡检依赖 Prometheus node_exporter 指标</small></p>
       </div>
       <div v-else style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0">
-        <!-- 巡检范围标签 -->
         <div class="inspect-scope-bar">
           <span class="inspect-scope-label">巡检范围：</span>
           <span class="inspect-scope-badge" :class="inspectSummary.group_id ? 'group' : 'all'">
@@ -235,16 +162,12 @@
           </span>
           <span class="inspect-scope-stat">共 {{ inspectSummary.total }} 台 · 正常 {{ inspectSummary.normal }} · 警告 {{ inspectSummary.warning }} · 严重 {{ inspectSummary.critical }}</span>
         </div>
-        <div v-if="inspectNotifyMessage" class="inspect-notify-msg" :class="inspectNotifyStatus">
-          {{ inspectNotifyMessage }}
-        </div>
-        <!-- AI 分析总结卡片（流式显示） -->
+        <div v-if="inspectNotifyMessage" class="inspect-notify-msg" :class="inspectNotifyStatus">{{ inspectNotifyMessage }}</div>
         <div v-if="inspectAiSummary || inspectAiStreaming" class="inspect-ai-card" :class="{ streaming: inspectAiStreaming }">
           <div class="inspect-ai-header">
             <div>
               <div class="inspect-ai-title">
-                <span v-if="inspectAiStreaming" class="ai-thinking-dot"></span>
-                AI 分析总结
+                <span v-if="inspectAiStreaming" class="ai-thinking-dot"></span>AI 分析总结
               </div>
               <div v-if="inspectAiProvider" class="inspect-ai-provider">模型：{{ inspectAiProvider }}</div>
             </div>
@@ -252,54 +175,40 @@
               <span class="inspect-ai-badge" :class="{ fallback: inspectAiFallback, streaming: inspectAiStreaming }">
                 {{ inspectAiStreaming ? '生成中...' : inspectAiFallback ? '规则兜底' : 'AI生成' }}
               </span>
-              <button v-if="!inspectAiStreaming" class="ai-toggle-btn" @click="aiExpanded = !aiExpanded" :title="aiExpanded ? '收起' : '展开'">
-                {{ aiExpanded ? '▲ 收起' : '▼ 展开' }}
-              </button>
+              <button v-if="!inspectAiStreaming" class="ai-toggle-btn" @click="aiExpanded = !aiExpanded">{{ aiExpanded ? '▲ 收起' : '▼ 展开' }}</button>
             </div>
           </div>
           <div v-show="aiExpanded || inspectAiStreaming" class="inspect-ai-content">
             <span v-if="inspectAiSummary">{{ inspectAiSummary }}</span>
-            <span v-else-if="inspectAiStreaming" class="ai-placeholder">AI 正在分析巡检数据...</span>
-            <span v-else class="ai-placeholder">暂无分析结果</span>
+            <span v-else class="ai-placeholder">AI 正在分析...</span>
             <span v-if="inspectAiStreaming" class="ai-cursor"></span>
           </div>
-          <div v-if="inspectAiFallback && !inspectAiStreaming" class="inspect-ai-note">
-            AI 服务暂不可用，当前显示规则摘要。
-          </div>
         </div>
-        <!-- 巡检结果表格 -->
         <div class="inspect-table-wrap">
           <table class="inspect-table">
             <thead>
               <tr>
-                <th class="ith-sort" @click="setInspectSort('overall')">
-                  状态<em>{{ inspectSortKey==='overall' ? (inspectSortAsc?'↑':'↓') : '' }}</em>
-                </th>
-                <th class="ith-sort" @click="setInspectSort('hostname')">
-                  主机名<em>{{ inspectSortKey==='hostname' ? (inspectSortAsc?'↑':'↓') : '' }}</em>
-                </th>
-                <th class="ith-sort" @click="setInspectSort('ip')">
-                  IP<em>{{ inspectSortKey==='ip' ? (inspectSortAsc?'↑':'↓') : '' }}</em>
-                </th>
+                <th>状态</th>
+                <th>主机名</th>
+                <th>IP</th>
                 <th>OS</th>
                 <th>分组</th>
-                <th v-for="col in inspectCheckCols" :key="col" class="ith-sort" @click="setInspectSort('check:'+col)">
-                  {{ col }}<em>{{ inspectSortKey==='check:'+col ? (inspectSortAsc?'↑':'↓') : '' }}</em>
-                </th>
+                <th v-for="col in inspectCheckCols" :key="col">{{ col }}</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in sortedInspectResults" :key="r.instance" :class="'irow-'+r.overall">
-                <td><span class="inspect-badge" :class="r.overall">{{ statusLabel(r.overall) }}</span></td>
+              <tr v-for="r in inspectResults" :key="r.instance" :class="'irow-'+r.overall">
+                <td><span class="inspect-badge" :class="r.overall">{{ inspectStatusLabel(r.overall) }}</span></td>
                 <td class="itd-host">{{ r.hostname || r.instance }}</td>
                 <td class="mono itd-ip">{{ r.ip }}</td>
                 <td class="itd-os">{{ r.os || '-' }}</td>
                 <td class="itd-group">{{ groupMap[r.group] || '-' }}</td>
-                <td
-                  v-for="col in inspectCheckCols" :key="col"
-                  :class="inspectCellClass(r, col)"
-                  :title="inspectCellThreshold(r, col)"
-                >{{ inspectCellValue(r, col) }}</td>
+                <td v-for="col in inspectCheckCols" :key="col">
+                  <span v-if="checkStatus(r, col)" class="check-cell" :class="checkStatus(r, col)">
+                    {{ checkValue(r, col) }}
+                  </span>
+                  <span v-else class="check-na">-</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -307,1517 +216,889 @@
       </div>
     </div>
 
-
-
     <!-- 分组管理 -->
     <div v-show="tab === 'groups'" class="groups-wrap">
-      <div class="groups-layout">
-        <!-- 左：分组列表 -->
-        <div class="groups-list-panel">
-          <div class="groups-panel-title">主机分组</div>
-          <div v-if="!groups.length" class="empty-state" style="min-height:120px">
-            <span class="icon">📂</span><p>暂无分组</p>
-          </div>
-          <div
-            v-for="g in groups" :key="g.id"
-            class="group-item"
-            :class="{ active: selectedGroup && selectedGroup.id === g.id }"
-            @click="selectGroup(g)"
-          >
-            <div class="group-item-name">{{ g.name }}</div>
-            <div class="group-item-meta">
-              <span class="group-host-count">{{ g.host_count || 0 }} 台主机</span>
-              <span v-if="g.schedule_enabled" class="group-badge schedule">定时</span>
-              <span v-if="g.feishu_webhook" class="group-badge feishu">飞书</span>
-              <span v-if="g.dingtalk_webhook" class="group-badge dingtalk">钉钉</span>
+      <div class="groups-header">
+        <button class="btn btn-primary" @click="openAddGroup">+ 新建分组</button>
+      </div>
+      <div v-if="!groups.length" class="empty-state"><span class="icon">🗂️</span><p>暂无分组，点击「新建分组」创建</p></div>
+      <div v-else class="group-cards">
+        <div v-for="g in groups" :key="g.id" class="group-card">
+          <div class="group-card-header">
+            <span class="group-name">{{ g.name }}</span>
+            <div class="group-actions">
+              <button class="btn btn-outline btn-xs" @click="openEditGroup(g)">编辑</button>
+              <button class="btn btn-danger btn-xs" @click="deleteGroup(g)">删除</button>
             </div>
           </div>
-          <button class="btn btn-primary" style="width:100%;margin-top:12px" @click="startCreateGroup">
-            + 新建分组
-          </button>
-        </div>
-
-        <!-- 右：分组编辑 -->
-        <div class="groups-edit-panel">
-          <template v-if="groupForm.visible">
-            <div class="groups-panel-title">{{ groupForm.id ? '编辑分组' : '新建分组' }}</div>
-            <div class="edit-row">
-              <label>分组名称</label>
-              <input v-model="groupForm.name" placeholder="如：生产环境、DBA组" />
-            </div>
-            <div class="edit-row">
-              <label>飞书 Webhook</label>
-              <input v-model="groupForm.feishu_webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
-            </div>
-            <div class="edit-row">
-              <label>飞书关键词</label>
-              <input v-model="groupForm.feishu_keyword" placeholder="如：运维（飞书机器人安全关键词）" />
-            </div>
-            <div class="edit-row">
-              <label>钉钉 Webhook</label>
-              <input v-model="groupForm.dingtalk_webhook" placeholder="https://oapi.dingtalk.com/robot/send?..." />
-            </div>
-            <div class="edit-row">
-              <label>钉钉关键词</label>
-              <input v-model="groupForm.dingtalk_keyword" placeholder="如：运维" />
-            </div>
-            <div class="edit-row" style="margin-top:12px">
-              <label>定时巡检推送</label>
-              <div class="schedule-row">
-                <label class="toggle-switch">
-                  <input type="checkbox" v-model="groupForm.schedule_enabled" />
-                  <span class="toggle-slider"></span>
-                </label>
-                <span class="toggle-state-label">{{ groupForm.schedule_enabled ? '已开启' : '已关闭' }}</span>
-                <template v-if="groupForm.schedule_enabled">
-                  <span class="schedule-at">每天</span>
-                  <input type="time" v-model="groupForm.schedule_time" class="time-input" />
-                  <span class="schedule-at">执行巡检并推送</span>
-                </template>
-              </div>
-            </div>
-            <div class="group-form-note">
-              💡 开启后每天在指定时间自动巡检此分组主机并推送完整报告，不论是否有告警
-            </div>
-            <div style="display:flex;gap:8px;margin-top:12px">
-              <button class="btn btn-primary" style="flex:1" @click="saveGroup" :disabled="groupSaving">
-                {{ groupSaving ? '保存中...' : '保存' }}
-              </button>
-              <button v-if="groupForm.id" class="btn btn-danger" @click="deleteGroup(groupForm.id)">删除</button>
-              <button class="btn btn-outline" @click="groupForm.visible = false">取消</button>
-            </div>
-          </template>
-          <template v-else>
-            <div class="empty-state" style="min-height:200px">
-              <span class="icon">👈</span>
-              <p>选择左侧分组查看详情<br>或点击「新建分组」</p>
-            </div>
-          </template>
-
-          <!-- 该分组下的主机 -->
-          <template v-if="selectedGroup">
-            <div class="groups-panel-title" style="margin-top:20px">
-              「{{ selectedGroup.name }}」的主机（{{ groupHosts.length }} 台）
-            </div>
-            <div v-if="!groupHosts.length" class="text-muted" style="font-size:12px;padding:8px 0">
-              暂无主机关联到此分组，在左侧主机列表点击主机，在 CMDB 信息中设置「所属分组」
-            </div>
-            <div v-else class="group-hosts-list">
-              <div v-for="h in groupHosts" :key="h.instance" class="group-host-chip">
-                <span class="dot" :class="h.state === 'up' ? 'ok' : 'err'"></span>
-                {{ h.hostname || h.ip }}
-              </div>
-            </div>
-          </template>
+          <div class="group-card-meta">
+            <span class="group-meta-item">主机数：{{ g.host_count || 0 }}</span>
+            <span v-if="g.feishu_webhook" class="group-meta-item ok">飞书 ✓</span>
+            <span v-if="g.schedule_enabled" class="group-meta-item ok">定时 {{ g.schedule_time }}</span>
+          </div>
+          <div v-if="g.description" class="group-desc">{{ g.description }}</div>
         </div>
       </div>
     </div>
 
     </div><!-- /content-main -->
 
-    <!-- 主机详情侧栏（flex 同级，向右扩展） -->
-    <transition name="slide">
-      <div v-if="selected" class="detail-panel">
-        <div class="detail-header">
-          <span>{{ selected.hostname || selected.instance }}</span>
-          <button class="btn btn-outline btn-xs" @click="selected = null">✕</button>
+    <!-- 右侧详情面板 -->
+    <div v-if="selectedHost" class="detail-panel">
+      <div class="detail-header">
+        <span>主机详情</span>
+        <button class="close-btn" @click="selectedHost = null">✕</button>
+      </div>
+      <div class="detail-body">
+        <div class="detail-row"><span class="dl">主机名</span><span class="dv">{{ selectedHost.hostname }}</span></div>
+        <div class="detail-row"><span class="dl">IP 地址</span><span class="dv mono">{{ selectedHost.ip }}</span></div>
+        <div class="detail-row"><span class="dl">平台</span><span class="dv">{{ selectedHost.platform }}</span></div>
+        <div class="detail-row"><span class="dl">操作系统</span><span class="dv">{{ selectedHost.os_version || '-' }}</span></div>
+        <div class="detail-row"><span class="dl">CPU核心</span><span class="dv">{{ selectedHost.cpu_cores ? selectedHost.cpu_cores + ' 核' : '-' }}</span></div>
+        <div class="detail-row"><span class="dl">内存</span><span class="dv">{{ selectedHost.memory_gb ? selectedHost.memory_gb + ' GB' : '-' }}</span></div>
+        <div class="detail-row"><span class="dl">磁盘</span><span class="dv">{{ selectedHost.disk_gb ? selectedHost.disk_gb + ' GB' : '-' }}</span></div>
+        <div class="detail-row"><span class="dl">状态</span><span class="dv">{{ statusLabel(selectedHost.status) }}</span></div>
+        <div class="detail-row"><span class="dl">环境</span><span class="dv">{{ envLabel(selectedHost.env) }}</span></div>
+        <div class="detail-row"><span class="dl">用途</span><span class="dv">{{ selectedHost.role || '-' }}</span></div>
+        <div class="detail-row"><span class="dl">负责人</span><span class="dv">{{ selectedHost.owner || '-' }}</span></div>
+        <div class="detail-row"><span class="dl">机房</span><span class="dv">{{ selectedHost.datacenter || '-' }}</span></div>
+        <div class="detail-row"><span class="dl">SSH 端口</span><span class="dv">{{ selectedHost.ssh_port }}</span></div>
+        <div class="detail-row"><span class="dl">SSH 用户</span><span class="dv">{{ selectedHost.ssh_user || '-' }}</span></div>
+        <div class="detail-row"><span class="dl">SSH 凭证</span><span class="dv">{{ selectedHost.ssh_saved ? '已配置' : '未配置' }}</span></div>
+        <div class="detail-row"><span class="dl">备注</span><span class="dv">{{ selectedHost.notes || '-' }}</span></div>
+        <div v-if="selectedHost.labels && Object.keys(selectedHost.labels).length" class="detail-row">
+          <span class="dl">标签</span>
+          <span class="dv">
+            <span v-for="(v, k) in selectedHost.labels" :key="k" class="label-chip-detail">{{ k }}={{ v }}</span>
+          </span>
         </div>
-        <div class="detail-body">
-          <div class="detail-row"><span>Instance</span><span>{{ selected.instance }}</span></div>
-          <div class="detail-row"><span>IP</span><span>{{ selected.ip }}</span></div>
-          <div class="detail-row"><span>Job</span><span>{{ selected.job }}</span></div>
-          <div class="detail-row"><span>OS</span><span>{{ selected.os || '-' }}</span></div>
-          <div class="detail-row"><span>架构</span><span>{{ selected.arch || '-' }}</span></div>
-          <div class="detail-row"><span>CPU 核数</span><span>{{ selected.cpu_cores || '-' }}</span></div>
-          <div class="detail-row"><span>内存</span><span>{{ selected.metrics.mem_total_gb ? selected.metrics.mem_total_gb + ' GB' : '-' }}</span></div>
-
-          <!-- Prometheus 自定义标签 -->
-          <template v-if="selected.custom_labels && Object.keys(selected.custom_labels).length">
-            <div class="detail-section">Prometheus 标签</div>
-            <div class="detail-label-list">
-              <span
-                v-for="(val, key) in selected.custom_labels" :key="key"
-                class="label-chip"
-                :style="{ '--label-hue': labelHue(key) }"
-              >{{ key }}=<b>{{ val }}</b></span>
-            </div>
-          </template>
-
-          <!-- 网络 & I/O -->
-          <div class="detail-section">实时指标</div>
-          <div class="detail-row"><span>磁盘读</span><span>{{ selected.metrics.disk_read_mbps != null ? selected.metrics.disk_read_mbps + ' MB/s' : '-' }}</span></div>
-          <div class="detail-row"><span>磁盘写</span><span>{{ selected.metrics.disk_write_mbps != null ? selected.metrics.disk_write_mbps + ' MB/s' : '-' }}</span></div>
-          <div class="detail-row"><span>下载带宽</span><span>{{ selected.metrics.net_recv_mbps != null ? selected.metrics.net_recv_mbps + ' MB/s' : '-' }}</span></div>
-          <div class="detail-row"><span>上传带宽</span><span>{{ selected.metrics.net_send_mbps != null ? selected.metrics.net_send_mbps + ' MB/s' : '-' }}</span></div>
-          <div class="detail-row"><span>TCP 连接</span><span>{{ selected.metrics.tcp_estab ?? '-' }}</span></div>
-          <div class="detail-row"><span>TCP TIME_WAIT</span><span>{{ selected.metrics.tcp_tw ?? '-' }}</span></div>
-
-          <!-- 分区详情 -->
-          <div class="detail-section">磁盘分区</div>
-          <div v-if="selected.partitions && selected.partitions.length">
-            <div v-for="p in selected.partitions" :key="p.mountpoint" class="part-detail-item">
-              <div class="part-detail-head">
-                <span class="part-mount-label">{{ p.mountpoint }}</span>
-                <span :class="usageClass(p.usage_pct)">{{ p.usage_pct }}%</span>
-              </div>
-              <div class="part-bar-wrap">
-                <div class="part-bar" :style="{ width: p.usage_pct + '%' }" :class="usageBarClass(p.usage_pct)"></div>
-              </div>
-              <div class="part-detail-info">{{ p.fstype }} | {{ p.used_gb }}/{{ p.total_gb }} GB</div>
-            </div>
-          </div>
-          <div v-else class="text-muted" style="font-size:12px">无分区数据</div>
-
-          <!-- CMDB 信息 -->
-          <div class="detail-section">CMDB 信息</div>
-          <div class="edit-row">
-            <label>用途</label>
-            <input v-model="editForm.role" placeholder="如：Web服务器、数据库" />
-          </div>
-          <div class="edit-row">
-            <label>负责人</label>
-            <input v-model="editForm.owner" placeholder="如：张三" />
-          </div>
-          <div class="edit-row">
-            <label>环境</label>
-            <select v-model="editForm.env">
-              <option value="">未分类</option>
-              <option value="production">生产</option>
-              <option value="staging">预发布</option>
-              <option value="development">开发</option>
-              <option value="testing">测试</option>
-            </select>
-          </div>
-          <div class="edit-row">
-            <label>所属分组</label>
-            <select v-model="editForm.group">
-              <option value="">不分组</option>
-              <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
-            </select>
-          </div>
-          <div class="edit-row">
-            <label>备注</label>
-            <textarea v-model="editForm.notes" rows="2" placeholder="补充说明"></textarea>
-          </div>
-
-          <!-- SSH 凭证 -->
-          <div class="detail-section">SSH 凭证</div>
-          <div class="edit-row">
-            <label>使用凭证库</label>
-            <select v-model="editForm.credential_id">
-              <option value="">不使用（手动配置）</option>
-              <option v-for="c in credentials" :key="c.id" :value="c.id">
-                {{ c.name }} ({{ c.username }}:{{ c.port }})
-              </option>
-            </select>
-          </div>
-          <template v-if="!editForm.credential_id">
-            <div class="edit-row">
-              <label>SSH 端口</label>
-              <input v-model.number="editForm.ssh_port" type="number" placeholder="22" />
-            </div>
-            <div class="edit-row">
-              <label>SSH 用户名</label>
-              <input v-model="editForm.ssh_user" placeholder="root" />
-            </div>
-            <div class="edit-row">
-              <label>SSH 密码</label>
-              <div class="password-wrap">
-                <input v-model="editForm.ssh_password" :type="showPwd ? 'text' : 'password'"
-                  :placeholder="selected.ssh_saved ? '已保存（留空不修改）' : '输入密码'" />
-                <button class="pwd-toggle" @click="showPwd = !showPwd" type="button">
-                  {{ showPwd ? '隐藏' : '显示' }}
-                </button>
-              </div>
-            </div>
-          </template>
-
-          <button class="btn btn-primary" style="width:100%;margin-top:8px" @click="saveHost" :disabled="saving">
-            {{ saving ? '保存中...' : '保存' }}
+        <div class="detail-row"><span class="dl">录入时间</span><span class="dv small-text">{{ selectedHost.created_at }}</span></div>
+        <div class="detail-row"><span class="dl">更新时间</span><span class="dv small-text">{{ selectedHost.updated_at }}</span></div>
+        <div v-if="syncMsg" class="sync-msg" :class="syncOk ? 'ok' : 'err'">{{ syncMsg }}</div>
+        <div class="detail-actions">
+          <button class="btn btn-primary" style="width:100%;margin-bottom:6px" @click="openEdit(selectedHost)">编辑主机</button>
+          <button class="btn btn-sync" style="width:100%;margin-bottom:6px" :disabled="syncingId === selectedHost.id" @click="syncHost(selectedHost)">
+            <span v-if="syncingId === selectedHost.id" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+            <span v-else>⟳</span> 同步系统信息
           </button>
-          <button class="btn btn-outline" style="width:100%;margin-top:6px" @click="openSSH(selected)">
-            {{ selected.ssh_saved ? '>_ SSH 快连（已保存凭证）' : '>_ SSH 连接' }}
-          </button>
+          <button class="btn btn-outline" style="width:100%" @click="openSSH(selectedHost)">SSH 连接</button>
         </div>
       </div>
-    </transition>
-
+    </div>
     </div><!-- /content-row -->
+
+    <!-- 添加/编辑主机弹窗 -->
+    <div v-if="showHostModal" class="modal-mask" @click.self="showHostModal = false">
+      <div class="host-modal">
+        <div class="modal-header">
+          <span>{{ editingHost ? '编辑主机' : '添加主机' }}</span>
+          <button class="close-btn" @click="showHostModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <form @submit.prevent="saveHost">
+            <div class="form-section-title">基本信息</div>
+            <div class="form-row">
+              <div class="form-group required">
+                <label>主机名</label>
+                <input v-model="hostForm.hostname" placeholder="e.g. web-01" required />
+              </div>
+              <div class="form-group required">
+                <label>IP 地址</label>
+                <input v-model="hostForm.ip" placeholder="e.g. 192.168.1.10" required />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>平台</label>
+                <select v-model="hostForm.platform">
+                  <option value="Linux">Linux</option>
+                  <option value="Windows">Windows</option>
+                  <option value="Network">网络设备</option>
+                  <option value="Other">其他</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>操作系统版本</label>
+                <input v-model="hostForm.os_version" placeholder="e.g. Ubuntu 22.04.3 LTS" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>CPU 核心数</label>
+                <input v-model.number="hostForm.cpu_cores" type="number" min="1" placeholder="e.g. 8" />
+              </div>
+              <div class="form-group">
+                <label>内存 (GB)</label>
+                <input v-model.number="hostForm.memory_gb" type="number" min="0" step="0.5" placeholder="e.g. 16" />
+              </div>
+              <div class="form-group">
+                <label>磁盘 (GB)</label>
+                <input v-model.number="hostForm.disk_gb" type="number" min="0" placeholder="e.g. 500" />
+              </div>
+            </div>
+
+            <div class="form-section-title">运维信息</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>状态</label>
+                <select v-model="hostForm.status">
+                  <option value="active">在线</option>
+                  <option value="offline">离线</option>
+                  <option value="maintenance">维护中</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>环境</label>
+                <select v-model="hostForm.env">
+                  <option value="production">生产</option>
+                  <option value="staging">预发</option>
+                  <option value="development">开发</option>
+                  <option value="testing">测试</option>
+                  <option value="dr">容灾</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>用途/角色</label>
+                <input v-model="hostForm.role" placeholder="e.g. Web服务器、数据库主" />
+              </div>
+              <div class="form-group">
+                <label>负责人</label>
+                <input v-model="hostForm.owner" placeholder="e.g. 张三" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>机房/区域</label>
+                <input v-model="hostForm.datacenter" placeholder="e.g. 上海机房-A区" />
+              </div>
+              <div class="form-group">
+                <label>所属分组</label>
+                <select v-model="hostForm.group">
+                  <option value="">无分组</option>
+                  <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-section-title">SSH 配置</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>SSH 端口</label>
+                <input v-model.number="hostForm.ssh_port" type="number" min="1" max="65535" />
+              </div>
+              <div class="form-group">
+                <label>SSH 用户名</label>
+                <input v-model="hostForm.ssh_user" placeholder="e.g. root" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>SSH 密码 <span class="form-hint">{{ editingHost ? '（留空保持不变）' : '' }}</span></label>
+                <input v-model="hostForm.ssh_password" type="password" placeholder="输入密码加密存储" autocomplete="new-password" />
+              </div>
+              <div class="form-group">
+                <label>或关联凭证</label>
+                <select v-model="hostForm.credential_id">
+                  <option value="">不使用凭证库</option>
+                  <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }}</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-section-title">其他</div>
+            <div class="form-row">
+              <div class="form-group full">
+                <label>备注</label>
+                <textarea v-model="hostForm.notes" rows="2" placeholder="备注信息"></textarea>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group full">
+                <label>标签 <span class="form-hint">格式：key=value，每行一条</span></label>
+                <textarea v-model="labelsText" rows="3" placeholder="app=nginx&#10;env=prod"></textarea>
+              </div>
+            </div>
+            <div v-if="hostFormError" class="form-error">{{ hostFormError }}</div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-outline" @click="showHostModal = false">取消</button>
+              <button type="submit" class="btn btn-primary" :disabled="saving">
+                <span v-if="saving" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+                {{ editingHost ? '保存修改' : '添加主机' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除确认弹窗 -->
+    <div v-if="deleteTarget" class="modal-mask" @click.self="deleteTarget = null">
+      <div class="confirm-modal">
+        <div class="modal-header"><span>确认删除</span><button class="close-btn" @click="deleteTarget = null">✕</button></div>
+        <div class="modal-body">
+          <p>确定要删除主机 <strong>{{ deleteTarget.hostname }}</strong>（{{ deleteTarget.ip }}）吗？</p>
+          <p style="color:var(--text-muted);font-size:12px;margin-top:4px">此操作不可恢复。</p>
+          <div class="form-actions">
+            <button class="btn btn-outline" @click="deleteTarget = null">取消</button>
+            <button class="btn btn-danger" @click="doDelete" :disabled="deleting">
+              <span v-if="deleting" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+              确认删除
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 分组弹窗 -->
+    <div v-if="showGroupModal" class="modal-mask" @click.self="showGroupModal = false">
+      <div class="host-modal" style="max-width:480px">
+        <div class="modal-header">
+          <span>{{ editingGroup ? '编辑分组' : '新建分组' }}</span>
+          <button class="close-btn" @click="showGroupModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <form @submit.prevent="saveGroup">
+            <div class="form-group required"><label>分组名称</label><input v-model="groupForm.name" required placeholder="e.g. 生产核心" /></div>
+            <div class="form-group"><label>描述</label><input v-model="groupForm.description" placeholder="可选描述" /></div>
+            <div class="form-section-title">推送配置</div>
+            <div class="form-group"><label>飞书 Webhook</label><input v-model="groupForm.feishu_webhook" placeholder="https://open.feishu.cn/..." /></div>
+            <div class="form-group"><label>飞书关键字</label><input v-model="groupForm.feishu_keyword" /></div>
+            <div class="form-group"><label>钉钉 Webhook</label><input v-model="groupForm.dingtalk_webhook" placeholder="https://oapi.dingtalk.com/..." /></div>
+            <div class="form-group"><label>钉钉关键字</label><input v-model="groupForm.dingtalk_keyword" /></div>
+            <div class="form-section-title">定时巡检</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>定时时间</label>
+                <input v-model="groupForm.schedule_time" type="time" />
+              </div>
+              <div class="form-group" style="justify-content:flex-end;padding-top:20px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                  <input type="checkbox" v-model="groupForm.schedule_enabled" /> 启用定时巡检
+                </label>
+              </div>
+            </div>
+            <div v-if="groupFormError" class="form-error">{{ groupFormError }}</div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-outline" @click="showGroupModal = false">取消</button>
+              <button type="submit" class="btn btn-primary" :disabled="savingGroup">
+                <span v-if="savingGroup" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+                {{ editingGroup ? '保存' : '创建' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { useRouter, RouterLink } from 'vue-router'
 import { api } from '../api/index.js'
 
-const router          = useRouter()
-const tab             = ref('cmdb')
-const hosts           = ref([])
-const loading         = ref(false)
-const error           = ref('')
-const selected        = ref(null)
-const saving          = ref(false)
-const inspecting      = ref(false)
-const inspectResults  = ref([])
-const inspectSummary  = ref({ normal: 0, warning: 0, critical: 0 })
-const inspectAiSummary = ref('')
-const inspectAiProvider = ref('')
-const inspectAiFallback = ref(false)
-const inspectError = ref('')
-const inspectNotifyMessage = ref('')
-const inspectNotifyStatus = ref('info')
-const inspectGroupId  = ref('')   // 当前选中的巡检分组（空=全部）
+const router = useRouter()
 
-const editForm = reactive({ owner: '', env: '', role: '', notes: '', group: '', ssh_port: 22, ssh_user: '', ssh_password: '', credential_id: '' })
-
-// ────────── 自定义标签筛选 ──────────
-// labelFilters: Map<key, Set<val>>  — 同 key 多值 OR，不同 key AND
-const labelFilters = ref(new Map())
-
-const allLabelKeys = computed(() => {
-  const keys = new Set()
-  for (const h of hosts.value) {
-    for (const k of Object.keys(h.custom_labels || {})) keys.add(k)
-  }
-  return [...keys].sort()
-})
-
-function labelValuesByKey(key) {
-  const vals = new Set()
-  for (const h of hosts.value) {
-    const v = (h.custom_labels || {})[key]
-    if (v !== undefined) vals.add(v)
-  }
-  return [...vals].sort()
-}
-
-function isLabelFilterActive(key, val) {
-  return labelFilters.value.get(key)?.has(val) ?? false
-}
-
-function toggleLabelFilter(key, val) {
-  const m = new Map(labelFilters.value)
-  if (!m.has(key)) m.set(key, new Set())
-  const s = new Set(m.get(key))
-  if (s.has(val)) s.delete(val)
-  else s.add(val)
-  if (s.size === 0) m.delete(key)
-  else m.set(key, s)
-  labelFilters.value = m
-}
-
-// 为每个 label key 生成稳定的色相（基于字符串 hash）
-function labelHue(key) {
-  let h = 0
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) & 0xffff
-  return h % 360
-}
-
-// ────────── 分组 ──────────
-const groups         = ref([])
-const selectedGroup  = ref(null)
-const groupSaving    = ref(false)
-const groupForm      = reactive({ visible: false, id: '', name: '', feishu_webhook: '', feishu_keyword: '', dingtalk_webhook: '', dingtalk_keyword: '', schedule_enabled: false, schedule_time: '08:00' })
-
-// CMDB 列表：按分组筛选（分组多时可搜索）
+// ── 数据 ─────────────────────────────────────────────────────────────────────
+const hosts       = ref([])
+const groups      = ref([])
+const credentials = ref([])
+const loading     = ref(false)
+const tab         = ref('cmdb')
+const search      = ref('')
+const envFilter   = ref('')
 const groupFilter = ref('')
-const groupSearch = ref('')
-const groupMap = computed(() => Object.fromEntries((groups.value || []).map(g => [g.id, g.name])))
-const filteredGroupsForFilter = computed(() => {
-  const kw = groupSearch.value.trim().toLowerCase()
-  const list = [...(groups.value || [])].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
-  if (!kw) return list
-  return list.filter(g => String(g.name || '').toLowerCase().includes(kw) || String(g.id || '').toLowerCase().includes(kw))
-})
+const sortKey     = ref('hostname')
+const sortAsc     = ref(true)
+const selectedHost = ref(null)
 
-const groupHosts = computed(() => {
-  if (!selectedGroup.value) return []
-  return hosts.value.filter(h => h.group === selectedGroup.value.id)
-})
+const groupMap = computed(() => Object.fromEntries(groups.value.map(g => [g.id, g.name])))
 
-function selectGroup(g) {
-  selectedGroup.value = g
-  groupForm.id               = g.id
-  groupForm.name             = g.name
-  groupForm.feishu_webhook   = g.feishu_webhook || ''
-  groupForm.feishu_keyword   = g.feishu_keyword || ''
-  groupForm.dingtalk_webhook = g.dingtalk_webhook || ''
-  groupForm.dingtalk_keyword = g.dingtalk_keyword || ''
-  groupForm.schedule_enabled = !!g.schedule_enabled
-  groupForm.schedule_time    = g.schedule_time || '08:00'
-  groupForm.visible          = true
-}
-
-function startCreateGroup() {
-  selectedGroup.value        = null
-  groupForm.id               = ''
-  groupForm.name             = ''
-  groupForm.feishu_webhook   = ''
-  groupForm.feishu_keyword   = ''
-  groupForm.dingtalk_webhook = ''
-  groupForm.dingtalk_keyword = ''
-  groupForm.schedule_enabled = false
-  groupForm.schedule_time    = '08:00'
-  groupForm.visible          = true
-}
-
-async function loadGroups() {
-  try {
-    const r = await api.listGroups()
-    groups.value = r.data || []
-  } catch (e) { console.error('加载分组失败', e) }
-}
-
-async function saveGroup() {
-  if (!groupForm.name.trim()) return alert('请输入分组名称')
-  groupSaving.value = true
-  try {
-    const payload = {
-      name: groupForm.name,
-      feishu_webhook: groupForm.feishu_webhook,
-      feishu_keyword: groupForm.feishu_keyword,
-      dingtalk_webhook: groupForm.dingtalk_webhook,
-      dingtalk_keyword: groupForm.dingtalk_keyword,
-      schedule_enabled: groupForm.schedule_enabled,
-      schedule_time: groupForm.schedule_time || '08:00',
-    }
-    if (groupForm.id) {
-      await api.updateGroup(groupForm.id, payload)
-    } else {
-      await api.createGroup(payload)
-    }
-    await loadGroups()
-    groupForm.visible = false
-    selectedGroup.value = null
-  } catch (e) {
-    alert('保存分组失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
-  } finally {
-    groupSaving.value = false
-  }
-}
-
-async function deleteGroup(id) {
-  if (!confirm('确定删除该分组？已关联该分组的主机将取消关联。')) return
-  try {
-    await api.deleteGroup(id)
-    await loadGroups()
-    await loadHosts()
-    groupForm.visible = false
-    selectedGroup.value = null
-  } catch (e) {
-    alert('删除失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
-  }
-}
-
-// 排序
-const sortKey = ref('')   // 当前排序字段
-const sortAsc = ref(true) // true=升序 false=降序
-const inspectSortKey = ref('')
-const inspectSortAsc = ref(false)
-const showPwd = ref(false)
-
-// 凭证库
-const credentials     = ref([])
-const credForm        = reactive({ name: '', username: 'root', password: '', port: 22 })
-const credEditId      = ref('')
-const credSaving      = ref(false)
-
-
-// ────────── 列设置 ──────────
-const STORAGE_KEY = 'cmdb_visible_cols'
-const optionalColumns = [
-  { key: 'job',      label: 'Job' },
-  { key: 'cpu',      label: 'CPU%' },
-  { key: 'mem',      label: '内存%' },
-  { key: 'disk',     label: '磁盘(/)' },
-  { key: 'disk_read',label: 'I/O(R/W)' },
-  { key: 'net_recv', label: '网络(↓/↑)' },
-  { key: 'tcp_estab',label: 'TCP' },
-  { key: 'load5',    label: '负载' },
-  { key: 'uptime',   label: '运行时长' },
-  { key: 'labels',   label: 'Prom 标签' },
-]
-const defaultVisibleCols = new Set(['job', 'cpu', 'mem', 'disk', 'disk_read', 'net_recv', 'tcp_estab', 'load5', 'uptime', 'labels'])
-
-function loadVisibleCols() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved) return new Set(JSON.parse(saved))
-  } catch {}
-  return new Set(defaultVisibleCols)
-}
-
-const visibleCols = ref(loadVisibleCols())
-const showColPicker = ref(false)
-
-function toggleCol(key) {
-  const s = new Set(visibleCols.value)
-  if (s.has(key)) s.delete(key)
-  else s.add(key)
-  visibleCols.value = s
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([...s]))
-}
-
-function onDocClick() { showColPicker.value = false }
-
-// ────────── 排序取值 ──────────
-function sortVal(h, key) {
-  switch (key) {
-    case 'state':    return h.state === 'up' ? 0 : 1
-    case 'hostname': return (h.hostname || h.instance || '').toLowerCase()
-    case 'ip':       return h.ip || ''
-    case 'job':      return (h.job || '').toLowerCase()
-    case 'cpu':      return h.metrics.cpu_usage ?? -1
-    case 'mem':      return h.metrics.mem_usage ?? -1
-    case 'disk':     return rootDiskUsage(h) ?? -1
-    case 'disk_read':  return h.metrics.disk_read_mbps ?? -1
-    case 'net_recv':   return h.metrics.net_recv_mbps ?? -1
-    case 'tcp_estab':  return h.metrics.tcp_estab ?? -1
-    case 'load5':    return h.metrics.load5 ?? -1
-    case 'uptime':   return h.metrics.uptime_seconds ?? -1
-    default:         return ''
-  }
-}
+const countByStatus = (s) => hosts.value.filter(h => h.status === s).length
 
 function setSort(key) {
-  if (sortKey.value === key) {
-    sortAsc.value = !sortAsc.value
-  } else {
-    sortKey.value = key
-    sortAsc.value = true
-  }
+  if (sortKey.value === key) sortAsc.value = !sortAsc.value
+  else { sortKey.value = key; sortAsc.value = true }
 }
 
 const filteredHosts = computed(() => {
-  let base = hosts.value
-  if (groupFilter.value) {
-    base = base.filter(h => h.group === groupFilter.value)
+  let list = hosts.value
+  if (search.value) {
+    const q = search.value.toLowerCase()
+    list = list.filter(h =>
+      (h.hostname || '').toLowerCase().includes(q) ||
+      (h.ip || '').includes(q) ||
+      (h.owner || '').toLowerCase().includes(q) ||
+      (h.role || '').toLowerCase().includes(q)
+    )
   }
-  if (!labelFilters.value.size) return base
-  return base.filter(h => {
-    for (const [key, vals] of labelFilters.value) {
-      const hv = (h.custom_labels || {})[key]
-      if (!vals.has(hv)) return false
-    }
-    return true
-  })
+  if (envFilter.value) list = list.filter(h => h.env === envFilter.value)
+  if (groupFilter.value) list = list.filter(h => h.group === groupFilter.value)
+  return list
 })
 
 const sortedHosts = computed(() => {
-  const base = filteredHosts.value
-  if (!sortKey.value) return base
-  return [...base].sort((a, b) => {
-    const va = sortVal(a, sortKey.value)
-    const vb = sortVal(b, sortKey.value)
-    if (va < vb) return sortAsc.value ? -1 : 1
-    if (va > vb) return sortAsc.value ? 1 : -1
-    return 0
+  const list = [...filteredHosts.value]
+  list.sort((a, b) => {
+    const va = (a[sortKey.value] || '').toString().toLowerCase()
+    const vb = (b[sortKey.value] || '').toString().toLowerCase()
+    return sortAsc.value ? va.localeCompare(vb) : vb.localeCompare(va)
   })
+  return list
 })
-
-const inspectSeverityRank = { critical: 3, warning: 2, normal: 1 }
-
-function compareIp(ipA, ipB) {
-  const a = String(ipA || '').split('.').map(v => Number.parseInt(v, 10))
-  const b = String(ipB || '').split('.').map(v => Number.parseInt(v, 10))
-  const len = Math.max(a.length, b.length)
-  for (let i = 0; i < len; i++) {
-    const av = Number.isFinite(a[i]) ? a[i] : -1
-    const bv = Number.isFinite(b[i]) ? b[i] : -1
-    if (av !== bv) return av - bv
-  }
-  return String(ipA || '').localeCompare(String(ipB || ''))
-}
-
-function setInspectSort(key) {
-  if (inspectSortKey.value === key) {
-    inspectSortAsc.value = !inspectSortAsc.value
-    return
-  }
-  inspectSortKey.value = key
-  inspectSortAsc.value = key === 'ip'
-}
-
-const inspectCheckCols = computed(() => {
-  const cols = []
-  const seen = new Set()
-  for (const r of inspectResults.value) {
-    for (const c of r.checks || []) {
-      if (!seen.has(c.item)) { seen.add(c.item); cols.push(c.item) }
-    }
-  }
-  return cols
-})
-
-function _inspectCheck(r, col) {
-  return (r.checks || []).find(c => c.item === col)
-}
-function inspectCellValue(r, col) {
-  return _inspectCheck(r, col)?.value ?? '-'
-}
-function inspectCellThreshold(r, col) {
-  return _inspectCheck(r, col)?.threshold ?? ''
-}
-function inspectCellClass(r, col) {
-  const s = _inspectCheck(r, col)?.status
-  return s === 'critical' ? 'cell-crit' : s === 'warning' ? 'cell-warn' : s === 'normal' ? 'cell-ok' : ''
-}
-
-const _checkSortVal = { critical: 3, warning: 2, normal: 1 }
-
-const sortedInspectResults = computed(() => {
-  const items = [...inspectResults.value]
-  if (!inspectSortKey.value) return items
-  return items.sort((a, b) => {
-    let diff = 0
-    const key = inspectSortKey.value
-    if (key === 'overall') {
-      diff = (inspectSeverityRank[a.overall] || 0) - (inspectSeverityRank[b.overall] || 0)
-    } else if (key === 'ip') {
-      diff = compareIp(a.ip, b.ip)
-    } else if (key === 'hostname') {
-      diff = String(a.hostname || a.instance || '').localeCompare(String(b.hostname || b.instance || ''))
-    } else if (key.startsWith('check:')) {
-      const col = key.slice(6)
-      const sa = _checkSortVal[_inspectCheck(a, col)?.status] || 0
-      const sb = _checkSortVal[_inspectCheck(b, col)?.status] || 0
-      diff = sa - sb
-    }
-    if (diff === 0) {
-      diff = String(a.hostname || a.instance || '').localeCompare(String(b.hostname || b.instance || ''))
-    }
-    return inspectSortAsc.value ? diff : -diff
-  })
-})
-
-function countByState(state) {
-  return hosts.value.filter(h => h.state === state).length
-}
-
-function fmt(val, suffix = '') {
-  return val != null ? val + suffix : '-'
-}
-
-function fmtUptime(sec) {
-  if (sec == null) return '-'
-  const d = Math.floor(sec / 86400)
-  const h = Math.floor((sec % 86400) / 3600)
-  return d > 0 ? `${d}天${h}时` : `${h}小时`
-}
-
-function fmtIO(m) {
-  if (m.disk_read_mbps == null) return '-'
-  return `${m.disk_read_mbps}/${m.disk_write_mbps}`
-}
-
-function fmtNet(m) {
-  if (m.net_recv_mbps == null) return '-'
-  return `${m.net_recv_mbps}/${m.net_send_mbps}`
-}
-
-function fmtTcp(m) {
-  if (m.tcp_estab == null) return '-'
-  return `${m.tcp_estab}/${m.tcp_tw ?? 0}`
-}
-
-function maxDiskPartition(h) {
-  // 返回占用率最高的分区，无分区数据时回退到 metrics
-  if (h.partitions && h.partitions.length) {
-    return h.partitions.reduce((a, b) => (a.usage_pct >= b.usage_pct ? a : b))
-  }
-  return null
-}
-
-function rootDiskUsage(h) {
-  const p = maxDiskPartition(h)
-  return p ? p.usage_pct : h.metrics.disk_usage
-}
-
-function usageClass(val) {
-  if (val == null) return ''
-  if (val > 90) return 'usage-critical'
-  if (val > 70) return 'usage-warning'
-  return 'usage-ok'
-}
-
-function usageBarClass(val) {
-  if (val > 90) return 'bar-critical'
-  if (val > 70) return 'bar-warning'
-  return 'bar-ok'
-}
-
-function statusLabel(s) {
-  return { normal: '正常', warning: '警告', critical: '严重' }[s] || s
-}
-
-function selectHost(h) {
-  selected.value = h
-  editForm.owner = h.owner || ''
-  editForm.env   = h.env || ''
-  editForm.role  = h.role || ''
-  editForm.notes = h.notes || ''
-  editForm.group = h.group || ''
-  editForm.ssh_port = h.ssh_port || 22
-  editForm.ssh_user = h.ssh_user || ''
-  editForm.ssh_password = ''  // 密码不从后端返回，留空表示不修改
-  editForm.credential_id = h.credential_id || ''
-  showPwd.value = false
-}
-
-
-function openSSH(h) {
-  const query = { instance: h.instance }
-  if (h.credential_id) query.credential_id = h.credential_id
-  router.push({ path: '/ssh', query })
-}
 
 async function loadHosts() {
   loading.value = true
-  error.value = ''
   try {
-    const r = await api.getHosts()
-    hosts.value = r.data
+    const res = await api.getHosts()
+    hosts.value = res.data || []
   } catch (e) {
-    error.value = typeof e === 'string' ? e : (e?.message || 'Prometheus 连接失败')
+    console.error(e)
   } finally {
     loading.value = false
   }
 }
 
-async function saveHost() {
-  if (!selected.value) return
-  saving.value = true
+async function loadGroups() {
   try {
-    const payload = {
-      owner: editForm.owner,
-      env:   editForm.env,
-      role:  editForm.role,
-      notes: editForm.notes,
-      group: editForm.group,
-      credential_id: editForm.credential_id,
+    const res = await api.listGroups()
+    groups.value = res.data || []
+  } catch {}
+}
+
+async function loadCredentials() {
+  try {
+    const res = await api.listCredentials()
+    credentials.value = res || []
+  } catch {}
+}
+
+onMounted(() => { loadHosts(); loadGroups(); loadCredentials() })
+
+function selectHost(h) { selectedHost.value = h === selectedHost.value ? null : h }
+
+// ── 标签映射 ─────────────────────────────────────────────────────────────────
+function statusLabel(s) {
+  return { active: '在线', offline: '离线', maintenance: '维护中' }[s] || s
+}
+function envLabel(e) {
+  return { production: '生产', staging: '预发', development: '开发', testing: '测试', dr: '容灾' }[e] || e
+}
+function inspectStatusLabel(s) {
+  return { normal: '正常', warning: '警告', critical: '严重' }[s] || s
+}
+
+// ── 添加/编辑主机 ─────────────────────────────────────────────────────────────
+const showHostModal = ref(false)
+const editingHost   = ref(null)
+const saving        = ref(false)
+const hostFormError = ref('')
+const labelsText    = ref('')
+
+const hostForm = reactive({
+  hostname: '', ip: '', platform: 'Linux', os_version: '',
+  cpu_cores: null, memory_gb: null, disk_gb: null,
+  status: 'active', env: 'production', role: '', owner: '',
+  datacenter: '', group: '', ssh_port: 22, ssh_user: '',
+  ssh_password: '', credential_id: '', notes: '',
+})
+
+function parseLabels(text) {
+  const result = {}
+  for (const line of text.split('\n')) {
+    const idx = line.indexOf('=')
+    if (idx > 0) {
+      const k = line.slice(0, idx).trim()
+      const v = line.slice(idx + 1).trim()
+      if (k) result[k] = v
     }
-    // 仅在未使用凭证库时发送独立 SSH 配置
-    if (!editForm.credential_id) {
-      payload.ssh_port = editForm.ssh_port
-      payload.ssh_user = editForm.ssh_user
-      if (editForm.ssh_password) {
-        payload.ssh_password = editForm.ssh_password
-      }
-    }
-    await api.updateHost(selected.value.instance, payload)
-    selected.value.owner = editForm.owner
-    selected.value.env   = editForm.env
-    selected.value.role  = editForm.role
-    selected.value.notes = editForm.notes
-    selected.value.group = editForm.group
-    selected.value.credential_id = editForm.credential_id
-    if (editForm.credential_id) {
-      selected.value.ssh_saved = true
+  }
+  return result
+}
+
+function labelsToText(labels) {
+  return Object.entries(labels || {}).map(([k, v]) => `${k}=${v}`).join('\n')
+}
+
+function openAdd() {
+  editingHost.value = null
+  hostFormError.value = ''
+  labelsText.value = ''
+  Object.assign(hostForm, {
+    hostname: '', ip: '', platform: 'Linux', os_version: '',
+    cpu_cores: null, memory_gb: null, disk_gb: null,
+    status: 'active', env: 'production', role: '', owner: '',
+    datacenter: '', group: '', ssh_port: 22, ssh_user: '',
+    ssh_password: '', credential_id: '', notes: '',
+  })
+  showHostModal.value = true
+}
+
+function openEdit(h) {
+  editingHost.value = h
+  hostFormError.value = ''
+  labelsText.value = labelsToText(h.labels)
+  Object.assign(hostForm, {
+    hostname: h.hostname, ip: h.ip, platform: h.platform || 'Linux',
+    os_version: h.os_version || '', cpu_cores: h.cpu_cores || null,
+    memory_gb: h.memory_gb || null, disk_gb: h.disk_gb || null,
+    status: h.status || 'active', env: h.env || 'production',
+    role: h.role || '', owner: h.owner || '', datacenter: h.datacenter || '',
+    group: h.group || '', ssh_port: h.ssh_port || 22,
+    ssh_user: h.ssh_user || '', ssh_password: '',
+    credential_id: h.credential_id || '', notes: h.notes || '',
+  })
+  showHostModal.value = true
+}
+
+async function saveHost() {
+  hostFormError.value = ''
+  if (!hostForm.hostname.trim()) { hostFormError.value = '主机名不能为空'; return }
+  if (!hostForm.ip.trim()) { hostFormError.value = 'IP 地址不能为空'; return }
+  saving.value = true
+  const payload = { ...hostForm, labels: parseLabels(labelsText.value) }
+  if (!payload.cpu_cores) payload.cpu_cores = null
+  if (!payload.memory_gb) payload.memory_gb = null
+  if (!payload.disk_gb) payload.disk_gb = null
+  try {
+    if (editingHost.value) {
+      await api.updateHost(editingHost.value.id, payload)
     } else {
-      selected.value.ssh_port = editForm.ssh_port
-      selected.value.ssh_user = editForm.ssh_user
-      if (editForm.ssh_password) {
-        selected.value.ssh_saved = true
-        editForm.ssh_password = ''
-      }
+      await api.createHost(payload)
     }
+    showHostModal.value = false
+    await loadHosts()
+    selectedHost.value = null
+  } catch (e) {
+    hostFormError.value = typeof e === 'string' ? e : '保存失败，请重试'
   } finally {
     saving.value = false
   }
 }
 
-const inspectAiStreaming = ref(false)
-const aiExpanded = ref(true)
-const excelDownloading = ref(false)
-const notifyingGroups = ref(false)
+// ── 删除主机 ──────────────────────────────────────────────────────────────────
+const deleteTarget = ref(null)
+const deleting     = ref(false)
 
-function switchToInspect() {
-  tab.value = 'inspect'
-  if (!inspecting.value && !inspectResults.value.length) {
-    runInspect()
+function confirmDelete(h) { deleteTarget.value = h }
+
+async function doDelete() {
+  if (!deleteTarget.value) return
+  deleting.value = true
+  try {
+    await api.deleteHost(deleteTarget.value.id)
+    if (selectedHost.value?.id === deleteTarget.value.id) selectedHost.value = null
+    deleteTarget.value = null
+    await loadHosts()
+  } catch (e) {
+    alert('删除失败：' + (typeof e === 'string' ? e : '未知错误'))
+  } finally {
+    deleting.value = false
   }
 }
 
-async function notifyGroups(resultsOverride = null) {
-  const results = Array.isArray(resultsOverride) ? resultsOverride : inspectResults.value
-  if (notifyingGroups.value || !results?.length) return
-  if (!inspectGroupId.value) {
-    inspectNotifyStatus.value = 'warning'
-    inspectNotifyMessage.value = '请先选择要推送的主机分组。'
-    alert(inspectNotifyMessage.value)
+// ── SSH 同步系统信息 ──────────────────────────────────────────────────────────
+const syncingId = ref('')
+const syncMsg   = ref('')
+const syncOk    = ref(false)
+
+async function syncHost(h) {
+  if (!h.ssh_saved && !h.credential_id) {
+    syncMsg.value = '请先配置 SSH 密码或关联凭证'
+    syncOk.value = false
     return
   }
-  notifyingGroups.value = true
-  inspectNotifyStatus.value = 'info'
-  const currentGroup = groups.value.find(item => item.id === inspectGroupId.value)
-  const currentGroupName = currentGroup?.name || inspectSummary.value?.group_name || inspectGroupId.value
-  inspectNotifyMessage.value = `正在推送分组「${currentGroupName}」到飞书，请稍候...`
+  syncingId.value = h.id
+  syncMsg.value = ''
   try {
-    const resp = await api.notifyInspectGroups({
-      results,
-      summary: inspectSummary.value || {},
-      ai_text: inspectAiSummary.value || '',
-      group_id: inspectGroupId.value,
-    })
-    const items = resp?.results || []
-    const sent = items.filter(item => item?.push?.ok)
-    const failed = items.filter(item => item?.push && !item.push.ok)
-    const skipped = items.filter(item => item?.skipped)
-    if (sent.length) {
-      const hostTotal = sent.reduce((sum, item) => sum + (Number(item.hosts) || 0), 0)
-      inspectNotifyStatus.value = failed.length ? 'warning' : 'success'
-      inspectNotifyMessage.value = `分组「${currentGroupName}」已推送，涉及 ${hostTotal} 台主机${failed.length ? `，${failed.length} 次发送失败` : ''}${skipped.length ? `，${skipped.length} 次跳过` : ''}。`
-    } else {
-      inspectNotifyStatus.value = 'warning'
-      inspectNotifyMessage.value = resp?.message || skipped.map(item => `${item.group_name || item.group_id}：${item.reason}`).filter(Boolean).join('；') || `分组「${currentGroupName}」没有可推送的巡检数据，请检查分组主机和飞书 Webhook 配置。`
+    const res = await api.syncHost(h.id)
+    const updated = res.updated || {}
+    const parts = []
+    if (updated.os_version)  parts.push(`OS: ${updated.os_version}`)
+    if (updated.cpu_cores)   parts.push(`CPU: ${updated.cpu_cores}核`)
+    if (updated.memory_gb)   parts.push(`内存: ${updated.memory_gb}G`)
+    if (updated.disk_gb)     parts.push(`磁盘: ${updated.disk_gb}G`)
+    if (updated.hostname)    parts.push(`主机名: ${updated.hostname}`)
+    syncMsg.value = parts.length ? `已同步：${parts.join(' / ')}` : '同步完成'
+    syncOk.value = true
+    // 刷新列表
+    await loadHosts()
+    // 如果右侧面板是这台主机，更新
+    if (selectedHost.value?.id === h.id) {
+      selectedHost.value = hosts.value.find(x => x.id === h.id) || selectedHost.value
     }
   } catch (e) {
-    inspectNotifyStatus.value = 'error'
-    inspectNotifyMessage.value = '按分组推送失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误')
-    alert(inspectNotifyMessage.value)
+    syncMsg.value = '同步失败：' + (typeof e === 'string' ? e : '请检查 SSH 密码和网络连通性')
+    syncOk.value = false
+  } finally {
+    syncingId.value = ''
+  }
+}
+
+// ── SSH 跳转 ──────────────────────────────────────────────────────────────────
+function openSSH(h) {
+  sessionStorage.setItem('ssh_prefill', JSON.stringify({
+    host: h.ip, port: h.ssh_port || 22, username: h.ssh_user || 'root',
+    credential_id: h.credential_id || '',
+  }))
+  router.push('/tools/ssh')
+}
+
+// ── 巡检 ─────────────────────────────────────────────────────────────────────
+const inspecting         = ref(false)
+const inspectError       = ref('')
+const inspectResults     = ref([])
+const inspectSummary     = reactive({ total: 0, normal: 0, warning: 0, critical: 0, group_id: '', group_name: '' })
+const inspectAiSummary   = ref('')
+const inspectAiStreaming  = ref(false)
+const inspectAiFallback  = ref(false)
+const inspectAiProvider  = ref('')
+const inspectGroupId     = ref('')
+const notifyingGroups    = ref(false)
+const inspectNotifyMessage = ref('')
+const inspectNotifyStatus  = ref('ok')
+const excelDownloading   = ref(false)
+const aiExpanded         = ref(true)
+
+const inspectCheckCols = computed(() => {
+  const cols = new Set()
+  inspectResults.value.forEach(r => (r.checks || []).forEach(c => cols.add(c.item)))
+  return [...cols]
+})
+
+function checkStatus(r, col) {
+  const c = (r.checks || []).find(c => c.item === col)
+  return c?.status
+}
+function checkValue(r, col) {
+  const c = (r.checks || []).find(c => c.item === col)
+  return c?.value ?? '-'
+}
+
+function switchToInspect() { tab.value = 'inspect' }
+
+async function runInspect() {
+  inspecting.value = true
+  inspectError.value = ''
+  inspectResults.value = []
+  inspectAiSummary.value = ''
+  inspectNotifyMessage.value = ''
+  const url = `/api/hosts/inspect${inspectGroupId.value ? `?group_id=${encodeURIComponent(inspectGroupId.value)}` : ''}`
+  const es = new EventSource(url)
+  es.onmessage = (e) => {
+    if (e.data === '[DONE]') { es.close(); inspecting.value = false; return }
+    try {
+      const msg = JSON.parse(e.data)
+      if (msg.type === 'inspect_data') {
+        inspectResults.value = msg.data
+        Object.assign(inspectSummary, msg.summary)
+      } else if (msg.type === 'error') {
+        inspectError.value = msg.message
+        inspecting.value = false
+        es.close()
+      }
+    } catch {}
+  }
+  es.onerror = () => { inspectError.value = '连接失败'; inspecting.value = false; es.close() }
+}
+
+async function runInspectAI() {
+  inspectAiStreaming.value = true
+  inspectAiSummary.value = ''
+  inspectAiFallback.value = false
+  const url = `/api/hosts/inspect/ai`
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ results: inspectResults.value, summary: inspectSummary }),
+  })
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue
+      const raw = line.slice(5).trim()
+      if (raw === '[DONE]') { inspectAiStreaming.value = false; return }
+      try {
+        const msg = JSON.parse(raw)
+        if (msg.type === 'ai_meta') { inspectAiProvider.value = msg.provider; inspectAiFallback.value = msg.fallback }
+        if (msg.type === 'ai_chunk') inspectAiSummary.value += msg.text
+      } catch {}
+    }
+  }
+  inspectAiStreaming.value = false
+}
+
+async function notifyGroups() {
+  notifyingGroups.value = true
+  inspectNotifyMessage.value = ''
+  try {
+    const res = await api.notifyInspectGroups({ results: inspectResults.value, summary: inspectSummary, group_id: inspectGroupId.value })
+    inspectNotifyMessage.value = res.message
+    inspectNotifyStatus.value = res.ok ? 'ok' : 'err'
+  } catch (e) {
+    inspectNotifyMessage.value = '推送失败：' + (typeof e === 'string' ? e : '未知错误')
+    inspectNotifyStatus.value = 'err'
   } finally {
     notifyingGroups.value = false
   }
 }
 
-async function runInspect() {
-  inspecting.value = true
-  inspectResults.value = []
-  inspectAiSummary.value = ''
-  inspectAiProvider.value = ''
-  inspectAiFallback.value = false
-  inspectAiStreaming.value = false
-  inspectError.value = ''
-  inspectNotifyMessage.value = ''
-
-  try {
-    const url = inspectGroupId.value
-      ? `/api/hosts/inspect?group_id=${encodeURIComponent(inspectGroupId.value)}`
-      : '/api/hosts/inspect'
-    const resp = await fetch(url)
-    if (!resp.ok) throw new Error(`巡检请求失败: ${resp.status}`)
-
-    const ct = resp.headers.get('content-type') || ''
-
-    // ── 旧版后端：直接返回 JSON ──
-    if (ct.includes('application/json')) {
-      const data = await resp.json()
-      inspectResults.value = data.data || []
-      inspectSummary.value = data.summary || {}
-      inspecting.value = false
-      return
-    }
-
-    // ── 新版后端：SSE 流式 ──
-    const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n')
-      buf = lines.pop()
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') break
-        try {
-          const msg = JSON.parse(raw)
-          if (msg.type === 'inspect_data') {
-            inspectResults.value = msg.data
-            inspectSummary.value = msg.summary
-            inspecting.value = false
-          } else if (msg.type === 'error') {
-            inspectError.value = msg.message || '巡检失败'
-          }
-        } catch { /* ignore parse errors */ }
-      }
-    }
-  } catch (e) {
-    inspectError.value = typeof e === 'string' ? e : (e?.message || '巡检失败')
-  } finally {
-    inspecting.value = false
-  }
-}
-
-async function runInspectAI() {
-  if (inspectAiStreaming.value || !inspectResults.value.length) return
-  inspectAiSummary.value = ''
-  inspectAiProvider.value = ''
-  inspectAiFallback.value = false
-  inspectAiStreaming.value = true
-  aiExpanded.value = true
-
-  try {
-    const resp = await fetch('/api/hosts/inspect/ai', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ results: inspectResults.value, summary: inspectSummary.value }),
-    })
-    if (!resp.ok) throw new Error(`AI分析请求失败: ${resp.status}`)
-
-    const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n')
-      buf = lines.pop()
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') break
-        try {
-          const msg = JSON.parse(raw)
-          if (msg.type === 'ai_meta') {
-            inspectAiProvider.value = msg.provider || ''
-            inspectAiFallback.value = !!msg.fallback
-          } else if (msg.type === 'ai_chunk') {
-            inspectAiSummary.value += msg.text
-          }
-        } catch { /* ignore */ }
-      }
-    }
-  } catch (e) {
-    inspectAiSummary.value = `AI分析失败：${e?.message || e}`
-  } finally {
-    inspectAiStreaming.value = false
-  }
-}
-
 async function downloadInspectExcel() {
-  if (excelDownloading.value || !inspectResults.value.length) return
   excelDownloading.value = true
   try {
     const resp = await fetch('/api/hosts/inspect/excel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        results: inspectResults.value,
-        summary: inspectSummary.value,
-        ai_text: inspectAiSummary.value || '',
-      }),
+      body: JSON.stringify({ results: inspectResults.value, summary: inspectSummary, ai_text: inspectAiSummary.value }),
     })
-    if (!resp.ok) throw new Error(`Excel导出失败: ${resp.status}`)
     const blob = await resp.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `巡检报告_${new Date().toISOString().slice(0,10)}.xlsx`
+    a.download = `主机巡检_${new Date().toLocaleDateString('zh-CN')}.xlsx`
     a.click()
     URL.revokeObjectURL(url)
   } catch (e) {
-    inspectError.value = e?.message || 'Excel导出失败'
+    alert('下载失败')
   } finally {
     excelDownloading.value = false
   }
 }
 
-// ────────── 凭证库 ──────────
+// ── 分组管理 ──────────────────────────────────────────────────────────────────
+const showGroupModal = ref(false)
+const editingGroup   = ref(null)
+const savingGroup    = ref(false)
+const groupFormError = ref('')
+const groupForm = reactive({
+  name: '', description: '', feishu_webhook: '', feishu_keyword: '',
+  dingtalk_webhook: '', dingtalk_keyword: '', schedule_time: '09:00', schedule_enabled: false,
+})
 
-async function loadCredentials() {
+function openAddGroup() {
+  editingGroup.value = null
+  groupFormError.value = ''
+  Object.assign(groupForm, { name: '', description: '', feishu_webhook: '', feishu_keyword: '', dingtalk_webhook: '', dingtalk_keyword: '', schedule_time: '09:00', schedule_enabled: false })
+  showGroupModal.value = true
+}
+
+function openEditGroup(g) {
+  editingGroup.value = g
+  groupFormError.value = ''
+  Object.assign(groupForm, { name: g.name, description: g.description || '', feishu_webhook: g.feishu_webhook || '', feishu_keyword: g.feishu_keyword || '', dingtalk_webhook: g.dingtalk_webhook || '', dingtalk_keyword: g.dingtalk_keyword || '', schedule_time: g.schedule_time || '09:00', schedule_enabled: !!g.schedule_enabled })
+  showGroupModal.value = true
+}
+
+async function saveGroup() {
+  groupFormError.value = ''
+  if (!groupForm.name.trim()) { groupFormError.value = '分组名称不能为空'; return }
+  savingGroup.value = true
   try {
-    const r = await api.listCredentials()
-    credentials.value = r.data
-  } catch (e) {
-    console.error('加载凭证失败', e)
-  }
-}
-
-function resetCredForm() {
-  credForm.name = ''
-  credForm.username = 'root'
-  credForm.password = ''
-  credForm.port = 22
-  credEditId.value = ''
-}
-
-function editCred(c) {
-  credEditId.value = c.id
-  credForm.name = c.name
-  credForm.username = c.username
-  credForm.password = ''
-  credForm.port = c.port
-}
-
-async function saveCred() {
-  if (!credForm.name) return alert('请输入凭证名称')
-  if (!credEditId.value && !credForm.password) return alert('请输入密码')
-  credSaving.value = true
-  try {
-    const payload = {
-      name: credForm.name,
-      username: credForm.username || 'root',
-      password: credForm.password || '',
-      port: credForm.port || 22,
-    }
-    if (credEditId.value) {
-      await api.updateCredential(credEditId.value, payload)
+    if (editingGroup.value) {
+      await api.updateGroup(editingGroup.value.id, { ...groupForm })
     } else {
-      await api.createCredential(payload)
+      await api.createGroup({ ...groupForm })
     }
-    resetCredForm()
-    await loadCredentials()
+    showGroupModal.value = false
+    await loadGroups()
   } catch (e) {
-    alert('保存凭证失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
+    groupFormError.value = typeof e === 'string' ? e : '保存失败'
   } finally {
-    credSaving.value = false
+    savingGroup.value = false
   }
 }
 
-async function deleteCred(id) {
-  if (!confirm('确定删除此凭证？已绑定该凭证的主机将需要重新配置。')) return
-  await api.deleteCredential(id)
-  await loadCredentials()
+async function deleteGroup(g) {
+  if (!confirm(`确定删除分组「${g.name}」？已分配该组的主机将清除分组关联。`)) return
+  try {
+    await api.deleteGroup(g.id)
+    await loadGroups()
+    await loadHosts()
+  } catch (e) {
+    alert('删除失败：' + (typeof e === 'string' ? e : '未知'))
+  }
 }
-
-
-onMounted(() => {
-  loadHosts()
-  loadCredentials()
-  loadGroups()
-  document.addEventListener('click', onDocClick)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', onDocClick)
-})
-
 </script>
 
 <style scoped>
-.cmdb-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; padding: 8px 12px; gap: 8px; }
-/* 内容行：左侧主内容 + 右侧详情栏 */
-.content-row { flex: 1; display: flex; min-height: 0; gap: 0; }
-.content-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.cmdb-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; padding: 16px; gap: 12px; }
 
-/* 统计卡片 */
+/* 统计 */
 .stats-row { display: flex; gap: 10px; flex-shrink: 0; }
-.stat-card {
-  flex: 1;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 12px 16px; text-align: center;
-  box-shadow: var(--shadow-sm);
-}
-.stat-val { font-size: 22px; font-weight: 700; color: var(--text-primary); }
-.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 18px; min-width: 90px; }
 .stat-card.ok .stat-val { color: var(--success); }
 .stat-card.warn .stat-val { color: var(--warning); }
 .stat-card.error .stat-val { color: var(--error); }
+.stat-val { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* 工具栏 */
-.toolbar {
-  display: flex; align-items: center; justify-content: space-between;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 7px 12px; flex-shrink: 0;
-  box-shadow: var(--shadow-sm);
-}
-.toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 8px; }
-.btn-ai {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 12px; border-radius: 6px;
-  border: 1px solid rgba(145, 109, 213, .45);
-  background: rgba(145, 109, 213, .12);
-  color: #b58bf5; font-size: 12px; font-weight: 500;
-  cursor: pointer; transition: background .15s;
-}
-.btn-ai:hover:not(:disabled) { background: rgba(145, 109, 213, .22); }
-.btn-ai:disabled { opacity: .5; cursor: not-allowed; }
-.btn-excel {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 12px; border-radius: 6px;
-  border: 1px solid rgba(82, 196, 26, .4);
-  background: rgba(82, 196, 26, .1);
-  color: #52c41a; font-size: 12px; font-weight: 500;
-  cursor: pointer; transition: background .15s;
-}
-.btn-excel:hover:not(:disabled) { background: rgba(82, 196, 26, .2); }
-.btn-excel:disabled { opacity: .5; cursor: not-allowed; }
-.tab-group { display: flex; gap: 2px; background: var(--bg-base); padding: 3px; border-radius: 6px; border: 1px solid var(--border); }
-.tab-btn {
-  padding: 4px 12px; border-radius: 4px; border: none;
-  background: transparent; color: var(--text-muted);
-  font-size: 13px; cursor: pointer; transition: all .12s;
-}
-.tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
-.tab-btn.active { background: var(--bg-active); color: var(--text-primary); }
-.ssh-link { text-decoration: none; color: var(--accent); border: 1px dashed var(--border-accent); }
-.ssh-link:hover { background: var(--accent-dim); }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+.toolbar-left { display: flex; align-items: center; }
+.toolbar-right { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.tab-group { display: flex; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.tab-btn { padding: 6px 14px; font-size: 13px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background 0.15s; white-space: nowrap; }
+.tab-btn:hover { background: var(--bg-hover); }
+.tab-btn.active { background: var(--accent); color: #fff; }
+.tab-btn.ssh-link { text-decoration: none; display: flex; align-items: center; color: var(--text-muted); }
+.search-input { padding: 5px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 200px; }
+.filter-select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
+
+/* 内容区 */
+.content-row { display: flex; gap: 10px; flex: 1; overflow: hidden; min-height: 0; }
+.content-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
 /* 表格 */
-.cmdb-tab-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.table-wrap { flex: 1; overflow: auto; min-height: 0; }
-.host-table {
-  width: 100%; border-collapse: collapse; font-size: 12px;
-}
-.host-table th {
-  text-align: left; padding: 7px 10px; font-weight: 600;
-  color: var(--text-muted); font-size: 11px; text-transform: uppercase;
-  letter-spacing: .04em; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: var(--bg-hover); z-index: 1;
-  white-space: nowrap;
-}
+.cmdb-tab-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
+.host-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.host-table thead { position: sticky; top: 0; z-index: 2; }
+.host-table th { background: var(--bg-header); padding: 8px 10px; text-align: left; font-weight: 600; font-size: 11px; color: var(--text-muted); white-space: nowrap; border-bottom: 1px solid var(--border); }
+.host-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; }
+.host-table tbody tr:hover { background: var(--bg-hover); cursor: pointer; }
 .th-sort { cursor: pointer; user-select: none; }
-.th-sort:hover { color: var(--text-primary); background: var(--bg-active); }
-.sort-icon { margin-left: 4px; font-size: 10px; opacity: .5; }
-.th-sort:hover .sort-icon { opacity: 1; }
-.host-table td {
-  padding: 7px 10px; border-bottom: 1px solid var(--border);
-  color: var(--text-secondary); white-space: nowrap;
-}
-.host-table tr { cursor: pointer; transition: background .1s; }
-.host-table tr:hover td { background: var(--bg-hover); }
-.hostname { color: var(--text-primary); font-weight: 500; }
-.small-text { font-size: 11px; color: var(--text-muted); }
-.disk-mount { font-size: 10px; color: var(--text-muted); margin-left: 3px; }
-.tag.role {
-  display: inline-block; font-size: 10px; padding: 1px 6px;
-  border-radius: 4px; background: var(--accent-dim);
-  color: var(--accent); margin-right: 4px;
-}
+.th-sort:hover { color: var(--text-primary); }
+.sort-icon { font-size: 10px; margin-left: 3px; opacity: 0.6; }
+.hostname-cell { display: flex; align-items: center; gap: 5px; }
+.hostname { font-weight: 500; }
+.ssh-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: rgba(56,139,253,.15); color: var(--accent); }
+.mono { font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; }
+.small-text { font-size: 12px; color: var(--text-muted); }
+.action-cell { display: flex; gap: 4px; }
 
-.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
-.dot.ok, .dot.normal { background: var(--success); }
-.dot.err, .dot.critical { background: var(--error); }
-.dot.warning { background: var(--warning); }
+/* 状态 */
+.status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+.status-dot.active { background: var(--success); }
+.status-dot.offline { background: var(--error); }
+.status-dot.maintenance { background: var(--warning); }
+.status-text { font-size: 12px; }
 
-.usage-ok { color: var(--success); }
-.usage-warning { color: var(--warning); }
-.usage-critical { color: var(--error); font-weight: 600; }
+/* 平台/环境标签 */
+.platform-badge { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--bg-hover); }
+.platform-badge.linux { background: rgba(63,185,80,.12); color: var(--success); }
+.platform-badge.windows { background: rgba(56,139,253,.12); color: var(--accent); }
+.env-badge { font-size: 11px; padding: 1px 6px; border-radius: 3px; }
+.env-badge.production { background: rgba(248,81,73,.12); color: var(--error); }
+.env-badge.staging { background: rgba(210,153,34,.12); color: var(--warning); }
+.env-badge.development { background: rgba(63,185,80,.12); color: var(--success); }
+.env-badge.testing { background: rgba(56,139,253,.12); color: var(--accent); }
+.env-badge.dr { background: rgba(188,130,255,.12); color: #bc82ff; }
+.group-badge-inline { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: var(--bg-hover); color: var(--text-muted); }
 
-.text-muted { color: var(--text-muted); }
-
-/* 巡检 */
-.inspect-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-
-.inspect-group-select {
-  height: 32px; padding: 0 10px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--bg-card);
-  color: var(--text); font-size: 13px; cursor: pointer;
-}
-.inspect-group-select:disabled { opacity: .5; cursor: not-allowed; }
-
-.inspect-scope-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 12px; background: var(--bg-card);
-  border-bottom: 1px solid var(--border); font-size: 12px; flex-shrink: 0;
-}
-.inspect-scope-label { color: var(--text-muted); }
-.inspect-scope-badge {
-  padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
-}
-.inspect-scope-badge.all { background: rgba(100,180,255,.15); color: #64b4ff; }
-.inspect-scope-badge.group { background: rgba(103,194,58,.15); color: #67c23a; }
-.inspect-scope-stat { color: var(--text-muted); margin-left: 4px; }
-.inspect-notify-msg {
-  margin: 8px 0 12px;
-  padding: 8px 12px;
-  border-radius: var(--radius);
-  border: 1px solid rgba(88,166,255,.28);
-  background: rgba(88,166,255,.08);
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.inspect-notify-msg.success {
-  border-color: rgba(34,197,94,.35);
-  background: rgba(34,197,94,.10);
-  color: var(--success);
-}
-.inspect-notify-msg.warning {
-  border-color: rgba(234,179,8,.35);
-  background: rgba(234,179,8,.10);
-  color: var(--warning);
-}
-.inspect-notify-msg.error {
-  border-color: rgba(239,68,68,.35);
-  background: rgba(239,68,68,.10);
-  color: var(--error);
-}
-
-.inspect-ai-card {
-  background: linear-gradient(180deg, rgba(88,166,255,.08), rgba(88,166,255,.03));
-  border: 1px solid rgba(88,166,255,.28);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  margin-bottom: 12px;
-  box-shadow: var(--shadow-sm);
-}
-.inspect-ai-header {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 12px; margin-bottom: 10px;
-}
-.inspect-ai-title {
-  font-size: 15px; font-weight: 700; color: var(--text-primary);
-}
-.inspect-ai-provider {
-  margin-top: 4px; font-size: 12px; color: var(--text-muted);
-}
-.inspect-ai-badge {
-  flex-shrink: 0;
-  font-size: 11px; font-weight: 700;
-  color: var(--accent); background: rgba(88,166,255,.12);
-  border: 1px solid rgba(88,166,255,.32);
-  border-radius: 9999px; padding: 4px 10px;
-}
-.inspect-ai-badge.fallback {
-  color: var(--warning);
-  background: rgba(234,179,8,.12);
-  border-color: rgba(234,179,8,.35);
-}
-.inspect-ai-content {
-  font-size: 13px; line-height: 1.75; color: var(--text-secondary);
-  white-space: pre-wrap;
-  max-height: 260px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
-.ai-toggle-btn {
-  padding: 2px 10px; font-size: 11px;
-  background: var(--bg-hover); border: 1px solid var(--border);
-  border-radius: var(--radius); color: var(--text-secondary);
-  cursor: pointer; white-space: nowrap; flex-shrink: 0;
-}
-.ai-toggle-btn:hover { background: var(--bg-card); color: var(--text-primary); }
-.inspect-ai-note {
-  margin-top: 10px; font-size: 12px; color: var(--text-muted);
-}
-/* 流式状态 */
-.inspect-ai-card.streaming {
-  border-color: rgba(58,132,255,.4);
-  background: linear-gradient(180deg, rgba(58,132,255,.06), rgba(58,132,255,.02));
-}
-.inspect-ai-badge.streaming {
-  color: var(--accent); border-color: rgba(58,132,255,.4);
-  background: rgba(58,132,255,.12); animation: badge-pulse 1.2s ease infinite;
-}
-@keyframes badge-pulse { 0%,100% { opacity: 1 } 50% { opacity: .5 } }
-.ai-thinking-dot {
-  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--accent); margin-right: 6px;
-  animation: badge-pulse 1s ease infinite;
-}
-.ai-cursor {
-  display: inline-block; width: 2px; height: 1em; background: var(--accent);
-  margin-left: 2px; vertical-align: text-bottom;
-  animation: blink .7s step-start infinite;
-}
-@keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0 } }
-.ai-placeholder { color: var(--text-muted); font-style: italic; }
-.inspect-sortbar {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 10px; flex-wrap: wrap;
-}
-.inspect-sort-label { font-size: 12px; color: var(--text-muted); }
-.inspect-sort-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border); background: var(--bg-card);
-  color: var(--text-secondary); border-radius: 9999px;
-  padding: 5px 12px; font-size: 12px; cursor: pointer;
-  transition: all .15s ease;
-}
-.inspect-sort-btn:hover { color: var(--text-primary); border-color: var(--accent); }
-.inspect-sort-btn.active {
-  color: var(--accent); border-color: var(--accent);
-  background: var(--accent-dim);
-}
-.inspect-sort-icon { font-size: 11px; line-height: 1; }
-
-/* ── 巡检结果表格 ── */
-.inspect-table-wrap {
-  flex: 1; overflow: auto; min-height: 0;
-}
-.inspect-table {
-  width: 100%; border-collapse: collapse;
-  font-size: 12px; white-space: nowrap;
-}
-.inspect-table thead th {
-  position: sticky; top: 0; z-index: 1;
-  background: var(--bg-base);
-  border-bottom: 1px solid var(--border);
-  padding: 7px 10px; text-align: left;
-  font-size: 11px; font-weight: 600; color: var(--text-muted);
-  letter-spacing: .3px; user-select: none;
-}
-.ith-sort { cursor: pointer; }
-.ith-sort:hover { color: var(--text-primary); }
-.ith-sort em { font-style: normal; color: var(--accent); margin-left: 2px; }
-.inspect-table tbody tr { border-bottom: 1px solid rgba(46,49,80,.35); transition: background .1s; }
-.inspect-table tbody tr:hover { background: var(--bg-hover); }
-.irow-warning { background: rgba(234,179,8,.04); }
-.irow-critical { background: rgba(239,68,68,.06); }
-.inspect-table td { padding: 6px 10px; color: var(--text-secondary); vertical-align: middle; }
-.itd-host { color: var(--text-primary); font-weight: 500; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-.itd-ip   { color: var(--text-muted); font-family: 'Consolas', monospace; }
-.itd-os   { color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
-.itd-group { color: var(--accent-hover); }
-/* 检查列状态着色 */
-.cell-ok   { color: var(--success); }
-.cell-warn { color: var(--warning); font-weight: 600; }
-.cell-crit { color: var(--error);   font-weight: 600; background: rgba(239,68,68,.06); }
-
-.inspect-list { display: flex; flex-direction: column; gap: 10px; }
-.inspect-card {
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px;
-  box-shadow: var(--shadow-sm);
-}
-.inspect-card.card-warning { border-left: 3px solid var(--warning); }
-.inspect-card.card-critical { border-left: 3px solid var(--error); }
-.inspect-card.card-normal { border-left: 3px solid var(--success); }
-
-.inspect-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.inspect-host { font-weight: 600; color: var(--text-primary); }
-.inspect-ip { color: var(--text-muted); font-size: 12px; }
-.inspect-os { color: var(--text-muted); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inspect-badge {
-  font-size: 11px; padding: 2px 8px; border-radius: 9999px; font-weight: 600;
-}
-.inspect-badge.normal { background: rgba(34,197,94,.15); color: var(--success); }
-.inspect-badge.warning { background: rgba(234,179,8,.15); color: var(--warning); }
-.inspect-badge.critical { background: rgba(239,68,68,.15); color: var(--error); }
-
-.check-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.check-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 12px; border-radius: 6px; font-size: 12px;
-  background: var(--bg-base); min-width: 150px;
-}
-.check-name { color: var(--text-muted); }
-.check-value { color: var(--text-primary); font-weight: 600; flex: 1; }
-.check-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.check-status-dot.normal { background: var(--success); }
-.check-status-dot.warning { background: var(--warning); }
-.check-status-dot.critical { background: var(--error); }
-
-/* 分区 */
-.partitions-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.part-title { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
-.part-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.part-item { background: var(--bg-base); border-radius: 6px; padding: 6px 10px; min-width: 200px; flex: 1; max-width: 300px; }
-.part-mount { font-size: 11px; color: var(--text-primary); font-weight: 600; margin-bottom: 3px; }
-.part-bar-wrap { width: 100%; height: 6px; background: rgba(255,255,255,.06); border-radius: 3px; overflow: hidden; }
-.part-bar { height: 100%; border-radius: 3px; transition: width .3s; }
-.bar-ok { background: var(--success); }
-.bar-warning { background: var(--warning); }
-.bar-critical { background: var(--error); }
-.part-info { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
-
-/* 详情侧栏分区 */
-.part-detail-item { margin-bottom: 8px; }
-.part-detail-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; }
-.part-mount-label { color: var(--text-primary); font-weight: 600; }
-.part-detail-info { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
-
-/* 详情侧栏 */
-.detail-panel {
-  width: 320px; flex-shrink: 0;
-  background: var(--bg-card);
-  border-left: 1px solid var(--border);
-  display: flex; flex-direction: column;
-  box-shadow: var(--shadow);
-  overflow: hidden;
-}
-.detail-header {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 12px 16px; border-bottom: 1px solid var(--border);
-  font-weight: 600; font-size: 14px; color: var(--text-primary);
-}
-.btn-xs { padding: 2px 8px; font-size: 11px; }
-.detail-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
-.detail-row {
-  display: flex; justify-content: space-between; padding: 6px 0;
-  font-size: 12px; border-bottom: 1px solid rgba(46,49,80,.3);
-}
-.detail-row span:first-child { color: var(--text-muted); }
-.detail-row span:last-child { color: var(--text-primary); }
-.detail-section {
-  font-size: 11px; font-weight: 600; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: .8px;
-  margin-top: 16px; margin-bottom: 8px; padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-.edit-row { margin-bottom: 8px; }
-.edit-row label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
-.edit-row input, .edit-row select, .edit-row textarea {
-  width: 100%; background: var(--bg-hover);
-  border: 1px solid var(--border); color: var(--text-primary);
-  padding: 5px 8px; border-radius: 5px; font-size: 12px;
-  font-family: inherit; resize: vertical;
-}
-.password-wrap { display: flex; gap: 4px; }
-.password-wrap input { flex: 1; }
-.pwd-toggle {
-  background: var(--bg-hover); border: 1px solid var(--border); color: var(--text-muted);
-  padding: 4px 8px; border-radius: 5px; font-size: 11px; cursor: pointer; white-space: nowrap;
-  transition: color .15s;
-}
-.pwd-toggle:hover { color: var(--accent); }
-
-/* 详情栏滑入 */
-.slide-enter-active, .slide-leave-active { transition: width .2s ease, opacity .2s ease; overflow: hidden; }
-.slide-enter-from, .slide-leave-to { width: 0 !important; opacity: 0; }
+/* 按钮 */
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; border-radius: 5px; border: 1px solid transparent; font-size: 13px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-outline { background: transparent; border-color: var(--border); color: var(--text-secondary); }
+.btn-outline:hover { background: var(--bg-hover); }
+.btn-ai { background: linear-gradient(135deg, #7c3aed, #2563eb); color: #fff; border: none; }
+.btn-excel { background: rgba(63,185,80,.15); color: var(--success); border-color: var(--success); }
+.btn-danger { background: rgba(248,81,73,.12); color: var(--error); border-color: var(--error); }
+.btn-danger:hover { background: rgba(248,81,73,.22); }
+.btn-sync { background: rgba(56,139,253,.12); color: var(--accent); border-color: var(--accent); }
+.btn-sync:hover { background: rgba(56,139,253,.22); }
+.btn-xs { padding: 2px 7px; font-size: 11px; }
+.sync-msg { font-size: 12px; padding: 5px 10px; border-radius: 5px; }
+.sync-msg.ok { background: rgba(63,185,80,.12); color: var(--success); }
+.sync-msg.err { background: rgba(248,81,73,.12); color: var(--error); }
 
 /* 空状态 */
-.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; color: var(--text-muted); gap: 8px; }
-.empty-state .icon { font-size: 36px; }
-.spinner { width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); gap: 8px; }
+.empty-state .icon { font-size: 32px; }
+.spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 列设置 */
-.col-picker-wrap { position: relative; }
-.col-picker-dropdown {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 200;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 14px; min-width: 150px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.4);
-}
-.col-picker-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
-.col-picker-item { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 0; cursor: pointer; white-space: nowrap; color: var(--text-base); }
-.col-picker-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
-/* ── Prometheus 自定义标签 ── */
-.label-filter-bar {
-  display: flex; align-items: flex-start; gap: 8px; padding: 6px 0 4px;
-  border-bottom: 1px solid var(--border); margin-bottom: 4px; flex-wrap: wrap;
-}
-.label-filter-title { font-size: 11px; color: var(--text-muted); padding-top: 4px; white-space: nowrap; }
-.label-filter-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1; }
-.label-filter-group { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-.label-key-name { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
-.label-filter-chip {
-  font-size: 11px; padding: 2px 8px; border-radius: 12px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--bg-hover);
-  color: var(--text-secondary); transition: all .15s; white-space: nowrap;
-}
-.label-filter-chip.active {
-  background: rgba(82,130,255,.18); border-color: #5282ff; color: #7aa6ff; font-weight: 500;
-}
-.label-filter-chip:hover { border-color: #5282ff; }
-.label-filter-clear {
-  font-size: 11px; padding: 2px 8px; border-radius: 12px; cursor: pointer;
-  border: 1px solid var(--border); background: transparent;
-  color: var(--text-muted); transition: all .15s;
-}
-.label-filter-clear:hover { color: var(--error); border-color: var(--error); }
+/* 详情面板 */
+.detail-panel { width: 280px; flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.detail-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border); }
+.detail-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.detail-row { display: flex; gap: 6px; font-size: 12px; }
+.dl { color: var(--text-muted); min-width: 64px; flex-shrink: 0; }
+.dv { color: var(--text-primary); word-break: break-all; }
+.detail-actions { margin-top: 8px; }
+.label-chip-detail { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--bg-hover); margin-right: 3px; }
+.close-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; }
 
-/* 鈹€鈹€ 分组筛选（CMDB 主表）鈹€鈹€ */
-.group-filter-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 0 8px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-  flex-wrap: wrap;
-}
-.group-filter-search {
-  width: 180px; max-width: 48vw;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 9999px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  font-size: 12px;
-  outline: none;
-}
-.group-filter-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(82,130,255,.15); }
-.group-badge-inline {
-  display: inline-flex; align-items: center;
-  margin-left: 6px;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 9999px;
-  border: 1px solid rgba(82,130,255,.35);
-  background: rgba(82,130,255,.12);
-  color: #7aa6ff;
-}
-.action-cell { width: 40px; white-space: nowrap; }
-.label-cell { max-width: 260px; }
-.label-chips-wrap { display: flex; flex-wrap: wrap; gap: 2px; max-height: 44px; overflow: hidden; }
-.label-chip {
-  display: inline-flex; align-items: center; gap: 2px;
-  font-size: 10px; padding: 1px 6px; border-radius: 10px; cursor: pointer;
-  margin: 1px 2px; white-space: nowrap;
-  background: hsl(var(--label-hue, 210), 40%, 18%);
-  border: 1px solid hsl(var(--label-hue, 210), 50%, 30%);
-  color: hsl(var(--label-hue, 210), 80%, 75%);
-  transition: opacity .15s;
-}
-.label-chip:hover { opacity: .8; }
-.label-chip b { font-weight: 600; }
-.detail-label-list { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0 8px; }
+/* 巡检 */
+.inspect-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: 10px; }
+.inspect-scope-bar { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-shrink: 0; }
+.inspect-scope-label { color: var(--text-muted); }
+.inspect-scope-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+.inspect-scope-badge.all { background: rgba(56,139,253,.12); color: var(--accent); }
+.inspect-scope-badge.group { background: rgba(63,185,80,.12); color: var(--success); }
+.inspect-scope-stat { color: var(--text-muted); }
+.inspect-notify-msg { font-size: 12px; padding: 5px 10px; border-radius: 5px; flex-shrink: 0; }
+.inspect-notify-msg.ok { background: rgba(63,185,80,.12); color: var(--success); }
+.inspect-notify-msg.err { background: rgba(248,81,73,.12); color: var(--error); }
+.inspect-ai-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; flex-shrink: 0; }
+.inspect-ai-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+.inspect-ai-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.inspect-ai-provider { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.inspect-ai-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(56,139,253,.12); color: var(--accent); }
+.inspect-ai-badge.fallback { background: rgba(210,153,34,.12); color: var(--warning); }
+.inspect-ai-badge.streaming { background: rgba(124,58,237,.12); color: #7c3aed; }
+.inspect-ai-content { font-size: 12px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+.ai-placeholder { color: var(--text-muted); }
+.ai-cursor { display: inline-block; width: 2px; height: 13px; background: var(--accent); margin-left: 2px; animation: blink 1s step-end infinite; vertical-align: middle; }
+.ai-thinking-dot { width: 8px; height: 8px; border-radius: 50%; background: #7c3aed; animation: pulse 1s ease-in-out infinite; display: inline-block; }
+.ai-toggle-btn { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.inspect-table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
+.inspect-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.inspect-table th { position: sticky; top: 0; background: var(--bg-header); padding: 7px 10px; text-align: left; font-weight: 600; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.inspect-table td { padding: 6px 10px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; }
+.irow-warning { background: rgba(210,153,34,.04); }
+.irow-critical { background: rgba(248,81,73,.06); }
+.inspect-badge { font-size: 11px; padding: 2px 7px; border-radius: 10px; }
+.inspect-badge.normal { background: rgba(63,185,80,.12); color: var(--success); }
+.inspect-badge.warning { background: rgba(210,153,34,.12); color: var(--warning); }
+.inspect-badge.critical { background: rgba(248,81,73,.12); color: var(--error); }
+.check-cell { font-size: 11px; padding: 1px 5px; border-radius: 3px; }
+.check-cell.normal { background: rgba(63,185,80,.1); color: var(--success); }
+.check-cell.warning { background: rgba(210,153,34,.1); color: var(--warning); }
+.check-cell.critical { background: rgba(248,81,73,.1); color: var(--error); }
+.check-na { color: var(--text-muted); }
+.itd-host { font-weight: 500; }
+.itd-ip, .itd-os, .itd-group { color: var(--text-muted); }
 
-/* ── 分组管理 ── */
-.groups-wrap { flex: 1; overflow-y: auto; padding: 4px 0; }
-.groups-layout { display: flex; gap: 16px; height: 100%; }
-.groups-list-panel {
-  width: 220px; flex-shrink: 0;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 6px;
-}
-.groups-edit-panel {
-  flex: 1; background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 16px; overflow-y: auto;
-}
-.groups-panel-title { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
-.group-item {
-  padding: 8px 10px; border-radius: 6px; cursor: pointer;
-  border: 1px solid transparent; transition: all .15s;
-}
-.group-item:hover { background: var(--bg-hover); }
-.group-item.active { background: var(--accent-muted, rgba(82,130,255,.12)); border-color: var(--accent, #5282ff); }
-.group-item-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
-.group-item-meta { display: flex; align-items: center; gap: 4px; margin-top: 3px; }
-.group-host-count { font-size: 11px; color: var(--text-muted); flex: 1; }
-.group-badge { font-size: 10px; padding: 1px 5px; border-radius: 10px; font-weight: 500; }
-.group-badge.feishu { background: rgba(50,195,120,.15); color: #32c378; }
-.group-badge.dingtalk { background: rgba(82,130,255,.15); color: #5282ff; }
-.group-badge.schedule { background: rgba(234,179,8,.15); color: #e6a23c; }
+/* 分组管理 */
+.groups-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: 10px; }
+.groups-header { display: flex; justify-content: flex-end; flex-shrink: 0; }
+.group-cards { flex: 1; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 10px; align-content: flex-start; }
+.group-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; width: 280px; }
+.group-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.group-name { font-weight: 600; font-size: 14px; }
+.group-actions { display: flex; gap: 4px; }
+.group-card-meta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; margin-bottom: 4px; }
+.group-meta-item { padding: 1px 7px; border-radius: 10px; background: var(--bg-hover); color: var(--text-muted); }
+.group-meta-item.ok { background: rgba(63,185,80,.12); color: var(--success); }
+.group-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
-/* Toggle switch */
-.schedule-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.toggle-switch { display: inline-flex; align-items: center; cursor: pointer; user-select: none; flex-shrink: 0; }
-.toggle-switch input[type=checkbox] { display: none; }
-.toggle-slider {
-  width: 36px; height: 20px; border-radius: 10px;
-  background: var(--border); position: relative; flex-shrink: 0;
-  transition: background .2s;
-}
-.toggle-switch input:checked + .toggle-slider { background: var(--accent, #5282ff); }
-.toggle-slider::after {
-  content: ''; position: absolute; top: 3px; left: 3px;
-  width: 14px; height: 14px; border-radius: 50%;
-  background: #fff; transition: left .2s;
-}
-.toggle-switch input:checked + .toggle-slider::after { left: 19px; }
-.toggle-state-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
-.schedule-at { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.time-input {
-  width: 100px; height: 28px; padding: 0 8px;
-  border-radius: 6px; border: 1px solid var(--border);
-  background: var(--bg-hover); color: var(--text-primary);
-  font-size: 13px; font-family: inherit;
-}
-.time-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(82,130,255,.15); }
-.group-form-note {
-  font-size: 11px; color: var(--text-muted); background: var(--bg-hover);
-  border-radius: 6px; padding: 8px 10px; margin-top: 8px; line-height: 1.5;
-}
-.group-hosts-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.group-host-chip {
-  display: flex; align-items: center; gap: 5px;
-  background: var(--bg-hover); border: 1px solid var(--border);
-  border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-secondary);
-}
-.btn-danger {
-  background: rgba(255,70,70,.12); color: var(--error);
-  border: 1px solid rgba(255,70,70,.3); border-radius: var(--radius);
-  padding: 6px 14px; cursor: pointer; font-size: 13px; transition: all .15s;
-}
-.btn-danger:hover { background: rgba(255,70,70,.2); }
+/* 弹窗 */
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 200; display: flex; align-items: center; justify-content: center; }
+.host-modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; width: 680px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+.confirm-modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; width: 360px; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 14px; }
+.modal-body { flex: 1; overflow-y: auto; padding: 18px; }
+.form-section-title { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin: 14px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.form-row { display: flex; gap: 12px; margin-bottom: 10px; }
+.form-group { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.form-group.full { flex: 100%; }
+.form-group.required label::after { content: ' *'; color: var(--error); }
+.form-group label { font-size: 12px; color: var(--text-muted); }
+.form-hint { font-weight: 400; font-style: italic; }
+.form-group input, .form-group select, .form-group textarea { padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 100%; box-sizing: border-box; }
+.form-group textarea { resize: vertical; font-family: inherit; }
+.form-error { color: var(--error); font-size: 12px; margin-top: 6px; padding: 6px 10px; background: rgba(248,81,73,.08); border-radius: 5px; }
+.form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 </style>

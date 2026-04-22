@@ -1,10 +1,11 @@
-"""CMDB 主机管理 + 主机巡检路由。
+"""CMDB 主机管理（手动录入）+ 主机巡检路由。
 
 路由前缀：/api/hosts/*
 """
 import json
 import logging
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
 
@@ -20,94 +21,331 @@ import io
 
 from state import (
     prom, analyzer,
-    load_cmdb, save_cmdb,
+    load_hosts_list, save_hosts_list,
     load_groups,
     encrypt_password, decrypt_password,
-    PROMETHEUS_URL,
+    load_credentials,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── 主机列表 ──────────────────────────────────────────────────────────────────
+_NOW = lambda: datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-@router.get("/api/hosts")
-async def get_hosts():
-    """获取所有主机列表（Prometheus 发现 + CMDB 补充字段 + 实时指标 + 分区）"""
-    try:
-        hosts, all_metrics, all_partitions = await asyncio.gather(
-            prom.discover_hosts(),
-            prom.get_all_host_metrics(),
-            prom.get_all_partitions(),
-        )
-        cmdb        = load_cmdb()
-        cmdb_dirty  = False
+# ── 主机 CRUD ──────────────────────────────────────────────────────────────────
 
-        for host in hosts:
-            inst = host["instance"]
-            host["metrics"]    = all_metrics.get(inst, {})
-            host["partitions"] = all_partitions.get(inst, [])
-            extra = cmdb.get(inst, {})
-            host["owner"]         = extra.get("owner", "")
-            host["env"]           = extra.get("env", "")
-            host["role"]          = extra.get("role", "")
-            host["notes"]         = extra.get("notes", "")
-            host["group"]         = extra.get("group", "")
-            # custom_labels 由 Prometheus 采集，不存 CMDB（只读展示）
-            host.setdefault("custom_labels", {})
-            host["ssh_port"]      = extra.get("ssh_port", 22)
-            host["ssh_user"]      = extra.get("ssh_user", "")
-            host["ssh_saved"]     = bool(extra.get("ssh_password"))
-            host["credential_id"] = extra.get("credential_id", "")
-            if host["ip"] and host["ip"] != extra.get("ip"):
-                cmdb.setdefault(inst, {})["ip"] = host["ip"]
-                cmdb_dirty = True
-
-        if cmdb_dirty:
-            save_cmdb(cmdb)
-        return {"data": hosts, "total": len(hosts), "prometheus_url": PROMETHEUS_URL}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Prometheus 连接失败: {e}")
+class HostCreateRequest(BaseModel):
+    hostname:      str
+    ip:            str
+    platform:      str = "Linux"        # Linux / Windows / Network / Other
+    os_version:    str = ""
+    cpu_cores:     Optional[int] = None
+    memory_gb:     Optional[float] = None
+    disk_gb:       Optional[float] = None
+    status:        str = "active"       # active / offline / maintenance
+    env:           str = "production"   # production / staging / development / testing / dr
+    role:          str = ""
+    owner:         str = ""
+    datacenter:    str = ""
+    group:         str = ""
+    ssh_port:      int = 22
+    ssh_user:      str = ""
+    ssh_password:  str = ""
+    credential_id: str = ""
+    notes:         str = ""
+    labels:        dict = {}
 
 
 class HostUpdateRequest(BaseModel):
-    owner:         Optional[str] = None
+    hostname:      Optional[str] = None
+    ip:            Optional[str] = None
+    platform:      Optional[str] = None
+    os_version:    Optional[str] = None
+    cpu_cores:     Optional[int] = None
+    memory_gb:     Optional[float] = None
+    disk_gb:       Optional[float] = None
+    status:        Optional[str] = None
     env:           Optional[str] = None
     role:          Optional[str] = None
-    notes:         Optional[str] = None
-    group:         Optional[str] = None  # 分组 ID
+    owner:         Optional[str] = None
+    datacenter:    Optional[str] = None
+    group:         Optional[str] = None
     ssh_port:      Optional[int] = None
     ssh_user:      Optional[str] = None
-    ssh_password:  Optional[str] = None  # 明文传入，加密存储
-    credential_id: Optional[str] = None  # 关联凭证库中的凭证
+    ssh_password:  Optional[str] = None
+    credential_id: Optional[str] = None
+    notes:         Optional[str] = None
+    labels:        Optional[dict] = None
 
 
-@router.put("/api/hosts/{instance:path}")
-async def update_host(instance: str, body: HostUpdateRequest):
-    """更新主机 CMDB 信息"""
-    cmdb = load_cmdb()
-    if instance not in cmdb:
-        cmdb[instance] = {}
-    for field in ("owner", "env", "role", "notes", "group", "ssh_port", "ssh_user"):
-        val = getattr(body, field)
+@router.get("/api/hosts")
+async def list_hosts():
+    """获取所有手动录入的主机列表。"""
+    hosts = load_hosts_list()
+    # 脱敏：不返回加密密码
+    safe = []
+    for h in hosts:
+        entry = dict(h)
+        entry["ssh_saved"] = bool(entry.pop("ssh_password", ""))
+        safe.append(entry)
+    return {"data": safe, "total": len(safe)}
+
+
+@router.post("/api/hosts")
+async def create_host(body: HostCreateRequest):
+    """新增主机。"""
+    hosts = load_hosts_list()
+    # 校验 IP 唯一性
+    if any(h.get("ip") == body.ip for h in hosts):
+        raise HTTPException(status_code=409, detail=f"IP {body.ip} 已存在")
+    now = _NOW()
+    entry: dict = {
+        "id":           str(uuid.uuid4()),
+        "hostname":     body.hostname,
+        "ip":           body.ip,
+        "platform":     body.platform,
+        "os_version":   body.os_version,
+        "cpu_cores":    body.cpu_cores,
+        "memory_gb":    body.memory_gb,
+        "disk_gb":      body.disk_gb,
+        "status":       body.status,
+        "env":          body.env,
+        "role":         body.role,
+        "owner":        body.owner,
+        "datacenter":   body.datacenter,
+        "group":        body.group,
+        "ssh_port":     body.ssh_port,
+        "ssh_user":     body.ssh_user,
+        "ssh_password": encrypt_password(body.ssh_password) if body.ssh_password else "",
+        "credential_id": body.credential_id,
+        "notes":        body.notes,
+        "labels":       body.labels,
+        "created_at":   now,
+        "updated_at":   now,
+    }
+    hosts.append(entry)
+    save_hosts_list(hosts)
+    result = dict(entry)
+    result["ssh_saved"] = bool(result.pop("ssh_password", ""))
+    return result
+
+
+@router.put("/api/hosts/{host_id}")
+async def update_host(host_id: str, body: HostUpdateRequest):
+    """更新主机信息。"""
+    hosts = load_hosts_list()
+    idx = next((i for i, h in enumerate(hosts) if h.get("id") == host_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    host = hosts[idx]
+    fields = ["hostname", "ip", "platform", "os_version", "cpu_cores", "memory_gb",
+              "disk_gb", "status", "env", "role", "owner", "datacenter", "group",
+              "ssh_port", "ssh_user", "credential_id", "notes", "labels"]
+    for f in fields:
+        val = getattr(body, f)
         if val is not None:
-            cmdb[instance][field] = val
+            host[f] = val
     if body.ssh_password is not None:
-        if body.ssh_password:
-            cmdb[instance]["ssh_password"] = encrypt_password(body.ssh_password)
-        else:
-            cmdb[instance].pop("ssh_password", None)
-    if body.credential_id is not None:
-        if body.credential_id:
-            cmdb[instance]["credential_id"] = body.credential_id
-            cmdb[instance].pop("ssh_password", None)
-        else:
-            cmdb[instance].pop("credential_id", None)
-    save_cmdb(cmdb)
-    return {"ok": True, "instance": instance}
+        host["ssh_password"] = encrypt_password(body.ssh_password) if body.ssh_password else ""
+    host["updated_at"] = _NOW()
+    hosts[idx] = host
+    save_hosts_list(hosts)
+    result = dict(host)
+    result["ssh_saved"] = bool(result.pop("ssh_password", ""))
+    return result
 
 
-# ── 巡检 ──────────────────────────────────────────────────────────────────────
+@router.delete("/api/hosts/{host_id}")
+async def delete_host(host_id: str):
+    """删除主机。"""
+    hosts = load_hosts_list()
+    new_hosts = [h for h in hosts if h.get("id") != host_id]
+    if len(new_hosts) == len(hosts):
+        raise HTTPException(status_code=404, detail="主机不存在")
+    save_hosts_list(new_hosts)
+    return {"ok": True}
+
+
+# ── SSH 同步系统信息 ─────────────────────────────────────────────────────────
+
+_SYNC_SCRIPT = """
+python3 - <<'PYEOF' 2>/dev/null || python - <<'PYEOF' 2>/dev/null
+import subprocess, json, os, platform
+
+def run(cmd):
+    try:
+        return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=5).decode().strip()
+    except Exception:
+        return ""
+
+info = {}
+
+# OS 版本
+os_release = run("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'\"' -f2")
+if not os_release:
+    os_release = run("lsb_release -d 2>/dev/null | cut -f2")
+if not os_release:
+    os_release = run("uname -sr")
+info["os_version"] = os_release
+
+# CPU 核心数
+cpu_cores = run("nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null")
+try:
+    info["cpu_cores"] = int(cpu_cores)
+except Exception:
+    pass
+
+# 内存 GB
+mem_kb = run("grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}'")
+try:
+    info["memory_gb"] = round(int(mem_kb) / 1024 / 1024, 1)
+except Exception:
+    pass
+
+# 磁盘 GB（根分区）
+disk_kb = run("df / 2>/dev/null | tail -1 | awk '{print $2}'")
+try:
+    info["disk_gb"] = round(int(disk_kb) / 1024 / 1024, 1)
+except Exception:
+    pass
+
+# 主机名
+info["hostname"] = run("hostname -s 2>/dev/null || hostname")
+
+print(json.dumps(info))
+PYEOF
+"""
+
+_SYNC_SCRIPT_SHELL = r"""
+set -e
+INFO="{}"
+
+# OS 版本
+OS=$(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2 || lsb_release -d 2>/dev/null | cut -f2 || uname -sr)
+# CPU
+CPU=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 0)
+# 内存 KB → GB
+MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
+# 磁盘 KB → GB (根分区)
+DISK_KB=$(df / 2>/dev/null | tail -1 | awk '{print $2}' || echo 0)
+# 主机名
+HN=$(hostname -s 2>/dev/null || hostname)
+
+echo "OS_VER=${OS}"
+echo "CPU_CORES=${CPU}"
+echo "MEM_KB=${MEM_KB}"
+echo "DISK_KB=${DISK_KB}"
+echo "HOSTNAME=${HN}"
+"""
+
+
+async def _ssh_sync(host: dict) -> dict:
+    """通过 SSH 连接主机，读取系统基本信息，返回可更新字段 dict。"""
+    import asyncssh
+
+    ip       = host.get("ip", "")
+    port     = int(host.get("ssh_port") or 22)
+    username = host.get("ssh_user") or "root"
+
+    # 解密密码
+    password = None
+    enc_pw = host.get("ssh_password", "")
+    if enc_pw:
+        try:
+            password = decrypt_password(enc_pw)
+        except Exception:
+            pass
+
+    # 凭证库优先
+    cred_id = host.get("credential_id", "")
+    if cred_id and not password:
+        creds = load_credentials()
+        cred = next((c for c in creds if c.get("id") == cred_id), None)
+        if cred:
+            username = cred.get("username", username)
+            raw = cred.get("password", "")
+            if raw:
+                try:
+                    password = decrypt_password(raw)
+                except Exception:
+                    password = raw
+
+    if not ip:
+        raise ValueError("主机没有配置 IP")
+    if not password:
+        raise ValueError("主机没有配置 SSH 密码或关联凭证")
+
+    connect_kwargs = dict(
+        host=ip, port=port, username=username, password=password,
+        known_hosts=None, connect_timeout=10,
+    )
+
+    async with asyncssh.connect(**connect_kwargs) as conn:
+        result = await conn.run(_SYNC_SCRIPT_SHELL, timeout=15)
+        output = result.stdout or ""
+
+    info: dict = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("OS_VER="):
+            v = line[7:].strip()
+            if v:
+                info["os_version"] = v
+        elif line.startswith("CPU_CORES="):
+            try:
+                info["cpu_cores"] = int(line[10:].strip())
+            except Exception:
+                pass
+        elif line.startswith("MEM_KB="):
+            try:
+                kb = int(line[7:].strip())
+                info["memory_gb"] = round(kb / 1024 / 1024, 1) if kb > 0 else None
+            except Exception:
+                pass
+        elif line.startswith("DISK_KB="):
+            try:
+                kb = int(line[8:].strip())
+                info["disk_gb"] = round(kb / 1024 / 1024, 1) if kb > 0 else None
+            except Exception:
+                pass
+        elif line.startswith("HOSTNAME="):
+            v = line[9:].strip()
+            if v:
+                info["hostname"] = v
+
+    return info
+
+
+@router.post("/api/hosts/{host_id}/sync")
+async def sync_host_info(host_id: str):
+    """通过 SSH 同步主机系统信息（OS版本、CPU、内存、磁盘、主机名）。"""
+    hosts = load_hosts_list()
+    idx = next((i for i, h in enumerate(hosts) if h.get("id") == host_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    host = hosts[idx]
+    try:
+        info = await _ssh_sync(host)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SSH 同步失败：{e}")
+
+    if not info:
+        raise HTTPException(status_code=400, detail="SSH 连接成功但未获取到系统信息，请确认 shell 可正常执行")
+
+    # 更新字段
+    for k, v in info.items():
+        if v is not None:
+            host[k] = v
+    host["updated_at"] = _NOW()
+    hosts[idx] = host
+    save_hosts_list(hosts)
+
+    result = dict(host)
+    result["ssh_saved"] = bool(result.pop("ssh_password", ""))
+    return {"ok": True, "updated": info, "host": result}
+
+
+# ── 巡检（基于 Prometheus，使用 CMDB 中的 IP 匹配实例）──────────────────────
 
 def _inspection_issue_counts(results: list[dict]) -> list[tuple[str, int]]:
     counter: dict[str, int] = {}
@@ -157,50 +395,38 @@ def _build_inspection_fallback_summary(
     return "\n\n".join(parts)
 
 
-async def _generate_inspection_summary(
-    results: list[dict], summary: dict
-) -> tuple[str, str, bool, str]:
-    provider_name = analyzer.provider_name
-    try:
-        chunks: list[str] = []
-        async for chunk in analyzer.generate_inspection_summary(results, summary):
-            chunks.append(chunk)
-        content = "".join(chunks).strip()
-        if not content:
-            raise RuntimeError("AI 返回内容为空")
-        return content, provider_name, False, ""
-    except Exception as exc:
-        logger.exception("巡检 AI 总结生成失败")
-        fallback = _build_inspection_fallback_summary(results, summary, exc)
-        return fallback, provider_name, True, str(exc)
+def _cmdb_instances_for_group(group_id: str) -> tuple[Optional[list[str]], str]:
+    """根据分组 ID 从 CMDB 获取 Prometheus 实例列表（ip:9100），返回 (instances, group_name)。"""
+    hosts = load_hosts_list()
+    groups = load_groups()
+    g = next((g for g in groups if g["id"] == group_id), None)
+    group_name = g["name"] if g else group_id
+    # 用 ip:9100 作为 Prometheus instance 格式
+    instances = [f"{h['ip']}:9100" for h in hosts if h.get("group") == group_id and h.get("ip")]
+    return instances or None, group_name
 
 
 @router.get("/api/hosts/inspect")
 async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
-    """巡检主机，支持按分组过滤（group_id 为空则全量巡检），SSE 流式返回"""
+    """巡检主机，支持按分组过滤，SSE 流式返回。"""
     async def generate():
         try:
-            # 按分组过滤实例
             instances: Optional[list[str]] = None
             group_name: str = ""
             if group_id:
-                cmdb = load_cmdb()
-                instances = [inst for inst, meta in cmdb.items() if meta.get("group") == group_id]
-                groups = load_groups()
-                g = next((g for g in groups if g["id"] == group_id), None)
-                group_name = g["name"] if g else group_id
+                instances, group_name = _cmdb_instances_for_group(group_id)
                 if not instances:
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'分组「{group_name}」下没有主机'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'分组「{group_name}」下没有主机或主机无 IP'}, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
 
             results = await prom.inspect_hosts(instances=instances)
 
-            # 为每条结果附加分组信息（方便前端显示）
             if group_id:
-                cmdb = load_cmdb()
+                host_map = {h["ip"]: h for h in load_hosts_list() if h.get("ip")}
                 for r in results:
-                    r.setdefault("group", cmdb.get(r.get("instance", ""), {}).get("group", ""))
+                    ip = r.get("ip", "")
+                    r.setdefault("group", host_map.get(ip, {}).get("group", ""))
 
             summary = {
                 "total":      len(results),
@@ -231,7 +457,7 @@ class InspectAIRequest(BaseModel):
 
 @router.post("/api/hosts/inspect/ai")
 async def inspect_ai_summary(req: InspectAIRequest):
-    """对已有巡检结果做 AI 流式分析（按需调用）"""
+    """对已有巡检结果做 AI 流式分析（按需调用）。"""
     async def generate():
         provider_name = analyzer.provider_name
         yield f"data: {json.dumps({'type': 'ai_meta', 'provider': provider_name, 'fallback': False}, ensure_ascii=False)}\n\n"
@@ -253,12 +479,6 @@ async def inspect_ai_summary(req: InspectAIRequest):
     )
 
 
-class InspectExcelRequest(BaseModel):
-    results: list
-    summary: dict
-    ai_text: str = ""
-
-
 class NotifyGroupsRequest(BaseModel):
     results: list
     summary: dict = {}
@@ -268,7 +488,7 @@ class NotifyGroupsRequest(BaseModel):
 
 @router.post("/api/hosts/inspect/notify-groups")
 async def notify_groups_inspect(req: NotifyGroupsRequest):
-    """将巡检结果按分组推送到飞书（手动巡检后按需触发）"""
+    """将巡检结果按分组推送到飞书。"""
     try:
         from scheduler import _send_group_inspect_notifications
         results = await _send_group_inspect_notifications(
@@ -276,15 +496,12 @@ async def notify_groups_inspect(req: NotifyGroupsRequest):
             force=True,
             group_id=(req.group_id or "").strip(),
         )
-        sent = [item for item in results if item.get("push", {}).get("ok")]
-        failed = [item for item in results if item.get("push") and not item.get("push", {}).get("ok")]
+        sent    = [item for item in results if item.get("push", {}).get("ok")]
+        failed  = [item for item in results if item.get("push") and not item.get("push", {}).get("ok")]
         skipped = [item for item in results if item.get("skipped")]
         target_group_name = next(
-            (
-                item.get("group_name") or item.get("group_id")
-                for item in results
-                if item.get("group_name") or item.get("group_id")
-            ),
+            (item.get("group_name") or item.get("group_id") for item in results
+             if item.get("group_name") or item.get("group_id")),
             (req.group_id or "").strip(),
         )
         if sent:
@@ -294,31 +511,32 @@ async def notify_groups_inspect(req: NotifyGroupsRequest):
         else:
             message = (
                 f"分组「{target_group_name}」没有成功推送，请检查巡检数据和飞书 Webhook 配置"
-                if req.group_id else
-                "没有成功推送的分组，请检查分组主机和飞书 Webhook 配置"
+                if req.group_id else "没有成功推送的分组，请检查分组主机和飞书 Webhook 配置"
             )
         return {
             "ok": bool(sent),
             "message": message,
-            "summary": {
-                "sent": len(sent),
-                "failed": len(failed),
-                "skipped": len(skipped),
-            },
+            "summary": {"sent": len(sent), "failed": len(failed), "skipped": len(skipped)},
             "results": results,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class InspectExcelRequest(BaseModel):
+    results: list
+    summary: dict
+    ai_text: str = ""
+
+
 @router.post("/api/hosts/inspect/excel")
 async def export_inspect_excel(req: InspectExcelRequest):
-    """根据传入的巡检结果生成 Excel 文件并下载"""
+    """根据传入的巡检结果生成 Excel 文件并下载。"""
     try:
-        results  = req.results
-        summary  = req.summary
-        ai_text  = req.ai_text
-        now_str  = datetime.now().strftime("%Y-%m-%d %H:%M")
+        results = req.results
+        summary = req.summary
+        ai_text = req.ai_text
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         wb = Workbook()
 
@@ -354,7 +572,6 @@ async def export_inspect_excel(req: InspectExcelRequest):
             else:
                 c.font = Font(size=9)
 
-        # Sheet 1: 巡检概况
         ws1 = wb.active
         ws1.title = "巡检概况"
         ws1.column_dimensions["A"].width = 22
@@ -400,13 +617,9 @@ async def export_inspect_excel(req: InspectExcelRequest):
             c.font      = Font(size=9)
             c.alignment = Alignment(vertical="top", wrap_text=True)
             c.border    = tborder()
-            ws1.merge_cells(
-                start_row=ai_start + 1, start_column=1,
-                end_row=ai_start + 1,   end_column=2,
-            )
+            ws1.merge_cells(start_row=ai_start + 1, start_column=1, end_row=ai_start + 1, end_column=2)
             ws1.row_dimensions[ai_start + 1].height = max(60, len(ai_text) // 3)
 
-        # Sheet 2: 全部主机明细
         ws2 = wb.create_sheet("全部主机明细")
         headers2 = [
             "主机名", "IP地址", "操作系统", "状态", "巡检结果",
@@ -450,7 +663,6 @@ async def export_inspect_excel(req: InspectExcelRequest):
 
         ws2.freeze_panes = "A2"
 
-        # Sheet 3: 异常项明细
         ws3 = wb.create_sheet("异常项明细")
         headers3 = ["主机名", "IP地址", "检查项", "当前值", "状态", "阈值说明"]
         header_row(ws3, headers3)
@@ -489,13 +701,21 @@ async def export_inspect_excel(req: InspectExcelRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/api/hosts/{instance:path}/inspect")
-async def inspect_single_host(instance: str):
-    """巡检单台主机"""
+@router.get("/api/hosts/{host_id}/inspect")
+async def inspect_single_host(host_id: str):
+    """巡检单台主机（按 CMDB ID 查找 IP，再查 Prometheus）。"""
+    hosts = load_hosts_list()
+    host = next((h for h in hosts if h.get("id") == host_id), None)
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    ip = host.get("ip", "")
+    if not ip:
+        raise HTTPException(status_code=400, detail="主机没有配置 IP")
     try:
+        instance = f"{ip}:9100"
         results = await prom.inspect_hosts(instances=[instance])
         if not results:
-            raise HTTPException(status_code=404, detail="主机未找到")
+            raise HTTPException(status_code=404, detail="Prometheus 中未找到该主机指标（请确认 node_exporter 已运行）")
         return results[0]
     except HTTPException:
         raise

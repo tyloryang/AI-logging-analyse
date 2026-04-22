@@ -36,6 +36,9 @@ const routes = [
   { path: '/middleware',    component: () => import('../views/MiddlewareView.vue'),     name: 'middleware' },
   { path: '/middleware/es', component: () => import('../views/ElasticsearchView.vue'),  name: 'middleware-es' },
 
+  // ── 7.5. CI/CD ────────────────────────────────────────────────
+  { path: '/cicd/jenkins', component: () => import('../views/JenkinsView.vue'), name: 'cicd-jenkins' },
+
   // ── 8. 可观测性 ───────────────────────────────────────────────
   { path: '/observability/overview', component: () => import('../views/Dashboard.vue'),      name: 'obs-overview' },
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },

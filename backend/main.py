@@ -42,6 +42,7 @@ from routers.tickets import router as tickets_router
 from routers.elasticsearch import router as es_router
 from routers.alerts import router as alerts_router
 from routers.rca import router as rca_router
+from routers.jenkins import router as jenkins_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ app.include_router(tickets_router)
 app.include_router(es_router)
 app.include_router(alerts_router)
 app.include_router(rca_router)
+app.include_router(jenkins_router)
 
 
 if __name__ == "__main__":
