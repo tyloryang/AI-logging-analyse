@@ -46,6 +46,8 @@
             <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
           </select>
           <button class="btn btn-primary" @click="openAdd">+ 添加主机</button>
+          <button class="btn btn-outline" @click="downloadExport" title="导出 Excel">📥 导出</button>
+          <button class="btn btn-outline" @click="showImportModal = true" title="从 Excel/CSV 导入">📤 导入</button>
         </template>
         <button class="btn btn-outline" @click="tab === 'cmdb' ? loadHosts() : (tab === 'groups' ? loadGroups() : null)" :disabled="loading">
           <span v-if="loading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
@@ -505,6 +507,41 @@
       </div>
     </div>
 
+    <!-- 导入弹窗 -->
+    <div v-if="showImportModal" class="modal-mask" @click.self="showImportModal = false">
+      <div class="host-modal" style="max-width:440px">
+        <div class="modal-header"><span>批量导入主机</span><button class="close-btn" @click="showImportModal = false">✕</button></div>
+        <div class="modal-body">
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">支持 <b>.xlsx</b> / <b>.csv</b> 文件，列名以导出模板为准</p>
+          <div class="form-group">
+            <label>选择文件</label>
+            <input type="file" accept=".xlsx,.xls,.csv" @change="onImportFile" class="file-input" />
+          </div>
+          <div class="form-group">
+            <label>IP 重复时</label>
+            <select v-model="importConflict" class="filter-select" style="width:100%">
+              <option value="skip">跳过（保留已有数据）</option>
+              <option value="update">覆盖（用文件数据更新）</option>
+            </select>
+          </div>
+          <div v-if="importResult" class="import-result" :class="importResult.ok ? 'ok' : 'err'">
+            <div style="font-weight:600;margin-bottom:4px">{{ importResult.message }}</div>
+            <div v-if="importResult.error_details?.length" style="font-size:11px;margin-top:4px">
+              <div v-for="e in importResult.error_details" :key="e" style="color:var(--error)">{{ e }}</div>
+            </div>
+          </div>
+          <div v-if="importError" class="form-error">{{ importError }}</div>
+          <div class="form-actions">
+            <button class="btn btn-outline" @click="downloadExport">📥 下载模板</button>
+            <button class="btn btn-primary" @click="doImport" :disabled="!importFile || importing">
+              <span v-if="importing" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+              导入
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 删除确认弹窗 -->
     <div v-if="deleteTarget" class="modal-mask" @click.self="deleteTarget = null">
       <div class="confirm-modal">
@@ -834,6 +871,42 @@ async function saveHost() {
     hostFormError.value = typeof e === 'string' ? e : '保存失败，请重试'
   } finally {
     saving.value = false
+  }
+}
+
+// ── 导出 / 导入 ───────────────────────────────────────────────────────────────
+function downloadExport() {
+  const a = document.createElement('a')
+  a.href = api.exportHosts()
+  a.click()
+}
+
+const showImportModal = ref(false)
+const importFile      = ref(null)
+const importConflict  = ref('skip')
+const importing       = ref(false)
+const importResult    = ref(null)
+const importError     = ref('')
+
+function onImportFile(e) {
+  importFile.value  = e.target.files[0] || null
+  importResult.value = null
+  importError.value  = ''
+}
+
+async function doImport() {
+  if (!importFile.value) return
+  importing.value   = true
+  importResult.value = null
+  importError.value  = ''
+  try {
+    const res = await api.importHosts(importFile.value, importConflict.value)
+    importResult.value = res
+    if (res.ok) await loadHosts()
+  } catch (e) {
+    importError.value = typeof e === 'string' ? e : '导入失败，请检查文件格式'
+  } finally {
+    importing.value = false
   }
 }
 
@@ -1221,6 +1294,10 @@ async function deleteGroup(g) {
 .sync-msg { display: flex; flex-direction: column; gap: 4px; font-size: 12px; padding: 5px 10px; border-radius: 5px; }
 .sync-msg.ok { background: rgba(63,185,80,.12); color: var(--success); }
 .sync-msg.err { background: rgba(248,81,73,.12); color: var(--error); }
+.file-input { padding: 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 100%; box-sizing: border-box; cursor: pointer; }
+.import-result { font-size: 12px; padding: 8px 12px; border-radius: 5px; margin-top: 6px; }
+.import-result.ok { background: rgba(63,185,80,.12); color: var(--success); }
+.import-result.err { background: rgba(248,81,73,.12); color: var(--error); }
 
 /* 空状态 */
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); gap: 8px; }

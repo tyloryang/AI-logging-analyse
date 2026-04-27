@@ -11,7 +11,7 @@ from typing import Optional
 from urllib.parse import quote
 
 import asyncio
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
@@ -190,6 +190,236 @@ async def delete_host(host_id: str):
         raise HTTPException(status_code=404, detail="主机不存在")
     save_hosts_list(new_hosts)
     return {"ok": True}
+
+
+# ── 导出 / 导入 ──────────────────────────────────────────────────────────────
+
+_EXPORT_COLS = [
+    ("hostname",    "主机名"),
+    ("ip",          "IP 地址"),
+    ("platform",    "平台"),
+    ("os_version",  "操作系统版本"),
+    ("cpu_cores",   "CPU 核心数"),
+    ("memory_gb",   "内存(GB)"),
+    ("disk_gb",     "磁盘(GB)"),
+    ("status",      "状态"),
+    ("env",         "环境"),
+    ("role",        "用途/角色"),
+    ("owner",       "负责人"),
+    ("datacenter",  "机房/区域"),
+    ("ssh_port",    "SSH 端口"),
+    ("ssh_user",    "SSH 用户名"),
+    ("notes",       "备注"),
+]
+_ENV_LABEL = {"production":"生产","staging":"预发","development":"开发","testing":"测试","dr":"容灾"}
+_STATUS_LABEL = {"active":"在线","offline":"离线","maintenance":"维护中"}
+
+
+@router.get("/api/hosts/export")
+async def export_hosts():
+    """导出所有主机为 Excel 文件。"""
+    hosts = load_hosts_list()
+    groups = load_groups()
+    group_map = {g["id"]: g["name"] for g in groups}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "主机列表"
+
+    header_fill = PatternFill("solid", fgColor="FF1F3A5F")
+    header_font = Font(bold=True, color="FFFFFFFF", size=10)
+    border_side = Side(style="thin", color="FFCCCCCC")
+    cell_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+    center = Alignment(horizontal="center", vertical="center")
+
+    # 表头（含"分组"列）
+    headers = [label for _, label in _EXPORT_COLS] + ["分组"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = center
+        c.border = cell_border
+
+    # 列宽
+    widths = [16, 16, 10, 22, 10, 10, 10, 10, 10, 18, 12, 16, 8, 12, 24, 16]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[1].height = 22
+    ws.freeze_panes = "A2"
+
+    for row_idx, h in enumerate(hosts, 2):
+        for col_idx, (field, _) in enumerate(_EXPORT_COLS, 1):
+            val = h.get(field, "")
+            if field == "status":
+                val = _STATUS_LABEL.get(val, val)
+            elif field == "env":
+                val = _ENV_LABEL.get(val, val)
+            c = ws.cell(row=row_idx, column=col_idx, value=val if val is not None else "")
+            c.alignment = Alignment(vertical="center", wrap_text=False)
+            c.border = cell_border
+            c.font = Font(size=9)
+        # 分组列
+        grp_col = len(_EXPORT_COLS) + 1
+        c = ws.cell(row=row_idx, column=grp_col, value=group_map.get(h.get("group", ""), ""))
+        c.alignment = Alignment(vertical="center")
+        c.border = cell_border
+        c.font = Font(size=9)
+        ws.row_dimensions[row_idx].height = 16
+
+    # 说明 sheet
+    ws2 = wb.create_sheet("填写说明")
+    tips = [
+        ("字段", "可选值 / 说明"),
+        ("主机名", "可选，留空自动用 IP"),
+        ("IP 地址", "必填，不能重复"),
+        ("平台", "Linux / Windows / Network / Other"),
+        ("状态", "在线 / 离线 / 维护中"),
+        ("环境", "生产 / 预发 / 开发 / 测试 / 容灾"),
+        ("SSH 端口", "默认 22"),
+        ("分组", "填写分组名称（导入时自动匹配）"),
+    ]
+    for r, (k, v) in enumerate(tips, 1):
+        ws2.cell(row=r, column=1, value=k).font = Font(bold=True, size=10)
+        ws2.cell(row=r, column=2, value=v).font = Font(size=10)
+    ws2.column_dimensions["A"].width = 14
+    ws2.column_dimensions["B"].width = 40
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    now_str = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"主机CMDB_{now_str}.xlsx"
+    encoded = quote(filename, encoding="utf-8")
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
+
+
+@router.post("/api/hosts/import")
+async def import_hosts(
+    file: UploadFile = File(...),
+    conflict: str = Query("skip", description="重复 IP 处理策略：skip=跳过 / update=覆盖"),
+):
+    """从 Excel 或 CSV 文件批量导入主机。返回导入摘要。"""
+    from openpyxl import load_workbook
+    import csv
+
+    content = await file.read()
+    filename = file.filename or ""
+    now = _NOW()
+
+    # 解析文件
+    rows: list[dict] = []
+    if filename.endswith(".csv"):
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(text.splitlines())
+        rows = list(reader)
+    elif filename.endswith((".xlsx", ".xls")):
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        headers_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), [])
+        col_names = [str(h).strip() if h else "" for h in headers_row]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            rows.append({col_names[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row) if i < len(col_names)})
+        wb.close()
+    else:
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx 或 .csv 文件")
+
+    # 列名映射（中文表头 → 字段名）
+    _col_map = {v: k for k, v in _EXPORT_COLS}
+    _col_map.update({k: k for k, _ in _EXPORT_COLS})  # 英文字段名也接受
+
+    groups = load_groups()
+    group_name_map = {g["name"]: g["id"] for g in groups}
+
+    hosts = load_hosts_list()
+    existing_ips = {h.get("ip", ""): i for i, h in enumerate(hosts)}
+
+    added = skipped = updated = errors = 0
+    error_details: list[str] = []
+
+    for row_num, raw in enumerate(rows, 2):
+        # 映射列名
+        entry: dict = {}
+        for raw_key, val in raw.items():
+            field = _col_map.get(raw_key.strip())
+            if field:
+                entry[field] = val
+
+        ip = entry.get("ip", "").strip()
+        if not ip:
+            error_details.append(f"第 {row_num} 行：IP 地址为空，跳过")
+            errors += 1
+            continue
+
+        # 数值转换
+        for num_field in ("cpu_cores",):
+            v = entry.get(num_field, "")
+            try:
+                entry[num_field] = int(float(v)) if v else None
+            except (ValueError, TypeError):
+                entry[num_field] = None
+        for float_field in ("memory_gb", "disk_gb"):
+            v = entry.get(float_field, "")
+            try:
+                entry[float_field] = round(float(v), 1) if v else None
+            except (ValueError, TypeError):
+                entry[float_field] = None
+        # ssh_port
+        try:
+            entry["ssh_port"] = int(entry.get("ssh_port", 22) or 22)
+        except (ValueError, TypeError):
+            entry["ssh_port"] = 22
+
+        # 中文状态/环境反转
+        _rev_status = {v: k for k, v in _STATUS_LABEL.items()}
+        _rev_env    = {v: k for k, v in _ENV_LABEL.items()}
+        entry["status"] = _rev_status.get(entry.get("status", ""), entry.get("status", "active")) or "active"
+        entry["env"]    = _rev_env.get(entry.get("env", ""), entry.get("env", "production")) or "production"
+
+        # 分组名称 → ID
+        grp_name = entry.pop("分组", "") or ""
+        entry["group"] = group_name_map.get(grp_name, entry.get("group", ""))
+
+        entry.setdefault("hostname", ip)
+        entry.setdefault("platform", "Linux")
+
+        if ip in existing_ips:
+            if conflict == "update":
+                idx = existing_ips[ip]
+                # 保留原有 id / 密码 / 创建时间
+                preserved = {k: hosts[idx].get(k) for k in ("id", "ssh_password", "credential_id", "created_at", "labels")}
+                hosts[idx].update(entry)
+                hosts[idx].update(preserved)
+                hosts[idx]["updated_at"] = now
+                updated += 1
+            else:
+                skipped += 1
+        else:
+            entry["id"] = str(uuid.uuid4())
+            entry.setdefault("labels", {})
+            entry["ssh_password"] = ""
+            entry["credential_id"] = ""
+            entry["created_at"] = now
+            entry["updated_at"] = now
+            hosts.append(entry)
+            existing_ips[ip] = len(hosts) - 1
+            added += 1
+
+    save_hosts_list(hosts)
+    return {
+        "ok": True,
+        "total": len(rows),
+        "added": added,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "error_details": error_details[:20],
+        "message": f"导入完成：新增 {added} 台，更新 {updated} 台，跳过 {skipped} 台，错误 {errors} 条",
+    }
 
 
 # ── SSH 同步系统信息 ─────────────────────────────────────────────────────────

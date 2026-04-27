@@ -34,6 +34,11 @@ export const api = {
   updateHost:     (id, data) => http.put(`/hosts/${id}`, data),
   deleteHost:     (id) => http.delete(`/hosts/${id}`),
   syncHost:       (id) => http.post(`/hosts/${id}/sync`),
+  exportHosts:    ()   => `/api/hosts/export`,
+  importHosts:    (file, conflict = 'skip') => {
+    const fd = new FormData(); fd.append('file', file)
+    return http.post(`/hosts/import?conflict=${conflict}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
   inspectHosts:   (groupId) => http.get('/hosts/inspect', { params: groupId ? { group_id: groupId } : {} }),
   inspectHost:    (id) => http.get(`/hosts/${id}/inspect`),
   notifyInspectGroups: (data) => http.post('/hosts/inspect/notify-groups', data),
