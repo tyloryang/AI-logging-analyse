@@ -10,9 +10,28 @@ class JenkinsClient:
     def __init__(self, url: str, username: str = "", token: str = ""):
         self.url = url.rstrip("/")
         self.auth = (username, token) if username and token else None
+        self._crumb: dict | None = None  # 缓存 CSRF crumb
 
     def _headers(self) -> dict:
         return {"Accept": "application/json"}
+
+    async def _get_crumb(self, client: httpx.AsyncClient) -> dict:
+        """获取 Jenkins CSRF crumb，失败时返回空 dict（部分 Jenkins 关闭了 CSRF 保护）。"""
+        if self._crumb is not None:
+            return self._crumb
+        try:
+            r = await client.get(
+                f"{self.url}/crumbIssuer/api/json",
+                headers=self._headers(),
+            )
+            if r.status_code == 200:
+                data = r.json()
+                self._crumb = {data["crumbRequestField"]: data["crumb"]}
+                return self._crumb
+        except Exception as e:
+            logger.debug("[jenkins] 获取 crumb 失败（可能未启用 CSRF）: %s", e)
+        self._crumb = {}
+        return {}
 
     async def _get(self, path: str, params: dict | None = None) -> dict | list:
         async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=15) as client:
@@ -22,7 +41,15 @@ class JenkinsClient:
 
     async def _post(self, path: str, params: dict | None = None, data: dict | None = None) -> httpx.Response:
         async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=15) as client:
-            r = await client.post(f"{self.url}{path}", params=params, data=data, headers=self._headers())
+            crumb = await self._get_crumb(client)
+            headers = {**self._headers(), **crumb}
+            r = await client.post(f"{self.url}{path}", params=params, data=data, headers=headers)
+            # crumb 过期时重试一次
+            if r.status_code == 403:
+                self._crumb = None
+                crumb = await self._get_crumb(client)
+                headers = {**self._headers(), **crumb}
+                r = await client.post(f"{self.url}{path}", params=params, data=data, headers=headers)
             r.raise_for_status()
             return r
 
