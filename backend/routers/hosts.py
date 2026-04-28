@@ -1285,35 +1285,82 @@ def _cmdb_instances_for_group(group_id: str) -> tuple[list[str], str]:
 
 @router.get("/api/hosts/inspect")
 async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
-    """巡检主机（只巡检 CMDB 中的主机），支持按分组过滤，SSE 流式返回。"""
+    """巡检主机 — 以 CMDB 为基准，有 Prometheus 指标的正常巡检，无指标的标记为离线。"""
     async def generate():
         try:
             group_name: str = ""
-            all_hosts = load_hosts_list()
-            host_map  = {h["ip"]: h for h in all_hosts if h.get("ip")}
+            all_hosts  = load_hosts_list()
 
+            # 确定本次巡检的目标主机列表
             if group_id:
-                # 指定分组：只取该分组的主机
-                instances, group_name = _cmdb_instances_for_group(group_id)
-                if not instances:
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'分组「{group_name}」下没有主机或主机无 IP'}, ensure_ascii=False)}\n\n"
+                groups_list = load_groups()
+                g = next((g for g in groups_list if g["id"] == group_id), None)
+                group_name = g["name"] if g else group_id
+                target_hosts = [h for h in all_hosts if h.get("group") == group_id and h.get("ip")]
+                if not target_hosts:
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'分组「{group_name}」下没有主机'}, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
             else:
-                # 全量巡检：只取 CMDB 中有 IP 的主机（不用 Prometheus 自动发现）
-                instances = [f"{h['ip']}:9100" for h in all_hosts if h.get("ip")]
-                if not instances:
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'CMDB 中没有可巡检的主机，请先录入主机'}, ensure_ascii=False)}\n\n"
+                target_hosts = [h for h in all_hosts if h.get("ip")]
+                if not target_hosts:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'CMDB 中没有主机，请先录入主机'}, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
 
-            results = await prom.inspect_hosts(instances=instances)
+            # 从 Prometheus 获取有指标的主机（用 ip:9100 匹配）
+            instances = [f"{h['ip']}:9100" for h in target_hosts]
+            try:
+                prom_results = await prom.inspect_hosts(instances=instances)
+            except Exception:
+                prom_results = []
 
-            # 补全分组信息
-            for r in results:
+            # 建立 ip → prom_result 映射
+            prom_map: dict[str, dict] = {}
+            for r in prom_results:
                 ip = r.get("ip", "")
-                r.setdefault("group", host_map.get(ip, {}).get("group", ""))
-                r.setdefault("hostname", host_map.get(ip, {}).get("hostname", ""))
+                if not ip:
+                    # instance 格式 ip:9100，解析 ip
+                    inst = r.get("instance", "")
+                    ip = inst.split(":")[0] if ":" in inst else inst
+                prom_map[ip] = r
+
+            # 合并：CMDB 主机为基准
+            results = []
+            for h in target_hosts:
+                ip = h["ip"]
+                if ip in prom_map:
+                    # 有 Prometheus 数据：使用巡检结果，补全 CMDB 信息
+                    r = dict(prom_map[ip])
+                    r["hostname"] = h.get("hostname") or r.get("hostname") or ip
+                    r["group"]    = h.get("group", "")
+                    r["env"]      = h.get("env", "")
+                    results.append(r)
+                else:
+                    # 无 Prometheus 数据：以"无数据"状态显示，确保主机出现在报告中
+                    results.append({
+                        "instance": f"{ip}:9100",
+                        "ip":       ip,
+                        "hostname": h.get("hostname") or ip,
+                        "os":       h.get("os_version", ""),
+                        "job":      "",
+                        "state":    "offline",
+                        "group":    h.get("group", ""),
+                        "env":      h.get("env", ""),
+                        "overall":  "warning",
+                        "checks": [{
+                            "item":      "Prometheus 数据",
+                            "value":     "无指标",
+                            "status":    "warning",
+                            "threshold": "需要安装 node_exporter 或检查 Prometheus 配置",
+                        }],
+                        "metrics":    {},
+                        "partitions": [],
+                    })
+
+            # 严重 → 警告 → 正常排序
+            sev = {"critical": 2, "warning": 1, "normal": 0}
+            results.sort(key=lambda x: -sev.get(x["overall"], 0))
 
             summary = {
                 "total":      len(results),
