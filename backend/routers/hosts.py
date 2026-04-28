@@ -5,8 +5,10 @@
 import json
 import logging
 import os
+import shlex
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
@@ -24,6 +26,7 @@ import io
 
 from state import (
     prom, analyzer,
+    REPORTS_DIR,
     load_hosts_list, save_hosts_list,
     load_groups,
     encrypt_password, decrypt_password,
@@ -926,18 +929,43 @@ def _prioritize(procs: list[dict]) -> list[dict]:
     return combined[:15]
 
 
-@router.get("/api/hosts/{host_id}/processes")
-async def get_host_processes(host_id: str):
-    """通过 SSH 获取主机 Top 进程列表（服务进程置顶）。"""
-    hosts = load_hosts_list()
-    host = next((h for h in hosts if h.get("id") == host_id), None)
+_JAVA_DIAG_DIR = REPORTS_DIR / "java_diagnostics"
+_JAVA_DIAG_DIR.mkdir(exist_ok=True)
+
+_ARTHAS_PRESETS = {
+    "dashboard": "dashboard -n 1",
+    "jvm": "jvm",
+    "thread_top": "thread -n 5",
+    "thread_blocked": "thread -b",
+    "memory": "memory",
+}
+
+_JAVA_FLAME_EVENTS = {"cpu", "alloc", "lock", "wall"}
+
+
+class JavaArthasRequest(BaseModel):
+    pid: int
+    preset: str = "dashboard"
+    command: str = ""
+
+
+class JavaFlamegraphRequest(BaseModel):
+    pid: int
+    seconds: int = 30
+    event: str = "cpu"
+
+
+def _get_host_or_404(host_id: str) -> dict:
+    host = next((h for h in load_hosts_list() if h.get("id") == host_id), None)
     if not host:
         raise HTTPException(status_code=404, detail="主机不存在")
+    return host
 
-    import asyncssh
-    ip       = host.get("ip", "")
-    port     = int(host.get("ssh_port") or 22)
-    username = host.get("ssh_user") or "root"
+
+def _resolve_host_ssh_auth(host: dict) -> tuple[str, str, int, str]:
+    ip = str(host.get("ip") or "").strip()
+    port = int(host.get("ssh_port") or 22)
+    username = str(host.get("ssh_user") or "root").strip() or "root"
     password = None
 
     cred_id = host.get("credential_id", "")
@@ -945,7 +973,7 @@ async def get_host_processes(host_id: str):
         creds = load_credentials()
         cred = next((c for c in creds if c.get("id") == cred_id), None)
         if cred:
-            username = cred.get("username", username)
+            username = str(cred.get("username") or username).strip() or username
             raw_pw = cred.get("password", "")
             if raw_pw:
                 try:
@@ -959,18 +987,111 @@ async def get_host_processes(host_id: str):
             try:
                 password = decrypt_password(enc_pw)
             except Exception:
-                pass
+                password = None
 
     if not ip:
         raise HTTPException(status_code=400, detail="主机没有配置 IP")
     if not password:
-        raise HTTPException(status_code=400, detail="主机未配置 SSH 密码，无法获取进程信息")
+        raise HTTPException(status_code=400, detail="主机未配置 SSH 密码，无法执行诊断")
+    return ip, username, port, password
+
+
+def _java_artifact_url(filename: str) -> str:
+    return f"/api/hosts/java-diagnostics/artifacts/{quote(filename)}"
+
+
+def _save_java_artifact(filename: str, content: str, encoding: str = "utf-8") -> Path:
+    path = _JAVA_DIAG_DIR / filename
+    path.write_text(content, encoding=encoding)
+    return path
+
+
+async def _ssh_run(host: dict, command: str, timeout: float):
+    import asyncssh
+
+    ip, username, port, password = _resolve_host_ssh_auth(host)
+    return await asyncssh.connect(
+        host=ip,
+        port=port,
+        username=username,
+        password=password,
+        known_hosts=None,
+        connect_timeout=_HOST_SYNC_SSH_CONNECT_TIMEOUT,
+    )
+
+
+def _build_arthas_command(pid: int, arthas_command: str) -> str:
+    return f"""set -e
+WORKDIR=/tmp/aiops-java-tools
+BOOT="$WORKDIR/arthas-boot.jar"
+mkdir -p "$WORKDIR"
+if ! command -v java >/dev/null 2>&1; then
+  echo "java 命令不存在，无法执行 Arthas" >&2
+  exit 2
+fi
+if [ ! -s "$BOOT" ]; then
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$BOOT" https://arthas.aliyun.com/arthas-boot.jar
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$BOOT" https://arthas.aliyun.com/arthas-boot.jar
+  else
+    echo "缺少 curl/wget，无法下载 Arthas" >&2
+    exit 2
+  fi
+fi
+java -jar "$BOOT" {pid} -c {shlex.quote(arthas_command)}
+"""
+
+
+def _build_async_profiler_command(pid: int, seconds: int, event: str, remote_output: str) -> str:
+    return f"""set -e
+WORKDIR=/tmp/aiops-java-tools
+PROFILE_HOME="$WORKDIR/async-profiler"
+ARCH="$(uname -m)"
+mkdir -p "$WORKDIR"
+if ! command -v java >/dev/null 2>&1; then
+  echo "java 命令不存在，无法生成火焰图" >&2
+  exit 2
+fi
+case "$ARCH" in
+  x86_64|amd64) PKG="linux-x64" ;;
+  aarch64|arm64) PKG="linux-arm64" ;;
+  *)
+    echo "不支持的架构: $ARCH" >&2
+    exit 2
+    ;;
+esac
+if [ ! -x "$PROFILE_HOME/profiler.sh" ]; then
+  cd "$WORKDIR"
+  rm -rf "$PROFILE_HOME" async-profiler async-profiler-*.tar.gz async-profiler-*
+  URL="https://github.com/async-profiler/async-profiler/releases/download/v3.0/async-profiler-3.0-$PKG.tar.gz"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$URL" -o async-profiler.tar.gz
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO async-profiler.tar.gz "$URL"
+  else
+    echo "缺少 curl/wget，无法下载 async-profiler" >&2
+    exit 2
+  fi
+  tar -xzf async-profiler.tar.gz
+  SRC_DIR="$(find "$WORKDIR" -maxdepth 1 -type d -name 'async-profiler-*' | head -1)"
+  if [ -z "$SRC_DIR" ]; then
+    echo "async-profiler 解压失败" >&2
+    exit 2
+  fi
+  mv "$SRC_DIR" "$PROFILE_HOME"
+fi
+"$PROFILE_HOME/profiler.sh" -d {seconds} -e {event} -f {shlex.quote(remote_output)} {pid}
+"""
+
+
+@router.get("/api/hosts/{host_id}/processes")
+async def get_host_processes(host_id: str):
+    """通过 SSH 获取主机 Top 进程列表（服务进程置顶）。"""
+    host = _get_host_or_404(host_id)
 
     try:
-        async with asyncssh.connect(
-            host=ip, port=port, username=username, password=password,
-            known_hosts=None, connect_timeout=8,
-        ) as conn:
+        async with await _ssh_run(host, _PROC_CMD, timeout=10) as conn:
             result = await conn.run(_PROC_CMD, timeout=10)
             raw = result.stdout or ""
     except Exception as e:
@@ -982,6 +1103,124 @@ async def get_host_processes(host_id: str):
     # 统计检测到的服务
     detected = sorted({p["service"] for p in procs if p["service"]})
     return {"data": procs, "detected_services": detected, "total": len(procs)}
+
+
+@router.post("/api/hosts/{host_id}/java-diagnostics/arthas")
+async def run_java_arthas(host_id: str, body: JavaArthasRequest):
+    host = _get_host_or_404(host_id)
+    pid = int(body.pid or 0)
+    if pid <= 0:
+        raise HTTPException(status_code=400, detail="PID 必须大于 0")
+
+    preset = (body.preset or "dashboard").strip()
+    if preset == "custom":
+        arthas_command = (body.command or "").strip()
+        if not arthas_command:
+            raise HTTPException(status_code=400, detail="自定义 Arthas 命令不能为空")
+    else:
+        arthas_command = _ARTHAS_PRESETS.get(preset)
+        if not arthas_command:
+            raise HTTPException(status_code=400, detail="不支持的 Arthas 预设")
+
+    command = _build_arthas_command(pid, arthas_command)
+    try:
+        async with await _ssh_run(host, command, timeout=90) as conn:
+            result = await conn.run(command, timeout=90, check=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=_ssh_error_msg(e, host))
+
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if result.exit_status != 0:
+        detail = stderr or stdout or "Arthas 执行失败"
+        raise HTTPException(status_code=400, detail=detail)
+
+    artifact_name = f"arthas_{host_id}_{pid}_{uuid.uuid4().hex[:8]}.txt"
+    preview = stdout or stderr or "(无输出)"
+    _save_java_artifact(artifact_name, preview)
+    return {
+        "ok": True,
+        "tool": "arthas",
+        "pid": pid,
+        "preset": preset,
+        "command": arthas_command,
+        "stdout": stdout,
+        "stderr": stderr,
+        "download_url": _java_artifact_url(artifact_name),
+    }
+
+
+@router.post("/api/hosts/{host_id}/java-diagnostics/flamegraph")
+async def run_java_flamegraph(host_id: str, body: JavaFlamegraphRequest):
+    host = _get_host_or_404(host_id)
+    pid = int(body.pid or 0)
+    seconds = int(body.seconds or 0)
+    event = (body.event or "cpu").strip().lower()
+
+    if pid <= 0:
+        raise HTTPException(status_code=400, detail="PID 必须大于 0")
+    if seconds < 10 or seconds > 300:
+        raise HTTPException(status_code=400, detail="采样时长必须在 10 到 300 秒之间")
+    if event not in _JAVA_FLAME_EVENTS:
+        raise HTTPException(status_code=400, detail="不支持的火焰图事件类型")
+
+    artifact_name = f"flamegraph_{host_id}_{pid}_{event}_{uuid.uuid4().hex[:8]}.html"
+    remote_output = f"/tmp/aiops-java-tools/{artifact_name}"
+    command = _build_async_profiler_command(pid, seconds, event, remote_output)
+
+    try:
+        async with await _ssh_run(host, command, timeout=seconds + 120) as conn:
+            result = await conn.run(command, timeout=seconds + 120, check=False)
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            if result.exit_status != 0:
+                detail = stderr or stdout or "火焰图生成失败"
+                raise HTTPException(status_code=400, detail=detail)
+
+            async with conn.start_sftp_client() as sftp:
+                local_path = _JAVA_DIAG_DIR / artifact_name
+                await sftp.get(remote_output, str(local_path))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=_ssh_error_msg(e, host))
+
+    size_bytes = (_JAVA_DIAG_DIR / artifact_name).stat().st_size
+    return {
+        "ok": True,
+        "tool": "flamegraph",
+        "pid": pid,
+        "seconds": seconds,
+        "event": event,
+        "size_bytes": size_bytes,
+        "download_url": _java_artifact_url(artifact_name),
+        "stdout": stdout,
+    }
+
+
+@router.get("/api/hosts/java-diagnostics/artifacts/{filename}")
+async def download_java_diag_artifact(filename: str):
+    safe_name = Path(filename).name
+    if safe_name != filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
+
+    path = _JAVA_DIAG_DIR / safe_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="诊断结果不存在")
+
+    suffix = path.suffix.lower()
+    media_type = {
+        ".html": "text/html; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+        ".svg": "image/svg+xml",
+    }.get(suffix, "application/octet-stream")
+    encoded = quote(path.name)
+    disposition = "inline" if suffix in {".html", ".svg"} else "attachment"
+    return Response(
+        content=path.read_bytes(),
+        media_type=media_type,
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded}"},
+    )
 
 
 # ── 巡检（基于 Prometheus，使用 CMDB 中的 IP 匹配实例）──────────────────────
