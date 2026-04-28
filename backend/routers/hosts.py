@@ -1273,38 +1273,47 @@ def _build_inspection_fallback_summary(
     return "\n\n".join(parts)
 
 
-def _cmdb_instances_for_group(group_id: str) -> tuple[Optional[list[str]], str]:
+def _cmdb_instances_for_group(group_id: str) -> tuple[list[str], str]:
     """根据分组 ID 从 CMDB 获取 Prometheus 实例列表（ip:9100），返回 (instances, group_name)。"""
     hosts = load_hosts_list()
     groups = load_groups()
     g = next((g for g in groups if g["id"] == group_id), None)
     group_name = g["name"] if g else group_id
-    # 用 ip:9100 作为 Prometheus instance 格式
     instances = [f"{h['ip']}:9100" for h in hosts if h.get("group") == group_id and h.get("ip")]
-    return instances or None, group_name
+    return instances, group_name
 
 
 @router.get("/api/hosts/inspect")
 async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
-    """巡检主机，支持按分组过滤，SSE 流式返回。"""
+    """巡检主机（只巡检 CMDB 中的主机），支持按分组过滤，SSE 流式返回。"""
     async def generate():
         try:
-            instances: Optional[list[str]] = None
             group_name: str = ""
+            all_hosts = load_hosts_list()
+            host_map  = {h["ip"]: h for h in all_hosts if h.get("ip")}
+
             if group_id:
+                # 指定分组：只取该分组的主机
                 instances, group_name = _cmdb_instances_for_group(group_id)
                 if not instances:
                     yield f"data: {json.dumps({'type': 'error', 'message': f'分组「{group_name}」下没有主机或主机无 IP'}, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
+            else:
+                # 全量巡检：只取 CMDB 中有 IP 的主机（不用 Prometheus 自动发现）
+                instances = [f"{h['ip']}:9100" for h in all_hosts if h.get("ip")]
+                if not instances:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'CMDB 中没有可巡检的主机，请先录入主机'}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
 
             results = await prom.inspect_hosts(instances=instances)
 
-            if group_id:
-                host_map = {h["ip"]: h for h in load_hosts_list() if h.get("ip")}
-                for r in results:
-                    ip = r.get("ip", "")
-                    r.setdefault("group", host_map.get(ip, {}).get("group", ""))
+            # 补全分组信息
+            for r in results:
+                ip = r.get("ip", "")
+                r.setdefault("group", host_map.get(ip, {}).get("group", ""))
+                r.setdefault("hostname", host_map.get(ip, {}).get("hostname", ""))
 
             summary = {
                 "total":      len(results),

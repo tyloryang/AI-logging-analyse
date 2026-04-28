@@ -40,13 +40,15 @@ class GroupUpdateRequest(BaseModel):
 
 @router.get("/api/groups")
 async def list_groups():
-    """获取所有分组（附带每组主机数量）"""
+    """获取所有分组（附带每组主机数量）。"""
     groups = load_groups()
-    hosts = load_hosts_list()
+    hosts  = load_hosts_list()
+    valid_group_ids = {g["id"] for g in groups}
     count: dict[str, int] = {}
     for h in hosts:
         gid = h.get("group", "")
-        if gid:
+        # 只统计有效分组 ID 的主机
+        if gid and gid in valid_group_ids:
             count[gid] = count.get(gid, 0) + 1
     for g in groups:
         g["host_count"] = count.get(g["id"], 0)
