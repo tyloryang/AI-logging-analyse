@@ -35,6 +35,7 @@ export const api = {
   deleteHost:     (id) => http.delete(`/hosts/${id}`),
   syncHost:       (id) => http.post(`/hosts/${id}/sync`),
   syncAllHosts:   ()   => `/api/hosts/sync-all`,
+  getHostProcesses: (id) => http.get(`/hosts/${id}/processes`),
   exportHosts:    ()   => `/api/hosts/export`,
   importHosts:    (file, conflict = 'skip') => {
     const fd = new FormData(); fd.append('file', file)

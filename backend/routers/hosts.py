@@ -814,6 +814,152 @@ async def sync_all_hosts():
     )
 
 
+# ── 进程列表 ─────────────────────────────────────────────────────────────────
+
+# 服务特征规则：(匹配关键字列表, 显示名, 颜色代号)
+_SERVICE_RULES: list[tuple[list[str], str, str]] = [
+    (["mysqld", "mysql"],              "MySQL",         "mysql"),
+    (["java"],                         "Java",          "java"),
+    (["python", "python3", "python2"], "Python",        "python"),
+    (["node", "nodejs"],               "Node.js",       "node"),
+    (["nginx"],                        "Nginx",         "nginx"),
+    (["redis-server", "redis"],        "Redis",         "redis"),
+    (["postgres", "postgresql"],       "PostgreSQL",    "postgres"),
+    (["elasticsearch", "kibana"],      "Elastic",       "elastic"),
+    (["docker", "containerd"],         "Docker",        "docker"),
+    (["kubelet", "kube-proxy", "etcd"],"Kubernetes",    "k8s"),
+    (["mongod", "mongo"],              "MongoDB",       "mongo"),
+    (["rabbitmq"],                     "RabbitMQ",      "rabbit"),
+    (["kafka", "zookeeper"],           "Kafka/ZK",      "kafka"),
+    (["sshd"],                         "SSH",           "ssh"),
+    (["php", "php-fpm"],               "PHP",           "php"),
+    (["go"],                           "Go",            "go"),
+]
+
+_PROC_CMD = r"""
+ps -eo pid,ppid,user,%cpu,%mem,rss,stat,comm,args --sort=-%cpu --no-headers 2>/dev/null | head -30 | awk '{
+  pid=$1; ppid=$2; user=$3; cpu=$4; mem=$5; rss=$6; stat=$7; comm=$8;
+  args="";
+  for(i=9;i<=NF;i++) args=args" "$i;
+  sub(/^ /,"",args);
+  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", pid,ppid,user,cpu,mem,rss,stat,comm,args
+}'
+"""
+
+
+def _classify_process(comm: str, args: str) -> tuple[str, str] | None:
+    """返回 (service_name, color_key) 或 None。"""
+    target = (comm + " " + args).lower()
+    for keywords, name, color in _SERVICE_RULES:
+        if any(kw in target for kw in keywords):
+            return name, color
+    return None
+
+
+def _parse_processes(raw: str) -> list[dict]:
+    """解析 ps 输出为进程列表，附加服务分类信息。"""
+    procs: list[dict] = []
+    for line in raw.strip().splitlines():
+        parts = line.split("\t", 8)
+        if len(parts) < 8:
+            continue
+        pid, ppid, user, cpu, mem, rss, stat, comm = parts[:8]
+        args = parts[8] if len(parts) > 8 else comm
+        try:
+            cpu_f = float(cpu)
+            mem_f = float(mem)
+            rss_mb = round(int(rss) / 1024, 1)
+        except (ValueError, TypeError):
+            continue
+
+        svc = _classify_process(comm, args)
+        # 截断过长的命令行
+        display_args = args[:120] + "…" if len(args) > 120 else args
+
+        procs.append({
+            "pid":      int(pid) if pid.isdigit() else 0,
+            "user":     user,
+            "cpu":      cpu_f,
+            "mem":      mem_f,
+            "rss_mb":   rss_mb,
+            "stat":     stat,
+            "comm":     comm,
+            "args":     display_args,
+            "service":  svc[0] if svc else None,
+            "color":    svc[1] if svc else None,
+        })
+    return procs
+
+
+def _prioritize(procs: list[dict]) -> list[dict]:
+    """服务进程置顶，同层内按 CPU 排序，最多返回 15 条。"""
+    service = [p for p in procs if p["service"]]
+    others  = [p for p in procs if not p["service"]]
+    # 服务进程按 CPU 降序，但去掉空闲的 kthreadd/idle 等
+    service.sort(key=lambda p: -p["cpu"])
+    others.sort(key=lambda p: -p["cpu"])
+    combined = service + others
+    return combined[:15]
+
+
+@router.get("/api/hosts/{host_id}/processes")
+async def get_host_processes(host_id: str):
+    """通过 SSH 获取主机 Top 进程列表（服务进程置顶）。"""
+    hosts = load_hosts_list()
+    host = next((h for h in hosts if h.get("id") == host_id), None)
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+
+    import asyncssh
+    ip       = host.get("ip", "")
+    port     = int(host.get("ssh_port") or 22)
+    username = host.get("ssh_user") or "root"
+    password = None
+
+    cred_id = host.get("credential_id", "")
+    if cred_id:
+        creds = load_credentials()
+        cred = next((c for c in creds if c.get("id") == cred_id), None)
+        if cred:
+            username = cred.get("username", username)
+            raw_pw = cred.get("password", "")
+            if raw_pw:
+                try:
+                    password = decrypt_password(raw_pw)
+                except Exception:
+                    password = raw_pw
+
+    if not password:
+        enc_pw = host.get("ssh_password", "")
+        if enc_pw:
+            try:
+                password = decrypt_password(enc_pw)
+            except Exception:
+                pass
+
+    if not ip:
+        raise HTTPException(status_code=400, detail="主机没有配置 IP")
+    if not password:
+        raise HTTPException(status_code=400, detail="主机未配置 SSH 密码，无法获取进程信息")
+
+    try:
+        async with asyncssh.connect(
+            host=ip, port=port, username=username, password=password,
+            known_hosts=None, connect_timeout=8,
+        ) as conn:
+            result = await conn.run(_PROC_CMD, timeout=10)
+            raw = result.stdout or ""
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=_ssh_error_msg(e, host))
+
+    procs = _parse_processes(raw)
+    procs = _prioritize(procs)
+
+    # 统计检测到的服务
+    detected = sorted({p["service"] for p in procs if p["service"]})
+    return {"data": procs, "detected_services": detected, "total": len(procs)}
+
+
 # ── 巡检（基于 Prometheus，使用 CMDB 中的 IP 匹配实例）──────────────────────
 
 def _inspection_issue_counts(results: list[dict]) -> list[tuple[str, int]]:

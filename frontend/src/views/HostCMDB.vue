@@ -287,10 +287,48 @@
     <!-- 右侧详情面板 -->
     <div v-if="selectedHost" class="detail-panel">
       <div class="detail-header">
-        <span>主机详情</span>
+        <div class="detail-tabs">
+          <button class="detail-tab" :class="{ active: detailTab === 'info' }" @click="detailTab='info'">信息</button>
+          <button class="detail-tab" :class="{ active: detailTab === 'proc' }" @click="openProcTab">进程</button>
+        </div>
         <button class="close-btn" @click="selectedHost = null">✕</button>
       </div>
       <div class="detail-body">
+
+        <!-- ── 进程 Tab ── -->
+        <template v-if="detailTab === 'proc'">
+          <div v-if="procLoading" class="proc-loading"><div class="spinner"></div><span>正在获取进程...</span></div>
+          <div v-else-if="procError" class="proc-error">{{ procError }}</div>
+          <template v-else>
+            <!-- 检测到的服务徽章 -->
+            <div v-if="procServices.length" class="proc-services-row">
+              <span class="proc-svc-badge" v-for="svc in procServices" :key="svc" :class="'svc-'+svcColor(svc)">{{ svc }}</span>
+            </div>
+            <div class="proc-list">
+              <div v-for="(p, i) in procList" :key="p.pid" class="proc-item" :class="{ 'proc-service': p.service }">
+                <div class="proc-top-row">
+                  <span class="proc-rank">{{ i+1 }}</span>
+                  <span v-if="p.service" class="proc-svc-tag" :class="'svc-'+p.color">{{ p.service }}</span>
+                  <span class="proc-comm">{{ p.comm }}</span>
+                  <span class="proc-spacer"></span>
+                  <span class="proc-cpu" :class="cpuClass(p.cpu)">CPU {{ p.cpu.toFixed(1) }}%</span>
+                  <span class="proc-mem">MEM {{ p.mem.toFixed(1) }}%</span>
+                </div>
+                <div class="proc-meta-row">
+                  <span class="proc-user">{{ p.user }}</span>
+                  <span class="proc-pid">PID {{ p.pid }}</span>
+                  <span class="proc-rss">{{ p.rss_mb }}MB</span>
+                  <span class="proc-stat">{{ p.stat }}</span>
+                </div>
+                <div v-if="p.service || p.args !== p.comm" class="proc-args" :title="p.args">{{ p.args }}</div>
+              </div>
+            </div>
+            <button class="btn btn-outline btn-xs" style="margin-top:8px;width:100%" @click="loadProcesses(selectedHost)">↺ 刷新进程</button>
+          </template>
+        </template>
+
+        <!-- ── 信息 Tab ── -->
+        <template v-if="detailTab === 'info'">
         <div class="detail-row"><span class="dl">主机名</span><span class="dv">{{ selectedHost.hostname }}</span></div>
         <div class="detail-row"><span class="dl">IP 地址</span><span class="dv mono">{{ selectedHost.ip }}</span></div>
         <div class="detail-row"><span class="dl">平台</span><span class="dv">{{ selectedHost.platform }}</span></div>
@@ -364,6 +402,8 @@
           </button>
           <button class="btn btn-outline" style="width:100%" @click="openSSH(selectedHost)">SSH 连接</button>
         </div>
+        </template><!-- /info tab -->
+
       </div>
     </div>
     </div><!-- /content-row -->
@@ -1005,6 +1045,58 @@ async function doDelete() {
   }
 }
 
+// ── 详情面板 tab ─────────────────────────────────────────────────────────────
+const detailTab = ref('info')
+
+// ── 进程列表 ─────────────────────────────────────────────────────────────────
+const procList     = ref([])
+const procServices = ref([])
+const procLoading  = ref(false)
+const procError    = ref('')
+
+// 服务名 → color key 映射（与后端保持一致）
+const _SVC_COLOR_MAP = {
+  'MySQL': 'mysql', 'Java': 'java', 'Python': 'python', 'Node.js': 'node',
+  'Nginx': 'nginx', 'Redis': 'redis', 'PostgreSQL': 'postgres',
+  'Elastic': 'elastic', 'Docker': 'docker', 'Kubernetes': 'k8s',
+  'MongoDB': 'mongo', 'RabbitMQ': 'rabbit', 'Kafka/ZK': 'kafka',
+  'SSH': 'ssh', 'PHP': 'php', 'Go': 'go',
+}
+function svcColor(svcName) { return _SVC_COLOR_MAP[svcName] || 'default' }
+function cpuClass(cpu) { return cpu >= 50 ? 'cpu-high' : cpu >= 20 ? 'cpu-mid' : '' }
+
+async function loadProcesses(host) {
+  if (!host) return
+  procLoading.value = true
+  procError.value   = ''
+  procList.value    = []
+  procServices.value = []
+  try {
+    const res = await api.getHostProcesses(host.id)
+    procList.value     = res.data || []
+    procServices.value = res.detected_services || []
+  } catch (e) {
+    procError.value = typeof e === 'string' ? e : '获取进程失败，请检查 SSH 配置'
+  } finally {
+    procLoading.value = false
+  }
+}
+
+function openProcTab() {
+  detailTab.value = 'proc'
+  if (procList.value.length === 0 && !procLoading.value && selectedHost.value) {
+    loadProcesses(selectedHost.value)
+  }
+}
+
+// 切换主机时重置进程面板
+watch(selectedHost, (h) => {
+  detailTab.value    = 'info'
+  procList.value     = []
+  procServices.value = []
+  procError.value    = ''
+})
+
 // ── SSH 同步系统信息 ──────────────────────────────────────────────────────────
 const syncingId = ref('')
 const syncStates = reactive({})
@@ -1381,6 +1473,50 @@ async function deleteGroup(g) {
 .sync-all-done { font-size: 12px; display: flex; align-items: center; }
 .sync-all-done.ok { color: var(--success); }
 .sync-all-done.warn { color: var(--warning); }
+
+/* 详情面板 tabs */
+.detail-tabs { display: flex; gap: 2px; }
+.detail-tab { padding: 3px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.detail-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* 进程列表 */
+.proc-loading { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12px; padding: 20px 0; }
+.proc-error { font-size: 12px; color: var(--error); padding: 8px; background: rgba(248,81,73,.08); border-radius: 5px; }
+.proc-services-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.proc-svc-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.proc-list { display: flex; flex-direction: column; gap: 5px; }
+.proc-item { background: var(--bg-hover); border: 1px solid var(--border-faint, var(--border)); border-radius: 6px; padding: 7px 10px; }
+.proc-item.proc-service { border-color: var(--accent); background: rgba(56,139,253,.05); }
+.proc-top-row { display: flex; align-items: center; gap: 5px; font-size: 12px; margin-bottom: 3px; }
+.proc-rank { font-size: 10px; color: var(--text-muted); min-width: 16px; }
+.proc-svc-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; white-space: nowrap; }
+.proc-comm { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
+.proc-spacer { flex: 1; }
+.proc-cpu { font-size: 11px; font-weight: 600; }
+.proc-cpu.cpu-high { color: var(--error); }
+.proc-cpu.cpu-mid  { color: var(--warning); }
+.proc-mem { font-size: 11px; color: var(--text-muted); }
+.proc-meta-row { display: flex; gap: 6px; font-size: 10px; color: var(--text-muted); }
+.proc-args { font-size: 10px; color: var(--text-muted); font-family: 'Cascadia Code','Consolas',monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; cursor: help; }
+
+/* 服务色系 */
+.svc-mysql    { background: rgba(0,117,143,.15);   color: #00758f; }
+.svc-java     { background: rgba(237,106,41,.15);  color: #ed6a29; }
+.svc-python   { background: rgba(55,118,171,.15);  color: #3776ab; }
+.svc-node     { background: rgba(104,160,99,.15);  color: #68a063; }
+.svc-nginx    { background: rgba(0,152,68,.15);    color: #009844; }
+.svc-redis    { background: rgba(220,50,50,.15);   color: #dc3232; }
+.svc-postgres { background: rgba(51,103,145,.15);  color: #336791; }
+.svc-elastic  { background: rgba(254,197,0,.15);   color: #c9a800; }
+.svc-docker   { background: rgba(0,159,227,.15);   color: #009fe3; }
+.svc-k8s      { background: rgba(50,108,229,.15);  color: #326ce5; }
+.svc-mongo    { background: rgba(77,179,61,.15);   color: #4db33d; }
+.svc-rabbit   { background: rgba(255,108,0,.15);   color: #ff6c00; }
+.svc-kafka    { background: rgba(33,33,33,.12);    color: var(--text-secondary); }
+.svc-ssh      { background: rgba(100,100,100,.1);  color: var(--text-muted); }
+.svc-php      { background: rgba(119,123,180,.15); color: #777bb4; }
+.svc-go       { background: rgba(0,173,216,.15);   color: #00acd8; }
+.svc-default  { background: var(--bg-hover); color: var(--text-muted); }
 
 /* 空状态 */
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); gap: 8px; }
