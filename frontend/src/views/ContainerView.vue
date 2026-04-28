@@ -10,9 +10,9 @@
           <option value="">全部命名空间</option>
           <option v-for="ns in namespaces" :key="ns.name" :value="ns.name">{{ ns.name }}</option>
         </select>
-        <button class="btn-ghost" :disabled="!activeCluster" @click="openEditCluster">编辑</button>
-        <button class="btn-ghost" :disabled="!activeCluster" @click="testActiveCluster">测试</button>
-        <button class="btn-ghost danger" :disabled="!activeCluster" @click="removeCluster">删除</button>
+        <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="openEditCluster">编辑</button>
+        <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="testActiveCluster">测试</button>
+        <button v-if="canManageClusters" class="btn-ghost danger" :disabled="!activeCluster" @click="removeCluster">删除</button>
         <button class="btn-refresh" @click="fetchAll" :disabled="loading || !activeClusterId">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <polyline points="23 4 23 10 17 10" />
@@ -32,7 +32,7 @@
       <div class="empty-card">
         <div class="empty-title">还没有 Kubernetes 集群</div>
         <div class="empty-subtitle">现在支持多个 kubeconfig 分别接入不同集群，并设置默认集群作为默认访问目标。</div>
-        <button class="btn-primary-lg" @click="openAddCluster">+ 添加第一个集群</button>
+        <button v-if="canManageClusters" class="btn-primary-lg" @click="openAddCluster">+ 添加第一个集群</button>
       </div>
     </div>
 
@@ -43,7 +43,7 @@
             <div class="sidebar-title">集群列表</div>
             <div class="sidebar-subtitle">{{ sortedClusters.length }} 个集群</div>
           </div>
-          <button class="btn-ghost compact" @click="openAddCluster">+ 新建</button>
+          <button v-if="canManageClusters" class="btn-ghost compact" @click="openAddCluster">+ 新建</button>
         </div>
 
         <div class="cluster-card-list">
@@ -60,7 +60,7 @@
                 <span v-if="cluster.is_default" class="default-badge">默认</span>
               </div>
               <button
-                v-if="!cluster.is_default"
+                v-if="canManageClusters && !cluster.is_default"
                 class="cluster-link"
                 @click.stop="setDefaultCluster(cluster)"
               >
@@ -599,9 +599,12 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount, reactive, ref, nextTick, watch } from 'vue'
 import { api } from '../api/index.js'
+import { useAuthStore } from '../stores/auth.js'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
+
+const authStore = useAuthStore()
 
 const TABS = [
   { id: 'pods', label: 'Pods' },
@@ -688,6 +691,7 @@ const detailModalTitle = computed(() => `${kindLabel(detailMeta.kind)} 详情`)
 const logModalTitle = computed(() => `${kindLabel(logMeta.kind)} 日志`)
 const selectedLogPodData = computed(() => logPods.value.find(item => item.name === selectedLogPod.value) || null)
 const selectedLogContainers = computed(() => selectedLogPodData.value?.containers || [])
+const canManageClusters = computed(() => authStore.isAdmin)
 
 function normalizeKind(kind) {
   const value = String(kind || '').trim().toLowerCase().replace(/[-_]/g, '')

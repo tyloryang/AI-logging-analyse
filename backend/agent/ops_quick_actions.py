@@ -64,8 +64,8 @@ def detect_mode(text: str) -> str:
     return "chat"
 
 
-async def get_quick_reply(text: str) -> str | None:
+async def get_quick_reply(text: str, config: dict | None = None) -> str | None:
     es_reply = await get_es_quick_reply(text)
     if es_reply:
         return es_reply
-    return await get_k8s_quick_reply(text)
+    return await get_k8s_quick_reply(text, config=config)

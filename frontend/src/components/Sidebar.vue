@@ -30,7 +30,7 @@
         </RouterLink>
 
         <!-- 可展开分组 -->
-        <div v-else-if="item.children && canShow(item)" class="nav-group" :class="{ open: openGroups[item.id] }">
+        <div v-else-if="item.children && visibleChildren(item).length && canShow(item)" class="nav-group" :class="{ open: openGroups[item.id] }">
           <button
             class="nav-group-toggle"
             :class="{ active: isGroupActive(item) }"
@@ -44,7 +44,7 @@
           </button>
           <div class="nav-sub" v-show="openGroups[item.id]">
             <RouterLink
-              v-for="child in item.children"
+              v-for="child in visibleChildren(item)"
               :key="child.to"
               :to="child.to"
               class="nav-sub-item"
@@ -128,7 +128,6 @@ const MENU = [
   {
     id: 'host', icon: 'host', label: '主机中心',
     children: [
-      { label: '主机资产', to: '/hosts/assets', module: 'cmdb' },
       { label: '任务中心', to: '/hosts/tasks' },
       { label: '定时任务', to: '/hosts/cron' },
       { label: '主机申请', to: '/hosts/apply' },
@@ -174,6 +173,7 @@ const MENU = [
     id: 'tools', icon: 'tools', label: '工具市场',
     children: [
       { label: '工具概览',   to: '/tools' },
+      { label: 'Java 诊断', to: '/tools/java-diagnostics', module: 'ssh' },
       { label: 'SSH 终端',   to: '/tools/ssh',     module: 'ssh' },
       { label: '慢日志分析', to: '/tools/slowlog',  module: 'slowlog' },
       { label: '指标监控',   to: '/tools/metrics',  module: 'metrics' },
@@ -186,7 +186,7 @@ const MENU = [
       { label: '🔔 告警中心', to: '/aiops/alerts' },
       { label: '🧠 根因分析', to: '/aiops/rca' },
       { label: '📊 异常检测', to: '/aiops/anomaly' },
-      { label: '💬 智能助手', to: '/aiops/assistant' },
+      { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
       { label: '⚙ 智能配置',  to: '/aiops/config' },
     ],
   },
@@ -238,6 +238,10 @@ function isGroupActive(item) {
 function canShow(item) {
   if (item.admin && !auth.isAdmin) return false
   return !item.module || auth.can(item.module, 'view')
+}
+
+function visibleChildren(item) {
+  return (item.children || []).filter(canShow)
 }
 
 // ── 图标库 ──────────────────────────────────────────────────────

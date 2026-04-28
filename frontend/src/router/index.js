@@ -15,7 +15,6 @@ const routes = [
   { path: '/cmdb', component: () => import('../views/HostCMDB.vue'), name: 'cmdb', meta: { module: 'cmdb' } },
 
   // ── 3. 主机中心 ───────────────────────────────────────────────
-  { path: '/hosts/assets', component: () => import('../views/HostCMDB.vue'),        name: 'host-assets', meta: { module: 'cmdb' } },
   { path: '/hosts/tasks',  component: () => import('../views/HostTaskView.vue'),    name: 'host-tasks' },
   { path: '/hosts/cron',   component: () => import('../views/HostCronView.vue'),    name: 'host-cron' },
   { path: '/hosts/apply',  component: () => import('../views/HostApplyView.vue'),   name: 'host-apply' },
@@ -51,6 +50,7 @@ const routes = [
 
   // ── 10. 工具市场 ──────────────────────────────────────────────
   { path: '/tools',         component: () => import('../views/ToolMarketView.vue'), name: 'tools' },
+  { path: '/tools/java-diagnostics', component: () => import('../views/JavaDiagnosticView.vue'), name: 'tools-java-diagnostics', meta: { module: 'ssh' } },
   { path: '/tools/ssh',     component: () => import('../views/SSHTerminal.vue'),    name: 'tools-ssh',     meta: { module: 'ssh' } },
   { path: '/tools/slowlog', component: () => import('../views/SlowLogView.vue'),    name: 'tools-slowlog', meta: { module: 'slowlog' } },
   { path: '/tools/report',  component: () => import('../views/AnalysisReport.vue'), name: 'tools-report',  meta: { module: 'report' } },
@@ -61,7 +61,7 @@ const routes = [
   { path: '/aiops/alerts',    component: () => import('../views/AlertCenterView.vue'),    name: 'aiops-alerts' },
   { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
   { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
-  { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),     name: 'aiops-assistant' },
+  { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),     name: 'aiops-assistant', meta: { module: 'agent' } },
   { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'), name: 'aiops-config' },
 
   // ── 管理页 ────────────────────────────────────────────────────
@@ -75,6 +75,7 @@ const routes = [
   { path: '/grafana',      redirect: '/observability/grafana' },
   { path: '/alerts',       redirect: '/observability/alerts' },
   { path: '/skywalking',   redirect: '/observability/trace' },
+  { path: '/hosts/assets', redirect: '/cmdb' },
   { path: '/hosts',        redirect: '/cmdb' },
   { path: '/ssh',          redirect: '/tools/ssh' },
   { path: '/slowlog',      redirect: '/tools/slowlog' },

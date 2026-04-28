@@ -47,9 +47,10 @@ async def _build_and_save_report() -> dict:
     return report
 
 
-async def _build_inspect_report() -> dict:
+async def _build_inspect_report(data: dict | None = None) -> dict:
     """生成主机巡检日报（用于定时推送）。"""
-    data = await collect_inspect_data()
+    if data is None:
+        data = await collect_inspect_data()
     meta = build_inspect_meta(data)
 
     ai_parts: list[str] = []
@@ -231,20 +232,21 @@ async def run_group_schedule_job() -> None:
 
         logger.info("[group_schedule] 分组 '%s' 开始巡检 %d 台主机", group["name"], len(instances))
         try:
-            results = await prom.inspect_hosts(instances=instances)
+            inspect_data = await collect_inspect_data(
+                instances=instances,
+                group_id=gid,
+                group_name=group["name"],
+            )
+            results = inspect_data["results"]
         except Exception as e:
             logger.warning("[group_schedule] 分组 '%s' 巡检失败: %s", group["name"], e)
             continue
 
-        total    = len(results)
-        normal   = sum(1 for r in results if r.get("overall") == "normal")
-        warning  = sum(1 for r in results if r.get("overall") == "warning")
-        critical = sum(1 for r in results if r.get("overall") == "critical")
-        group_summary = {
-            "total": total, "normal": normal,
-            "warning": warning, "critical": critical,
-            "group_name": group["name"],
-        }
+        group_summary = inspect_data["summary"]
+        total = group_summary.get("total", 0)
+        normal = group_summary.get("normal", 0)
+        warning = group_summary.get("warning", 0)
+        critical = group_summary.get("critical", 0)
 
         ai_text = ""
         try:
@@ -282,13 +284,9 @@ async def scheduled_report_job() -> None:
         report_url = f"{APP_URL}/report/{report['id']}" if APP_URL else ""
 
         logger.info("[scheduler] 开始生成主机巡检日报 ...")
-        inspect_report = await _build_inspect_report()
-
-        try:
-            raw_inspect_results = await prom.inspect_hosts()
-        except Exception as e:
-            logger.warning("[scheduler] 获取巡检原始结果失败: %s", e)
-            raw_inspect_results = []
+        inspect_data = await collect_inspect_data()
+        inspect_report = await _build_inspect_report(inspect_data)
+        raw_inspect_results = inspect_data["results"]
 
         logger.info("[scheduler] 开始生成慢日志报告 ...")
         try:

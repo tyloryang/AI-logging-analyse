@@ -34,6 +34,13 @@ const TOOLS = [
     icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
   },
   {
+    name: 'Java 进程诊断',
+    desc: '对远程 Java 进程执行 Arthas 和火焰图采样，快速定位热点与阻塞',
+    to: '/tools/java-diagnostics',
+    color: 'blue',
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8"/><path d="M9 3c0 3-2 4-2 7a5 5 0 0010 0c0-3-2-4-2-7"/><path d="M12 14v7"/><path d="M8 21h8"/></svg>`,
+  },
+  {
     name: '慢日志分析',
     desc: 'MySQL 慢查询日志采集与 TOP-N 分析',
     to: '/tools/slowlog',

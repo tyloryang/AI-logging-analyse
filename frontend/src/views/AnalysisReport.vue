@@ -290,6 +290,11 @@
                 <div class="metric-label">严重主机</div>
               </div>
             </div>
+            <div class="section" v-if="currentReport.summary_scope_note || currentReport.host_summary?.scope_note">
+              <div class="inspect-scope-note">
+                {{ currentReport.summary_scope_note || currentReport.host_summary?.scope_note }}
+              </div>
+            </div>
             <div class="section" v-if="currentReport.top_issues?.length">
               <h3 class="section-title">🔥 高频异常项 Top 10</h3>
               <div class="top10-list">
@@ -316,6 +321,23 @@
                     </span>
                   </div>
                   <span class="badge" :class="h.overall === 'critical' ? 'badge-error' : 'badge-warn'">{{ h.overall }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="section" v-if="currentReport.prometheus_extra_hosts?.length">
+              <h3 class="section-title">🧩 Prometheus 额外发现的非 CMDB 实例</h3>
+              <div class="extra-prom-list">
+                <div
+                  v-for="h in currentReport.prometheus_extra_hosts"
+                  :key="h.ip || h.instance"
+                  class="extra-prom-row"
+                >
+                  <span class="extra-prom-ip">{{ h.ip || h.instance }}</span>
+                  <span class="extra-prom-host">{{ h.hostname || h.instance || '-' }}</span>
+                  <span class="extra-prom-job">{{ h.job || 'unknown job' }}</span>
+                  <span class="badge" :class="h.overall === 'critical' ? 'badge-error' : (h.overall === 'warning' ? 'badge-warn' : 'badge-ok')">
+                    {{ h.overall || 'normal' }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -420,6 +442,24 @@
             </div>
             <div class="ai-analysis-box">
               <div v-if="aiStreamContent" class="ai-text" v-html="renderText(aiStreamContent)"></div>
+              <div v-else-if="inspectGroupAnalyses.length" class="group-ai-list">
+                <div
+                  v-for="group in inspectGroupAnalyses"
+                  :key="group.group_id || group.group_name"
+                  class="group-ai-card"
+                >
+                  <div class="group-ai-header">
+                    <div>
+                      <div class="group-ai-name">{{ group.group_name || '未分组' }}</div>
+                      <div class="group-ai-meta">{{ formatGroupSummary(group.host_summary) }}</div>
+                    </div>
+                    <span class="badge" :class="healthBadge(group.health_score ?? 0)">
+                      {{ group.health_score ?? 0 }}/100
+                    </span>
+                  </div>
+                  <div class="ai-text" v-html="renderText(group.ai_analysis)"></div>
+                </div>
+              </div>
               <div v-else-if="currentReport.ai_analysis" class="ai-text" v-html="renderText(currentReport.ai_analysis)"></div>
               <div v-else-if="generating" class="ai-placeholder">
                 <div class="spinner" style="width:20px;height:20px;border-width:2px"></div>
@@ -532,10 +572,21 @@ const filteredList = computed(() => {
   return reportList.value.filter(r => !r.type || r.type === 'daily')
 })
 
+const inspectGroupAnalyses = computed(() => {
+  if (currentReport.value?.type !== 'inspect') return []
+  const items = currentReport.value?.group_analyses
+  return Array.isArray(items) ? items : []
+})
+
 const maxTop   = computed(() => currentReport.value?.top10_errors?.[0]?.count || 1)
 const maxIssue = computed(() => currentReport.value?.top_issues?.[0]?.count || 1)
 function topBarWidth(cnt)   { return Math.round((cnt / maxTop.value) * 100) }
 function issueBarWidth(cnt) { return Math.round((cnt / maxIssue.value) * 100) }
+
+function formatGroupSummary(summary) {
+  if (!summary) return ''
+  return `主机 ${summary.total ?? 0} 台，正常 ${summary.normal ?? 0}，告警 ${summary.warning ?? 0}，严重 ${summary.critical ?? 0}`
+}
 
 // ── 列表 ───────────────────────────────────────────────────────────────
 async function loadReportList() {
@@ -901,6 +952,15 @@ onMounted(async () => {
 .metric-icon  { font-size: 20px; margin-bottom: 6px; }
 .metric-val   { font-size: 17px; font-weight: 700; color: var(--text-primary); line-height: 1.4; }
 .metric-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.inspect-scope-note {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(59,130,246,.22);
+  background: rgba(59,130,246,.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+}
 
 /* 区块 */
 .section { margin-bottom: 24px; }
@@ -931,6 +991,22 @@ onMounted(async () => {
   background: var(--bg-base); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 20px; min-height: 80px;
 }
+.group-ai-list { display: flex; flex-direction: column; gap: 14px; }
+.group-ai-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.group-ai-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.group-ai-name { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.group-ai-meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 .ai-text { font-size: 13px; line-height: 2; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; }
 :deep(.ai-warn) { color: var(--warning); }
 :deep(.ai-ok)   { color: var(--success); }
@@ -1004,6 +1080,21 @@ onMounted(async () => {
 .check-tag { padding: 1px 7px; border-radius: 2px; font-size: 11px; background: var(--bg-hover); color: var(--text-secondary); border: 1px solid var(--border); }
 .check-tag.warning  { background: rgba(255,156,1,.1);  color: var(--warning); border-color: rgba(255,156,1,.3); }
 .check-tag.critical { background: rgba(234,54,54,.1);  color: var(--error);   border-color: rgba(234,54,54,.3); }
+.extra-prom-list { display: flex; flex-direction: column; gap: 8px; }
+.extra-prom-row {
+  display: grid;
+  grid-template-columns: 150px minmax(180px, 1fr) minmax(120px, 180px) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  font-size: 12px;
+}
+.extra-prom-ip { font-family: monospace; color: var(--text-primary); }
+.extra-prom-host { color: var(--text-secondary); }
+.extra-prom-job { color: var(--text-muted); font-size: 11px; }
 
 @keyframes pulse { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
 .fade-enter-active, .fade-leave-active { transition: opacity .3s; }

@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone, date as date_cls, timedelta
 from typing import Optional
 
-from state import loki, prom, analyzer
+from state import loki, prom, analyzer, load_hosts_list
 
 logger = logging.getLogger(__name__)
 
@@ -70,20 +70,149 @@ async def collect_daily_data() -> dict:
 
 # ── 主机巡检日报 ──────────────────────────────────────────────────────────────
 
-async def collect_inspect_data(instances: Optional[list] = None) -> dict:
-    """采集主机巡检所需数据，返回 results + summary + meta_base。"""
+def _extract_result_ip(result: dict) -> str:
+    return (result.get("ip") or result.get("instance", "").split(":")[0]).strip()
+
+
+def _build_missing_host_result(host: dict) -> dict:
+    ip = (host.get("ip") or "").strip()
+    return {
+        "instance": f"{ip}:9100",
+        "ip": ip,
+        "hostname": host.get("hostname") or ip,
+        "os": host.get("os_version") or host.get("platform", ""),
+        "job": "",
+        "state": "missing",
+        "group": host.get("group", ""),
+        "env": host.get("env", ""),
+        "overall": "critical",
+        "checks": [{
+            "item": "Prometheus 监控",
+            "value": "未发现该主机监控数据",
+            "status": "critical",
+            "threshold": "应存在可抓取 target",
+        }],
+        "metrics": {},
+        "partitions": [],
+    }
+
+
+def _build_host_brief(result: dict) -> dict:
+    metrics = result.get("metrics") or {}
+    return {
+        "instance":   result.get("instance", ""),
+        "hostname":   result.get("hostname") or result.get("instance", ""),
+        "ip":         result.get("ip", ""),
+        "os":         result.get("os", ""),
+        "job":        result.get("job", ""),
+        "state":      result.get("state", ""),
+        "group":      result.get("group", ""),
+        "env":        result.get("env", ""),
+        "overall":    result.get("overall", "normal"),
+        "cpu_pct":    metrics.get("cpu_usage"),
+        "mem_pct":    metrics.get("mem_usage"),
+        "mem_total":  metrics.get("mem_total_gb"),
+        "load5":      metrics.get("load5"),
+        "net_recv":   metrics.get("net_recv_mbps"),
+        "net_send":   metrics.get("net_send_mbps"),
+        "tcp_estab":  metrics.get("tcp_estab"),
+        "uptime_s":   metrics.get("uptime_seconds"),
+        "checks":     result.get("checks", []),
+        "partitions": result.get("partitions", []),
+    }
+
+
+def _build_scope_note(cmdb_total: int, extra_count: int) -> str:
+    note = f"统计口径：按 CMDB 主机 {cmdb_total} 台统计，正常/警告/严重数量均以 CMDB 主机为基准。"
+    if extra_count:
+        note += f" Prometheus 额外发现 {extra_count} 个非 CMDB 实例（通常为容器 IP 或临时节点），已单独列出且不计入上方统计。"
+    return note
+
+
+async def collect_inspect_data(
+    instances: Optional[list] = None,
+    group_id: str = "",
+    group_name: str = "",
+) -> dict:
+    """采集主机巡检所需数据，按 CMDB 主机口径返回结果。"""
+    all_cmdb_hosts = [host for host in load_hosts_list() if host.get("ip")]
+    target_hosts = all_cmdb_hosts
+    if group_id:
+        target_hosts = [host for host in target_hosts if host.get("group") == group_id]
+    if instances is not None:
+        wanted_ips = {str(item).split(":")[0].strip() for item in instances if str(item).strip()}
+        target_hosts = [host for host in target_hosts if (host.get("ip") or "").strip() in wanted_ips]
+
+    inspect_instances = None
+    if group_id or instances is not None:
+        inspect_instances = [f"{host['ip']}:9100" for host in target_hosts if host.get("ip")]
+
     try:
-        results = await prom.inspect_hosts(instances=instances)
+        prom_results = await prom.inspect_hosts(instances=inspect_instances)
     except Exception as e:
         logger.warning("[report_builder] 巡检数据获取失败: %s", e)
-        results = []
+        prom_results = []
+
+    prom_map: dict[str, dict] = {}
+    for result in prom_results:
+        ip = _extract_result_ip(result)
+        if ip and ip not in prom_map:
+            prom_map[ip] = result
+
+    results: list[dict] = []
+    cmdb_ips = {(host.get("ip") or "").strip() for host in target_hosts if host.get("ip")}
+    for host in target_hosts:
+        ip = (host.get("ip") or "").strip()
+        if not ip:
+            continue
+        if ip in prom_map:
+            merged = dict(prom_map[ip])
+            merged["hostname"] = host.get("hostname") or merged.get("hostname") or ip
+            merged["os"] = host.get("os_version") or merged.get("os") or host.get("platform", "")
+            merged["group"] = host.get("group", "")
+            merged["env"] = host.get("env", "")
+            results.append(merged)
+        else:
+            results.append(_build_missing_host_result(host))
+
+    extra_prometheus_hosts: list[dict] = []
+    if not group_id and instances is None:
+        extras_by_ip: dict[str, dict] = {}
+        for result in prom_results:
+            ip = _extract_result_ip(result)
+            if not ip or ip in cmdb_ips or ip in extras_by_ip:
+                continue
+            extras_by_ip[ip] = _build_host_brief({
+                **result,
+                "group": "",
+                "env": "",
+            })
+        extra_prometheus_hosts = sorted(
+            extras_by_ip.values(),
+            key=lambda item: (
+                {"critical": 2, "warning": 1}.get(item.get("overall", "normal"), 0),
+                item.get("ip", ""),
+            ),
+            reverse=True,
+        )
+
+    results.sort(
+        key=lambda item: {"critical": 2, "warning": 1}.get(item.get("overall", "normal"), 0),
+        reverse=True,
+    )
 
     summary = {
         "total":    len(results),
         "normal":   sum(1 for r in results if r.get("overall") == "normal"),
         "warning":  sum(1 for r in results if r.get("overall") == "warning"),
         "critical": sum(1 for r in results if r.get("overall") == "critical"),
+        "cmdb_total": len(results),
+        "prometheus_extra_count": len(extra_prometheus_hosts),
+        "scope": "cmdb",
     }
+    if group_name:
+        summary["group_name"] = group_name
+    summary["scope_note"] = _build_scope_note(summary["cmdb_total"], summary["prometheus_extra_count"])
 
     issue_cnt: dict[str, int] = {}
     for r in results:
@@ -99,26 +228,7 @@ async def collect_inspect_data(instances: Optional[list] = None) -> dict:
         reverse=True,
     )
 
-    all_hosts_brief = []
-    for r in results:
-        m = r.get("metrics") or {}
-        all_hosts_brief.append({
-            "hostname":   r.get("hostname") or r.get("instance", ""),
-            "ip":         r.get("ip", ""),
-            "os":         r.get("os", ""),
-            "state":      r.get("state", ""),
-            "overall":    r.get("overall", "normal"),
-            "cpu_pct":    m.get("cpu_usage"),
-            "mem_pct":    m.get("mem_usage"),
-            "mem_total":  m.get("mem_total_gb"),
-            "load5":      m.get("load5"),
-            "net_recv":   m.get("net_recv_mbps"),
-            "net_send":   m.get("net_send_mbps"),
-            "tcp_estab":  m.get("tcp_estab"),
-            "uptime_s":   m.get("uptime_seconds"),
-            "checks":     r.get("checks", []),
-            "partitions": r.get("partitions", []),
-        })
+    all_hosts_brief = [_build_host_brief(result) for result in results]
 
     health_score = await analyzer.calculate_host_health_score(summary)
 
@@ -128,6 +238,8 @@ async def collect_inspect_data(instances: Optional[list] = None) -> dict:
         "top_issues":    [{"item": k, "count": v} for k, v in top_issues],
         "abnormal_hosts": abnormal_hosts[:20],
         "all_hosts":     all_hosts_brief,
+        "prometheus_extra_hosts": extra_prometheus_hosts,
+        "scope_note":    summary["scope_note"],
         "health_score":  health_score,
     }
 
@@ -155,6 +267,9 @@ def build_inspect_meta(
         "top_issues":     data["top_issues"],
         "abnormal_hosts": data["abnormal_hosts"],
         "all_hosts":      data["all_hosts"],
+        "prometheus_extra_hosts": data.get("prometheus_extra_hosts", []),
+        "prometheus_extra_count": len(data.get("prometheus_extra_hosts", [])),
+        "summary_scope_note": data.get("scope_note", ""),
     }
 
 

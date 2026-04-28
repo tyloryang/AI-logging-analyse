@@ -221,6 +221,8 @@ def _build_feishu_inspect_card(report: dict, keyword: str = "", report_url: str 
     title   = report.get("title", "主机巡检日报")
     summary = report.get("host_summary", {})
     ai      = (report.get("ai_analysis") or "").strip()
+    scope_note = (report.get("summary_scope_note") or summary.get("scope_note") or "").strip()
+    extra_hosts = report.get("prometheus_extra_hosts", []) or []
 
     total    = summary.get("total", 0)
     normal   = summary.get("normal", 0)
@@ -238,6 +240,20 @@ def _build_feishu_inspect_card(report: dict, keyword: str = "", report_url: str 
         header_content = keyword + "\n" + header_content
 
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": header_content}}]
+
+    if scope_note:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**统计口径**\n{scope_note}"}})
+
+    if extra_hosts:
+        lines = []
+        for item in extra_hosts[:8]:
+            label = item.get("hostname") or item.get("job") or item.get("instance") or item.get("ip") or "unknown"
+            lines.append(f"- `{item.get('ip') or item.get('instance', '-')}` · {label}")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {
+            "tag": "lark_md",
+            "content": "**Prometheus 额外发现的非 CMDB 实例**\n" + "\n".join(lines),
+        }})
 
     # 告警主机
     abnormal = report.get("abnormal_hosts", [])

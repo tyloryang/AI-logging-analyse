@@ -87,6 +87,8 @@ export const api = {
   adminAuditLogs:  (params) => http.get('/admin/audit-logs', { params }),
   adminGetUserCmdbGroups: (id)       => http.get(`/admin/users/${id}/cmdb-groups`),
   adminSetUserCmdbGroups: (id, data) => http.put(`/admin/users/${id}/cmdb-groups`, data),
+  adminGetUserK8sClusters: (id)       => http.get(`/admin/users/${id}/k8s-clusters`),
+  adminSetUserK8sClusters: (id, data) => http.put(`/admin/users/${id}/k8s-clusters`, data),
   // SkyWalking APM
   swGetServices:    (params)              => http.get('/sw/services', { params }),
   swGetInstances:   (params)              => http.get('/sw/instances', { params }),

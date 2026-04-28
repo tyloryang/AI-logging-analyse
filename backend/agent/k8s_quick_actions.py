@@ -123,8 +123,12 @@ def _looks_like_failure(result: str) -> bool:
     )
 
 
-async def _try_k8s_mcp(kind: str, namespace: str) -> tuple[str | None, str]:
+async def _try_k8s_mcp(kind: str, namespace: str, config: dict | None = None) -> tuple[str | None, str]:
     from agent.tools import call_k8s_mcp
+
+    cfg = config.get("configurable", {}) if config else {}
+    if cfg.get("allowed_k8s_clusters") is not None:
+        return None, "当前用户受 K8S 集群权限限制，已跳过通用 K8S MCP 直连查询。"
 
     params: dict[str, str] = {}
     if namespace and kind in {"pods", "deployments", "services"}:
@@ -136,7 +140,8 @@ async def _try_k8s_mcp(kind: str, namespace: str) -> tuple[str | None, str]:
             {
                 "action": action,
                 "params": json.dumps(params, ensure_ascii=False),
-            }
+            },
+            config=config,
         )
         text = str(result)
         if not _looks_like_failure(text):
@@ -146,7 +151,7 @@ async def _try_k8s_mcp(kind: str, namespace: str) -> tuple[str | None, str]:
     return None, last_error
 
 
-async def _fallback_builtin(kind: str, namespace: str) -> str:
+async def _fallback_builtin(kind: str, namespace: str, config: dict | None = None) -> str:
     from agent.tools import (
         get_k8s_deployments,
         get_k8s_namespaces,
@@ -157,30 +162,30 @@ async def _fallback_builtin(kind: str, namespace: str) -> str:
     )
 
     if kind == "nodes":
-        return str(await get_k8s_nodes.ainvoke({}))
+        return str(await get_k8s_nodes.ainvoke({}, config=config))
     if kind == "namespaces":
-        return str(await get_k8s_namespaces.ainvoke({}))
+        return str(await get_k8s_namespaces.ainvoke({}, config=config))
     if kind == "deployments":
-        return str(await get_k8s_deployments.ainvoke({"namespace": namespace}))
+        return str(await get_k8s_deployments.ainvoke({"namespace": namespace}, config=config))
     if kind == "services":
-        return str(await get_k8s_services.ainvoke({"namespace": namespace}))
+        return str(await get_k8s_services.ainvoke({"namespace": namespace}, config=config))
     if kind == "pods":
-        return str(await get_k8s_pods.ainvoke({"namespace": namespace}))
-    return str(await get_k8s_summary.ainvoke({}))
+        return str(await get_k8s_pods.ainvoke({"namespace": namespace}, config=config))
+    return str(await get_k8s_summary.ainvoke({}, config=config))
 
 
-async def get_k8s_quick_reply(text: str) -> str | None:
+async def get_k8s_quick_reply(text: str, config: dict | None = None) -> str | None:
     if not is_readonly_k8s_question(text):
         return None
 
     kind = detect_k8s_kind(text)
     namespace = extract_namespace(text)
 
-    mcp_reply, mcp_error = await _try_k8s_mcp(kind, namespace)
+    mcp_reply, mcp_error = await _try_k8s_mcp(kind, namespace, config=config)
     if mcp_reply:
         return mcp_reply
 
-    fallback = await _fallback_builtin(kind, namespace)
+    fallback = await _fallback_builtin(kind, namespace, config=config)
     if not mcp_error:
         return fallback
 

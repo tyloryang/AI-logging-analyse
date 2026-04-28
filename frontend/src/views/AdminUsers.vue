@@ -38,6 +38,7 @@
               <button v-if="u.status === 'locked'" class="btn btn-xs btn-ok" @click="unlock(u)">解锁</button>
               <button class="btn btn-xs btn-outline" @click="openPerms(u)">权限</button>
               <button v-if="!u.is_superuser" class="btn btn-xs btn-group-assign" @click="openGroupAssign(u)" title="分配 CMDB 分组">分组</button>
+              <button v-if="!u.is_superuser" class="btn btn-xs btn-k8s-assign" @click="openK8sAssign(u)" title="分配 K8s 集群">K8s</button>
               <button v-if="u.status !== 'disabled' && u.id !== authStore.user?.id"
                       class="btn btn-xs btn-warn" @click="disable(u)">禁用</button>
               <button v-if="u.id !== authStore.user?.id"
@@ -136,6 +137,48 @@
                 <button class="btn btn-outline btn-xs" @click="selectedGroupIds = allGroups.map(g=>g.id)">全选</button>
                 <button class="btn btn-primary" @click="saveGroups" :disabled="groupSaving">
                   {{ groupSaving ? '保存中...' : '保存分组' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- K8s 集群分配弹窗 -->
+    <transition name="fade">
+      <div v-if="showK8sModal" class="modal-overlay" @click.self="showK8sModal = false">
+        <div class="modal-box modal-wide">
+          <div class="modal-header">
+            <span>K8s 集群权限 · {{ k8sUser?.username }}</span>
+            <button class="btn btn-xs btn-outline" @click="showK8sModal = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <p class="group-hint">
+              普通用户只能在 AI 与容器页面查看其被授权的 K8s 集群。未分配任何集群时，无法查看任何 K8s 数据。
+            </p>
+            <div v-if="k8sLoading" class="empty-state"><div class="spinner"></div></div>
+            <div v-else class="group-check-list">
+              <label v-for="cluster in allK8sClusters" :key="cluster.id" class="group-check-item"
+                     :class="{ selected: selectedK8sClusterIds.includes(cluster.id) }">
+                <input type="checkbox" :value="cluster.id" v-model="selectedK8sClusterIds" />
+                <span class="group-check-name">{{ cluster.name }}</span>
+                <span class="group-check-count">{{ cluster.context || 'default context' }}</span>
+              </label>
+              <div v-if="!allK8sClusters.length" class="empty-state" style="height:80px">
+                暂无 K8s 集群，请先在容器管理中配置集群
+              </div>
+            </div>
+            <div v-if="k8sError" class="form-error" style="margin-top:8px">{{ k8sError }}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
+              <span style="font-size:12px;color:var(--text-muted)">
+                已选 {{ selectedK8sClusterIds.length }} / {{ allK8sClusters.length }} 个集群
+              </span>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-outline btn-xs" @click="selectedK8sClusterIds = []">清空</button>
+                <button class="btn btn-outline btn-xs" @click="selectedK8sClusterIds = allK8sClusters.map(cluster => cluster.id)">全选</button>
+                <button class="btn btn-primary" @click="saveK8sClusters" :disabled="k8sSaving">
+                  {{ k8sSaving ? '保存中...' : '保存集群' }}
                 </button>
               </div>
             </div>
@@ -306,6 +349,14 @@ const groupLoading      = ref(false)
 const groupSaving       = ref(false)
 const groupError        = ref('')
 
+const showK8sModal          = ref(false)
+const k8sUser               = ref(null)
+const allK8sClusters        = ref([])
+const selectedK8sClusterIds = ref([])
+const k8sLoading            = ref(false)
+const k8sSaving             = ref(false)
+const k8sError              = ref('')
+
 async function openGroupAssign(u) {
   groupUser.value        = u
   groupError.value       = ''
@@ -333,6 +384,36 @@ async function saveGroups() {
     groupError.value = typeof e === 'string' ? e : '保存失败'
   } finally {
     groupSaving.value = false
+  }
+}
+
+async function openK8sAssign(u) {
+  k8sUser.value = u
+  k8sError.value = ''
+  selectedK8sClusterIds.value = []
+  showK8sModal.value = true
+  k8sLoading.value = true
+  try {
+    const res = await api.adminGetUserK8sClusters(u.id)
+    allK8sClusters.value = res.all_clusters || []
+    selectedK8sClusterIds.value = res.cluster_ids || []
+  } catch (e) {
+    k8sError.value = typeof e === 'string' ? e : '加载 K8s 集群失败'
+  } finally {
+    k8sLoading.value = false
+  }
+}
+
+async function saveK8sClusters() {
+  k8sSaving.value = true
+  k8sError.value = ''
+  try {
+    await api.adminSetUserK8sClusters(k8sUser.value.id, { cluster_ids: selectedK8sClusterIds.value })
+    showK8sModal.value = false
+  } catch (e) {
+    k8sError.value = typeof e === 'string' ? e : '保存失败'
+  } finally {
+    k8sSaving.value = false
   }
 }
 </script>
@@ -394,6 +475,7 @@ async function saveGroups() {
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 /* 分组分配 */
 .btn-group-assign { background: rgba(56,139,253,.12); color: var(--accent); border-color: rgba(56,139,253,.3); }
+.btn-k8s-assign { background: rgba(63,185,80,.12); color: var(--success); border-color: rgba(63,185,80,.3); }
 .group-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.6; }
 .group-check-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
 .group-check-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; transition: all .15s; }

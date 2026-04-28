@@ -7,10 +7,44 @@ import os
 import re
 from datetime import datetime
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from state import loki, prom
 
 _REPORTS_DIR = os.path.join(os.path.dirname(__file__), "..", "reports")
+
+
+def _configurable(config: RunnableConfig | None) -> dict:
+    return config.get("configurable", {}) if config else {}
+
+
+def _allowed_groups(config: RunnableConfig | None) -> list[str] | None:
+    return _configurable(config).get("allowed_groups")
+
+
+def _filter_hosts_by_groups(hosts: list[dict], allowed_groups: list[str] | None) -> list[dict]:
+    if allowed_groups is None:
+        return hosts
+    return [host for host in hosts if host.get("group", "") in allowed_groups]
+
+
+def _allowed_k8s_clusters(config: RunnableConfig | None) -> list[str] | None:
+    return _configurable(config).get("allowed_k8s_clusters")
+
+
+def _visible_k8s_clusters(config: RunnableConfig | None) -> list[dict]:
+    from routers.kubernetes import _load_clusters
+
+    clusters = _load_clusters()
+    allowed_cluster_ids = _allowed_k8s_clusters(config)
+    if allowed_cluster_ids is None:
+        return clusters
+    return [cluster for cluster in clusters if cluster.get("id") in allowed_cluster_ids]
+
+
+def _is_k8s_mcp_name(name: str) -> bool:
+    lower = str(name or "").lower()
+    return any(keyword in lower for keyword in ("k8s", "kubernetes", "kube"))
 
 
 def _call_sse_mcp_sync(sse_url: str, method: str, params: dict) -> list:
@@ -136,9 +170,14 @@ async def get_services_list() -> str:
 
 
 @tool
-async def get_host_metrics(instance: str = "") -> str:
+async def get_host_metrics(instance: str = "", config: RunnableConfig = None) -> str:
     """获取主机实时性能指标（CPU/内存/磁盘/负载/TCP连接数）。instance=主机IP或实例地址（空=返回全部主机）。"""
     try:
+        from state import load_hosts_list
+
+        allowed_groups = _allowed_groups(config)
+        cmdb_hosts = _filter_hosts_by_groups(load_hosts_list(), allowed_groups)
+        allowed_ips = {host.get("ip", "") for host in cmdb_hosts if host.get("ip")}
         hosts = await prom.discover_hosts()
         metrics = await prom.get_all_host_metrics()
         partitions = await prom.get_all_partitions()
@@ -146,6 +185,8 @@ async def get_host_metrics(instance: str = "") -> str:
         for h in hosts:
             inst = h.get("instance", "")
             ip = h.get("ip", "")
+            if allowed_groups is not None and ip not in allowed_ips:
+                continue
             if instance and instance not in inst and instance not in ip:
                 continue
             m = metrics.get(inst, {})
@@ -169,18 +210,13 @@ async def get_host_metrics(instance: str = "") -> str:
 
 
 @tool
-async def inspect_all_hosts(config: dict | None = None) -> str:
+async def inspect_all_hosts(config: RunnableConfig = None) -> str:
     """执行全量主机巡检，检查所有在线主机的 CPU/内存/磁盘/负载是否超过阈值。返回所有异常项和总体状态。"""
     from state import load_hosts_list
     try:
         # 读取 CMDB 主机，按用户分组权限过滤
-        allowed_groups = None
-        if config:
-            cfg = config.get("configurable", {})
-            allowed_groups = cfg.get("allowed_groups")  # None=超管不限
-        cmdb_hosts = load_hosts_list()
-        if allowed_groups is not None:
-            cmdb_hosts = [h for h in cmdb_hosts if h.get("group", "") in allowed_groups]
+        allowed_groups = _allowed_groups(config)
+        cmdb_hosts = _filter_hosts_by_groups(load_hosts_list(), allowed_groups)
         # 构建 Prometheus 实例
         instances = [f"{h['ip']}:9100" for h in cmdb_hosts if h.get("ip")]
         if not instances:
@@ -399,101 +435,153 @@ async def search_daily_reports(keyword: str = "", days: int = 30, limit: int = 8
 # ── Kubernetes 工具 ────────────────────────────────────────────────────────────
 
 @tool
-async def get_k8s_summary() -> str:
+async def get_k8s_summary(config: RunnableConfig = None) -> str:
     """查询 Kubernetes 集群总览：节点数、Pod 数、Deployment 数、命名空间列表。
     用户询问 k8s 状态、集群情况、容器平台状态时使用。"""
     try:
         from routers.kubernetes import _get_client
-        core_v1, apps_v1 = _get_client()
-        nodes = core_v1.list_node(timeout_seconds=8)
-        pods  = core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
-        deps  = apps_v1.list_deployment_for_all_namespaces(timeout_seconds=8)
-        ns    = core_v1.list_namespace(timeout_seconds=8)
 
-        total_nodes = len(nodes.items)
-        ready_nodes = sum(
-            1 for n in nodes.items
-            if any(c.type == "Ready" and c.status == "True" for c in n.status.conditions)
-        )
-        total_pods   = len(pods.items)
-        running_pods = sum(1 for p in pods.items if (p.status.phase or "") == "Running")
-        total_deps   = len(deps.items)
-        ready_deps   = sum(
-            1 for d in deps.items
-            if (d.status.ready_replicas or 0) >= (d.spec.replicas or 1)
-        )
-        ns_names = [n.metadata.name for n in ns.items]
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
 
-        def _icon(ok, total): return "[正常]" if ok == total else f"[{total-ok}个异常]"
+        def _icon(ok: int, total: int) -> str:
+            return "[正常]" if ok == total else f"[{total - ok}个异常]"
 
-        lines = [
-            "**K8s 集群总览**",
-            f"节点：{ready_nodes}/{total_nodes} 就绪 {_icon(ready_nodes, total_nodes)}",
-            f"Pod：{running_pods}/{total_pods} 运行中 {_icon(running_pods, total_pods)}",
-            f"Deployment：{ready_deps}/{total_deps} 就绪 {_icon(ready_deps, total_deps)}",
-            f"命名空间：{', '.join(ns_names[:12]) or '无'}",
-        ]
-        return "\n".join(lines)
+        sections: list[str] = []
+        for cluster in clusters:
+            core_v1, apps_v1 = _get_client(cluster["id"])
+            nodes = core_v1.list_node(timeout_seconds=8)
+            pods = core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
+            deps = apps_v1.list_deployment_for_all_namespaces(timeout_seconds=8)
+            namespaces = core_v1.list_namespace(timeout_seconds=8)
+
+            total_nodes = len(nodes.items)
+            ready_nodes = sum(
+                1
+                for node in nodes.items
+                if any(cond.type == "Ready" and cond.status == "True" for cond in node.status.conditions)
+            )
+            total_pods = len(pods.items)
+            running_pods = sum(1 for pod in pods.items if (pod.status.phase or "") == "Running")
+            total_deps = len(deps.items)
+            ready_deps = sum(
+                1
+                for dep in deps.items
+                if (dep.status.ready_replicas or 0) >= (dep.spec.replicas or 1)
+            )
+            ns_names = [item.metadata.name for item in namespaces.items]
+            sections.append(
+                "\n".join(
+                    [
+                        f"**K8s 集群总览 / {cluster['name']}**",
+                        f"节点：{ready_nodes}/{total_nodes} 就绪 {_icon(ready_nodes, total_nodes)}",
+                        f"Pod：{running_pods}/{total_pods} 运行中 {_icon(running_pods, total_pods)}",
+                        f"Deployment：{ready_deps}/{total_deps} 就绪 {_icon(ready_deps, total_deps)}",
+                        f"命名空间：{', '.join(ns_names[:12]) or '无'}",
+                    ]
+                )
+            )
+        return "\n\n".join(sections)
     except Exception as e:
         return f"K8s 连接失败：{e}（请检查系统配置中的 kubeconfig）"
 
 
 @tool
-async def get_k8s_pods(namespace: str = "") -> str:
+async def get_k8s_pods(namespace: str = "", config: RunnableConfig = None) -> str:
     """查询 Kubernetes Pod 列表及运行状态。
     namespace=命名空间（空=全部命名空间）。
     用户询问某个命名空间的 Pod 状态、哪些 Pod 异常/重启时使用。"""
     try:
         from routers.kubernetes import _get_client
-        core_v1, _ = _get_client()
-        if namespace:
-            pods = core_v1.list_namespaced_pod(namespace, timeout_seconds=8)
-        else:
-            pods = core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
 
-        if not pods.items:
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
+
+        pods_data: list[dict] = []
+        for cluster in clusters:
+            core_v1, _ = _get_client(cluster["id"])
+            pods = (
+                core_v1.list_namespaced_pod(namespace, timeout_seconds=8)
+                if namespace
+                else core_v1.list_pod_for_all_namespaces(timeout_seconds=8)
+            )
+            for pod in pods.items:
+                pods_data.append(
+                    {
+                        "cluster": cluster["name"],
+                        "namespace": pod.metadata.namespace,
+                        "name": pod.metadata.name,
+                        "phase": pod.status.phase or "?",
+                        "restarts": sum(cs.restart_count for cs in (pod.status.container_statuses or [])),
+                    }
+                )
+
+        if not pods_data:
             return f"命名空间 {namespace or '全部'} 下无 Pod"
 
-        lines = [f"**Pod 列表**（{namespace or '全部命名空间'}，共 {len(pods.items)} 个）\n"]
-        # 优先展示非 Running 的
-        items = sorted(pods.items, key=lambda p: (p.status.phase == "Running", p.metadata.name))
-        for p in items[:30]:
-            ns   = p.metadata.namespace
-            name = p.metadata.name
-            phase = p.status.phase or "?"
-            restarts = sum(
-                cs.restart_count for cs in (p.status.container_statuses or [])
+        pods_data.sort(
+            key=lambda item: (
+                item["phase"] == "Running",
+                item["cluster"],
+                item["namespace"],
+                item["name"],
             )
-            flag = "" if phase == "Running" else "[异常] "
-            lines.append(f"{flag}[{ns}] {name}  状态:{phase}  重启:{restarts}次")
-        if len(pods.items) > 30:
-            lines.append(f"...（共 {len(pods.items)} 个，仅展示前 30 个）")
+        )
+        lines = [f"**Pod 列表**（{namespace or '全部命名空间'}，共 {len(pods_data)} 个）\n"]
+        for item in pods_data[:50]:
+            flag = "" if item["phase"] == "Running" else "[异常] "
+            lines.append(
+                f"{flag}[{item['cluster']}][{item['namespace']}] {item['name']}  "
+                f"状态:{item['phase']}  重启:{item['restarts']}次"
+            )
+        if len(pods_data) > 50:
+            lines.append(f"...（共 {len(pods_data)} 个，仅展示前 50 个）")
         return "\n".join(lines)
     except Exception as e:
         return f"查询 Pod 失败：{e}"
 
 
 @tool
-async def get_k8s_nodes() -> str:
+async def get_k8s_nodes(config: RunnableConfig = None) -> str:
     """查询 Kubernetes 节点列表及状态（CPU/内存分配、是否就绪）。
     用户询问节点健康状态、节点资源时使用。"""
     try:
         from routers.kubernetes import _get_client
-        core_v1, _ = _get_client()
-        nodes = core_v1.list_node(timeout_seconds=8)
-        if not nodes.items:
+
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
+
+        nodes_data: list[dict] = []
+        for cluster in clusters:
+            core_v1, _ = _get_client(cluster["id"])
+            nodes = core_v1.list_node(timeout_seconds=8)
+            for node in nodes.items:
+                nodes_data.append(
+                    {
+                        "cluster": cluster["name"],
+                        "name": node.metadata.name,
+                        "ready": next(
+                            (cond.status for cond in node.status.conditions if cond.type == "Ready"),
+                            "Unknown",
+                        ),
+                        "cpu": node.status.capacity.get("cpu", "?"),
+                        "mem": node.status.capacity.get("memory", "?"),
+                    }
+                )
+
+        if not nodes_data:
             return "集群无节点"
-        lines = [f"**节点列表**（共 {len(nodes.items)} 个）\n"]
-        for n in nodes.items:
-            name   = n.metadata.name
-            ready  = next(
-                (c.status for c in n.status.conditions if c.type == "Ready"),
-                "Unknown"
+
+        lines = [f"**节点列表**（共 {len(nodes_data)} 个）\n"]
+        for item in nodes_data:
+            flag = "" if item["ready"] == "True" else "[异常] "
+            lines.append(
+                f"{flag}[{item['cluster']}] {item['name']}  Ready:{item['ready']}  "
+                f"CPU:{item['cpu']}  内存:{item['mem']}"
             )
-            cpu    = n.status.capacity.get("cpu", "?")
-            mem    = n.status.capacity.get("memory", "?")
-            flag   = "" if ready == "True" else "[异常] "
-            lines.append(f"{flag}{name}  Ready:{ready}  CPU:{cpu}  内存:{mem}")
         return "\n".join(lines)
     except Exception as e:
         return f"查询节点失败：{e}"
@@ -502,19 +590,37 @@ async def get_k8s_nodes() -> str:
 # ── 中间件工具 ─────────────────────────────────────────────────────────────────
 
 @tool
-async def get_k8s_namespaces() -> str:
+async def get_k8s_namespaces(config: RunnableConfig = None) -> str:
     """查询 Kubernetes 命名空间列表。"""
     try:
-        from routers.kubernetes import list_namespaces
+        from routers.kubernetes import _get_client
 
-        namespaces = await list_namespaces()
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
+
+        namespaces: list[dict] = []
+        for cluster in clusters:
+            core_v1, _ = _get_client(cluster["id"])
+            ns_list = core_v1.list_namespace(timeout_seconds=8)
+            for item in ns_list.items:
+                namespaces.append(
+                    {
+                        "cluster": cluster["name"],
+                        "name": item.metadata.name,
+                        "status": item.status.phase or "Active",
+                        "age": str(item.metadata.creation_timestamp)[:10] if item.metadata.creation_timestamp else "",
+                    }
+                )
+
         if not namespaces:
             return "当前集群没有命名空间数据"
 
         lines = [f"**命名空间列表**（共 {len(namespaces)} 个）\n"]
         for item in namespaces[:30]:
             lines.append(
-                f"{item.get('name', '?')}  状态:{item.get('status', '?')}  创建:{item.get('age', '?')}"
+                f"[{item.get('cluster', '?')}] {item.get('name', '?')}  "
+                f"状态:{item.get('status', '?')}  创建:{item.get('age', '?')}"
             )
         if len(namespaces) > 30:
             lines.append(f"... 共 {len(namespaces)} 个，仅展示前 30 个")
@@ -524,12 +630,38 @@ async def get_k8s_namespaces() -> str:
 
 
 @tool
-async def get_k8s_deployments(namespace: str = "") -> str:
+async def get_k8s_deployments(namespace: str = "", config: RunnableConfig = None) -> str:
     """查询 Kubernetes Deployment 列表及就绪状态。namespace=命名空间（空=全部）。"""
     try:
-        from routers.kubernetes import list_deployments
+        from routers.kubernetes import _get_client
 
-        deployments = await list_deployments(namespace)
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
+
+        deployments: list[dict] = []
+        for cluster in clusters:
+            _, apps = _get_client(cluster["id"])
+            items = (
+                apps.list_deployment_for_all_namespaces(timeout_seconds=8)
+                if not namespace
+                else apps.list_namespaced_deployment(namespace, timeout_seconds=8)
+            )
+            for item in items.items:
+                desired = item.spec.replicas or 0
+                ready = item.status.ready_replicas or 0
+                updated = item.status.updated_replicas or 0
+                deployments.append(
+                    {
+                        "cluster": cluster["name"],
+                        "namespace": item.metadata.namespace,
+                        "name": item.metadata.name,
+                        "desired": desired,
+                        "ready": ready,
+                        "status": "Ready" if ready == desired and desired > 0 else ("Progressing" if updated < desired else "Degraded"),
+                    }
+                )
+
         if not deployments:
             return f"命名空间 {namespace or '全部'} 下无 Deployment"
 
@@ -540,6 +672,7 @@ async def get_k8s_deployments(namespace: str = "") -> str:
             deployments,
             key=lambda item: (
                 item.get("status") == "Ready",
+                item.get("cluster", ""),
                 item.get("namespace", ""),
                 item.get("name", ""),
             ),
@@ -547,7 +680,7 @@ async def get_k8s_deployments(namespace: str = "") -> str:
         for item in items[:30]:
             flag = "" if item.get("status") == "Ready" else "[异常] "
             lines.append(
-                f"{flag}[{item.get('namespace', '?')}] {item.get('name', '?')}  "
+                f"{flag}[{item.get('cluster', '?')}][{item.get('namespace', '?')}] {item.get('name', '?')}  "
                 f"状态:{item.get('status', '?')}  副本:{item.get('ready', 0)}/{item.get('desired', 0)}"
             )
         if len(deployments) > 30:
@@ -558,12 +691,43 @@ async def get_k8s_deployments(namespace: str = "") -> str:
 
 
 @tool
-async def get_k8s_services(namespace: str = "") -> str:
+async def get_k8s_services(namespace: str = "", config: RunnableConfig = None) -> str:
     """查询 Kubernetes Service 列表及暴露端口。namespace=命名空间（空=全部）。"""
     try:
-        from routers.kubernetes import list_services
+        from routers.kubernetes import _get_client
 
-        services = await list_services(namespace)
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
+
+        services: list[dict] = []
+        for cluster in clusters:
+            core_v1, _ = _get_client(cluster["id"])
+            items = (
+                core_v1.list_service_for_all_namespaces(timeout_seconds=8)
+                if not namespace
+                else core_v1.list_namespaced_service(namespace, timeout_seconds=8)
+            )
+            for item in items.items:
+                ports = []
+                for port in (item.spec.ports or []):
+                    entry = f"{port.port}"
+                    if port.node_port:
+                        entry += f":{port.node_port}"
+                    if port.protocol and port.protocol != "TCP":
+                        entry += f"/{port.protocol}"
+                    ports.append(entry)
+                services.append(
+                    {
+                        "cluster": cluster["name"],
+                        "namespace": item.metadata.namespace,
+                        "name": item.metadata.name,
+                        "type": item.spec.type or "ClusterIP",
+                        "clusterIP": item.spec.cluster_ip or "",
+                        "ports": ports,
+                    }
+                )
+
         if not services:
             return f"命名空间 {namespace or '全部'} 下无 Service"
 
@@ -571,7 +735,7 @@ async def get_k8s_services(namespace: str = "") -> str:
         for item in services[:30]:
             ports = ",".join(item.get("ports", []) or []) or "-"
             lines.append(
-                f"[{item.get('namespace', '?')}] {item.get('name', '?')}  "
+                f"[{item.get('cluster', '?')}][{item.get('namespace', '?')}] {item.get('name', '?')}  "
                 f"类型:{item.get('type', '?')}  ClusterIP:{item.get('clusterIP', '-') or '-'}  端口:{ports}"
             )
         if len(services) > 30:
@@ -733,7 +897,12 @@ def _find_enabled_mcp(
 
 
 @tool
-async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
+async def call_mcp_tool(
+    mcp_name: str,
+    action: str,
+    params: str = "{}",
+    config: RunnableConfig = None,
+) -> str:
     """调用已配置的 MCP（Model Context Protocol）工具执行操作。
     mcp_name=MCP 名称（如 'Prometheus MCP'、'Redis MCP'），
     action=要执行的动作或接口路径（如 'query' / '/metrics'），
@@ -742,6 +911,8 @@ async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
     import json as _json
     try:
         # 读取 agent_config 找到对应 MCP
+        if _is_k8s_mcp_name(mcp_name) and _allowed_k8s_clusters(config) is not None:
+            return "当前账号的 K8s 查询已按集群权限控制，不支持直接调用 K8s MCP，请使用内置 K8s 工具"
         cfg_file = os.path.join(os.path.dirname(__file__), "..", "data", "agent_config.json")
         with open(cfg_file, encoding="utf-8") as f:
             cfg = _json.load(f)
@@ -791,9 +962,11 @@ async def call_mcp_tool(mcp_name: str, action: str, params: str = "{}") -> str:
 
 
 @tool
-async def call_k8s_mcp(action: str, params: str = "{}") -> str:
+async def call_k8s_mcp(action: str, params: str = "{}", config: RunnableConfig = None) -> str:
     """调用已启用的 Kubernetes / K8S MCP。
     action=工具名，例如 list_pods / list_nodes / list_namespaces / list_deployments / list_services。"""
+    if _allowed_k8s_clusters(config) is not None:
+        return "当前账号的 K8s 查询已按集群权限控制，不支持直接调用 K8s MCP，请使用内置 K8s 工具"
     mcp = _find_enabled_mcp(
         keywords=("k8s", "kubernetes", "kube"),
         preferred_names=("K8S MCP", "Kubernetes MCP"),
@@ -805,7 +978,8 @@ async def call_k8s_mcp(action: str, params: str = "{}") -> str:
             "mcp_name": str(mcp.get("name", "")),
             "action": action,
             "params": params,
-        }
+        },
+        config=config,
     )
 
 
@@ -1289,6 +1463,7 @@ async def execute_ssh_command(
     host: str,
     command: str,
     timeout: int = 30,
+    config: RunnableConfig = None,
 ) -> str:
     """通过 SSH 在指定主机上执行命令。
     host=主机 IP 或主机名（必填，从 CMDB 中匹配）。
@@ -1307,7 +1482,7 @@ async def execute_ssh_command(
         return f"❌ 命令被拒绝：{danger}"
 
     # 从 CMDB 找主机
-    hosts = load_hosts_list()
+    hosts = _filter_hosts_by_groups(load_hosts_list(), _allowed_groups(config))
     target = next(
         (h for h in hosts if h.get("ip") == host or h.get("hostname") == host),
         None,

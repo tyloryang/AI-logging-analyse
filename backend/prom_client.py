@@ -250,7 +250,14 @@ class PrometheusClient:
         )
 
         if instances:
-            hosts = [h for h in hosts if h["instance"] in instances]
+            wanted = {str(x).strip() for x in instances if str(x).strip()}
+            wanted_ips = {x.split(":")[0] for x in wanted}
+            hosts = [
+                h for h in hosts
+                if h["instance"] in wanted
+                or h.get("ip", "") in wanted_ips
+                or h["instance"].split(":")[0] in wanted_ips
+            ]
 
         results = []
         for host in hosts:

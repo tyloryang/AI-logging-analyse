@@ -14,7 +14,11 @@ from auth.password import hash_password
 from auth.deps import require_admin
 from auth.audit import write_audit
 from auth import service, session as sess
-from state import load_user_groups, save_user_groups, load_groups, load_hosts_list
+from state import (
+    load_user_groups, save_user_groups, load_groups, load_hosts_list,
+    load_user_k8s_clusters, save_user_k8s_clusters,
+)
+from routers.kubernetes import _load_clusters
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -169,6 +173,10 @@ async def delete_user(
     if user_id in ug:
         del ug[user_id]
         save_user_groups(ug)
+    k8s_map = load_user_k8s_clusters()
+    if user_id in k8s_map:
+        del k8s_map[user_id]
+        save_user_k8s_clusters(k8s_map)
     await write_audit(db, "admin.delete_user", user_id=admin.id, resource=username,
                       ip=request.client.host if request.client else "")
     return {"message": f"用户 {username} 已彻底删除"}
@@ -255,6 +263,10 @@ class UserGroupsRequest(BaseModel):
     group_ids: list[str]   # 空列表表示"无权访问任何分组"
 
 
+class UserK8sClustersRequest(BaseModel):
+    cluster_ids: list[str]
+
+
 @router.get("/users/{user_id}/cmdb-groups")
 async def get_user_cmdb_groups(
     user_id: str,
@@ -300,3 +312,42 @@ async def set_user_cmdb_groups(
     ug[user_id] = list(set(body.group_ids))   # 去重
     save_user_groups(ug)
     return {"ok": True, "group_ids": ug[user_id]}
+
+
+@router.get("/users/{user_id}/k8s-clusters")
+async def get_user_k8s_clusters(
+    user_id: str,
+    _: User = Depends(require_admin),
+):
+    mapping = load_user_k8s_clusters()
+    clusters = _load_clusters()
+    cluster_map = {item["id"]: item for item in clusters}
+    assigned_ids = mapping.get(user_id, [])
+    return {
+        "user_id": user_id,
+        "cluster_ids": assigned_ids,
+        "clusters": [cluster_map[cid] for cid in assigned_ids if cid in cluster_map],
+        "all_clusters": clusters,
+    }
+
+
+@router.put("/users/{user_id}/k8s-clusters")
+async def set_user_k8s_clusters(
+    user_id: str,
+    body: UserK8sClustersRequest,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user.is_superuser:
+        return {"ok": True, "message": "管理员用户不受 K8S 集群限制，设置已忽略"}
+
+    valid_cluster_ids = {item["id"] for item in _load_clusters()}
+    normalized = [cid for cid in dict.fromkeys(body.cluster_ids) if cid in valid_cluster_ids]
+    mapping = load_user_k8s_clusters()
+    mapping[user_id] = normalized
+    save_user_k8s_clusters(mapping)
+    return {"ok": True, "cluster_ids": normalized}

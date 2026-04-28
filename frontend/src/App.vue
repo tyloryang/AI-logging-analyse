@@ -11,7 +11,7 @@
           <component :is="Component" />
         </keep-alive>
       </main>
-      <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant'" />
+      <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant' && canUseAgent" />
     </div>
   </router-view>
 </template>
@@ -19,6 +19,11 @@
 <script setup>
 import Sidebar from './components/Sidebar.vue'
 import AIOpsAssistantFloat from './components/AIOpsAssistantFloat.vue'
+import { computed } from 'vue'
+import { useAuthStore } from './stores/auth.js'
+
+const authStore = useAuthStore()
+const canUseAgent = computed(() => authStore.can('agent', 'view'))
 </script>
 
 <style scoped>

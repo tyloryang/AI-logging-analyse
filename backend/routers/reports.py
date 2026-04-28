@@ -23,6 +23,7 @@ from state import (
     load_groups, load_cmdb,
 )
 from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
+from report_builder import collect_inspect_data, build_inspect_meta
 from report_store import save_report_meta, list_report_meta
 
 logger = logging.getLogger(__name__)
@@ -145,94 +146,279 @@ async def list_reports():
 
 # ── 巡检日报 ──────────────────────────────────────────────────────────────────
 
+UNGROUPED_GROUP_ID = "__ungrouped__"
+UNGROUPED_GROUP_NAME = "未分组"
+
+
+def _build_inspect_summary(results: list[dict], group_name: str = "") -> dict:
+    total = len(results)
+    summary = {
+        "total": total,
+        "normal": sum(1 for r in results if r.get("overall") == "normal"),
+        "warning": sum(1 for r in results if r.get("overall") == "warning"),
+        "critical": sum(1 for r in results if r.get("overall") == "critical"),
+        "cmdb_total": total,
+        "prometheus_extra_count": 0,
+        "scope": "cmdb",
+    }
+    summary["scope_note"] = f"统计口径：按 CMDB 主机 {total} 台统计，正常/警告/严重数量均以 CMDB 主机为基准。"
+    if group_name:
+        summary["group_name"] = group_name
+    return summary
+
+
+def _build_inspect_top_issues(results: list[dict]) -> list[dict]:
+    issue_cnt: dict[str, int] = {}
+    for r in results:
+        for c in r.get("checks", []):
+            if c.get("status") != "normal":
+                item = c.get("item", "未知")
+                issue_cnt[item] = issue_cnt.get(item, 0) + 1
+    return [{"item": k, "count": v} for k, v in sorted(issue_cnt.items(), key=lambda x: x[1], reverse=True)[:10]]
+
+
+def _sort_abnormal_hosts(results: list[dict]) -> list[dict]:
+    abnormal_hosts = [r for r in results if r.get("overall") != "normal"]
+    abnormal_hosts.sort(
+        key=lambda r: {"critical": 2, "warning": 1}.get(r.get("overall", "normal"), 0),
+        reverse=True,
+    )
+    return abnormal_hosts
+
+
+def _append_missing_cmdb_hosts(results: list[dict], group_id: str = "") -> list[dict]:
+    cmdb = load_cmdb()
+    expected = [
+        {"ip": ip, **meta}
+        for ip, meta in cmdb.items()
+        if not group_id or meta.get("group") == group_id
+    ]
+    found_ips = {
+        (r.get("ip") or r.get("instance", "").split(":")[0]).strip()
+        for r in results
+        if (r.get("ip") or r.get("instance"))
+    }
+    merged = list(results)
+    for host in expected:
+        ip = (host.get("ip") or "").strip()
+        if not ip or ip in found_ips:
+            continue
+        merged.append({
+            "instance": ip,
+            "ip": ip,
+            "hostname": host.get("hostname") or ip,
+            "os": host.get("os") or host.get("platform", ""),
+            "job": "",
+            "state": "missing",
+            "overall": "critical",
+            "checks": [{
+                "item": "Prometheus 监控",
+                "value": "未发现该主机监控数据",
+                "status": "critical",
+                "threshold": "应存在可抓取 target",
+            }],
+            "metrics": {},
+            "partitions": [],
+        })
+    merged.sort(
+        key=lambda r: {"critical": 2, "warning": 1}.get(r.get("overall", "normal"), 0),
+        reverse=True,
+    )
+    return merged
+
+
+def _inspect_health_score(summary: dict) -> int:
+    total = summary.get("total", 0)
+    if total <= 0:
+        return 100
+    score = 100
+    score -= min(40, int(summary.get("critical", 0) / total * 200))
+    score -= min(30, int(summary.get("warning", 0) / total * 100))
+    return max(0, score)
+
+
+def _group_inspect_results(results: list[dict]) -> list[dict]:
+    groups = load_groups()
+    group_order = {g["id"]: idx for idx, g in enumerate(groups)}
+    group_names = {g["id"]: g.get("name", g["id"]) for g in groups}
+    cmdb = load_cmdb()
+
+    grouped: dict[str, dict] = {}
+    for result in results:
+        ip = (result.get("ip") or result.get("instance", "").split(":")[0]).strip()
+        host_meta = cmdb.get(ip, {})
+        raw_group_id = (host_meta.get("group") or "").strip()
+        key = raw_group_id or UNGROUPED_GROUP_ID
+        group_name = group_names.get(raw_group_id, raw_group_id) if raw_group_id else UNGROUPED_GROUP_NAME
+        bucket = grouped.setdefault(key, {
+            "group_id": "" if key == UNGROUPED_GROUP_ID else key,
+            "group_name": group_name,
+            "sort_index": group_order.get(raw_group_id, len(group_order) + (1 if raw_group_id else 2)),
+            "results": [],
+        })
+        bucket["results"].append(result)
+
+    return sorted(grouped.values(), key=lambda item: (item["sort_index"], item["group_name"]))
+
+
+def _group_ai_fallback(group_name: str, summary: dict) -> str:
+    return (
+        f"分组「{group_name}」共 {summary.get('total', 0)} 台主机，"
+        f"正常 {summary.get('normal', 0)} 台、告警 {summary.get('warning', 0)} 台、"
+        f"严重 {summary.get('critical', 0)} 台。"
+        "建议优先处理严重主机和高频异常项。"
+    )
+
+
+async def _build_group_analyses(grouped_results: list[dict]) -> list[dict]:
+    analyses = []
+    for item in grouped_results:
+        summary = _build_inspect_summary(item["results"], item["group_name"])
+        ai_parts: list[str] = []
+        try:
+            async for chunk in analyzer.generate_inspection_summary(item["results"], summary):
+                ai_parts.append(chunk)
+            ai_text = "".join(ai_parts).strip()
+        except Exception as exc:
+            logger.warning("分组 %s AI 分析生成失败: %s", item["group_name"], exc)
+            ai_text = _group_ai_fallback(item["group_name"], summary)
+
+        analyses.append({
+            "group_id": item["group_id"],
+            "group_name": item["group_name"],
+            "host_summary": summary,
+            "top_issues": _build_inspect_top_issues(item["results"]),
+            "abnormal_hosts": _sort_abnormal_hosts(item["results"])[:20],
+            "health_score": _inspect_health_score(summary),
+            "ai_analysis": ai_text,
+        })
+    return analyses
+
+
+def _compose_group_ai_text(group_analyses: list[dict]) -> str:
+    sections: list[str] = []
+    for item in group_analyses:
+        summary = item.get("host_summary", {})
+        header = (
+            f"【分组：{item.get('group_name') or UNGROUPED_GROUP_NAME}】\n"
+            f"主机 {summary.get('total', 0)} 台，正常 {summary.get('normal', 0)} 台，"
+            f"告警 {summary.get('warning', 0)} 台，严重 {summary.get('critical', 0)} 台"
+        )
+        body = (item.get("ai_analysis") or "").strip() or "暂无 AI 分析结果"
+        sections.append(f"{header}\n{body}")
+    return "\n\n".join(sections).strip()
+
+
+def _build_group_report_from_inspect(report: dict, group_analysis: dict, group_results: list[dict]) -> dict:
+    created_at = report.get("created_at", "")
+    date_text = created_at[:10] if created_at else ""
+    group_name = group_analysis.get("group_name") or UNGROUPED_GROUP_NAME
+    summary = group_analysis.get("host_summary") or _build_inspect_summary(group_results, group_name)
+    return {
+        "id": report.get("id", ""),
+        "type": "inspect",
+        "group_id": group_analysis.get("group_id", ""),
+        "group_name": group_name,
+        "title": f"主机巡检日报【{group_name}】 {date_text}".strip(),
+        "created_at": created_at,
+        "health_score": group_analysis.get("health_score", _inspect_health_score(summary)),
+        "host_summary": summary,
+        "top_issues": group_analysis.get("top_issues") or _build_inspect_top_issues(group_results),
+        "abnormal_hosts": group_analysis.get("abnormal_hosts") or _sort_abnormal_hosts(group_results)[:20],
+        "all_hosts": group_results,
+        "prometheus_extra_hosts": [],
+        "prometheus_extra_count": 0,
+        "summary_scope_note": summary.get("scope_note", ""),
+        "ai_analysis": (group_analysis.get("ai_analysis") or "").strip() or report.get("ai_analysis", ""),
+        "group_analyses": [group_analysis],
+    }
+
+
+def _split_inspect_report_by_group(report: dict) -> dict[str, dict]:
+    if report.get("group_id"):
+        return {report.get("group_id", ""): report}
+
+    all_hosts = report.get("all_hosts", [])
+    if not all_hosts:
+        return {}
+
+    grouped_results = _group_inspect_results(all_hosts)
+    analyses = {
+        (item.get("group_id") or UNGROUPED_GROUP_ID): item
+        for item in (report.get("group_analyses") or [])
+    }
+
+    split_reports: dict[str, dict] = {}
+    for item in grouped_results:
+        key = item["group_id"] or UNGROUPED_GROUP_ID
+        analysis = analyses.get(key, {
+            "group_id": item["group_id"],
+            "group_name": item["group_name"],
+            "host_summary": _build_inspect_summary(item["results"], item["group_name"]),
+            "top_issues": _build_inspect_top_issues(item["results"]),
+            "abnormal_hosts": _sort_abnormal_hosts(item["results"])[:20],
+            "health_score": _inspect_health_score(_build_inspect_summary(item["results"], item["group_name"])),
+            "ai_analysis": "",
+        })
+        split_reports[item["group_id"]] = _build_group_report_from_inspect(report, analysis, item["results"])
+    return split_reports
+
+
 @router.get("/api/report/inspect/generate")
 async def generate_inspect_report(group_id: Optional[str] = Query(None)):
     """生成主机巡检日报，流式返回 AI 分析；可通过 group_id 限定分组"""
     try:
-        instances: Optional[list] = None
         group_name = ""
         if group_id:
-            cmdb = load_cmdb()
-            instances = [inst for inst, meta in cmdb.items() if meta.get("group") == group_id]
             groups = load_groups()
             g = next((g for g in groups if g["id"] == group_id), None)
             group_name = g["name"] if g else group_id
-        results = await prom.inspect_hosts(instances=instances if instances is not None else None)
-        summary = {
-            "total":    len(results),
-            "normal":   sum(1 for r in results if r["overall"] == "normal"),
-            "warning":  sum(1 for r in results if r["overall"] == "warning"),
-            "critical": sum(1 for r in results if r["overall"] == "critical"),
-        }
+        data = await collect_inspect_data(group_id=group_id or "", group_name=group_name)
+        results = data["results"]
+        summary = data["summary"]
+        top_issues = data["top_issues"]
+        abnormal_hosts = data["abnormal_hosts"]
+        all_hosts_brief = data["all_hosts"]
+        health_score = data["health_score"]
+        meta = build_inspect_meta(data, group_id or "", group_name)
 
-        issue_cnt: dict[str, int] = {}
-        for r in results:
-            for c in r.get("checks", []):
-                if c.get("status") != "normal":
-                    issue_cnt[c.get("item", "未知")] = issue_cnt.get(c.get("item", "未知"), 0) + 1
-        top_issues = sorted(issue_cnt.items(), key=lambda x: x[1], reverse=True)[:10]
-
-        abnormal_hosts = [r for r in results if r.get("overall") != "normal"]
-        abnormal_hosts.sort(
-            key=lambda r: {"critical": 2, "warning": 1}.get(r.get("overall", "normal"), 0),
-            reverse=True,
-        )
-
-        health_score = await analyzer.calculate_host_health_score(summary)
-
-        now       = datetime.now(timezone.utc)
-        report_id = "inspect_" + now.strftime("%Y%m%d%H%M%S")
-
-        all_hosts_brief = []
-        for r in results:
-            m = r.get("metrics") or {}
-            all_hosts_brief.append({
-                "hostname":   r.get("hostname") or r.get("instance", ""),
-                "ip":         r.get("ip", ""),
-                "os":         r.get("os", ""),
-                "state":      r.get("state", ""),
-                "overall":    r.get("overall", "normal"),
-                "cpu_pct":    m.get("cpu_usage"),
-                "mem_pct":    m.get("mem_usage"),
-                "mem_total":  m.get("mem_total_gb"),
-                "load5":      m.get("load5"),
-                "net_recv":   m.get("net_recv_mbps"),
-                "net_send":   m.get("net_send_mbps"),
-                "tcp_estab":  m.get("tcp_estab"),
-                "uptime_s":   m.get("uptime_seconds"),
-                "checks":     r.get("checks", []),
-                "partitions": r.get("partitions", []),
-            })
-
-        title_suffix = f"【{group_name}】" if group_name else ""
-        meta = {
-            "id":             report_id,
-            "type":           "inspect",
-            "group_id":       group_id or "",
-            "group_name":     group_name,
-            "title":          f"主机巡检日报{title_suffix} {now.strftime('%Y-%m-%d')}",
-            "created_at":     now.isoformat(),
-            "health_score":   health_score,
-            "host_summary":   summary,
-            "top_issues":     [{"item": k, "count": v} for k, v in top_issues],
-            "abnormal_hosts": abnormal_hosts[:20],
-            "all_hosts":      all_hosts_brief,
-        }
-
-        report_path = REPORTS_DIR / f"{report_id}.json"
-        ai_parts: list[str] = []
-
+        report_path = REPORTS_DIR / f"{meta['id']}.json"
         async def generate():
             yield f"data: __META__{json.dumps(meta, ensure_ascii=False)}\n\n"
-            try:
-                async for chunk in analyzer.generate_host_inspect_report(results, summary):
-                    ai_parts.append(chunk)
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            except Exception as exc:
-                logger.exception("巡检日报 AI 生成异常")
-                ai_parts.append(f"\n[AI生成出错] {exc}")
-                yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
-            meta["ai_analysis"] = "".join(ai_parts)
+            if group_id:
+                ai_parts: list[str] = []
+                try:
+                    async for chunk in analyzer.generate_host_inspect_report(results, summary):
+                        ai_parts.append(chunk)
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                except Exception as exc:
+                    logger.exception("巡检日报 AI 生成异常")
+                    ai_parts.append(f"\n[AI生成出错] {exc}")
+                    yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
+                ai_text = "".join(ai_parts).strip()
+                meta["group_analyses"] = [{
+                    "group_id": group_id or "",
+                    "group_name": group_name or UNGROUPED_GROUP_NAME,
+                    "host_summary": summary,
+                    "top_issues": top_issues,
+                    "abnormal_hosts": abnormal_hosts[:20],
+                    "health_score": health_score,
+                    "ai_analysis": ai_text,
+                }]
+                meta["ai_analysis"] = ai_text
+            else:
+                grouped_results = _group_inspect_results(all_hosts_brief)
+                if not grouped_results:
+                    meta["group_analyses"] = []
+                    meta["ai_analysis"] = "未找到可用于分组分析的主机数据。"
+                    yield f"data: {json.dumps(meta['ai_analysis'], ensure_ascii=False)}\n\n"
+                else:
+                    group_analyses = await _build_group_analyses(grouped_results)
+                    combined_text = _compose_group_ai_text(group_analyses)
+                    meta["group_analyses"] = group_analyses
+                    meta["ai_analysis"] = combined_text
+                    for chunk in [combined_text[i:i + 800] for i in range(0, len(combined_text), 800)]:
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
             asyncio.create_task(save_report_meta(meta))
             # 后台写入 Milvus
@@ -298,64 +484,33 @@ async def generate_inspect_report_all_groups():
                 source       = "cached"
             else:
                 # ② 重新采集 + 生成 AI + 保存报告
-                host_results = await prom.inspect_hosts(instances=instances)
-                summary = {
-                    "total":    len(host_results),
-                    "normal":   sum(1 for r in host_results if r["overall"] == "normal"),
-                    "warning":  sum(1 for r in host_results if r["overall"] == "warning"),
-                    "critical": sum(1 for r in host_results if r["overall"] == "critical"),
-                }
+                inspect_data = await collect_inspect_data(
+                    instances=instances,
+                    group_id=group_id,
+                    group_name=group_name,
+                )
+                full_results = inspect_data["results"]
+                summary = inspect_data["summary"]
                 ai_parts: list[str] = []
                 try:
-                    async for chunk in analyzer.generate_host_inspect_report(host_results, summary):
+                    async for chunk in analyzer.generate_host_inspect_report(full_results, summary):
                         ai_parts.append(chunk)
                 except Exception as ai_exc:
                     logger.warning("分组 %s AI生成失败: %s", group_name, ai_exc)
                 ai_text = "".join(ai_parts)
-
-                # 构建摘要主机列表并保存报告，下次可复用
-                issue_cnt: dict[str, int] = {}
-                for r in host_results:
-                    for c in r.get("checks", []):
-                        if c.get("status") != "normal":
-                            issue_cnt[c.get("item", "未知")] = issue_cnt.get(c.get("item", "未知"), 0) + 1
-                top_issues = sorted(issue_cnt.items(), key=lambda x: x[1], reverse=True)[:10]
-                abnormal   = sorted(
-                    [r for r in host_results if r.get("overall") != "normal"],
-                    key=lambda r: {"critical": 2, "warning": 1}.get(r.get("overall", "normal"), 0),
-                    reverse=True,
-                )
-                all_hosts_brief = []
-                for r in host_results:
-                    m = r.get("metrics") or {}
-                    all_hosts_brief.append({
-                        "hostname":   r.get("hostname") or r.get("instance", ""),
-                        "ip":         r.get("ip", ""),
-                        "os":         r.get("os", ""),
-                        "state":      r.get("state", ""),
-                        "overall":    r.get("overall", "normal"),
-                        "cpu_pct":    m.get("cpu_usage"),
-                        "mem_pct":    m.get("mem_usage"),
-                        "checks":     r.get("checks", []),
-                        "partitions": r.get("partitions", []),
-                    })
-                now_g     = datetime.now(timezone.utc)
-                rid_g     = "inspect_" + now_g.strftime("%Y%m%d%H%M%S") + f"_{group_id}"
-                health_g  = await analyzer.calculate_host_health_score(summary)
-                meta_g = {
-                    "id": rid_g, "type": "inspect",
-                    "group_id": group_id, "group_name": group_name,
-                    "title": f"主机巡检日报【{group_name}】 {now_g.strftime('%Y-%m-%d')}",
-                    "created_at": now_g.isoformat(),
-                    "health_score": health_g,
+                meta_g = build_inspect_meta(inspect_data, group_id, group_name)
+                meta_g["ai_analysis"] = ai_text
+                meta_g["group_analyses"] = [{
+                    "group_id": group_id,
+                    "group_name": group_name,
                     "host_summary": summary,
-                    "top_issues": [{"item": k, "count": v} for k, v in top_issues],
-                    "abnormal_hosts": abnormal[:20],
-                    "all_hosts": all_hosts_brief,
+                    "top_issues": inspect_data["top_issues"],
+                    "abnormal_hosts": inspect_data["abnormal_hosts"],
+                    "health_score": inspect_data["health_score"],
                     "ai_analysis": ai_text,
-                }
+                }]
                 try:
-                    (REPORTS_DIR / f"{rid_g}.json").write_text(
+                    (REPORTS_DIR / f"{meta_g['id']}.json").write_text(
                         json.dumps(meta_g, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
                     asyncio.create_task(save_report_meta(meta_g))
@@ -363,7 +518,7 @@ async def generate_inspect_report_all_groups():
                     logger.warning("分组 %s 报告保存失败: %s", group_name, save_exc)
 
                 # 推送时使用完整巡检结果（含 checks 字段）
-                host_results = all_hosts_brief
+                host_results = full_results
                 source = "generated"
 
             push_result = await send_feishu_group_inspect(
@@ -628,6 +783,7 @@ async def notify_report_groups(report_id: str, group_id: Optional[str] = Query(N
     report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
 
     all_groups = load_groups()
+    group_reports = _split_inspect_report_by_group(report) if report.get("type") == "inspect" else {}
     # 若指定分组则只取该分组，否则取全部
     target_groups = [g for g in all_groups if g["id"] == group_id] if group_id else all_groups
 
@@ -636,16 +792,21 @@ async def notify_report_groups(report_id: str, group_id: Optional[str] = Query(N
         gid        = group["id"]
         group_name = group.get("name", gid)
         pushed: dict[str, dict] = {}
+        payload_report = group_reports.get(gid, report) if group_reports else report
+
+        if report.get("type") == "inspect" and group_reports and gid not in group_reports:
+            results.append({"group_id": gid, "group_name": group_name, "skipped": True, "reason": "该分组在当前报告中无主机"})
+            continue
 
         feishu_wh = group.get("feishu_webhook", "")
         if feishu_wh:
             keyword = group.get("feishu_keyword", FEISHU_KEYWORD)
-            pushed["feishu"] = await send_feishu(report, feishu_wh, keyword=keyword, report_url=report_url)
+            pushed["feishu"] = await send_feishu(payload_report, feishu_wh, keyword=keyword, report_url=report_url)
 
         dingtalk_wh = group.get("dingtalk_webhook", "")
         if dingtalk_wh:
             keyword = group.get("dingtalk_keyword", DINGTALK_KEYWORD)
-            pushed["dingtalk"] = await send_dingtalk(report, dingtalk_wh, keyword=keyword)
+            pushed["dingtalk"] = await send_dingtalk(payload_report, dingtalk_wh, keyword=keyword)
 
         if not pushed:
             results.append({"group_id": gid, "group_name": group_name, "skipped": True, "reason": "未配置 webhook"})

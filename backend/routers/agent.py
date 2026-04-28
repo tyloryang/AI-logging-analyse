@@ -13,11 +13,11 @@ from sqlalchemy import select, delete as sa_delete
 
 from agent.graph import build_graph
 from agent.external_executor import get_agent_executor, run_configured_executor
-from auth.deps import current_user
+from auth.deps import current_user, require_permission
 from auth.models import AgentConversation, User
 from db import AsyncSessionLocal
 from agent.ops_quick_actions import detect_mode, get_quick_reply, quick_actions_enabled
-from state import get_user_allowed_groups
+from state import get_user_allowed_groups, get_user_allowed_k8s_clusters
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -110,7 +110,29 @@ async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User |
 
     try:
         resolved_mode = detect_mode(message) if mode == "chat" else mode
+        thread_id = f"{conv_id}:{resolved_mode}" if conv_id else f"anon-{resolved_mode}"
+        allowed_groups: list[str] | None = None
+        allowed_k8s_clusters: list[str] | None = None
+        if user and not user.is_superuser:
+            allowed_groups = get_user_allowed_groups(user.id) or []
+            allowed_k8s_clusters = get_user_allowed_k8s_clusters(user.id) or []
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "user_id": user.id if user else "anon",
+                "is_superuser": user.is_superuser if user else True,
+                "allowed_groups": allowed_groups,
+                "allowed_k8s_clusters": allowed_k8s_clusters,
+            },
+            "recursion_limit": 40,
+        }
         executor_mode = get_agent_executor("API")
+        if executor_mode != "langgraph" and user and not user.is_superuser:
+            logger.warning(
+                "[agent] 普通用户 %s 请求已强制使用 langgraph，避免外部执行器绕过数据权限",
+                user.username,
+            )
+            executor_mode = "langgraph"
         if executor_mode != "langgraph":
             logger.info("[agent] 使用外部执行器: %s", executor_mode)
             thread_id = conv_id or f"anon-{resolved_mode}"
@@ -121,7 +143,7 @@ async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User |
             return
 
         quick_reply = (
-            await get_quick_reply(message)
+            await get_quick_reply(message, config=config)
             if quick_actions_enabled("AIOPS") and resolved_mode in {"es_ops", "k8s_ops"}
             else None
         )
@@ -133,21 +155,6 @@ async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User |
         checkpointer = await _get_checkpointer()
         graph = build_graph(resolved_mode, checkpointer=checkpointer)
         input_state = {"messages": [HumanMessage(content=message)]}
-        thread_id = f"{conv_id}:{resolved_mode}" if conv_id else f"anon-{resolved_mode}"
-        # 将用户分组权限注入 configurable，工具层可通过 config 读取
-        allowed_groups: list[str] | None = None
-        if user and not user.is_superuser:
-            allowed_groups = get_user_allowed_groups(user.id) or []
-        config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "user_id": user.id if user else "anon",
-                "is_superuser": user.is_superuser if user else True,
-                "allowed_groups": allowed_groups,  # None = 超管不限制
-            },
-            "recursion_limit": 40,
-        }
-
         async for event in graph.astream_events(input_state, config=config, version="v2"):
             kind = event.get("event", "")
 
@@ -230,28 +237,28 @@ _DEFAULT_MESSAGES = {
 
 
 @router.post("/rca")
-async def agent_rca(req: AgentRequest, user: User = Depends(current_user)):
+async def agent_rca(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["rca"]
     return StreamingResponse(_stream_graph("rca", message, req.conv_id, user),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/inspect")
-async def agent_inspect(req: AgentRequest, user: User = Depends(current_user)):
+async def agent_inspect(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["inspect"]
     return StreamingResponse(_stream_graph("inspect", message, req.conv_id, user),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/chat")
-async def agent_chat(req: AgentRequest, user: User = Depends(current_user)):
+async def agent_chat(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["chat"]
     return StreamingResponse(_stream_graph("chat", message, req.conv_id, user),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/guided")
-async def agent_guided(req: AgentRequest, user: User = Depends(current_user)):
+async def agent_guided(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["guided"]
     return StreamingResponse(_stream_graph("guided", message, req.conv_id, user),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
@@ -266,7 +273,7 @@ class SaveConversationRequest(BaseModel):
 
 
 @router.get("/conversations")
-async def list_conversations(user: User = Depends(current_user)):
+async def list_conversations(user: User = require_permission("agent", "view")):
     """返回当前用户所有历史会话（按更新时间倒序，最多 100 条）。"""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -289,7 +296,7 @@ async def list_conversations(user: User = Depends(current_user)):
 
 
 @router.get("/conversations/{conv_id}")
-async def get_conversation(conv_id: str, user: User = Depends(current_user)):
+async def get_conversation(conv_id: str, user: User = require_permission("agent", "view")):
     """获取单条历史会话的完整消息列表。"""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -310,7 +317,7 @@ async def get_conversation(conv_id: str, user: User = Depends(current_user)):
 
 @router.put("/conversations/{conv_id}")
 async def save_conversation(conv_id: str, req: SaveConversationRequest,
-                            user: User = Depends(current_user)):
+                            user: User = require_permission("agent", "view")):
     """新建或更新一条历史会话（upsert）。"""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -336,7 +343,7 @@ async def save_conversation(conv_id: str, req: SaveConversationRequest,
 
 
 @router.delete("/conversations/{conv_id}")
-async def delete_conversation(conv_id: str, user: User = Depends(current_user)):
+async def delete_conversation(conv_id: str, user: User = require_permission("agent", "view")):
     """删除一条历史会话。"""
     async with AsyncSessionLocal() as db:
         await db.execute(

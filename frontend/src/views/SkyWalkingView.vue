@@ -39,11 +39,11 @@
           <span style="color:var(--text-muted);font-size:12px">暂无服务（时间范围内无数据）</span>
         </div>
         <!-- 按 group 分组展示 -->
-        <template v-if="swServiceGroups.length > 1">
+        <template v-if="swServiceGroups.length">
           <div v-for="grp in swServiceGroups" :key="grp.group" class="sw-ns-group">
             <div class="sw-ns-header" @click="toggleSwNs(grp.group)">
               <span class="sw-ns-arrow" :class="{ open: openSwNs.has(grp.group) }">▶</span>
-              <span class="sw-ns-label">{{ grp.group || '默认' }}</span>
+              <span class="sw-ns-label">{{ displayGroupName(grp.group) }}</span>
               <span class="sw-ns-count">{{ grp.items.length }}</span>
             </div>
             <div v-show="openSwNs.has(grp.group)">
@@ -68,7 +68,7 @@
           >
             <span class="sw-svc-dot svc"></span>
             <span class="sw-svc-name">{{ svc.name }}</span>
-            <span v-if="svc.group" class="sw-svc-group">{{ svc.group }}</span>
+            <span class="sw-svc-group">{{ displayGroupName(svc.group) }}</span>
           </div>
         </template>
       </div>
@@ -122,6 +122,7 @@
         >{{ t.label }}</button>
         <span class="sw-tab-svc" v-if="selectedSvc">
           · {{ selectedSvc.name }}
+          <span class="sw-svc-group">{{ displayGroupName(selectedSvc.group) }}</span>
         </span>
       </div>
 
@@ -631,6 +632,9 @@ function toggleSwNs(g) {
   s.has(g) ? s.delete(g) : s.add(g)
   openSwNs.value = s
 }
+function displayGroupName(group) {
+  return group || '默认'
+}
 const selectedSvc  = ref(null)
 const loadingSvcs  = ref(false)
 const svcError     = ref('')
@@ -830,11 +834,12 @@ async function loadServices() {
   try {
     services.value = await api.swGetServices(timeParams.value)
     // 自动展开第一个 group
-    if (swServiceGroups.value.length > 1) {
-      openSwNs.value = new Set([swServiceGroups.value[0].group])
-    }
+    openSwNs.value = swServiceGroups.value.length
+      ? new Set([swServiceGroups.value[0]?.group ?? ''])
+      : new Set()
   } catch (e) {
     services.value = []
+    openSwNs.value = new Set()
     svcError.value = e?.message || '连接 OAP 失败'
     try {
       const diag = await api.swTest()
@@ -1147,7 +1152,7 @@ onMounted(() => {
 }
 .sw-tab-btn:hover { color: var(--text-primary); background: var(--sidebar-hover); }
 .sw-tab-btn.active { color: var(--accent); font-weight: 500; background: rgba(56,139,253,.1); }
-.sw-tab-svc { margin-left: 8px; font-size: 12px; color: var(--text-muted); }
+.sw-tab-svc { margin-left: 8px; font-size: 12px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; }
 .sw-tab-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
 /* ── 追踪工具栏 ── */

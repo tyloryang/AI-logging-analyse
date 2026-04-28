@@ -34,7 +34,7 @@
           <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
         </div>
         <!-- 按 namespace 分组展示 -->
-        <template v-if="serviceGroups.length > 1">
+        <template v-if="serviceGroups.length">
           <div v-for="grp in serviceGroups" :key="grp.namespace" class="svc-ns-group">
             <div class="svc-ns-header" @click="toggleNs(grp.namespace)">
               <span class="svc-ns-arrow" :class="{ open: openNs.has(grp.namespace) }">▶</span>
@@ -202,16 +202,18 @@
           <div class="log-table-wrap">
             <table class="log-table">
               <colgroup>
-                <col style="width:168px">
-                <col style="width:72px">
-                <col style="width:130px">
-                <col>
+              <col style="width:168px">
+              <col style="width:72px">
+              <col style="width:130px">
+              <col style="width:120px">
+              <col>
               </colgroup>
               <thead>
                 <tr>
                   <th>时间</th>
                   <th>级别</th>
                   <th>服务</th>
+                  <th>分组</th>
                   <th>内容</th>
                 </tr>
               </thead>
@@ -227,7 +229,8 @@
                       {{ extractLevel(log.line).toUpperCase() }}
                     </span>
                   </td>
-                  <td class="col-svc">{{ log.labels?.app || log.labels?.job || selectedService || '—' }}</td>
+                  <td class="col-svc">{{ logServiceName(log) }}</td>
+                  <td class="col-group">{{ logGroup(log) }}</td>
                   <td class="col-msg">{{ log.line }}</td>
                 </tr>
               </tbody>
@@ -277,7 +280,11 @@
               </div>
               <div class="drawer-row">
                 <span class="drawer-label">服务</span>
-                <span class="drawer-val">{{ detailLog.labels?.app || detailLog.labels?.job || selectedService || '—' }}</span>
+                <span class="drawer-val">{{ logServiceName(detailLog) }}</span>
+              </div>
+              <div class="drawer-row">
+                <span class="drawer-label">分组</span>
+                <span class="drawer-val">{{ logGroup(detailLog) }}</span>
               </div>
               <div v-if="detailLog.labels && Object.keys(detailLog.labels).length" class="drawer-row">
                 <span class="drawer-label">标签</span>
@@ -577,6 +584,22 @@ const totalErrors = computed(() =>
   services.value.reduce((s, v) => s + v.error_count, 0)
 )
 
+function logServiceName(log) {
+  return log?.labels?.app || log?.labels?.job || selectedService.value || '—'
+}
+
+function logGroup(log) {
+  const labels = log?.labels || {}
+  return (
+    labels.namespace ||
+    labels.k8s_namespace_name ||
+    labels.kubernetes_namespace ||
+    labels.k8s_namespace ||
+    labels.ns ||
+    '默认'
+  )
+}
+
 // 返回今天 00:00 ~ 当前时刻的本地时间字符串（datetime-local 格式）
 function todayRange() {
   const now = new Date()
@@ -763,13 +786,14 @@ async function loadServices() {
     if (rg?.data?.length) {
       serviceGroups.value = rg.data
       // 自动展开第一个 namespace
-      if (rg.data[0]?.namespace) openNs.value = new Set([rg.data[0].namespace])
+      openNs.value = new Set([rg.data[0]?.namespace ?? ''])
       // 平铺 services 保持兼容（totalErrors 等计算用）
       services.value = rg.data.flatMap(g => g.services)
     } else {
       const r = await api.getServices()
       services.value = r.data
       serviceGroups.value = []
+      openNs.value = new Set()
     }
   } finally {
     loadingSvcs.value = false
@@ -1205,6 +1229,7 @@ onMounted(() => {
 .log-row td { padding: 5px 12px; vertical-align: top; }
 .col-ts  { color: var(--text-muted); white-space: nowrap; font-size: 11px; }
 .col-svc { color: var(--accent-hover); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.col-group { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .col-msg { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-error .col-msg { color: #fca5a5; }
 .row-warn  .col-msg { color: #fcd34d; }

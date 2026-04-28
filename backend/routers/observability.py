@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from state import loki, prom, analyzer
+from state import loki, prom, analyzer, load_hosts_list
 from skywalking_client import sw_client, check_connectivity as sw_check
 
 logger = logging.getLogger(__name__)
@@ -259,66 +259,204 @@ class AnalyzeReq(BaseModel):
     question: str = "分析当前系统健康状况"
     hours: int = 1
 
+async def _get_host_metrics() -> list[dict]:
+    """获取 CMDB 所有主机的 Prometheus 实时指标。"""
+    try:
+        cmdb_hosts = load_hosts_list()
+        if not cmdb_hosts:
+            return []
+        all_metrics    = await prom.get_all_host_metrics()
+        all_partitions = await prom.get_all_partitions()
+        # 建立 ip → instance 映射
+        discovered = await prom.discover_hosts()
+        ip_to_inst = {h["ip"]: h["instance"] for h in discovered if h.get("ip")}
+
+        result = []
+        for h in cmdb_hosts:
+            ip   = h.get("ip", "")
+            inst = ip_to_inst.get(ip, f"{ip}:9100")
+            m    = all_metrics.get(inst, {})
+            parts = all_partitions.get(inst, [])
+            # 取根分区使用率
+            root_disk = next((p["usage_pct"] for p in parts if p.get("mountpoint") == "/"), None)
+            result.append({
+                "hostname":  h.get("hostname") or ip,
+                "ip":        ip,
+                "group":     h.get("group", ""),
+                "env":       h.get("env", ""),
+                "cpu":       m.get("cpu_usage"),
+                "mem":       m.get("mem_usage"),
+                "disk_root": root_disk,
+                "load5":     m.get("load5"),
+                "has_data":  bool(m),
+            })
+        return result
+    except Exception as e:
+        logger.warning("[analyze] 获取主机指标失败: %s", e)
+        return []
+
+
+async def _get_k8s_summary() -> dict:
+    """获取 K8s 集群摘要（Pod 状态）。"""
+    try:
+        from services.k8s_store import load_k8s_clusters
+        clusters = load_k8s_clusters()
+        if not clusters:
+            return {}
+        from kubernetes import client as k8s_client, config as k8s_config
+        default_cluster = next((c for c in clusters if c.get("default")), clusters[0])
+        kubeconfig = default_cluster.get("kubeconfig_content") or default_cluster.get("kubeconfig_path")
+        if not kubeconfig:
+            return {}
+        # 简化：直接返回已知信息
+        return {"cluster_name": default_cluster.get("name", "default")}
+    except Exception:
+        return {}
+
+
 @router.post("/analyze")
 async def analyze_observability(req: AnalyzeReq):
-    """对可观测性数据做 AI 流式分析"""
+    """对可观测性数据做全面 AI 流式分析（含服务器状态）"""
 
     async def _stream():
-        # 1. 收集上下文数据
+        # 1. 并发收集所有上下文数据
         try:
-            (alert_count, recent_alerts), \
-            (error_count, error_breakdown), \
-            (trace_count, recent_traces) = await asyncio.gather(
+            results = await asyncio.gather(
                 _get_alert_count(),
                 _get_loki_error_count(req.hours),
                 _get_sw_trace_count(req.hours),
+                _get_host_metrics(),
+                return_exceptions=True,
             )
         except Exception as e:
             yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
             return
 
-        # 2. 构造 prompt
+        (alert_count, recent_alerts) = results[0] if not isinstance(results[0], Exception) else (0, [])
+        (error_count, error_breakdown) = results[1] if not isinstance(results[1], Exception) else (0, [])
+        (trace_count, recent_traces)  = results[2] if not isinstance(results[2], Exception) else (0, [])
+        host_metrics = results[3] if not isinstance(results[3], Exception) else []
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # 2. 构造全面 prompt
         context_lines = [
-            f"当前时间：{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-            f"统计时间范围：最近 {req.hours} 小时",
-            f"",
-            f"## 告警概况",
-            f"- 触发告警数：{alert_count}",
+            f"当前时间：{now_str}",
+            f"统计范围：最近 {req.hours} 小时",
+            "",
         ]
-        for a in recent_alerts[:5]:
-            context_lines.append(f"  - [{a.get('severity','?')}] {a.get('service','?')}: {a.get('name','?')}")
 
-        context_lines += [
-            f"",
-            f"## 服务错误",
-            f"- 错误总数：{error_count}",
-        ]
-        for e in error_breakdown[:5]:
-            context_lines.append(f"  - {e['service']}: {e['count']} 条错误")
+        # ── 服务器状态 ──────────────────────────────────────────
+        context_lines.append("## 服务器实时状态")
+        if host_metrics:
+            has_data_hosts = [h for h in host_metrics if h["has_data"]]
+            no_data_hosts  = [h for h in host_metrics if not h["has_data"]]
 
-        context_lines += [
-            f"",
-            f"## APM Trace",
-            f"- Trace 总量：{trace_count}",
-        ]
-        for t in recent_traces[:3]:
-            status = "❌" if t.get("error") else "✅"
-            context_lines.append(f"  - {status} {t.get('service','?')} {t.get('endpoint','?')} {t.get('duration',0)}ms")
+            if has_data_hosts:
+                # 危险指标（CPU>80 / 内存>85 / 磁盘>85）
+                danger = []
+                warn   = []
+                normal = []
+                for h in has_data_hosts:
+                    issues = []
+                    if h["cpu"] is not None and h["cpu"] > 80:
+                        issues.append(f"CPU {h['cpu']:.0f}%")
+                    if h["mem"] is not None and h["mem"] > 85:
+                        issues.append(f"内存 {h['mem']:.0f}%")
+                    if h["disk_root"] is not None and h["disk_root"] > 85:
+                        issues.append(f"磁盘 {h['disk_root']:.0f}%")
+                    if issues:
+                        if any(">90" in i or int(''.join(filter(str.isdigit, i.split()[1].rstrip('%'))))>=90 for i in issues if '%' in i):
+                            danger.append((h, issues))
+                        else:
+                            warn.append((h, issues))
+                    else:
+                        normal.append(h)
+
+                context_lines.append(f"- 在线主机：{len(has_data_hosts)} 台，离线/无数据：{len(no_data_hosts)} 台")
+                if danger:
+                    context_lines.append(f"- 🔴 严重异常主机（{len(danger)} 台）：")
+                    for h, issues in danger[:5]:
+                        context_lines.append(f"    {h['hostname']}({h['ip']}) {' / '.join(issues)}")
+                if warn:
+                    context_lines.append(f"- 🟡 警告主机（{len(warn)} 台）：")
+                    for h, issues in warn[:5]:
+                        context_lines.append(f"    {h['hostname']}({h['ip']}) {' / '.join(issues)}")
+                if normal:
+                    context_lines.append(f"- ✅ 正常主机：{len(normal)} 台")
+
+                # 最高资源占用
+                by_cpu  = sorted([h for h in has_data_hosts if h["cpu"] is not None],  key=lambda x: -x["cpu"])
+                by_mem  = sorted([h for h in has_data_hosts if h["mem"] is not None],  key=lambda x: -x["mem"])
+                by_disk = sorted([h for h in has_data_hosts if h["disk_root"] is not None], key=lambda x: -x["disk_root"])
+                if by_cpu:
+                    context_lines.append(f"- CPU 最高：{by_cpu[0]['hostname']} {by_cpu[0]['cpu']:.1f}%")
+                if by_mem:
+                    context_lines.append(f"- 内存最高：{by_mem[0]['hostname']} {by_mem[0]['mem']:.1f}%")
+                if by_disk:
+                    context_lines.append(f"- 磁盘最高：{by_disk[0]['hostname']} {by_disk[0]['disk_root']:.1f}%（根分区）")
+
+            if no_data_hosts:
+                names = ", ".join(h["hostname"] for h in no_data_hosts[:5])
+                context_lines.append(f"- 无 Prometheus 数据（未安装 node_exporter 或离线）：{names}")
+        else:
+            context_lines.append("- 暂无主机数据（Prometheus 未配置或无 CMDB 主机）")
+
+        # ── 告警 ────────────────────────────────────────────────
+        context_lines += ["", "## 告警状态"]
+        context_lines.append(f"- 活跃告警：{alert_count} 条")
+        if recent_alerts:
+            # 按严重度统计
+            by_sev: dict[str, int] = {}
+            for a in recent_alerts:
+                s = a.get("severity", "unknown")
+                by_sev[s] = by_sev.get(s, 0) + 1
+            for sev, cnt in sorted(by_sev.items(), key=lambda x: {"critical":0,"error":1,"warning":2}.get(x[0],9)):
+                context_lines.append(f"  - {sev}: {cnt} 条")
+            context_lines.append("- 最近告警：")
+            for a in recent_alerts[:5]:
+                context_lines.append(f"  [{a.get('severity','?')}] {a.get('service','?')}: {a.get('alertname') or a.get('name','?')}")
+
+        # ── 日志错误 ────────────────────────────────────────────
+        context_lines += ["", "## 日志错误（Loki）"]
+        context_lines.append(f"- 错误日志总数：{error_count} 条（最近 {req.hours} 小时）")
+        if error_breakdown:
+            context_lines.append("- 错误最多的服务：")
+            for e in error_breakdown[:8]:
+                context_lines.append(f"  - {e['service']}: {e['count']} 条")
+
+        # ── APM Trace ───────────────────────────────────────────
+        context_lines += ["", "## APM 链路追踪（SkyWalking）"]
+        context_lines.append(f"- Trace 总量：{trace_count}")
+        if recent_traces:
+            errors = [t for t in recent_traces if t.get("error")]
+            slow   = [t for t in recent_traces if t.get("duration", 0) > 1000]
+            if errors:
+                context_lines.append(f"- 错误 Trace：{len(errors)} 条")
+                for t in errors[:3]:
+                    context_lines.append(f"  ❌ {t.get('service','?')} {t.get('endpoint','?')} {t.get('duration',0)}ms")
+            if slow:
+                context_lines.append(f"- 慢请求（>1s）：{len(slow)} 条")
 
         prompt = "\n".join(context_lines)
         prompt += f"\n\n---\n用户问题：{req.question}"
 
         system = (
-            "你是一名资深 SRE 工程师，负责分析可观测性平台数据。"
-            "请根据以下运维数据，给出简洁的根因分析和行动建议。"
-            "输出格式：\n## 告警分析\n## 错误根因\n## 建议行动\n"
-            "每节保持简短，建议行动使用编号列表，最多3条。"
+            "你是一名资深 SRE 工程师，负责全栈运维分析。"
+            "请根据以下全面的运维数据（服务器状态 + 告警 + 日志 + 链路追踪），"
+            "给出系统当前健康状况的综合评估和优先处理建议。\n"
+            "输出格式：\n"
+            "## 🖥️ 服务器状况\n（分析 CPU/内存/磁盘异常，点出需关注的主机）\n"
+            "## 🚨 告警与错误\n（归纳告警模式和日志错误根因）\n"
+            "## 🔗 链路追踪\n（是否有慢接口或错误接口）\n"
+            "## ✅ 优先处理建议\n（编号列表，最多5条，按紧急程度排序）\n"
+            "语言简洁专业，每节不超过5行。"
         )
 
         # 3. 流式输出
         try:
             full_prompt = f"{system}\n\n{prompt}"
-            async for chunk in analyzer.provider.stream(full_prompt, max_tokens=1500):
+            async for chunk in analyzer.provider.stream(full_prompt, max_tokens=2000):
                 yield f"data: {json.dumps({'type':'token','text':chunk})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"

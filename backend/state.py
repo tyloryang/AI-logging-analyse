@@ -200,6 +200,7 @@ def save_credentials(data: list[dict]) -> None:
 
 GROUPS_FILE      = Path(os.getenv("GROUPS_FILE",      "./data/groups.json"))
 USER_GROUPS_FILE = Path(os.getenv("USER_GROUPS_FILE", "./data/user_groups.json"))
+K8S_USER_CLUSTERS_FILE = Path(os.getenv("K8S_USER_CLUSTERS_FILE", "./data/user_k8s_clusters.json"))
 
 
 def load_groups() -> list[dict]:
@@ -235,6 +236,25 @@ def get_user_allowed_groups(user_id: str) -> list[str] | None:
     """返回用户允许访问的分组 ID 列表；None 表示超管（不限制）。"""
     ug = load_user_groups()
     return ug.get(user_id)  # 未配置的普通用户返回空列表
+
+
+def load_user_k8s_clusters() -> dict[str, list[str]]:
+    if K8S_USER_CLUSTERS_FILE.exists():
+        try:
+            return json.loads(K8S_USER_CLUSTERS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_user_k8s_clusters(data: dict[str, list[str]]) -> None:
+    K8S_USER_CLUSTERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    K8S_USER_CLUSTERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_user_allowed_k8s_clusters(user_id: str) -> list[str] | None:
+    mapping = load_user_k8s_clusters()
+    return mapping.get(user_id)
 
 
 SLOWLOG_TARGETS_FILE = Path(os.getenv("SLOWLOG_TARGETS_FILE", "./data/slowlog_targets.json"))

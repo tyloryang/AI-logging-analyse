@@ -7,8 +7,15 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket
+from fastapi import APIRouter, HTTPException, Query, WebSocket, Depends
 from pydantic import BaseModel
+from sqlalchemy import select
+
+from auth.deps import current_user, require_admin
+from auth.models import User
+from auth.session import get_session
+from db import AsyncSessionLocal
+from state import get_user_allowed_k8s_clusters
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/k8s", tags=["kubernetes"])
@@ -227,6 +234,50 @@ def _get_batch_client(cluster_id: str | None = None):
     return client.BatchV1Api(_get_api_client(cluster_id))
 
 
+def _user_allowed_cluster_ids(user: User) -> list[str] | None:
+    if user.is_superuser:
+        return None
+    return get_user_allowed_k8s_clusters(user.id) or []
+
+
+def _visible_clusters_for_user(user: User) -> list[dict]:
+    clusters = _load_clusters()
+    allowed_ids = _user_allowed_cluster_ids(user)
+    if allowed_ids is None:
+        return clusters
+    return [cluster for cluster in clusters if cluster.get("id") in allowed_ids]
+
+
+def _resolve_cluster_for_user(user: User, cluster_id: str | None = None) -> dict:
+    visible_clusters = _visible_clusters_for_user(user)
+    if not visible_clusters:
+        raise HTTPException(status_code=403, detail="当前用户未获得 Kubernetes 集群权限")
+
+    if cluster_id:
+        cluster = next((item for item in visible_clusters if item["id"] == cluster_id), None)
+        if not cluster:
+            raise HTTPException(status_code=403, detail=f"鏃犳潈璁块棶 K8s 闆嗙兢 {cluster_id}")
+        return cluster
+
+    return next((item for item in visible_clusters if item.get("is_default")), visible_clusters[0])
+
+
+async def _get_ws_user(ws: WebSocket) -> User | None:
+    session_id = ws.cookies.get("session_id")
+    if not session_id:
+        return None
+    session = await get_session(session_id)
+    if not session:
+        return None
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.id == session.get("user_id")))
+        user = result.scalar_one_or_none()
+        if not user or user.status != "active":
+            return None
+        return user
+
+
 def _phase_class(phase: str) -> str:
     return {
         "Running": "ok",
@@ -424,12 +475,12 @@ def _list_resource_pods(cluster_id: str | None, kind: str, namespace: str, name:
 # ── 集群 CRUD ────────────────────────────────────────────────────────────────
 
 @router.get("/clusters")
-async def list_clusters():
-    return _load_clusters()
+async def list_clusters(user: User = Depends(current_user)):
+    return _visible_clusters_for_user(user)
 
 
 @router.post("/clusters")
-async def add_cluster(body: K8sClusterPayload):
+async def add_cluster(body: K8sClusterPayload, _: User = Depends(require_admin)):
     name = body.name.strip()
     kubeconfig = body.kubeconfig.strip()
     if not name:
@@ -453,7 +504,7 @@ async def add_cluster(body: K8sClusterPayload):
 
 
 @router.put("/clusters/{cluster_id}")
-async def update_cluster(cluster_id: str, body: K8sClusterPayload):
+async def update_cluster(cluster_id: str, body: K8sClusterPayload, _: User = Depends(require_admin)):
     clusters = _load_clusters()
     idx = next((i for i, item in enumerate(clusters) if item["id"] == cluster_id), None)
     if idx is None:
@@ -480,7 +531,7 @@ async def update_cluster(cluster_id: str, body: K8sClusterPayload):
 
 
 @router.delete("/clusters/{cluster_id}")
-async def delete_cluster(cluster_id: str):
+async def delete_cluster(cluster_id: str, _: User = Depends(require_admin)):
     clusters = _load_clusters()
     if not any(item["id"] == cluster_id for item in clusters):
         raise HTTPException(status_code=404, detail="集群不存在")
@@ -491,7 +542,7 @@ async def delete_cluster(cluster_id: str):
 
 
 @router.post("/clusters/{cluster_id}/default")
-async def set_default_cluster(cluster_id: str):
+async def set_default_cluster(cluster_id: str, _: User = Depends(require_admin)):
     clusters = _load_clusters()
     if not any(item["id"] == cluster_id for item in clusters):
         raise HTTPException(status_code=404, detail="集群不存在")
@@ -501,7 +552,7 @@ async def set_default_cluster(cluster_id: str):
 
 
 @router.get("/clusters/{cluster_id}/test")
-async def test_cluster(cluster_id: str):
+async def test_cluster(cluster_id: str, _: User = Depends(require_admin)):
     try:
         cluster = _get_cluster(cluster_id)
         v1, _ = _get_client(cluster_id)
@@ -537,14 +588,16 @@ async def resource_detail(
     name: str = Query(..., description="资源名称"),
     namespace: str = Query("", description="命名空间"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        resource = _read_k8s_resource(cluster_id or None, kind, namespace, name)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        resource = _read_k8s_resource(cluster["id"], kind, namespace, name)
         return {
             "kind": _normalize_resource_kind(kind),
             "name": name,
             "namespace": namespace,
-            "data": _serialize_k8s_resource(cluster_id or None, resource),
+            "data": _serialize_k8s_resource(cluster["id"], resource),
         }
     except HTTPException:
         raise
@@ -559,9 +612,11 @@ async def resource_pods(
     name: str = Query(..., description="资源名称"),
     namespace: str = Query("", description="命名空间"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        pods = _list_resource_pods(cluster_id or None, kind, namespace, name)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        pods = _list_resource_pods(cluster["id"], kind, namespace, name)
         return {
             "kind": _normalize_resource_kind(kind),
             "name": name,
@@ -582,9 +637,11 @@ async def pod_logs(
     cluster_id: str = Query("", description="集群 ID"),
     container: str = Query("", description="容器名称"),
     tail_lines: int = Query(200, description="日志行数"),
+    user: User = Depends(current_user),
 ):
     try:
-        v1, _ = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        v1, _ = _get_client(cluster["id"])
         value = max(20, min(int(tail_lines or 200), 2000))
         logs = v1.read_namespaced_pod_log(
             name=pod_name,
@@ -608,9 +665,13 @@ async def pod_logs(
 # ── Namespaces ────────────────────────────────────────────────────────────────
 
 @router.get("/namespaces")
-async def list_namespaces(cluster_id: str = Query("", description="集群 ID")):
+async def list_namespaces(
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
+):
     try:
-        v1, _ = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        v1, _ = _get_client(cluster["id"])
         ns_list = v1.list_namespace()
         return [
             {
@@ -632,9 +693,11 @@ async def list_namespaces(cluster_id: str = Query("", description="集群 ID")):
 async def list_pods(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        v1, _ = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        v1, _ = _get_client(cluster["id"])
         pods = v1.list_pod_for_all_namespaces() if not namespace else v1.list_namespaced_pod(namespace)
         result = []
         for pod in pods.items:
@@ -674,9 +737,11 @@ async def list_pods(
 async def list_deployments(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        _, apps = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        _, apps = _get_client(cluster["id"])
         deps = apps.list_deployment_for_all_namespaces() if not namespace else apps.list_namespaced_deployment(namespace)
         result = []
         for item in deps.items:
@@ -712,9 +777,11 @@ async def list_deployments(
 async def list_daemonsets(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        _, apps = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        _, apps = _get_client(cluster["id"])
         items = apps.list_daemon_set_for_all_namespaces() if not namespace else apps.list_namespaced_daemon_set(namespace)
         result = []
         for item in items.items:
@@ -751,9 +818,11 @@ async def list_daemonsets(
 async def list_statefulsets(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        _, apps = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        _, apps = _get_client(cluster["id"])
         items = apps.list_stateful_set_for_all_namespaces() if not namespace else apps.list_namespaced_stateful_set(namespace)
         result = []
         for item in items.items:
@@ -788,9 +857,11 @@ async def list_statefulsets(
 async def list_jobs(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        batch = _get_batch_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        batch = _get_batch_client(cluster["id"])
         items = batch.list_job_for_all_namespaces() if not namespace else batch.list_namespaced_job(namespace)
         result = []
         for item in items.items:
@@ -822,9 +893,11 @@ async def list_jobs(
 async def list_cronjobs(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        batch = _get_batch_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        batch = _get_batch_client(cluster["id"])
         items = batch.list_cron_job_for_all_namespaces() if not namespace else batch.list_namespaced_cron_job(namespace)
         result = []
         for item in items.items:
@@ -859,9 +932,11 @@ async def list_cronjobs(
 async def list_services(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
 ):
     try:
-        v1, _ = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        v1, _ = _get_client(cluster["id"])
         svcs = v1.list_service_for_all_namespaces() if not namespace else v1.list_namespaced_service(namespace)
         result = []
         for item in svcs.items:
@@ -898,9 +973,13 @@ async def list_services(
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/nodes")
-async def list_nodes(cluster_id: str = Query("", description="集群 ID")):
+async def list_nodes(
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
+):
     try:
-        v1, _ = _get_client(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        v1, _ = _get_client(cluster["id"])
         nodes = v1.list_node()
         result = []
         for item in nodes.items:
@@ -935,9 +1014,12 @@ async def list_nodes(cluster_id: str = Query("", description="集群 ID")):
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 @router.get("/summary")
-async def cluster_summary(cluster_id: str = Query("", description="集群 ID")):
+async def cluster_summary(
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
+):
     try:
-        cluster = _get_cluster(cluster_id or None)
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
         v1, apps = _get_client(cluster["id"])
         batch = _get_batch_client(cluster["id"])
         pods = v1.list_pod_for_all_namespaces()
@@ -1026,6 +1108,17 @@ async def ws_k8s_exec(
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
+    user = await _get_ws_user(ws)
+    if not user:
+        await ws.close(code=4401, reason="未登录")
+        return
+
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+    except HTTPException as exc:
+        await ws.close(code=4403, reason=str(exc.detail))
+        return
+
     await ws.accept()
 
     # ── 1. 建立 exec 连接（阻塞，放入线程池）──────────────────────
@@ -1033,7 +1126,7 @@ async def ws_k8s_exec(
         from kubernetes import client as k8s_client
         from kubernetes.stream import stream as k8s_stream
 
-        api_client = _get_api_client(cluster_id or None)
+        api_client = _get_api_client(cluster["id"])
         v1 = k8s_client.CoreV1Api(api_client)
         exec_kwargs: dict = dict(
             command=[shell],

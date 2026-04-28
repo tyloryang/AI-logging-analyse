@@ -11,6 +11,7 @@ backend/.env.local
 backend/.ssh_key
 backend/cmdb_hosts.json
 backend/ssh_credentials.json
+backend/package-lock.json
 config/
 test_spawn.cmd
 
@@ -29,6 +30,7 @@ __pycache__/
 *.pyd
 .Python
 .venv/
+.venv311/
 venv/
 env/
 *.egg-info/
@@ -53,11 +55,14 @@ pnpm-debug.log*
 screenshots/*.log
 screenshots/_*_pids.txt
 screenshots/_*.txt
+logs/
+.tmp/
 
 # Local AI / tool state
 .agent/
 .claude/
 github-export/
+图片模型/
 
 # IDE
 .idea/
