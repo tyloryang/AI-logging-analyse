@@ -86,12 +86,10 @@ data:
       # 黑洞（丢弃）
       - name: blackhole
 
-  # 告警模板
+  # 告警模板（AlertManager 不支持 default 函数，用 if 替代）
   default.tmpl: |
     {{ define "aiops.summary" -}}
     [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}
-    服务: {{ .CommonLabels.service | default "unknown" }}
-    告警数: {{ len .Alerts }}
     {{- end }}
 
 ---
@@ -126,6 +124,10 @@ spec:
       labels:
         app: alertmanager
     spec:
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
       containers:
         - name: alertmanager
           image: prom/alertmanager:v0.27.0
