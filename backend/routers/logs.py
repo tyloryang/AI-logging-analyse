@@ -47,6 +47,16 @@ async def get_services():
         raise HTTPException(status_code=503, detail=f"Loki 连接失败: {e}")
 
 
+@router.get("/api/services/grouped")
+async def get_services_grouped():
+    """获取按 K8s namespace 分组的服务列表（日志中心环境分组用）。"""
+    try:
+        groups = await loki.get_grouped_services()
+        return {"data": groups}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Loki 连接失败: {e}")
+
+
 # ── 日志查询 ──────────────────────────────────────────────────────────────────
 
 @router.get("/api/logs")

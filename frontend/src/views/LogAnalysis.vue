@@ -33,16 +33,41 @@
         <div v-if="loadingSvcs" class="loading-row">
           <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
         </div>
-        <div
-          v-for="svc in services" :key="svc.name"
-          class="svc-item"
-          :class="{ active: selectedService === svc.name }"
-          @click="selectService(svc.name)"
-        >
-          <span class="svc-dot" :class="svc.error_count > 0 ? 'error' : 'ok'"></span>
-          <span class="svc-label">{{ svc.name }}</span>
-          <span v-if="svc.error_count" class="svc-badge error">{{ svc.error_count }}</span>
-        </div>
+        <!-- 按 namespace 分组展示 -->
+        <template v-if="serviceGroups.length > 1">
+          <div v-for="grp in serviceGroups" :key="grp.namespace" class="svc-ns-group">
+            <div class="svc-ns-header" @click="toggleNs(grp.namespace)">
+              <span class="svc-ns-arrow" :class="{ open: openNs.has(grp.namespace) }">▶</span>
+              <span class="svc-ns-label">{{ grp.label || grp.namespace }}</span>
+              <span class="svc-ns-count">{{ grp.services.length }}</span>
+            </div>
+            <div v-show="openNs.has(grp.namespace)" class="svc-ns-children">
+              <div
+                v-for="svc in grp.services" :key="svc.name"
+                class="svc-item svc-item-child"
+                :class="{ active: selectedService === svc.name }"
+                @click="selectService(svc.name)"
+              >
+                <span class="svc-dot" :class="svc.error_count > 0 ? 'error' : 'ok'"></span>
+                <span class="svc-label">{{ svc.name }}</span>
+                <span v-if="svc.error_count" class="svc-badge error">{{ svc.error_count }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
+        <!-- 无 namespace 时平铺 -->
+        <template v-else>
+          <div
+            v-for="svc in services" :key="svc.name"
+            class="svc-item"
+            :class="{ active: selectedService === svc.name }"
+            @click="selectService(svc.name)"
+          >
+            <span class="svc-dot" :class="svc.error_count > 0 ? 'error' : 'ok'"></span>
+            <span class="svc-label">{{ svc.name }}</span>
+            <span v-if="svc.error_count" class="svc-badge error">{{ svc.error_count }}</span>
+          </div>
+        </template>
       </div>
     </aside>
 
@@ -526,9 +551,17 @@ import { api, streamSSE } from '../api/index.js'
 
 // ── 公共状态 ─────────────────────────────
 const services       = ref([])
+const serviceGroups  = ref([])   // 按 namespace 分组 [{namespace, label, services:[]}]
+const openNs         = ref(new Set())  // 已展开的 namespace
 const selectedService = ref('')
 const hours          = ref('1')
 const loadingSvcs    = ref(false)
+
+function toggleNs(ns) {
+  const s = new Set(openNs.value)
+  s.has(ns) ? s.delete(ns) : s.add(ns)
+  openNs.value = s
+}
 const activeTab      = ref('logs')
 
 // 时间模式：relative（最近N小时） | custom（自定义时间段）
@@ -725,8 +758,19 @@ function highlightWildcard(tpl) {
 async function loadServices() {
   loadingSvcs.value = true
   try {
-    const r = await api.getServices()
-    services.value = r.data
+    // 优先尝试分组接口
+    const rg = await api.getServicesGrouped().catch(() => null)
+    if (rg?.data?.length) {
+      serviceGroups.value = rg.data
+      // 自动展开第一个 namespace
+      if (rg.data[0]?.namespace) openNs.value = new Set([rg.data[0].namespace])
+      // 平铺 services 保持兼容（totalErrors 等计算用）
+      services.value = rg.data.flatMap(g => g.services)
+    } else {
+      const r = await api.getServices()
+      services.value = r.data
+      serviceGroups.value = []
+    }
   } finally {
     loadingSvcs.value = false
   }
@@ -1042,6 +1086,16 @@ onMounted(() => {
 .svc-dot.error { background: var(--error); }
 .svc-label { flex: 1; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-badge { font-size: 10px; padding: 1px 6px; border-radius: 9999px; background: rgba(239,68,68,.15); color: var(--error); font-weight: 600; }
+/* namespace 分组 */
+.svc-ns-group { margin-bottom: 2px; }
+.svc-ns-header { display: flex; align-items: center; gap: 6px; padding: 5px 10px; cursor: pointer; border-radius: 5px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.svc-ns-header:hover { background: var(--bg-hover); color: var(--text-primary); }
+.svc-ns-arrow { font-size: 8px; transition: transform .2s; display: inline-block; }
+.svc-ns-arrow.open { transform: rotate(90deg); }
+.svc-ns-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc-ns-count { font-size: 10px; background: var(--bg-hover); padding: 1px 5px; border-radius: 8px; }
+.svc-ns-children { padding-left: 8px; }
+.svc-item-child { padding-left: 12px; }
 .loading-row { display: flex; justify-content: center; padding: 12px; }
 
 /* 右侧 */

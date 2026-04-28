@@ -14,7 +14,8 @@ http.interceptors.response.use(
 
 export const api = {
   // 服务列表
-  getServices:    () => http.get('/services'),
+  getServices:        () => http.get('/services'),
+  getServicesGrouped: () => http.get('/services/grouped'),
   // 日志
   getLogs:        (params) => http.get('/logs', { params }),
   getErrorLogs:   (params) => http.get('/logs/errors', { params }),

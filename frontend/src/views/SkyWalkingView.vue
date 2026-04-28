@@ -38,16 +38,39 @@
         <div v-else-if="!services.length" class="sw-empty-svc">
           <span style="color:var(--text-muted);font-size:12px">暂无服务（时间范围内无数据）</span>
         </div>
-        <div
-          v-for="svc in services" :key="svc.id"
-          class="sw-svc-item"
-          :class="{ active: selectedSvc?.id === svc.id }"
-          @click="selectService(svc)"
-        >
-          <span class="sw-svc-dot svc"></span>
-          <span class="sw-svc-name">{{ svc.name }}</span>
-          <span v-if="svc.group" class="sw-svc-group">{{ svc.group }}</span>
-        </div>
+        <!-- 按 group 分组展示 -->
+        <template v-if="swServiceGroups.length > 1">
+          <div v-for="grp in swServiceGroups" :key="grp.group" class="sw-ns-group">
+            <div class="sw-ns-header" @click="toggleSwNs(grp.group)">
+              <span class="sw-ns-arrow" :class="{ open: openSwNs.has(grp.group) }">▶</span>
+              <span class="sw-ns-label">{{ grp.group || '默认' }}</span>
+              <span class="sw-ns-count">{{ grp.items.length }}</span>
+            </div>
+            <div v-show="openSwNs.has(grp.group)">
+              <div
+                v-for="svc in grp.items" :key="svc.id"
+                class="sw-svc-item sw-svc-child"
+                :class="{ active: selectedSvc?.id === svc.id }"
+                @click="selectService(svc)"
+              >
+                <span class="sw-svc-dot svc"></span>
+                <span class="sw-svc-name">{{ svc.name }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <div
+            v-for="svc in services" :key="svc.id"
+            class="sw-svc-item"
+            :class="{ active: selectedSvc?.id === svc.id }"
+            @click="selectService(svc)"
+          >
+            <span class="sw-svc-dot svc"></span>
+            <span class="sw-svc-name">{{ svc.name }}</span>
+            <span v-if="svc.group" class="sw-svc-group">{{ svc.group }}</span>
+          </div>
+        </template>
       </div>
     </aside>
 
@@ -592,7 +615,22 @@ function applyCustomRange() {
 
 // ── 公共状态 ─────────────────────────────────────────────────────────────────
 const activeTab    = ref('traces')
-const services     = ref([])
+const services        = ref([])
+const swServiceGroups = computed(() => {
+  const map = {}
+  services.value.forEach(s => {
+    const g = s.group || ''
+    if (!map[g]) map[g] = { group: g, items: [] }
+    map[g].items.push(s)
+  })
+  return Object.values(map).sort((a, b) => a.group.localeCompare(b.group))
+})
+const openSwNs = ref(new Set())
+function toggleSwNs(g) {
+  const s = new Set(openSwNs.value)
+  s.has(g) ? s.delete(g) : s.add(g)
+  openSwNs.value = s
+}
 const selectedSvc  = ref(null)
 const loadingSvcs  = ref(false)
 const svcError     = ref('')
@@ -791,6 +829,10 @@ async function loadServices() {
   svcError.value = ''
   try {
     services.value = await api.swGetServices(timeParams.value)
+    // 自动展开第一个 group
+    if (swServiceGroups.value.length > 1) {
+      openSwNs.value = new Set([swServiceGroups.value[0].group])
+    }
   } catch (e) {
     services.value = []
     svcError.value = e?.message || '连接 OAP 失败'
@@ -1080,6 +1122,14 @@ onMounted(() => {
 .sw-svc-dot.svc  { background: var(--accent); }
 .sw-svc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sw-svc-group { font-size: 10px; color: var(--text-muted); background: var(--bg-input); padding: 1px 4px; border-radius: 3px; }
+.sw-ns-group { margin-bottom: 2px; }
+.sw-ns-header { display: flex; align-items: center; gap: 5px; padding: 5px 10px; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: .04em; border-radius: 4px; }
+.sw-ns-header:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+.sw-ns-arrow { font-size: 8px; transition: transform .2s; }
+.sw-ns-arrow.open { transform: rotate(90deg); }
+.sw-ns-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-ns-count { font-size: 10px; background: var(--bg-input); padding: 1px 5px; border-radius: 8px; }
+.sw-svc-child { padding-left: 20px; }
 .sw-loading-row { display: flex; justify-content: center; padding: 12px; }
 .sw-empty-svc { padding: 12px 16px; text-align: center; }
 

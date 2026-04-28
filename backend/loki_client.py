@@ -218,6 +218,71 @@ class LokiClient:
         _err_cache[cache_key] = result
         return result
 
+    async def get_namespaces(self) -> list[str]:
+        """获取 Loki 中所有 Kubernetes namespace 标签值。"""
+        for label in ("namespace", "k8s_namespace_name", "kubernetes_namespace"):
+            try:
+                vals = await self.get_label_values(label)
+                if vals:
+                    return sorted(vals)
+            except Exception:
+                continue
+        return []
+
+    async def get_services_by_namespace(self, namespace: str) -> list[str]:
+        """获取指定 namespace 下的所有服务（app/job 标签值）。"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            start_ns = int((time.time() - 86400) * 1e9)
+            # 先尝试通过 series 查询获取 namespace 下所有 app 值
+            for ns_label in ("namespace", "k8s_namespace_name", "kubernetes_namespace"):
+                for app_label in ("app", "container", "job"):
+                    try:
+                        kwargs = dict(
+                            url=f"{self.base_url}/loki/api/v1/series",
+                            headers=self._headers(),
+                            params={
+                                "match[]": f'{{{ns_label}="{namespace}"}}',
+                                "start": str(start_ns),
+                            },
+                        )
+                        if self.auth:
+                            kwargs["auth"] = self.auth
+                        resp = await client.get(**kwargs)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            apps = sorted({s.get(app_label, "") for s in data.get("data", []) if s.get(app_label)})
+                            if apps:
+                                return apps
+                    except Exception:
+                        continue
+        return []
+
+    async def get_grouped_services(self) -> list[dict]:
+        """返回按 K8s namespace 分组的服务列表。
+        格式: [{namespace: str, services: [{name, error_count}]}]
+        若没有 namespace 标签则降级为单组（未分组）。
+        """
+        namespaces = await self.get_namespaces()
+        error_counts = {}
+        try:
+            error_counts = await self.count_errors_by_service()
+        except Exception:
+            pass
+
+        if not namespaces:
+            # 降级：无 namespace，返回单个扁平分组
+            svcs = await self.get_services()
+            return [{"namespace": "", "label": "全部服务", "services": svcs}]
+
+        result = []
+        for ns in namespaces:
+            apps = await self.get_services_by_namespace(ns)
+            svcs = [{"name": a, "error_count": error_counts.get(a, 0)} for a in apps]
+            svcs.sort(key=lambda x: -x["error_count"])
+            if svcs:
+                result.append({"namespace": ns, "label": ns, "services": svcs})
+        return result
+
     async def get_services(self) -> list[dict]:
         """获取服务列表及错误数（结果缓存 60s）"""
         if "services" in _svc_cache:
