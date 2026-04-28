@@ -14,7 +14,7 @@ from auth.password import hash_password
 from auth.deps import require_admin
 from auth.audit import write_audit
 from auth import service, session as sess
-from state import load_user_groups, save_user_groups, load_groups
+from state import load_user_groups, save_user_groups, load_groups, load_hosts_list
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -126,13 +126,14 @@ async def unlock_user(
     return {"message": "账号已解锁"}
 
 
-@router.delete("/users/{user_id}")
+@router.post("/users/{user_id}/disable")
 async def disable_user(
     user_id: str,
     request: Request,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """禁用用户（保留数据，仅停用登录）。"""
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -144,6 +145,33 @@ async def disable_user(
     await write_audit(db, "admin.disable_user", user_id=admin.id, resource=user.username,
                       ip=request.client.host if request.client else "")
     return {"message": "用户已禁用"}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """彻底删除用户（不可恢复，同时清除分组权限记录）。"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, detail="用户不存在")
+    if user.id == admin.id:
+        raise HTTPException(400, detail="不能删除自己")
+    username = user.username
+    await db.delete(user)
+    await db.commit()
+    # 同步清理 user_groups 记录
+    ug = load_user_groups()
+    if user_id in ug:
+        del ug[user_id]
+        save_user_groups(ug)
+    await write_audit(db, "admin.delete_user", user_id=admin.id, resource=username,
+                      ip=request.client.host if request.client else "")
+    return {"message": f"用户 {username} 已彻底删除"}
 
 
 @router.get("/users/{user_id}/permissions")
@@ -232,9 +260,18 @@ async def get_user_cmdb_groups(
     user_id: str,
     _: User = Depends(require_admin),
 ):
-    """获取用户被分配的 CMDB 分组列表。"""
+    """获取用户被分配的 CMDB 分组列表（含每组主机数）。"""
     ug = load_user_groups()
     groups = load_groups()
+    hosts = load_hosts_list()
+    # 统计每组主机数
+    count: dict[str, int] = {}
+    for h in hosts:
+        gid = h.get("group", "")
+        if gid:
+            count[gid] = count.get(gid, 0) + 1
+    for g in groups:
+        g["host_count"] = count.get(g["id"], 0)
     group_map = {g["id"]: g for g in groups}
     assigned_ids = ug.get(user_id, [])
     return {

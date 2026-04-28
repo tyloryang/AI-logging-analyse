@@ -39,7 +39,9 @@
               <button class="btn btn-xs btn-outline" @click="openPerms(u)">权限</button>
               <button v-if="!u.is_superuser" class="btn btn-xs btn-group-assign" @click="openGroupAssign(u)" title="分配 CMDB 分组">分组</button>
               <button v-if="u.status !== 'disabled' && u.id !== authStore.user?.id"
-                      class="btn btn-xs btn-danger" @click="disable(u)">禁用</button>
+                      class="btn btn-xs btn-warn" @click="disable(u)">禁用</button>
+              <button v-if="u.id !== authStore.user?.id"
+                      class="btn btn-xs btn-danger" @click="confirmDelete(u)">删除</button>
             </td>
           </tr>
         </tbody>
@@ -141,6 +143,33 @@
         </div>
       </div>
     </transition>
+
+    <!-- 删除确认弹窗 -->
+    <transition name="fade">
+      <div v-if="deleteTarget" class="modal-overlay" @click.self="deleteTarget = null">
+        <div class="modal-box" style="width:380px">
+          <div class="modal-header">
+            <span style="color:var(--error)">⚠ 确认删除用户</span>
+            <button class="btn btn-xs btn-outline" @click="deleteTarget = null">✕</button>
+          </div>
+          <div class="modal-body">
+            <p style="color:var(--text-primary);margin:0 0 8px">
+              确定要彻底删除用户 <strong>{{ deleteTarget.username }}</strong> 吗？
+            </p>
+            <p style="color:var(--text-muted);font-size:12px;margin:0 0 16px">
+              此操作不可恢复，将删除该用户的所有权限和分组配置。
+            </p>
+            <div v-if="deleteError" class="form-error" style="margin-bottom:10px">{{ deleteError }}</div>
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button class="btn btn-outline" @click="deleteTarget = null">取消</button>
+              <button class="btn btn-danger" @click="doDelete" :disabled="deleting">
+                {{ deleting ? '删除中...' : '确认删除' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -190,9 +219,38 @@ async function unlock(u) {
 }
 
 async function disable(u) {
-  if (!confirm(`确认禁用用户 ${u.username}？`)) return
-  await api.adminDisableUser(u.id)
-  await loadUsers()
+  if (!confirm(`确认禁用用户 ${u.username}？禁用后该用户无法登录，数据保留。`)) return
+  try {
+    await api.adminDisableUser(u.id)
+    await loadUsers()
+  } catch (e) {
+    alert('禁用失败：' + (typeof e === 'string' ? e : '未知错误'))
+  }
+}
+
+// ── 删除用户 ─────────────────────────────────────────────────────────────────
+const deleteTarget = ref(null)
+const deleting     = ref(false)
+const deleteError  = ref('')
+
+function confirmDelete(u) {
+  deleteTarget.value = u
+  deleteError.value  = ''
+}
+
+async function doDelete() {
+  if (!deleteTarget.value) return
+  deleting.value  = true
+  deleteError.value = ''
+  try {
+    await api.adminDeleteUser(deleteTarget.value.id)
+    deleteTarget.value = null
+    await loadUsers()
+  } catch (e) {
+    deleteError.value = typeof e === 'string' ? e : '删除失败'
+  } finally {
+    deleting.value = false
+  }
 }
 
 async function createUser() {
@@ -304,6 +362,7 @@ async function saveGroups() {
 .btn-outline { background: transparent; border-color: var(--border); color: var(--text-secondary, var(--text-primary)); }
 .btn-xs { padding: 3px 8px; font-size: 12px; }
 .btn-ok     { background: rgba(63,185,80,.12);  color: var(--success); border-color: rgba(63,185,80,.3); }
+.btn-warn   { background: rgba(210,153,34,.12); color: var(--warning); border-color: rgba(210,153,34,.3); }
 .btn-danger { background: rgba(248,81,73,.08);  color: var(--error);   border-color: rgba(248,81,73,.3); }
 .btn:hover:not(:disabled) { opacity: .8; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
