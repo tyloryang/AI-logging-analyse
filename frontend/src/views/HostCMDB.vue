@@ -446,15 +446,15 @@
             <div class="form-row">
               <div class="form-group">
                 <label>CPU 核心数</label>
-                <input v-model.number="hostForm.cpu_cores" type="number" min="1" placeholder="e.g. 8" />
+                <input v-model="hostForm.cpu_cores" type="text" inputmode="numeric" placeholder="e.g. 8，留空则同步获取" />
               </div>
               <div class="form-group">
                 <label>内存 (GB)</label>
-                <input v-model.number="hostForm.memory_gb" type="number" min="0" step="0.5" placeholder="e.g. 16" />
+                <input v-model="hostForm.memory_gb" type="text" inputmode="decimal" placeholder="e.g. 16，留空则同步获取" />
               </div>
               <div class="form-group">
                 <label>磁盘 (GB)</label>
-                <input v-model.number="hostForm.disk_gb" type="number" min="0" placeholder="e.g. 500" />
+                <input v-model="hostForm.disk_gb" type="text" inputmode="decimal" placeholder="e.g. 500，留空则同步获取" />
               </div>
             </div>
 
@@ -842,7 +842,7 @@ const labelsText    = ref('')
 
 const hostForm = reactive({
   hostname: '', ip: '', platform: 'Linux', os_version: '',
-  cpu_cores: null, memory_gb: null, disk_gb: null,
+  cpu_cores: '', memory_gb: '', disk_gb: '',
   status: 'active', env: 'production', role: '', owner: '',
   datacenter: '', group: '', ssh_port: 22, ssh_user: '',
   ssh_password: '', credential_id: '', notes: '',
@@ -865,13 +865,37 @@ function labelsToText(labels) {
   return Object.entries(labels || {}).map(([k, v]) => `${k}=${v}`).join('\n')
 }
 
+function numberFieldToInput(value) {
+  return value === null || value === undefined || value === '' ? '' : String(value)
+}
+
+function parseOptionalInt(value, label, min = 1) {
+  const text = String(value ?? '').trim()
+  if (!text) return null
+  const parsed = Number(text)
+  if (!Number.isInteger(parsed) || parsed < min) {
+    throw new Error(`${label}必须是大于等于 ${min} 的整数`)
+  }
+  return parsed
+}
+
+function parseOptionalFloat(value, label, min = 0) {
+  const text = String(value ?? '').trim()
+  if (!text) return null
+  const parsed = Number(text)
+  if (!Number.isFinite(parsed) || parsed < min) {
+    throw new Error(`${label}必须是大于等于 ${min} 的数字`)
+  }
+  return parsed
+}
+
 function openAdd() {
   editingHost.value = null
   hostFormError.value = ''
   labelsText.value = ''
   Object.assign(hostForm, {
     hostname: '', ip: '', platform: 'Linux', os_version: '',
-    cpu_cores: null, memory_gb: null, disk_gb: null,
+    cpu_cores: '', memory_gb: '', disk_gb: '',
     status: 'active', env: 'production', role: '', owner: '',
     datacenter: '', group: '', ssh_port: 22, ssh_user: '',
     ssh_password: '', credential_id: '', notes: '',
@@ -885,8 +909,8 @@ function openEdit(h) {
   labelsText.value = labelsToText(h.labels)
   Object.assign(hostForm, {
     hostname: h.hostname, ip: h.ip, platform: h.platform || 'Linux',
-    os_version: h.os_version || '', cpu_cores: h.cpu_cores || null,
-    memory_gb: h.memory_gb || null, disk_gb: h.disk_gb || null,
+    os_version: h.os_version || '', cpu_cores: numberFieldToInput(h.cpu_cores),
+    memory_gb: numberFieldToInput(h.memory_gb), disk_gb: numberFieldToInput(h.disk_gb),
     status: h.status || 'active', env: h.env || 'production',
     role: h.role || '', owner: h.owner || '', datacenter: h.datacenter || '',
     group: h.group || '', ssh_port: h.ssh_port || 22,
@@ -908,13 +932,16 @@ async function saveHost() {
   hostFormError.value = ''
   if (!hostForm.ip.trim()) { hostFormError.value = 'IP 地址不能为空'; return }
   saving.value = true
-  const payload = { ...hostForm, labels: parseLabels(labelsText.value) }
-  if (payload.credential_id) payload.ssh_password = ''
-  else if (editingHost.value && !payload.ssh_password) delete payload.ssh_password
-  if (!payload.cpu_cores) payload.cpu_cores = null
-  if (!payload.memory_gb) payload.memory_gb = null
-  if (!payload.disk_gb) payload.disk_gb = null
   try {
+    const payload = {
+      ...hostForm,
+      cpu_cores: parseOptionalInt(hostForm.cpu_cores, 'CPU 核心数'),
+      memory_gb: parseOptionalFloat(hostForm.memory_gb, '内存 (GB)'),
+      disk_gb: parseOptionalFloat(hostForm.disk_gb, '磁盘 (GB)'),
+      labels: parseLabels(labelsText.value),
+    }
+    if (payload.credential_id) payload.ssh_password = ''
+    else if (editingHost.value && !payload.ssh_password) delete payload.ssh_password
     if (editingHost.value) {
       await api.updateHost(editingHost.value.id, payload)
     } else {
@@ -924,7 +951,7 @@ async function saveHost() {
     await loadHosts()
     selectedHost.value = null
   } catch (e) {
-    hostFormError.value = typeof e === 'string' ? e : '保存失败，请重试'
+    hostFormError.value = typeof e === 'string' ? e : e?.message || '保存失败，请重试'
   } finally {
     saving.value = false
   }

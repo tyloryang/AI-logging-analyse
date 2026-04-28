@@ -172,13 +172,13 @@ onUnmounted(() => clearInterval(_timer))
 </script>
 
 <style scoped>
-.task-view { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-main, #0d1117); color: var(--text-primary, #e6edf3); }
+.task-view { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-primary); }
 .page-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 12px; border-bottom: 1px solid rgba(255,255,255,0.07); flex-shrink: 0; }
 .header-left h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
 .subtitle { font-size: 12px; color: var(--text-muted, #6e7681); }
 .header-right { display: flex; gap: 8px; }
 .btn-primary { display: flex; align-items: center; gap: 5px; background: var(--accent, #388bfd); border: none; color: #fff; border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; font-weight: 500; }
-.btn-ghost   { display: flex; align-items: center; gap: 5px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: var(--text-primary); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+.btn-ghost   { display: flex; align-items: center; gap: 5px; background: var(--bg-hover); border: 1px solid var(--border); color: var(--text-primary); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
 .btn-icon    { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 3px; border-radius: 4px; }
 .btn-icon:hover { color: #f85149; background: rgba(248,81,73,0.1); }
 
@@ -188,7 +188,7 @@ onUnmounted(() => clearInterval(_timer))
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .task-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.task-table th { text-align: left; padding: 8px 10px; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid rgba(255,255,255,0.08); position: sticky; top: 0; background: var(--bg-main, #0d1117); }
+.task-table th { text-align: left; padding: 8px 10px; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-base); }
 .task-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); }
 .task-row { cursor: pointer; }
 .task-row:hover td { background: rgba(255,255,255,0.03); }
@@ -210,7 +210,7 @@ onUnmounted(() => clearInterval(_timer))
 
 /* Modal */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal  { background: var(--bg-card, #161b22); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
+.modal  { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
 .modal.wide { width: 760px; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.07); font-weight: 600; font-size: 14px; }
 .close-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; }
@@ -218,8 +218,8 @@ onUnmounted(() => clearInterval(_timer))
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.07); }
 .form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .form-row label { font-size: 11.5px; color: var(--text-muted); font-weight: 500; }
-.form-input, .form-textarea { background: var(--bg-main, #0d1117); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; color: var(--text-primary); padding: 7px 10px; font-size: 12px; outline: none; }
+.form-input, .form-textarea { background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); padding: 7px 10px; font-size: 12px; outline: none; }
 .form-input:focus, .form-textarea:focus { border-color: var(--accent); }
 .form-textarea { resize: vertical; min-height: 60px; font-family: 'Cascadia Code', 'Consolas', monospace; }
-.output-pre { background: #0a0c10; border-radius: 8px; padding: 14px; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; line-height: 1.7; color: #c9d1d9; white-space: pre-wrap; word-break: break-all; min-height: 200px; max-height: 55vh; overflow: auto; margin: 0; }
+.output-pre { background: var(--bg-base); border-radius: 8px; padding: 14px; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; line-height: 1.7; color: var(--text-primary); white-space: pre-wrap; word-break: break-all; min-height: 200px; max-height: 55vh; overflow: auto; margin: 0; }
 </style>
