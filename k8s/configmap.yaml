@@ -9,6 +9,7 @@ data:
   LOKI_PASSWORD: ""
 
   PROMETHEUS_URL: "http://192.168.9.221:24404"
+  ALERTMANAGER_URL: "http://alertmanager-main.monitoring.svc.cluster.local:9093"
   GRAFANA_URL: "http://192.168.9.221:30300"
 
   AI_PROVIDER: "openai"
