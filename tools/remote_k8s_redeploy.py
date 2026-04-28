@@ -16,6 +16,14 @@ BACKEND_DIR = ROOT / "backend"
 REGISTRY = "192.168.9.221:5000"
 TARGET_HOST = "192.168.9.221"
 
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
+
 
 def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
