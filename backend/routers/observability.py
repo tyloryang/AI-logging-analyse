@@ -109,22 +109,24 @@ async def _get_sw_trace_count(hours: int = 1) -> tuple[int, list[dict]]:
 # ── 辅助：从 Prometheus 获取告警数（alertmanager alerts） ──────────────────
 
 async def _get_alert_count() -> tuple[int, list[dict]]:
-    """返回 (alert_count, recent_alerts)"""
+    """返回 (active_alert_count, recent_alerts)，直接读 AIOps 告警存储。"""
     try:
-        # 尝试通过 Prometheus ALERTS 指标
-        result = await prom.query('ALERTS{alertstate="firing"}', timeout=5)
-        data = result.get("data", {}).get("result", [])
-        alerts = []
-        for item in data:
-            metric = item.get("metric", {})
-            alerts.append({
-                "service":    metric.get("job", metric.get("instance", "unknown")),
-                "name":       metric.get("alertname", "Unknown Alert"),
-                "severity":   metric.get("severity", "warning"),
-                "namespace":  metric.get("namespace", "production"),
-                "time":       datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+        from services.alert_dedup import list_groups as _list_groups
+        groups = _list_groups(status=None, limit=200)
+        active = [g for g in groups if g.get("status") not in ("resolved", "suppressed")]
+        recent = []
+        for g in active[:10]:
+            recent.append({
+                "service":   g.get("service", "unknown"),
+                "name":      g.get("alertname", "Unknown Alert"),
+                "alertname": g.get("alertname", ""),
+                "severity":  g.get("severity", "warning"),
+                "namespace": g.get("namespace", ""),
+                "status":    g.get("status", "new"),
+                "time":      (g.get("last_at") or "")[:16].replace("T", " "),
+                "summary":   g.get("summary", ""),
             })
-        return len(alerts), alerts[:10]
+        return len(active), recent
     except Exception as e:
         logger.warning("[obs] Alert count failed: %s", e)
         return 0, []
