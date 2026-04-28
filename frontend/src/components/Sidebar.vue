@@ -30,7 +30,7 @@
         </RouterLink>
 
         <!-- 可展开分组 -->
-        <div v-else-if="item.children" class="nav-group" :class="{ open: openGroups[item.id] }">
+        <div v-else-if="item.children && canShow(item)" class="nav-group" :class="{ open: openGroups[item.id] }">
           <button
             class="nav-group-toggle"
             :class="{ active: isGroupActive(item) }"
@@ -79,16 +79,6 @@
         <button class="logout-btn" @click="handleLogout" title="退出登录">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         </button>
-      </div>
-      <div v-if="auth.isAdmin" class="admin-links">
-        <RouterLink to="/admin/users" class="admin-link">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-          用户管理
-        </RouterLink>
-        <RouterLink to="/settings" class="admin-link">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
-          系统配置
-        </RouterLink>
       </div>
     </div>
   </aside>
@@ -200,6 +190,13 @@ const MENU = [
       { label: '⚙ 智能配置',  to: '/aiops/config' },
     ],
   },
+  {
+    id: 'system', icon: 'system', label: '系统管理', admin: true,
+    children: [
+      { label: '用户管理', to: '/admin/users', admin: true },
+      { label: '系统配置', to: '/settings',    admin: true },
+    ],
+  },
 ]
 
 // ── 展开状态 ────────────────────────────────────────────────────
@@ -211,6 +208,7 @@ const openGroups = reactive({
   obs:        true,
   tools:      false,
   aiops:      false,
+  system:     false,
 })
 
 function toggleGroup(id) {
@@ -238,6 +236,7 @@ function isGroupActive(item) {
 
 // ── 权限显示 ────────────────────────────────────────────────────
 function canShow(item) {
+  if (item.admin && !auth.isAdmin) return false
   return !item.module || auth.can(item.module, 'view')
 }
 
@@ -251,6 +250,7 @@ const ICONS = {
   container:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
   middleware: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
   cicd:       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg>`,
+  system:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,
   obs:        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
   event:      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>`,
   tools:      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>`,
