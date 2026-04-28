@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
+from pydantic import BaseModel
 from db import get_db
 from auth.models import User, Module, AuditLog, Permission
 from auth.schemas import (
@@ -13,6 +14,7 @@ from auth.password import hash_password
 from auth.deps import require_admin
 from auth.audit import write_audit
 from auth import service, session as sess
+from state import load_user_groups, save_user_groups, load_groups
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -216,3 +218,48 @@ async def get_audit_logs(
         "page": page,
         "page_size": page_size,
     }
+
+
+
+# ── 用户 CMDB 分组权限 ────────────────────────────────────────────────────────
+
+class UserGroupsRequest(BaseModel):
+    group_ids: list[str]   # 空列表表示"无权访问任何分组"
+
+
+@router.get("/users/{user_id}/cmdb-groups")
+async def get_user_cmdb_groups(
+    user_id: str,
+    _: User = Depends(require_admin),
+):
+    """获取用户被分配的 CMDB 分组列表。"""
+    ug = load_user_groups()
+    groups = load_groups()
+    group_map = {g["id"]: g for g in groups}
+    assigned_ids = ug.get(user_id, [])
+    return {
+        "user_id": user_id,
+        "group_ids": assigned_ids,
+        "groups": [group_map[gid] for gid in assigned_ids if gid in group_map],
+        "all_groups": groups,
+    }
+
+
+@router.put("/users/{user_id}/cmdb-groups")
+async def set_user_cmdb_groups(
+    user_id: str,
+    body: UserGroupsRequest,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """设置用户可访问的 CMDB 分组（超管不受限，此设置只对普通用户生效）。"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user.is_superuser:
+        return {"ok": True, "message": "管理员用户不受分组限制，设置已忽略"}
+    ug = load_user_groups()
+    ug[user_id] = list(set(body.group_ids))   # 去重
+    save_user_groups(ug)
+    return {"ok": True, "group_ids": ug[user_id]}

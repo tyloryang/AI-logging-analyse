@@ -37,6 +37,7 @@
               <button v-if="u.status === 'pending'" class="btn btn-xs btn-ok" @click="approve(u)">审批</button>
               <button v-if="u.status === 'locked'" class="btn btn-xs btn-ok" @click="unlock(u)">解锁</button>
               <button class="btn btn-xs btn-outline" @click="openPerms(u)">权限</button>
+              <button v-if="!u.is_superuser" class="btn btn-xs btn-group-assign" @click="openGroupAssign(u)" title="分配 CMDB 分组">分组</button>
               <button v-if="u.status !== 'disabled' && u.id !== authStore.user?.id"
                       class="btn btn-xs btn-danger" @click="disable(u)">禁用</button>
             </td>
@@ -93,6 +94,48 @@
               <button class="btn btn-primary" style="margin-top:14px" @click="savePerms" :disabled="permsSaving">
                 {{ permsSaving ? '保存中...' : '保存权限' }}
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- CMDB 分组分配弹窗 -->
+    <transition name="fade">
+      <div v-if="showGroupModal" class="modal-overlay" @click.self="showGroupModal = false">
+        <div class="modal-box modal-wide">
+          <div class="modal-header">
+            <span>CMDB 分组权限 · {{ groupUser?.username }}</span>
+            <button class="btn btn-xs btn-outline" @click="showGroupModal = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <p class="group-hint">
+              普通用户只能查看、导出、同步其分配分组内的主机。未分配任何分组则无法看到任何主机。
+            </p>
+            <div v-if="groupLoading" class="empty-state"><div class="spinner"></div></div>
+            <div v-else class="group-check-list">
+              <label v-for="g in allGroups" :key="g.id" class="group-check-item"
+                     :class="{ selected: selectedGroupIds.includes(g.id) }">
+                <input type="checkbox" :value="g.id" v-model="selectedGroupIds" />
+                <span class="group-check-name">{{ g.name }}</span>
+                <span class="group-check-count">{{ g.host_count || 0 }} 台</span>
+              </label>
+              <div v-if="!allGroups.length" class="empty-state" style="height:80px">
+                暂无分组，请先在 CMDB → 分组管理中创建
+              </div>
+            </div>
+            <div v-if="groupError" class="form-error" style="margin-top:8px">{{ groupError }}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
+              <span style="font-size:12px;color:var(--text-muted)">
+                已选 {{ selectedGroupIds.length }} / {{ allGroups.length }} 个分组
+              </span>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-outline btn-xs" @click="selectedGroupIds = []">清空</button>
+                <button class="btn btn-outline btn-xs" @click="selectedGroupIds = allGroups.map(g=>g.id)">全选</button>
+                <button class="btn btn-primary" @click="saveGroups" :disabled="groupSaving">
+                  {{ groupSaving ? '保存中...' : '保存分组' }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -195,6 +238,45 @@ async function savePerms() {
 }
 
 onMounted(loadUsers)
+
+// ── CMDB 分组分配 ─────────────────────────────────────────────────────────────
+const showGroupModal    = ref(false)
+const groupUser         = ref(null)
+const allGroups         = ref([])
+const selectedGroupIds  = ref([])
+const groupLoading      = ref(false)
+const groupSaving       = ref(false)
+const groupError        = ref('')
+
+async function openGroupAssign(u) {
+  groupUser.value        = u
+  groupError.value       = ''
+  selectedGroupIds.value = []
+  showGroupModal.value   = true
+  groupLoading.value     = true
+  try {
+    const res = await api.adminGetUserCmdbGroups(u.id)
+    allGroups.value        = res.all_groups || []
+    selectedGroupIds.value = res.group_ids  || []
+  } catch (e) {
+    groupError.value = typeof e === 'string' ? e : '加载分组失败'
+  } finally {
+    groupLoading.value = false
+  }
+}
+
+async function saveGroups() {
+  groupSaving.value = true
+  groupError.value  = ''
+  try {
+    await api.adminSetUserCmdbGroups(groupUser.value.id, { group_ids: selectedGroupIds.value })
+    showGroupModal.value = false
+  } catch (e) {
+    groupError.value = typeof e === 'string' ? e : '保存失败'
+  } finally {
+    groupSaving.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -251,4 +333,14 @@ onMounted(loadUsers)
 .mod-name { font-size: 13px; color: var(--text-base, #e2e8f0); }
 .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+/* 分组分配 */
+.btn-group-assign { background: rgba(56,139,253,.12); color: var(--accent, #7c83ff); border-color: rgba(56,139,253,.3); }
+.group-hint { font-size: 12px; color: var(--text-muted, #8892a4); margin-bottom: 12px; line-height: 1.6; }
+.group-check-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+.group-check-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; transition: all .15s; }
+.group-check-item:hover { background: rgba(255,255,255,.04); }
+.group-check-item.selected { background: rgba(56,139,253,.08); border-color: rgba(56,139,253,.2); }
+.group-check-item input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent, #7c83ff); }
+.group-check-name { flex: 1; font-size: 13px; color: var(--text-base, #e2e8f0); }
+.group-check-count { font-size: 11px; color: var(--text-muted, #8892a4); }
 </style>

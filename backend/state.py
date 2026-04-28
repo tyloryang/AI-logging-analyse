@@ -198,7 +198,8 @@ def save_credentials(data: list[dict]) -> None:
 
 # ── 慢日志定时报告目标配置 ────────────────────────────────────────────────────
 
-GROUPS_FILE = Path(os.getenv("GROUPS_FILE", "./data/groups.json"))
+GROUPS_FILE      = Path(os.getenv("GROUPS_FILE",      "./data/groups.json"))
+USER_GROUPS_FILE = Path(os.getenv("USER_GROUPS_FILE", "./data/user_groups.json"))
 
 
 def load_groups() -> list[dict]:
@@ -213,6 +214,27 @@ def load_groups() -> list[dict]:
 def save_groups(data: list[dict]) -> None:
     GROUPS_FILE.parent.mkdir(exist_ok=True)
     GROUPS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_user_groups() -> dict[str, list[str]]:
+    """返回 {user_id: [group_id, ...]}，表示每个普通用户可访问的 CMDB 分组。"""
+    if USER_GROUPS_FILE.exists():
+        try:
+            return json.loads(USER_GROUPS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_user_groups(data: dict[str, list[str]]) -> None:
+    USER_GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    USER_GROUPS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_user_allowed_groups(user_id: str) -> list[str] | None:
+    """返回用户允许访问的分组 ID 列表；None 表示超管（不限制）。"""
+    ug = load_user_groups()
+    return ug.get(user_id)  # 未配置的普通用户返回空列表
 
 
 SLOWLOG_TARGETS_FILE = Path(os.getenv("SLOWLOG_TARGETS_FILE", "./data/slowlog_targets.json"))

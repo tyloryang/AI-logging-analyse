@@ -81,6 +81,8 @@ export const api = {
   adminSetPermissions: (id, data) => http.put(`/admin/users/${id}/permissions`, data),
   adminListModules: () => http.get('/admin/modules'),
   adminAuditLogs:  (params) => http.get('/admin/audit-logs', { params }),
+  adminGetUserCmdbGroups: (id)       => http.get(`/admin/users/${id}/cmdb-groups`),
+  adminSetUserCmdbGroups: (id, data) => http.put(`/admin/users/${id}/cmdb-groups`, data),
   // SkyWalking APM
   swGetServices:    (params)              => http.get('/sw/services', { params }),
   swGetInstances:   (params)              => http.get('/sw/instances', { params }),

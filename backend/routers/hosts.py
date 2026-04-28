@@ -11,9 +11,11 @@ from typing import Optional
 from urllib.parse import quote
 
 import asyncio
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Depends
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
+from auth.deps import current_user
+from auth.models import User
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -26,12 +28,25 @@ from state import (
     load_groups,
     encrypt_password, decrypt_password,
     load_credentials,
+    get_user_allowed_groups,
+    load_user_groups, save_user_groups,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _NOW = lambda: datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _filter_hosts_by_user(hosts: list[dict], user: User) -> list[dict]:
+    """超管可见全部；普通用户只能看自己分组内的主机。"""
+    if user.is_superuser:
+        return hosts
+    allowed = get_user_allowed_groups(user.id)
+    if allowed is None:
+        return hosts  # 兜底：超管标记缺失时放行
+    # allowed 为空列表 → 只能看无分组主机；有值 → 只能看对应分组
+    return [h for h in hosts if h.get("group", "") in allowed]
 
 
 def _env_float(name: str, default: float) -> float:
@@ -96,9 +111,9 @@ class HostUpdateRequest(BaseModel):
 
 
 @router.get("/api/hosts")
-async def list_hosts():
-    """获取所有手动录入的主机列表。"""
-    hosts = load_hosts_list()
+async def list_hosts(user: User = Depends(current_user)):
+    """获取主机列表（非管理员只能看自己分组内的主机）。"""
+    hosts = _filter_hosts_by_user(load_hosts_list(), user)
     credentials = {c.get("id"): c for c in load_credentials()}
     # 脱敏：不返回加密密码
     safe = []
@@ -216,9 +231,9 @@ _STATUS_LABEL = {"active":"在线","offline":"离线","maintenance":"维护中"}
 
 
 @router.get("/api/hosts/export")
-async def export_hosts():
-    """导出所有主机为 Excel 文件。"""
-    hosts = load_hosts_list()
+async def export_hosts(user: User = Depends(current_user)):
+    """导出主机 Excel（非管理员只能导出自己分组的主机）。"""
+    hosts = _filter_hosts_by_user(load_hosts_list(), user)
     groups = load_groups()
     group_map = {g["id"]: g["name"] for g in groups}
 
@@ -747,11 +762,13 @@ async def sync_host_info(host_id: str):
 
 
 @router.post("/api/hosts/sync-all")
-async def sync_all_hosts():
-    """一键同步所有有 SSH 凭证的主机（并发执行，SSE 逐条返回结果，完成后统一回填保存）。"""
+async def sync_all_hosts(user: User = Depends(current_user)):
+    """一键同步（非管理员只同步自己分组的主机）。"""
     async def generate():
-        hosts = load_hosts_list()
-        targets = [h for h in hosts if h.get("ssh_password") or h.get("credential_id")]
+        all_hosts = load_hosts_list()
+        visible   = _filter_hosts_by_user(all_hosts, user)
+        hosts     = all_hosts  # 写回时用全量
+        targets   = [h for h in visible if h.get("ssh_password") or h.get("credential_id")]
         total = len(targets)
 
         if total == 0:
