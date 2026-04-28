@@ -126,6 +126,7 @@ async function fetchCrons() {
 }
 
 async function fetchPlaybooks() {
+  // 未配置 ANSIBLE_BASE_DIR 时后端直接返回 []，此处做容错
   try { playbooks.value = await api.ansiblePlaybooks() } catch { playbooks.value = [] }
 }
 
@@ -169,7 +170,7 @@ async function deleteCron(id) {
 
 function fmtTime(ts) { return ts ? ts.replace('T', ' ').replace('Z', '').slice(0, 16) : '—' }
 
-onMounted(() => { fetchCrons(); fetchPlaybooks() })
+onMounted(() => { Promise.all([fetchCrons(), fetchPlaybooks()]) })
 </script>
 
 <style scoped>

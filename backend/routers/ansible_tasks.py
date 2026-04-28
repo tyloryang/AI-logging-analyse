@@ -289,12 +289,35 @@ async def run_cron_now(cron_id: str):
 
 @router.get("/playbooks")
 async def list_playbooks():
-    """扫描 ANSIBLE_BASE_DIR 下的 *.yml / *.yaml 文件。"""
-    base = _ansible_base_dir()
+    """扫描 ANSIBLE_BASE_DIR 下的 *.yml / *.yaml 文件。
+    未配置时返回空列表，避免扫描 home 目录导致超长等待。
+    """
+    base_str = os.getenv("ANSIBLE_BASE_DIR", "")
     try:
-        files = []
-        for ext in ("*.yml", "*.yaml"):
-            files.extend(Path(base).rglob(ext))
-        return [str(f.relative_to(base)) for f in sorted(files)[:100]]
+        import json as _json
+        p = Path(__file__).parent.parent / "data" / "settings.json"
+        if p.exists():
+            d = _json.loads(p.read_text()).get("ansible_base_dir", "")
+            if d:
+                base_str = d
+    except Exception:
+        pass
+
+    if not base_str:
+        return []   # 未配置则直接返回，不扫描 home 目录
+
+    base = Path(base_str)
+    if not base.exists() or not base.is_dir():
+        return []
+
+    try:
+        loop = asyncio.get_event_loop()
+        def _scan():
+            files = []
+            for ext in ("*.yml", "*.yaml"):
+                files.extend(base.rglob(ext))
+            return [str(f.relative_to(base)) for f in sorted(files)[:200]]
+        # 在线程池中执行，避免阻塞事件循环
+        return await loop.run_in_executor(None, _scan)
     except Exception:
         return []
