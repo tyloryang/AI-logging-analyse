@@ -275,9 +275,13 @@
           <div class="group-card-meta">
             <span class="group-meta-item">主机数：{{ g.host_count || 0 }}</span>
             <span v-if="g.feishu_webhook" class="group-meta-item ok">飞书 ✓</span>
+            <span v-if="g.alert_matchers?.length" class="group-meta-item ok">告警路由 {{ g.alert_matchers.length }} 条</span>
             <span v-if="g.schedule_enabled" class="group-meta-item ok">定时 {{ g.schedule_time }}</span>
           </div>
           <div v-if="g.description" class="group-desc">{{ g.description }}</div>
+          <div v-if="g.alert_matchers?.length" class="group-desc">
+            告警标签：{{ formatAlertMatcherPreview(g.alert_matchers) }}
+          </div>
         </div>
       </div>
     </div>
@@ -632,6 +636,15 @@
             <div class="form-group"><label>飞书关键字</label><input v-model="groupForm.feishu_keyword" /></div>
             <div class="form-group"><label>钉钉 Webhook</label><input v-model="groupForm.dingtalk_webhook" placeholder="https://oapi.dingtalk.com/..." /></div>
             <div class="form-group"><label>钉钉关键字</label><input v-model="groupForm.dingtalk_keyword" /></div>
+            <div class="form-section-title">Alertmanager 告警路由</div>
+            <div class="form-group">
+              <label>标签匹配规则 <span class="form-hint">每行一条，格式 `label=value`，命中任意一条就推送到当前飞书群</span></label>
+              <textarea
+                v-model="groupForm.alert_matchers_text"
+                rows="4"
+                placeholder="例如：&#10;feishu_group=测试A&#10;team=middleware"
+              />
+            </div>
             <div class="form-section-title">定时巡检</div>
             <div class="form-row">
               <div class="form-group">
@@ -1363,19 +1376,66 @@ const groupFormError = ref('')
 const groupForm = reactive({
   name: '', description: '', feishu_webhook: '', feishu_keyword: '',
   dingtalk_webhook: '', dingtalk_keyword: '', schedule_time: '09:00', schedule_enabled: false,
+  alert_matchers_text: '',
 })
+
+function alertMatchersToText(matchers = []) {
+  return (matchers || [])
+    .filter(item => item?.label)
+    .map(item => `${item.label}=${item.value || ''}`)
+    .join('\n')
+}
+
+function parseAlertMatcherText(text = '') {
+  const seen = new Set()
+  const result = []
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const idx = line.indexOf('=')
+    const label = (idx === -1 ? line : line.slice(0, idx)).trim()
+    const value = (idx === -1 ? '' : line.slice(idx + 1)).trim()
+    if (!label) continue
+    const uniq = `${label}\u0000${value}`
+    if (seen.has(uniq)) continue
+    seen.add(uniq)
+    result.push({ label, value })
+  }
+  return result
+}
+
+function formatAlertMatcherPreview(matchers = []) {
+  return (matchers || [])
+    .slice(0, 3)
+    .map(item => `${item.label}=${item.value || '*'}`)
+    .join('，') + ((matchers || []).length > 3 ? ' …' : '')
+}
 
 function openAddGroup() {
   editingGroup.value = null
   groupFormError.value = ''
-  Object.assign(groupForm, { name: '', description: '', feishu_webhook: '', feishu_keyword: '', dingtalk_webhook: '', dingtalk_keyword: '', schedule_time: '09:00', schedule_enabled: false })
+  Object.assign(groupForm, {
+    name: '', description: '', feishu_webhook: '', feishu_keyword: '',
+    dingtalk_webhook: '', dingtalk_keyword: '', schedule_time: '09:00',
+    schedule_enabled: false, alert_matchers_text: '',
+  })
   showGroupModal.value = true
 }
 
 function openEditGroup(g) {
   editingGroup.value = g
   groupFormError.value = ''
-  Object.assign(groupForm, { name: g.name, description: g.description || '', feishu_webhook: g.feishu_webhook || '', feishu_keyword: g.feishu_keyword || '', dingtalk_webhook: g.dingtalk_webhook || '', dingtalk_keyword: g.dingtalk_keyword || '', schedule_time: g.schedule_time || '09:00', schedule_enabled: !!g.schedule_enabled })
+  Object.assign(groupForm, {
+    name: g.name,
+    description: g.description || '',
+    feishu_webhook: g.feishu_webhook || '',
+    feishu_keyword: g.feishu_keyword || '',
+    dingtalk_webhook: g.dingtalk_webhook || '',
+    dingtalk_keyword: g.dingtalk_keyword || '',
+    schedule_time: g.schedule_time || '09:00',
+    schedule_enabled: !!g.schedule_enabled,
+    alert_matchers_text: alertMatchersToText(g.alert_matchers),
+  })
   showGroupModal.value = true
 }
 
@@ -1384,10 +1444,21 @@ async function saveGroup() {
   if (!groupForm.name.trim()) { groupFormError.value = '分组名称不能为空'; return }
   savingGroup.value = true
   try {
+    const payload = {
+      name: groupForm.name,
+      description: groupForm.description,
+      feishu_webhook: groupForm.feishu_webhook,
+      feishu_keyword: groupForm.feishu_keyword,
+      dingtalk_webhook: groupForm.dingtalk_webhook,
+      dingtalk_keyword: groupForm.dingtalk_keyword,
+      schedule_time: groupForm.schedule_time,
+      schedule_enabled: groupForm.schedule_enabled,
+      alert_matchers: parseAlertMatcherText(groupForm.alert_matchers_text),
+    }
     if (editingGroup.value) {
-      await api.updateGroup(editingGroup.value.id, { ...groupForm })
+      await api.updateGroup(editingGroup.value.id, payload)
     } else {
-      await api.createGroup({ ...groupForm })
+      await api.createGroup(payload)
     }
     showGroupModal.value = false
     await loadGroups()

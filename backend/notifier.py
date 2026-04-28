@@ -21,6 +21,24 @@ def _health_emoji(score: int) -> str:
     return "❌"
 
 
+def _severity_template(level: str) -> str:
+    lowered = str(level or "").lower()
+    if lowered in {"critical", "error"}:
+        return "red"
+    if lowered == "warning":
+        return "orange"
+    return "blue"
+
+
+def _severity_emoji(level: str) -> str:
+    lowered = str(level or "").lower()
+    if lowered in {"critical", "error"}:
+        return "🔴"
+    if lowered == "warning":
+        return "🟡"
+    return "🔵"
+
+
 def _build_feishu_card(report: dict, keyword: str = "", report_url: str = "") -> dict:
     """构造飞书交互卡片"""
     score = report.get("health_score", 0)
@@ -367,6 +385,106 @@ def _build_feishu_group_inspect_card(
     }
 
 
+def _build_feishu_alert_card(
+    alert_group: dict,
+    target_name: str = "",
+    matches: list[dict] | None = None,
+    keyword: str = "",
+) -> dict:
+    """构造按分组推送的 Alertmanager 告警飞书卡片。"""
+    severity = alert_group.get("severity", "warning")
+    alertname = alert_group.get("alertname", "unknown")
+    service = alert_group.get("service", "unknown")
+    summary = (alert_group.get("summary") or "").strip()
+    description = (alert_group.get("description") or "").strip()
+    count = int(alert_group.get("count", 0) or 0)
+    first_at = str(alert_group.get("first_at", "") or "")[:19].replace("T", " ")
+    namespace = alert_group.get("namespace", "")
+    env = alert_group.get("env", "")
+
+    route_lines = []
+    for item in matches or []:
+        label = item.get("label", "")
+        actual = item.get("actual", "")
+        expected = item.get("value", "")
+        route_lines.append(f"- `{label}` = `{actual}`" + (f"（规则值：`{expected or '*'}`）" if expected != actual else ""))
+
+    lines = [
+        f"{_severity_emoji(severity)} **级别**: {severity}",
+        f"**告警名**: {alertname}",
+        f"**服务**: {service}",
+        f"**触发次数**: {count}",
+        f"**首次时间**: {first_at or '-'}",
+    ]
+    if namespace:
+        lines.append(f"**Namespace**: {namespace}")
+    if env:
+        lines.append(f"**环境**: {env}")
+    if keyword and keyword not in "\n".join(lines) and keyword not in alertname:
+        lines.insert(0, keyword)
+
+    elements = [{
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": "\n".join(lines)},
+    }]
+
+    if summary or description:
+        text = summary or description
+        if summary and description and description != summary:
+            text = f"{summary}\n{description}"
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**摘要**\n{text[:800]}"},
+        })
+
+    if route_lines:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "**命中的路由标签**\n" + "\n".join(route_lines[:6])},
+        })
+
+    raw_alerts = alert_group.get("raw_alerts", []) or []
+    if raw_alerts:
+        labels = raw_alerts[0].get("labels", {}) if isinstance(raw_alerts[0], dict) else {}
+        label_lines = [f"`{k}`=`{v}`" for k, v in list(labels.items())[:8]]
+        if label_lines:
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "**告警 Labels**\n" + "  ".join(label_lines)},
+            })
+
+    external_url = str(alert_group.get("external_url", "") or "").strip()
+    if external_url:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "打开 Alertmanager"},
+                "type": "primary",
+                "url": external_url,
+            }],
+        })
+
+    title = f"{_severity_emoji(severity)} 告警通知"
+    if target_name:
+        title += f" · {target_name}"
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": _severity_template(severity),
+            },
+            "elements": elements,
+        },
+    }
+
+
 async def send_feishu_group_inspect(
     group_name: str,
     results: list[dict],
@@ -376,6 +494,32 @@ async def send_feishu_group_inspect(
 ) -> dict:
     """按分组发送主机巡检告警到飞书群"""
     payload = _build_feishu_group_inspect_card(group_name, results, keyword=keyword, ai_text=ai_text)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(webhook_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code", -1) == 0:
+                return {"ok": True, "msg": "发送成功"}
+            return {"ok": False, "msg": data.get("msg", str(data))}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+async def send_feishu_alert_group(
+    alert_group: dict,
+    webhook_url: str,
+    keyword: str = "",
+    target_name: str = "",
+    matches: list[dict] | None = None,
+) -> dict:
+    """按分组发送 Alertmanager 聚合告警到飞书。"""
+    payload = _build_feishu_alert_card(
+        alert_group,
+        target_name=target_name,
+        matches=matches,
+        keyword=keyword,
+    )
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(webhook_url, json=payload)

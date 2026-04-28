@@ -10,7 +10,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from state import load_groups, save_groups, load_hosts_list, save_hosts_list
 
@@ -18,24 +18,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class AlertMatcherRequest(BaseModel):
+    label: str
+    value: str = ""
+
+
+def _sanitize_alert_matchers(matchers: list[AlertMatcherRequest] | None) -> list[dict]:
+    result: list[dict] = []
+    for item in matchers or []:
+        label = str(item.label or "").strip()
+        value = str(item.value or "").strip()
+        if not label:
+            continue
+        result.append({"label": label, "value": value})
+    return result
+
+
 class GroupCreateRequest(BaseModel):
     name: str
+    description: Optional[str] = ""
     feishu_webhook: Optional[str] = ""
     feishu_keyword: Optional[str] = ""
     dingtalk_webhook: Optional[str] = ""
     dingtalk_keyword: Optional[str] = ""
     schedule_enabled: bool = False
     schedule_time: Optional[str] = "08:00"  # HH:MM
+    alert_matchers: list[AlertMatcherRequest] = Field(default_factory=list)
 
 
 class GroupUpdateRequest(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
     feishu_webhook: Optional[str] = None
     feishu_keyword: Optional[str] = None
     dingtalk_webhook: Optional[str] = None
     dingtalk_keyword: Optional[str] = None
     schedule_enabled: Optional[bool] = None
     schedule_time: Optional[str] = None
+    alert_matchers: Optional[list[AlertMatcherRequest]] = None
 
 
 @router.get("/api/groups")
@@ -66,12 +86,14 @@ async def create_group(body: GroupCreateRequest):
     new_group = {
         "id": f"grp_{uuid.uuid4().hex[:8]}",
         "name": body.name.strip(),
+        "description": body.description or "",
         "feishu_webhook": body.feishu_webhook or "",
         "feishu_keyword": body.feishu_keyword or "",
         "dingtalk_webhook": body.dingtalk_webhook or "",
         "dingtalk_keyword": body.dingtalk_keyword or "",
         "schedule_enabled": body.schedule_enabled,
         "schedule_time": body.schedule_time or "08:00",
+        "alert_matchers": _sanitize_alert_matchers(body.alert_matchers),
     }
     groups.append(new_group)
     save_groups(groups)
@@ -93,6 +115,8 @@ async def update_group(group_id: str, body: GroupUpdateRequest):
         if any(g["name"] == body.name and g["id"] != group_id for g in groups):
             raise HTTPException(status_code=400, detail=f"分组名称 '{body.name}' 已存在")
         group["name"] = body.name.strip()
+    if body.description is not None:
+        group["description"] = body.description
     for field in ("feishu_webhook", "feishu_keyword", "dingtalk_webhook", "dingtalk_keyword"):
         val = getattr(body, field)
         if val is not None:
@@ -101,6 +125,8 @@ async def update_group(group_id: str, body: GroupUpdateRequest):
         group["schedule_enabled"] = body.schedule_enabled
     if body.schedule_time is not None:
         group["schedule_time"] = body.schedule_time
+    if body.alert_matchers is not None:
+        group["alert_matchers"] = _sanitize_alert_matchers(body.alert_matchers)
     save_groups(groups)
     logger.info("[groups] 更新分组: %s (%s)", group["name"], group_id)
     return {"ok": True, "data": group}

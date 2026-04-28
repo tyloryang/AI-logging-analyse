@@ -70,6 +70,17 @@
           <span>最近：<span class="mono">{{ fmt(g.last_at) }}</span></span>
           <span v-if="g.resolved_at">解决：<span class="mono">{{ fmt(g.resolved_at) }}</span></span>
         </div>
+        <div v-if="g.notify_targets?.length" class="group-routes">
+          <span v-for="target in g.notify_targets" :key="target.group_id || target.group_name" class="route-chip">
+            推送到 {{ target.group_name }}
+            <span v-if="target.matches?.length" class="route-match">
+              · {{ formatMatches(target.matches) }}
+            </span>
+          </span>
+        </div>
+        <div v-else-if="g.notify_via_global_feishu" class="group-routes">
+          <span class="route-chip fallback">未命中分组规则，走默认飞书群</span>
+        </div>
 
         <!-- 展开原始告警 -->
         <button class="expand-btn" @click="toggleExpand(g.id)">
@@ -154,6 +165,12 @@ async function load() {
 function fmt(iso) {
   if (!iso) return '—'
   return iso.slice(0, 19).replace('T', ' ')
+}
+
+function formatMatches(matches = []) {
+  return matches
+    .map(item => `${item.label}=${item.actual || item.value || '*'}`)
+    .join('，')
 }
 
 function toggleExpand(id) {
@@ -251,6 +268,13 @@ onMounted(load)
 
 .group-summary { font-size: 13px; color: var(--text-secondary); }
 .group-meta { display: flex; gap: 16px; font-size: 11px; color: var(--text-muted); }
+.group-routes { display: flex; flex-wrap: wrap; gap: 6px; }
+.route-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: rgba(56,139,253,.12); color: var(--accent);
+}
+.route-chip.fallback { background: var(--bg-surface); color: var(--text-muted); }
+.route-match { color: inherit; opacity: .9; }
 
 .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
 .btn-ghost:hover { border-color: var(--warning); color: var(--warning); }

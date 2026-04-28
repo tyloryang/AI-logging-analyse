@@ -203,10 +203,42 @@ USER_GROUPS_FILE = Path(os.getenv("USER_GROUPS_FILE", "./data/user_groups.json")
 K8S_USER_CLUSTERS_FILE = Path(os.getenv("K8S_USER_CLUSTERS_FILE", "./data/user_k8s_clusters.json"))
 
 
+def _normalize_alert_matchers(matchers) -> list[dict]:
+    normalized: list[dict] = []
+    if not isinstance(matchers, list):
+        return normalized
+    for item in matchers:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or item.get("key") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not label:
+            continue
+        normalized.append({"label": label, "value": value})
+    return normalized
+
+
+def _normalize_group(group: dict) -> dict:
+    item = dict(group or {})
+    item["id"] = str(item.get("id", "")).strip()
+    item["name"] = str(item.get("name", "")).strip()
+    item["description"] = str(item.get("description", "") or "").strip()
+    item["feishu_webhook"] = str(item.get("feishu_webhook", "") or "").strip()
+    item["feishu_keyword"] = str(item.get("feishu_keyword", "") or "").strip()
+    item["dingtalk_webhook"] = str(item.get("dingtalk_webhook", "") or "").strip()
+    item["dingtalk_keyword"] = str(item.get("dingtalk_keyword", "") or "").strip()
+    item["schedule_enabled"] = bool(item.get("schedule_enabled", False))
+    item["schedule_time"] = str(item.get("schedule_time", "") or "08:00").strip() or "08:00"
+    item["alert_matchers"] = _normalize_alert_matchers(item.get("alert_matchers"))
+    return item
+
+
 def load_groups() -> list[dict]:
     if GROUPS_FILE.exists():
         try:
-            return json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [_normalize_group(item) for item in data if isinstance(item, dict)]
         except Exception:
             pass
     return []
@@ -214,7 +246,8 @@ def load_groups() -> list[dict]:
 
 def save_groups(data: list[dict]) -> None:
     GROUPS_FILE.parent.mkdir(exist_ok=True)
-    GROUPS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized = [_normalize_group(item) for item in data if isinstance(item, dict)]
+    GROUPS_FILE.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_user_groups() -> dict[str, list[str]]:
