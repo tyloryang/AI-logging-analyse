@@ -1,0 +1,128 @@
+# 让 Prometheus 把告警发送到我们部署的 AlertManager
+#
+# 如果使用 kube-prometheus-stack（Prometheus Operator），
+# 执行以下命令添加 AlertManager 地址：
+#
+#   kubectl apply -f k8s/prometheus-alertmanager-patch.yaml
+#
+# ── 方式一：Prometheus Operator（AlertmanagerConfig）──────────────────────────
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: aiops-alertmanager-config
+  namespace: monitoring
+  labels:
+    alertmanagerConfig: aiops
+spec:
+  route:
+    receiver: aiops-webhook
+    groupBy: ['alertname', 'namespace']
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+  receivers:
+    - name: aiops-webhook
+      webhookConfigs:
+        - url: 'http://backend.aiops.svc.cluster.local:8000/api/alerts/webhook'
+          sendResolved: true
+
+---
+# ── 方式二：如果 Prometheus 是独立部署，配置 alerting 部分 ─────────────────────
+# 在 prometheus.yml 的 alerting 节添加：
+#
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager.monitoring.svc.cluster.local:9093
+#
+# rule_files:
+#   - /etc/prometheus/rules/*.yml
+#
+# ── Prometheus 告警规则示例（可选）─────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-alert-rules
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+data:
+  aiops-rules.yml: |
+    groups:
+      - name: aiops-host-rules
+        interval: 60s
+        rules:
+          # CPU 高负载
+          - alert: HostHighCpuLoad
+            expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+            for: 2m
+            labels:
+              severity: warning
+              service: "{{ $labels.instance }}"
+            annotations:
+              summary: "主机 CPU 使用率高"
+              description: "{{ $labels.instance }} CPU 使用率 {{ $value | printf \"%.1f\" }}%，持续 2 分钟"
+
+          # 内存不足
+          - alert: HostOutOfMemory
+            expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 10
+            for: 2m
+            labels:
+              severity: critical
+              service: "{{ $labels.instance }}"
+            annotations:
+              summary: "主机内存严重不足"
+              description: "{{ $labels.instance }} 可用内存不足 10%"
+
+          # 磁盘空间不足
+          - alert: HostDiskSpaceLow
+            expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 15
+            for: 5m
+            labels:
+              severity: warning
+              service: "{{ $labels.instance }}"
+            annotations:
+              summary: "主机磁盘空间不足"
+              description: "{{ $labels.instance }} 根分区剩余 {{ $value | printf \"%.1f\" }}%"
+
+          # 主机宕机
+          - alert: HostDown
+            expr: up{job=~"node.*"} == 0
+            for: 1m
+            labels:
+              severity: critical
+              service: "{{ $labels.instance }}"
+            annotations:
+              summary: "主机宕机"
+              description: "{{ $labels.instance }} 已离线超过 1 分钟"
+
+      - name: aiops-k8s-rules
+        interval: 60s
+        rules:
+          # Pod 频繁重启
+          - alert: PodCrashLooping
+            expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+              namespace: "{{ $labels.namespace }}"
+              service: "{{ $labels.pod }}"
+            annotations:
+              summary: "Pod 频繁重启"
+              description: "{{ $labels.namespace }}/{{ $labels.pod }} 重启频率异常"
+
+          # Pod 长时间 Pending
+          - alert: PodPending
+            expr: kube_pod_status_phase{phase="Pending"} == 1
+            for: 10m
+            labels:
+              severity: warning
+              namespace: "{{ $labels.namespace }}"
+              service: "{{ $labels.pod }}"
+            annotations:
+              summary: "Pod 长时间 Pending"
+              description: "{{ $labels.namespace }}/{{ $labels.pod }} 已 Pending 超过 10 分钟"

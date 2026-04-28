@@ -101,6 +101,8 @@ kubectl apply --validate=false -f "$K8S_DIR/secret.yaml"
 kubectl apply --validate=false -f "$K8S_DIR/pvc.yaml"
 kubectl apply --validate=false -f "$K8S_DIR/redis.yaml"
 kubectl apply --validate=false -f "$K8S_DIR/grafana.yaml"
+kubectl apply --validate=false -f "$K8S_DIR/alertmanager.yaml"
+kubectl apply --validate=false -f "$K8S_DIR/prometheus-alertmanager-patch.yaml"
 kubectl apply --validate=false -f "$K8S_DIR/backend.yaml"
 kubectl apply --validate=false -f "$K8S_DIR/frontend.yaml"
 
