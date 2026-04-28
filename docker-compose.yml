@@ -1,6 +1,8 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     env_file: ./backend/.env
     ports:
@@ -9,13 +11,15 @@ services:
       - ./backend/reports:/app/reports
       - ./backend/cmdb_hosts.json:/app/cmdb_hosts.json
       - ./backend/ssh_credentials.json:/app/ssh_credentials.json
-      - aiops_data:/app/data          # SQLite 数据库目录
+      - aiops_data:/app/data
     depends_on:
       redis:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     restart: unless-stopped
     ports:
       - "80:80"
@@ -34,7 +38,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Grafana（docker compose --profile grafana up）──
   grafana:
     image: grafana/grafana:latest
     profiles: [grafana]
@@ -42,16 +45,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # 允许 iframe 嵌入（AIOps 平台 Grafana 看板功能必需）
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      # 关闭登录页面（内网可选，生产环境请删除此行）
-      # GF_AUTH_ANONYMOUS_ENABLED: "true"
-      # GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3000}"
       GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
-      # 允许跨域（前端不同域访问时取消注释）
-      # GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - grafana_data:/var/lib/grafana
     healthcheck:
@@ -60,7 +57,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── 可选：MySQL 8（docker compose --profile mysql up）──
   mysql:
     image: mysql:8
     profiles: [mysql]
@@ -77,7 +73,6 @@ services:
       interval: 10s
       retries: 5
 
-  # ── 可选：PostgreSQL 16（docker compose --profile postgres up）──
   postgres:
     image: postgres:16-alpine
     profiles: [postgres]

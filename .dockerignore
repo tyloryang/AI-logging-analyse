@@ -27,3 +27,9 @@ backend/cmdb_hosts.json
 backend/ssh_credentials.json
 screenshots/*.log
 screenshots/_*_pids.txt
+.tmp/
+.venv/
+.venv311/
+logs/
+backend/.env
+backend/.env.local

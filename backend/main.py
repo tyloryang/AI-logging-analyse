@@ -1,6 +1,22 @@
 """AI Ops 日志分析系统 - FastAPI 主入口"""
 
 import os
+import sys
+
+# Force UTF-8 early so Chinese prompts/logs do not fall back to ASCII in
+# containers, Windows terminals, or inherited subprocess environments.
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("LANG", "C.UTF-8")
+os.environ.setdefault("LC_ALL", "C.UTF-8")
+
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
 
 from runtime_env import bootstrap_runtime_env
 
