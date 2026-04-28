@@ -746,6 +746,74 @@ async def sync_host_info(host_id: str):
     return {"ok": True, "updated": info, "host": result}
 
 
+@router.post("/api/hosts/sync-all")
+async def sync_all_hosts():
+    """一键同步所有有 SSH 凭证的主机，SSE 流式返回每台进度。"""
+    async def generate():
+        hosts = load_hosts_list()
+        # 只同步有凭证的主机
+        targets = [
+            h for h in hosts
+            if h.get("ssh_password") or h.get("credential_id")
+        ]
+        total = len(targets)
+        if total == 0:
+            yield f"data: {json.dumps({'type':'done','success':0,'fail':0,'skip':0,'total':0,'message':'没有配置 SSH 凭证的主机'}, ensure_ascii=False)}\n\n"
+            return
+
+        yield f"data: {json.dumps({'type':'start','total':total}, ensure_ascii=False)}\n\n"
+
+        success = fail = 0
+        # 并发上限 5，避免同时打开过多 SSH 连接
+        sem = asyncio.Semaphore(5)
+
+        async def _sync_one(host: dict) -> dict:
+            async with sem:
+                try:
+                    info = await _ssh_sync(host)
+                    return {"ok": True, "id": host["id"], "info": info}
+                except Exception as e:
+                    return {"ok": False, "id": host["id"], "error": _ssh_error_msg(e, host)}
+
+        tasks = [asyncio.create_task(_sync_one(h)) for h in targets]
+
+        # 逐任务完成时推送进度
+        id_to_idx = {h["id"]: i for i, h in enumerate(hosts)}
+        hosts_dirty = False
+
+        for coro in asyncio.as_completed(tasks):
+            res = await coro
+            host_id = res["id"]
+            h = next((x for x in hosts if x.get("id") == host_id), None)
+            if not h:
+                continue
+
+            if res["ok"]:
+                info = res["info"]
+                for k, v in info.items():
+                    if v is not None:
+                        h[k] = v
+                h["updated_at"] = _NOW()
+                hosts[id_to_idx[host_id]] = h
+                hosts_dirty = True
+                success += 1
+                yield f"data: {json.dumps({'type':'progress','id':host_id,'hostname':h.get('hostname',''),'ip':h.get('ip',''),'ok':True,'updated':info,'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
+            else:
+                fail += 1
+                yield f"data: {json.dumps({'type':'progress','id':host_id,'hostname':h.get('hostname',''),'ip':h.get('ip',''),'ok':False,'error':res['error'],'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
+
+        if hosts_dirty:
+            save_hosts_list(hosts)
+
+        yield f"data: {json.dumps({'type':'done','success':success,'fail':fail,'skip':total-success-fail,'total':total,'message':f'同步完成：成功 {success} 台，失败 {fail} 台'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ── 巡检（基于 Prometheus，使用 CMDB 中的 IP 匹配实例）──────────────────────
 
 def _inspection_issue_counts(results: list[dict]) -> list[tuple[str, int]]:

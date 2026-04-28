@@ -48,6 +48,10 @@
           <button class="btn btn-primary" @click="openAdd">+ 添加主机</button>
           <button class="btn btn-outline" @click="downloadExport" title="导出 Excel">📥 导出</button>
           <button class="btn btn-outline" @click="showImportModal = true" title="从 Excel/CSV 导入">📤 导入</button>
+          <button class="btn btn-sync" :disabled="syncingAll" @click="runSyncAll" title="SSH 同步所有有凭证的主机">
+            <span v-if="syncingAll" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+            <span v-else>⟳</span> 一键同步
+          </button>
         </template>
         <button class="btn btn-outline" @click="tab === 'cmdb' ? loadHosts() : (tab === 'groups' ? loadGroups() : null)" :disabled="loading">
           <span v-if="loading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
@@ -85,6 +89,18 @@
 
     <!-- CMDB 主机表 -->
     <div v-show="tab === 'cmdb'" class="cmdb-tab-wrap">
+      <!-- 一键同步进度条 -->
+      <div v-if="syncingAll || syncAllResult" class="sync-all-bar">
+        <div v-if="syncingAll" class="sync-all-progress">
+          <span class="sync-all-label">正在同步 {{ syncAllDone }}/{{ syncAllTotal }} 台...</span>
+          <div class="progress-track"><div class="progress-fill" :style="{ width: syncAllTotal ? (syncAllDone/syncAllTotal*100)+'%' : '0%' }"></div></div>
+          <span class="sync-all-stat">✅ {{ syncAllSuccess }} 成功 &nbsp; ❌ {{ syncAllFail }} 失败</span>
+        </div>
+        <div v-else class="sync-all-done" :class="syncAllFail > 0 ? 'warn' : 'ok'">
+          {{ syncAllResult }}
+          <button class="close-btn" style="margin-left:8px;font-size:12px" @click="syncAllResult=''">✕</button>
+        </div>
+      </div>
       <div class="table-wrap">
         <div v-if="loading && !hosts.length" class="empty-state">
           <div class="spinner"></div><p>加载主机列表...</p>
@@ -910,6 +926,64 @@ async function doImport() {
   }
 }
 
+// ── 一键同步所有主机 ──────────────────────────────────────────────────────────
+const syncingAll    = ref(false)
+const syncAllTotal  = ref(0)
+const syncAllDone   = ref(0)
+const syncAllSuccess = ref(0)
+const syncAllFail   = ref(0)
+const syncAllResult  = ref('')
+
+async function runSyncAll() {
+  syncingAll.value    = true
+  syncAllTotal.value  = 0
+  syncAllDone.value   = 0
+  syncAllSuccess.value = 0
+  syncAllFail.value   = 0
+  syncAllResult.value  = ''
+
+  const es = new EventSource('/api/hosts/sync-all', { withCredentials: false })
+  // SSE 是 GET，但我们需要 POST；用 fetch + ReadableStream 替代
+  es.close()
+
+  // 用 fetch SSE（POST）
+  const resp = await fetch('/api/hosts/sync-all', { method: 'POST', credentials: 'include' })
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue
+      const raw = line.slice(5).trim()
+      try {
+        const msg = JSON.parse(raw)
+        if (msg.type === 'start') {
+          syncAllTotal.value = msg.total
+        } else if (msg.type === 'progress') {
+          syncAllDone.value    = msg.success + msg.fail
+          syncAllSuccess.value = msg.success
+          syncAllFail.value    = msg.fail
+          // 更新单台主机状态（同步成功时刷新行数据）
+          if (msg.ok && msg.id) {
+            const h = hosts.value.find(x => x.id === msg.id)
+            if (h && msg.updated) Object.assign(h, msg.updated)
+          }
+        } else if (msg.type === 'done') {
+          syncAllResult.value = msg.message
+          syncingAll.value = false
+          await loadHosts()
+        }
+      } catch {}
+    }
+  }
+  syncingAll.value = false
+}
+
 // ── 删除主机 ──────────────────────────────────────────────────────────────────
 const deleteTarget = ref(null)
 const deleting     = ref(false)
@@ -1298,6 +1372,15 @@ async function deleteGroup(g) {
 .import-result { font-size: 12px; padding: 8px 12px; border-radius: 5px; margin-top: 6px; }
 .import-result.ok { background: rgba(63,185,80,.12); color: var(--success); }
 .import-result.err { background: rgba(248,81,73,.12); color: var(--error); }
+.sync-all-bar { flex-shrink: 0; padding: 8px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+.sync-all-progress { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.sync-all-label { color: var(--text-muted); white-space: nowrap; }
+.sync-all-stat { color: var(--text-muted); white-space: nowrap; }
+.progress-track { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
+.sync-all-done { font-size: 12px; display: flex; align-items: center; }
+.sync-all-done.ok { color: var(--success); }
+.sync-all-done.warn { color: var(--warning); }
 
 /* 空状态 */
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); gap: 8px; }
