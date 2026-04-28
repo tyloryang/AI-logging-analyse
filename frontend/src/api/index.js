@@ -65,6 +65,7 @@ export const api = {
   saveSettings:   (data) => http.put('/settings', data),
   testPrometheus: (data) => http.post('/settings/test/prometheus', data),
   testLoki:       (data) => http.post('/settings/test/loki', data),
+  testAlertmanager: (data) => http.post('/settings/test/alertmanager', data),
   testK8s:        ()     => http.get('/settings/test/k8s'),
   testAI:         (data) => http.post('/settings/test/ai', data),
   // 认证

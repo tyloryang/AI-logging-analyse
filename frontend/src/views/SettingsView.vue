@@ -86,6 +86,42 @@
         </div>
       </div>
 
+      <!-- Alertmanager -->
+      <div class="card settings-section">
+        <div class="section-head">
+          <div class="section-title">
+            <span class="section-icon alertmanager">AM</span>
+            Alertmanager
+          </div>
+          <span class="conn-badge" :class="alertmanagerStatus">
+            <span class="badge-dot"></span>
+            {{ alertmanagerStatusText }}
+          </span>
+        </div>
+
+        <div class="field-group">
+          <div class="field">
+            <label>服务器地址</label>
+            <div class="input-row">
+              <input v-model="form.alertmanager_url" placeholder="http://192.168.x.x:9093" />
+              <button class="btn btn-outline btn-sm" @click="testConn('alertmanager')" :disabled="testing.alertmanager">
+                {{ testing.alertmanager ? '测试中...' : '测试连接' }}
+              </button>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>用户名（可选）</label>
+              <input v-model="form.alertmanager_username" placeholder="留空表示无认证" />
+            </div>
+            <div class="field">
+              <label>密码{{ settings.alertmanager_password_set ? '（已设置）' : '' }}</label>
+              <input v-model="form.alertmanager_password" type="password" :placeholder="settings.alertmanager_password_set ? '留空不修改' : '留空表示无认证'" />
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Grafana & SkyWalking -->
       <div class="card settings-section">
         <div class="section-head">
@@ -559,6 +595,9 @@ const form = reactive({
   loki_url:                 '',
   loki_username:            '',
   loki_password:            '',
+  alertmanager_url:         '',
+  alertmanager_username:    '',
+  alertmanager_password:    '',
   grafana_url:              '',
   grafana_api_key:          '',
   skywalking_oap_url:       '',
@@ -596,8 +635,8 @@ const form = reactive({
   huawei_project_id:        '',
 })
 
-const testing     = reactive({ prometheus: false, loki: false })
-const testResults = reactive({ prometheus: null, loki: null })  // null | true | false
+const testing     = reactive({ prometheus: false, loki: false, alertmanager: false })
+const testResults = reactive({ prometheus: null, loki: null, alertmanager: null })  // null | true | false
 
 const testingGrafana    = ref(false)
 const grafanaTestResult = ref(null)
@@ -619,8 +658,10 @@ const anyCloudConfigured = computed(() =>
 
 const promStatus     = computed(() => testResults.prometheus === null ? 'idle' : testResults.prometheus ? 'ok' : 'err')
 const lokiStatus     = computed(() => testResults.loki === null ? 'idle' : testResults.loki ? 'ok' : 'err')
+const alertmanagerStatus = computed(() => testResults.alertmanager === null ? 'idle' : testResults.alertmanager ? 'ok' : 'err')
 const promStatusText = computed(() => testResults.prometheus === null ? '未测试' : testResults.prometheus ? '连接正常' : '连接失败')
 const lokiStatusText = computed(() => testResults.loki === null ? '未测试' : testResults.loki ? '连接正常' : '连接失败')
+const alertmanagerStatusText = computed(() => testResults.alertmanager === null ? '未测试' : testResults.alertmanager ? '连接正常' : '连接失败')
 
 const webhookUrl = computed(() => {
   const protocol = window.location.protocol || 'http:'
@@ -639,6 +680,8 @@ function applySettings(s) {
   form.prometheus_username = s.prometheus_username || ''
   form.loki_url = s.loki_url || ''
   form.loki_username = s.loki_username || ''
+  form.alertmanager_url = s.alertmanager_url || ''
+  form.alertmanager_username = s.alertmanager_username || ''
   form.grafana_url = s.grafana_url || ''
   // grafana_api_key 不回显到表单（敏感字段），只保留用户主动输入的值
   // 若服务端已配置（grafana_api_key_set=true），保持表单为空让用户选择是否覆盖
@@ -745,8 +788,14 @@ async function testConn(type) {
   try {
     const payload = type === 'prometheus'
       ? { url: form.prometheus_url, username: form.prometheus_username, password: form.prometheus_password }
-      : { url: form.loki_url,       username: form.loki_username,       password: form.loki_password }
-    const fn = type === 'prometheus' ? api.testPrometheus : api.testLoki
+      : type === 'loki'
+        ? { url: form.loki_url, username: form.loki_username, password: form.loki_password }
+        : { url: form.alertmanager_url, username: form.alertmanager_username, password: form.alertmanager_password }
+    const fn = type === 'prometheus'
+      ? api.testPrometheus
+      : type === 'loki'
+        ? api.testLoki
+        : api.testAlertmanager
     const r = await fn(payload)
     testResults[type] = r.ok
   } catch {
@@ -851,6 +900,7 @@ async function saveSettings() {
 .section-icon.prom    { background: rgba(232,93,15,0.15); color: #e85d0f; }
 .section-icon.loki    { background: rgba(251,191,36,0.15); color: #d97706; }
 .section-icon.ai      { background: var(--accent-dim); color: var(--accent); }
+.section-icon.alertmanager { background: rgba(225,29,72,0.12); color: #e11d48; font-size: 10px; }
 .section-icon.feishu  { background: rgba(0,186,113,0.15); color: #00ba71; }
 .section-icon.grafana  { background: rgba(248,134,0,0.15); color: #f88600; }
 .section-icon.k8s     { background: rgba(50,130,246,0.15); color: #3282f6; font-size:10px; }
