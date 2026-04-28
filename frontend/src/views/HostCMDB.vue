@@ -975,53 +975,64 @@ const syncAllFail   = ref(0)
 const syncAllResult  = ref('')
 
 async function runSyncAll() {
-  syncingAll.value    = true
-  syncAllTotal.value  = 0
-  syncAllDone.value   = 0
+  syncingAll.value     = true
+  syncAllTotal.value   = 0
+  syncAllDone.value    = 0
   syncAllSuccess.value = 0
-  syncAllFail.value   = 0
+  syncAllFail.value    = 0
   syncAllResult.value  = ''
 
-  const es = new EventSource('/api/hosts/sync-all', { withCredentials: false })
-  // SSE 是 GET，但我们需要 POST；用 fetch + ReadableStream 替代
-  es.close()
-
-  // 用 fetch SSE（POST）
-  const resp = await fetch('/api/hosts/sync-all', { method: 'POST', credentials: 'include' })
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    const lines = buf.split('\n')
-    buf = lines.pop()
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue
-      const raw = line.slice(5).trim()
-      try {
-        const msg = JSON.parse(raw)
-        if (msg.type === 'start') {
-          syncAllTotal.value = msg.total
-        } else if (msg.type === 'progress') {
-          syncAllDone.value    = msg.success + msg.fail
-          syncAllSuccess.value = msg.success
-          syncAllFail.value    = msg.fail
-          // 更新单台主机状态（同步成功时刷新行数据）
-          if (msg.ok && msg.id) {
-            const h = hosts.value.find(x => x.id === msg.id)
-            if (h && msg.updated) Object.assign(h, msg.updated)
-          }
-        } else if (msg.type === 'done') {
-          syncAllResult.value = msg.message
-          syncingAll.value = false
-          await loadHosts()
-        }
-      } catch {}
+  try {
+    const resp = await fetch('/api/hosts/sync-all', {
+      method: 'POST',
+      credentials: 'include',
+    })
+    if (!resp.ok) {
+      const errText = await resp.text()
+      throw new Error(`请求失败 (${resp.status}): ${errText}`)
     }
+
+    const reader  = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()           // 保留未完成的行
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (!raw) continue
+        try {
+          const msg = JSON.parse(raw)
+          if (msg.type === 'start') {
+            syncAllTotal.value = msg.total
+          } else if (msg.type === 'progress') {
+            syncAllSuccess.value = msg.success
+            syncAllFail.value    = msg.fail
+            syncAllDone.value    = msg.success + msg.fail
+            // 成功时直接更新对应行数据（无需等刷新）
+            if (msg.ok && msg.id && msg.updated) {
+              const h = hosts.value.find(x => x.id === msg.id)
+              if (h) Object.assign(h, msg.updated)
+            }
+          } else if (msg.type === 'done') {
+            syncAllResult.value = msg.message
+            // 同步完成后重新拉取列表，确保回填字段显示最新
+            await loadHosts()
+          }
+        } catch { /* JSON 解析错误跳过 */ }
+      }
+    }
+  } catch (e) {
+    syncAllResult.value = '同步出错：' + (e?.message || String(e))
+    syncAllFail.value   = syncAllTotal.value - syncAllSuccess.value
+  } finally {
+    syncingAll.value = false
   }
-  syncingAll.value = false
 }
 
 // ── 删除主机 ──────────────────────────────────────────────────────────────────

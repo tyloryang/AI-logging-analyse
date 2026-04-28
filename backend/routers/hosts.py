@@ -748,64 +748,71 @@ async def sync_host_info(host_id: str):
 
 @router.post("/api/hosts/sync-all")
 async def sync_all_hosts():
-    """一键同步所有有 SSH 凭证的主机，SSE 流式返回每台进度。"""
+    """一键同步所有有 SSH 凭证的主机（并发执行，SSE 逐条返回结果，完成后统一回填保存）。"""
     async def generate():
         hosts = load_hosts_list()
-        # 只同步有凭证的主机
-        targets = [
-            h for h in hosts
-            if h.get("ssh_password") or h.get("credential_id")
-        ]
+        targets = [h for h in hosts if h.get("ssh_password") or h.get("credential_id")]
         total = len(targets)
+
         if total == 0:
-            yield f"data: {json.dumps({'type':'done','success':0,'fail':0,'skip':0,'total':0,'message':'没有配置 SSH 凭证的主机'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type':'done','success':0,'fail':0,'total':0,'message':'没有配置 SSH 凭证的主机'}, ensure_ascii=False)}\n\n"
             return
 
         yield f"data: {json.dumps({'type':'start','total':total}, ensure_ascii=False)}\n\n"
 
-        success = fail = 0
-        # 并发上限 5，避免同时打开过多 SSH 连接
         sem = asyncio.Semaphore(5)
 
-        async def _sync_one(host: dict) -> dict:
+        async def _do_sync(host: dict) -> dict:
             async with sem:
                 try:
                     info = await _ssh_sync(host)
-                    return {"ok": True, "id": host["id"], "info": info}
+                    return {
+                        "ok": True,
+                        "id": host["id"],
+                        "hostname": host.get("hostname", ""),
+                        "ip": host.get("ip", ""),
+                        "info": info,
+                    }
                 except Exception as e:
-                    return {"ok": False, "id": host["id"], "error": _ssh_error_msg(e, host)}
+                    return {
+                        "ok": False,
+                        "id": host["id"],
+                        "hostname": host.get("hostname", ""),
+                        "ip": host.get("ip", ""),
+                        "error": _ssh_error_msg(e, host),
+                    }
 
-        tasks = [asyncio.create_task(_sync_one(h)) for h in targets]
+        # 全部并发执行，等待所有结果
+        results = await asyncio.gather(*[_do_sync(h) for h in targets], return_exceptions=True)
 
-        # 逐任务完成时推送进度
-        id_to_idx = {h["id"]: i for i, h in enumerate(hosts)}
-        hosts_dirty = False
+        id_to_host = {h["id"]: h for h in hosts}
+        success = fail = 0
 
-        for coro in asyncio.as_completed(tasks):
-            res = await coro
-            host_id = res["id"]
-            h = next((x for x in hosts if x.get("id") == host_id), None)
-            if not h:
+        for res in results:
+            if isinstance(res, Exception):
+                fail += 1
+                yield f"data: {json.dumps({'type':'progress','ok':False,'error':str(res),'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
                 continue
 
-            if res["ok"]:
-                info = res["info"]
-                for k, v in info.items():
+            host_id = res["id"]
+            h = id_to_host.get(host_id)
+
+            if res["ok"] and h:
+                for k, v in res["info"].items():
                     if v is not None:
                         h[k] = v
                 h["updated_at"] = _NOW()
-                hosts[id_to_idx[host_id]] = h
-                hosts_dirty = True
                 success += 1
-                yield f"data: {json.dumps({'type':'progress','id':host_id,'hostname':h.get('hostname',''),'ip':h.get('ip',''),'ok':True,'updated':info,'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type':'progress','id':host_id,'hostname':res['hostname'],'ip':res['ip'],'ok':True,'updated':res['info'],'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
             else:
                 fail += 1
-                yield f"data: {json.dumps({'type':'progress','id':host_id,'hostname':h.get('hostname',''),'ip':h.get('ip',''),'ok':False,'error':res['error'],'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type':'progress','id':host_id,'hostname':res['hostname'],'ip':res['ip'],'ok':False,'error':res.get('error',''),'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
 
-        if hosts_dirty:
-            save_hosts_list(hosts)
+        # 所有主机处理完后统一保存
+        save_hosts_list(hosts)
 
-        yield f"data: {json.dumps({'type':'done','success':success,'fail':fail,'skip':total-success-fail,'total':total,'message':f'同步完成：成功 {success} 台，失败 {fail} 台'}, ensure_ascii=False)}\n\n"
+        msg = f"同步完成：成功 {success} 台，失败 {fail} 台"
+        yield f"data: {json.dumps({'type':'done','success':success,'fail':fail,'total':total,'message':msg}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         generate(),
