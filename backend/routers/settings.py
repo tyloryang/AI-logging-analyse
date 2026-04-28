@@ -74,6 +74,9 @@ class SettingsPayload(BaseModel):
     prometheus_url: str = ""
     prometheus_username: str = ""
     prometheus_password: str = ""
+    alertmanager_url: str = ""
+    alertmanager_username: str = ""
+    alertmanager_password: str = ""
     grafana_url: str = ""
     grafana_api_key: str = ""
     skywalking_oap_url: str = ""
@@ -129,6 +132,9 @@ async def get_settings():
         "prometheus_url": state.PROMETHEUS_URL,
         "prometheus_username": state.PROMETHEUS_USERNAME,
         "prometheus_password_set": bool(state.PROMETHEUS_PASSWORD),
+        "alertmanager_url": os.getenv("ALERTMANAGER_URL", ""),
+        "alertmanager_username": os.getenv("ALERTMANAGER_USERNAME", ""),
+        "alertmanager_password_set": bool(os.getenv("ALERTMANAGER_PASSWORD", "")),
         "ai_provider": os.getenv("AI_PROVIDER", "anthropic"),
         "ai_base_url": os.getenv("AI_BASE_URL", ""),
         "ai_model": os.getenv("AI_MODEL", ""),
@@ -202,6 +208,13 @@ async def update_settings(body: SettingsPayload):
         existing["prometheus_username"] = body.prometheus_username
     if body.prometheus_password:
         existing["prometheus_password"] = body.prometheus_password
+
+    if body.alertmanager_url:
+        existing["alertmanager_url"] = body.alertmanager_url
+    if body.alertmanager_username is not None:
+        existing["alertmanager_username"] = body.alertmanager_username
+    if body.alertmanager_password:
+        existing["alertmanager_password"] = body.alertmanager_password
 
     if body.grafana_url:
         existing["grafana_url"] = body.grafana_url
@@ -318,6 +331,24 @@ async def update_settings(body: SettingsPayload):
         state.PROMETHEUS_USERNAME = new_prometheus_username
         state.PROMETHEUS_PASSWORD = new_prometheus_password
         hot_reloaded.append("prometheus")
+
+    new_alertmanager_url = existing.get("alertmanager_url", os.getenv("ALERTMANAGER_URL", ""))
+    new_alertmanager_username = existing.get(
+        "alertmanager_username", os.getenv("ALERTMANAGER_USERNAME", "")
+    )
+    new_alertmanager_password = existing.get(
+        "alertmanager_password", os.getenv("ALERTMANAGER_PASSWORD", "")
+    )
+    alertmanager_changed = (
+        new_alertmanager_url != os.getenv("ALERTMANAGER_URL", "")
+        or new_alertmanager_username != os.getenv("ALERTMANAGER_USERNAME", "")
+        or new_alertmanager_password != os.getenv("ALERTMANAGER_PASSWORD", "")
+    )
+    os.environ["ALERTMANAGER_URL"] = new_alertmanager_url
+    os.environ["ALERTMANAGER_USERNAME"] = new_alertmanager_username
+    os.environ["ALERTMANAGER_PASSWORD"] = new_alertmanager_password
+    if alertmanager_changed:
+        hot_reloaded.append("alertmanager")
 
     # Grafana / SkyWalking URL 热更新（直接写环境变量，observability 路由每次请求时读取）
     new_grafana_url = existing.get("grafana_url", os.getenv("GRAFANA_URL", ""))
@@ -466,6 +497,31 @@ async def test_loki(body: TestPayload):
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(**kw)
             return {"ok": response.status_code == 200, "status": response.status_code}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/api/settings/test/alertmanager")
+async def test_alertmanager(body: TestPayload):
+    """测试 Alertmanager 连接。"""
+    url = body.url.rstrip("/")
+    try:
+        kw: dict = {"auth": None}
+        if body.username:
+            kw["auth"] = (body.username, body.password)
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+            response = await client.get(f"{url}/api/v2/status", auth=kw["auth"])
+            if response.status_code == 200:
+                data = response.json()
+                version = (
+                    data.get("versionInfo", {}).get("version")
+                    or data.get("versionInfo", {}).get("revision")
+                    or ""
+                )
+                return {"ok": True, "status": response.status_code, "version": version}
+
+            fallback = await client.get(f"{url}/-/ready", auth=kw["auth"])
+            return {"ok": fallback.status_code == 200, "status": fallback.status_code}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 

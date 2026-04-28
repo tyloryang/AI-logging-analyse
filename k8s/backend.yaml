@@ -31,7 +31,8 @@ spec:
           image: 192.168.9.221:5000/aiops-backend:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8000
+            - name: backend-api
+              containerPort: 8000
           env:
             - name: PYTHONUTF8
               value: "1"
@@ -78,6 +79,54 @@ spec:
             limits:
               cpu: 1000m
               memory: 2Gi
+        - name: feishu-callback
+          image: 192.168.9.221:5000/aiops-backend:latest
+          imagePullPolicy: Always
+          command:
+            - python
+            - feishu_callback_app.py
+          ports:
+            - name: feishu-callback
+              containerPort: 8001
+          env:
+            - name: PYTHONUTF8
+              value: "1"
+            - name: PYTHONIOENCODING
+              value: UTF-8
+            - name: LANG
+              value: C.UTF-8
+            - name: LC_ALL
+              value: C.UTF-8
+          envFrom:
+            - configMapRef:
+                name: aiops-config
+            - secretRef:
+                name: aiops-secret
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+              subPath: data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8001
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -96,6 +145,11 @@ spec:
     app: backend
   type: NodePort
   ports:
-    - port: 8000
+    - name: backend-api
+      port: 8000
       targetPort: 8000
       nodePort: 30800
+    - name: feishu-callback
+      port: 8001
+      targetPort: 8001
+      nodePort: 30801

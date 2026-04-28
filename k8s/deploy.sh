@@ -121,6 +121,7 @@ echo -e "==============================${NC}"
 echo ""
 echo "  frontend: http://192.168.9.221:30090"
 echo "  backend:  http://192.168.9.221:30800/api/health"
+echo "  feishu:   http://192.168.9.221:30801/healthz"
 echo "  grafana:  http://192.168.9.221:30300"
 echo ""
 kubectl get pods -n aiops
