@@ -142,6 +142,24 @@ def _merge_group(group: dict, alert: dict, severity: str, now_iso: str) -> None:
     group["truncated_alerts"] = alert.get("__truncated_alerts", group.get("truncated_alerts", 0))
 
 
+def _extract_namespace(alert: dict) -> str:
+    """从告警标签中提取 K8s namespace。"""
+    labels = alert.get("labels", {})
+    for k in ("namespace", "kubernetes_namespace", "k8s_namespace"):
+        if labels.get(k):
+            return labels[k]
+    return ""
+
+
+def _extract_env(alert: dict) -> str:
+    """从告警标签中提取环境标识（env/environment/cluster）。"""
+    labels = alert.get("labels", {})
+    for k in ("env", "environment", "cluster", "datacenter"):
+        if labels.get(k):
+            return labels[k]
+    return ""
+
+
 def _new_group(fp: str, alert: dict, service: str, severity: str, name: str, now_iso: str) -> dict:
     return {
         "id": fp,
@@ -170,6 +188,8 @@ def _new_group(fp: str, alert: dict, service: str, severity: str, name: str, now
         "truncated_alerts": alert.get("__truncated_alerts", 0),
         "alertmanager_silence_id": None,
         "alertmanager_silence_url": "",
+        "namespace": _extract_namespace(alert),
+        "env": _extract_env(alert),
     }
 
 
@@ -193,13 +213,37 @@ def _handle_resolved(groups: dict[str, dict], alert: dict, now_iso: str) -> None
         groups[fp]["alertmanager_status"] = "resolved"
 
 
-def list_groups(status: str | None = None, limit: int = 100) -> list[dict]:
+def list_groups(
+    status: str | None = None,
+    namespace: str | None = None,
+    env: str | None = None,
+    service: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
     groups = _load()["groups"]
     result = list(groups.values())
     result.sort(key=lambda x: x["last_at"], reverse=True)
     if status:
         result = [g for g in result if g["status"] == status]
+    if namespace:
+        result = [g for g in result if g.get("namespace") == namespace]
+    if env:
+        result = [g for g in result if g.get("env") == env]
+    if service:
+        result = [g for g in result if service.lower() in g.get("service", "").lower()]
     return result[:limit]
+
+
+def list_namespaces() -> list[str]:
+    """返回所有告警中出现过的 namespace 列表。"""
+    groups = _load()["groups"]
+    return sorted({g.get("namespace", "") for g in groups.values() if g.get("namespace")})
+
+
+def list_envs() -> list[str]:
+    """返回所有告警中出现过的 env 列表。"""
+    groups = _load()["groups"]
+    return sorted({g.get("env", "") for g in groups.values() if g.get("env")})
 
 
 def get_group(group_id: str) -> dict | None:

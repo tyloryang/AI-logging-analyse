@@ -14,6 +14,22 @@
         {{ t.label }}
         <span v-if="t.key !== 'all'" class="tab-count">{{ countByStatus(t.key) }}</span>
       </button>
+      <!-- 过滤器 -->
+      <div class="alert-filters">
+        <select v-model="filterNs" @change="load" class="filter-select" title="K8s Namespace">
+          <option value="">全部 Namespace</option>
+          <option v-for="ns in filterOptions.namespaces" :key="ns" :value="ns">{{ ns }}</option>
+        </select>
+        <select v-model="filterEnv" @change="load" class="filter-select" title="环境">
+          <option value="">全部环境</option>
+          <option v-for="e in filterOptions.envs" :key="e" :value="e">{{ e }}</option>
+          <option value="production">生产</option>
+          <option value="staging">预发</option>
+          <option value="development">开发</option>
+          <option value="testing">测试</option>
+        </select>
+        <input v-model="filterSvc" @input="load" class="filter-input" placeholder="服务名筛选..." />
+      </div>
     </div>
 
     <!-- 模拟接入说明 -->
@@ -94,11 +110,15 @@ const STATUS_LABEL = {
   resolved:   '已解决',
 }
 
-const loading  = ref(false)
-const groups   = ref([])
-const tab      = ref('all')
-const expanded = ref(new Set())
-const copied   = ref(false)
+const loading       = ref(false)
+const groups        = ref([])
+const tab           = ref('all')
+const expanded      = ref(new Set())
+const copied        = ref(false)
+const filterNs      = ref('')
+const filterEnv     = ref('')
+const filterSvc     = ref('')
+const filterOptions = ref({ namespaces: [], envs: [] })
 
 const webhookUrl = computed(() => `${window.location.protocol}//${window.location.host}/api/alerts/webhook`)
 
@@ -114,8 +134,16 @@ function countByStatus(status) {
 async function load() {
   loading.value = true
   try {
-    const r = await api.alertGroups()
-    groups.value = r.groups || []
+    const params = {}
+    if (filterNs.value)  params.namespace = filterNs.value
+    if (filterEnv.value) params.env       = filterEnv.value
+    if (filterSvc.value) params.service   = filterSvc.value
+    const [r, fo] = await Promise.all([
+      api.alertGroups(params),
+      api.alertFilters().catch(() => ({ namespaces: [], envs: [] })),
+    ])
+    groups.value        = r.groups || []
+    filterOptions.value = fo
   } catch (e) {
     console.error(e)
   } finally {
@@ -156,7 +184,10 @@ onMounted(load)
 </script>
 
 <style scoped>
-.tab-bar { display: flex; gap: 2px; margin-bottom: 16px; border-bottom: 1px solid var(--border-light); }
+.tab-bar { display: flex; gap: 2px; margin-bottom: 16px; border-bottom: 1px solid var(--border-light); flex-wrap: wrap; align-items: flex-end; }
+.alert-filters { display: flex; gap: 6px; margin-left: auto; padding-bottom: 4px; }
+.filter-select { padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
+.filter-input { padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; width: 140px; }
 .tab {
   padding: 8px 16px; font-size: 13px; border: none; background: none;
   cursor: pointer; color: var(--text-secondary); border-bottom: 2px solid transparent;

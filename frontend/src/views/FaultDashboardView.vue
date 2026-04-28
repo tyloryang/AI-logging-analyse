@@ -4,7 +4,20 @@
     <div class="page-header">
       <h1>故障大盘</h1>
       <span class="subtitle">实时告警态势 · 服务健康总览</span>
-      <button class="btn btn-outline btn-sm" style="margin-left:auto" @click="refresh" :disabled="loading">
+      <div class="env-selector-bar">
+        <label class="env-label">环境</label>
+        <button v-for="e in ENV_OPTIONS" :key="e.value"
+          class="env-btn"
+          :class="{ active: envFilter === e.value }"
+          @click="envFilter = e.value; refresh()">
+          {{ e.label }}
+        </button>
+        <select v-if="nsOptions.length" v-model="nsFilter" @change="refresh" class="ns-select" title="Namespace">
+          <option value="">全部 Namespace</option>
+          <option v-for="ns in nsOptions" :key="ns" :value="ns">{{ ns }}</option>
+        </select>
+      </div>
+      <button class="btn btn-outline btn-sm" style="margin-left:8px" @click="refresh" :disabled="loading">
         {{ loading ? '刷新中...' : '刷新' }}
       </button>
     </div>
@@ -44,6 +57,10 @@
             <option value="error">Error</option>
             <option value="warning">Warning</option>
           </select>
+          <span v-if="envFilter || nsFilter" class="env-badge-active">
+            {{ [envFilter, nsFilter].filter(Boolean).join(' / ') }}
+            <button @click="envFilter=''; nsFilter=''; refresh()" class="clear-env-btn">✕</button>
+          </span>
         </div>
       </div>
 
@@ -116,24 +133,43 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../api/index.js'
 
-const loading   = ref(false)
-const statsData = ref({})
-const groups    = ref([])
-const detail    = ref(null)
+const ENV_OPTIONS = [
+  { label: '全部', value: '' },
+  { label: '生产', value: 'production' },
+  { label: '预发', value: 'staging' },
+  { label: '开发', value: 'development' },
+  { label: '测试', value: 'testing' },
+]
+
+const loading        = ref(false)
+const statsData      = ref({})
+const groups         = ref([])
+const detail         = ref(null)
 const severityFilter = ref('')
+const envFilter      = ref('')
+const nsFilter       = ref('')
+const nsOptions      = ref([])
 
 const filteredGroups = computed(() => {
-  const active = groups.value.filter(g => !['resolved', 'suppressed'].includes(g.status))
-  if (!severityFilter.value) return active
-  return active.filter(g => g.severity === severityFilter.value)
+  let active = groups.value.filter(g => !['resolved', 'suppressed'].includes(g.status))
+  if (severityFilter.value) active = active.filter(g => g.severity === severityFilter.value)
+  return active
 })
 
 async function refresh() {
   loading.value = true
   try {
-    const [s, g] = await Promise.all([api.alertStats(), api.alertGroups()])
+    const params = {}
+    if (envFilter.value) params.env       = envFilter.value
+    if (nsFilter.value)  params.namespace = nsFilter.value
+    const [s, g, fo] = await Promise.all([
+      api.alertStats(),
+      api.alertGroups(params),
+      api.alertFilters().catch(() => ({ namespaces: [] })),
+    ])
     statsData.value = s
-    groups.value = g.groups || []
+    groups.value    = g.groups || []
+    nsOptions.value = fo.namespaces || []
   } catch (e) {
     console.error(e)
   } finally {
@@ -188,7 +224,15 @@ onUnmounted(() => clearInterval(timer))
 .stat-num  { font-size: 28px; font-weight: 700; color: var(--text-primary); font-family: 'Cascadia Code', 'Consolas', monospace; }
 .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 
-.filter-row { display: flex; gap: 8px; }
+.filter-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.env-selector-bar { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.env-label { font-size: 12px; color: var(--text-muted); margin-right: 2px; }
+.env-btn { padding: 3px 10px; border-radius: 12px; border: 1px solid var(--border); background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; transition: all .15s; }
+.env-btn:hover { background: var(--bg-hover); }
+.env-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.ns-select { padding: 3px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
+.env-badge-active { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(56,139,253,.12); color: var(--accent); display: flex; align-items: center; gap: 4px; }
+.clear-env-btn { background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 12px; padding: 0; }
 .filter-select { padding: 4px 8px; font-size: 12px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); }
 
 .sev-badge {

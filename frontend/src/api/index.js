@@ -173,6 +173,7 @@ export const api = {
   // 告警中心
   alertWebhook:       (data)  => http.post('/alerts/webhook', data),
   alertGroups:        (params) => http.get('/alerts/groups', { params }),
+  alertFilters:       ()       => http.get('/alerts/filters'),
   alertGroup:         (id)    => http.get(`/alerts/groups/${id}`),
   alertUpdateStatus:  (id, data) => http.put(`/alerts/groups/${id}/status`, data),
   alertStats:         ()      => http.get('/alerts/stats'),

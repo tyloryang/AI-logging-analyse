@@ -21,6 +21,8 @@ from services.alert_dedup import (
     get_group,
     update_group_status,
     stats,
+    list_namespaces,
+    list_envs,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,10 +85,22 @@ async def _notify_feishu(group_ids: list[str]) -> None:
 
 @router.get("/api/alerts/groups")
 async def get_alert_groups(
-    status: str | None = Query(None, description="过滤状态: new/grouped/analyzing/resolved/suppressed"),
-    limit: int = Query(100, ge=1, le=500),
+    status:    str | None = Query(None, description="过滤状态: new/grouped/resolved/suppressed"),
+    namespace: str | None = Query(None, description="K8s namespace 过滤"),
+    env:       str | None = Query(None, description="环境过滤: production/staging/development/testing"),
+    service:   str | None = Query(None, description="服务名模糊过滤"),
+    limit:     int = Query(100, ge=1, le=500),
 ):
-    return {"groups": list_groups(status=status, limit=limit)}
+    return {"groups": list_groups(status=status, namespace=namespace, env=env, service=service, limit=limit)}
+
+
+@router.get("/api/alerts/filters")
+async def get_alert_filters():
+    """返回告警中出现过的 namespace 和 env 枚举值（供前端下拉框使用）。"""
+    return {
+        "namespaces": list_namespaces(),
+        "envs":       list_envs(),
+    }
 
 
 @router.get("/api/alerts/groups/{group_id}")

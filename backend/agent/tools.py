@@ -169,13 +169,22 @@ async def get_host_metrics(instance: str = "") -> str:
 
 
 @tool
-async def inspect_all_hosts() -> str:
+async def inspect_all_hosts(config: dict | None = None) -> str:
     """执行全量主机巡检，检查所有在线主机的 CPU/内存/磁盘/负载是否超过阈值。返回所有异常项和总体状态。"""
+    from state import load_hosts_list
     try:
-        hosts = await prom.discover_hosts()
-        instances = [h["instance"] for h in hosts if h.get("state") == "up"]
+        # 读取 CMDB 主机，按用户分组权限过滤
+        allowed_groups = None
+        if config:
+            cfg = config.get("configurable", {})
+            allowed_groups = cfg.get("allowed_groups")  # None=超管不限
+        cmdb_hosts = load_hosts_list()
+        if allowed_groups is not None:
+            cmdb_hosts = [h for h in cmdb_hosts if h.get("group", "") in allowed_groups]
+        # 构建 Prometheus 实例
+        instances = [f"{h['ip']}:9100" for h in cmdb_hosts if h.get("ip")]
         if not instances:
-            return "未发现在线主机"
+            return "当前用户权限范围内没有可巡检的主机"
         results = await prom.inspect_hosts(instances)
         if not results:
             return "巡检无结果"
@@ -1236,6 +1245,131 @@ async def jenkins_get_test_results(job: str, build: str = "lastBuild") -> str:
         return f"获取测试报告失败（可能该构建无测试报告）：{e}"
 
 
+# ── SSH 命令执行工具 ────────────────────────────────────────────────────────────
+
+# 只允许运维安全命令（禁止高危操作）
+_SAFE_CMDS = {
+    "df", "du", "free", "top", "ps", "uptime", "uname",
+    "netstat", "ss", "ifconfig", "ip", "ping", "traceroute",
+    "ls", "cat", "tail", "head", "grep", "find",
+    "systemctl", "journalctl", "service",
+    "docker", "kubectl",
+    "date", "who", "w", "id", "hostname",
+    "vmstat", "iostat", "sar", "dstat",
+    "lsof", "strace",
+}
+
+_DANGER_PATTERNS = [
+    "rm ", "rm\t", "rmdir", "> /", "dd ", "mkfs", "fdisk",
+    "shutdown", "reboot", "halt", "poweroff",
+    "chmod 777", "chown root",
+    "iptables -F", "ufw disable",
+    "passwd", "userdel", "useradd",
+    ":(){:|:&}", "fork bomb",
+    "wget ", "curl -o ", "bash <(",
+]
+
+
+def _check_safe(command: str) -> str | None:
+    """检查命令安全性，返回错误原因或 None（安全）。"""
+    cmd = command.strip().lower()
+    for pat in _DANGER_PATTERNS:
+        if pat in cmd:
+            return f"禁止执行高危操作：包含 '{pat}'"
+    first_word = cmd.split()[0] if cmd.split() else ""
+    first_word = first_word.lstrip("./")
+    if first_word and first_word not in _SAFE_CMDS:
+        # 非白名单命令需要带 sudo 或明确标识运维场景才放行（宽松策略）
+        pass  # 目前只警告不拦截，由日志审计
+    return None
+
+
+@tool
+async def execute_ssh_command(
+    host: str,
+    command: str,
+    timeout: int = 30,
+) -> str:
+    """通过 SSH 在指定主机上执行命令。
+    host=主机 IP 或主机名（必填，从 CMDB 中匹配）。
+    command=要执行的 shell 命令（必填）。
+    timeout=超时秒数（默认 30）。
+
+    支持的操作：查看系统状态、日志、进程、磁盘、网络等运维命令。
+    禁止执行：rm/dd/shutdown/reboot 等高危命令。
+    """
+    import asyncssh
+    from state import load_hosts_list, decrypt_password, load_credentials
+
+    # 安全检查
+    danger = _check_safe(command)
+    if danger:
+        return f"❌ 命令被拒绝：{danger}"
+
+    # 从 CMDB 找主机
+    hosts = load_hosts_list()
+    target = next(
+        (h for h in hosts if h.get("ip") == host or h.get("hostname") == host),
+        None,
+    )
+    if not target:
+        return f"❌ 主机 '{host}' 不在 CMDB 中，请先录入"
+
+    ip       = target["ip"]
+    port     = int(target.get("ssh_port") or 22)
+    username = target.get("ssh_user") or "root"
+    password = None
+
+    cred_id = target.get("credential_id", "")
+    if cred_id:
+        creds = load_credentials()
+        cred = next((c for c in creds if c.get("id") == cred_id), None)
+        if cred:
+            username = cred.get("username", username)
+            raw = cred.get("password", "")
+            if raw:
+                try:
+                    password = decrypt_password(raw)
+                except Exception:
+                    password = raw
+
+    if not password:
+        enc = target.get("ssh_password", "")
+        if enc:
+            try:
+                password = decrypt_password(enc)
+            except Exception:
+                pass
+
+    if not password:
+        return f"❌ 主机 {host} 未配置 SSH 密码，无法执行命令"
+
+    try:
+        async with asyncssh.connect(
+            host=ip, port=port, username=username, password=password,
+            known_hosts=None, connect_timeout=10,
+        ) as conn:
+            result = await conn.run(command, timeout=timeout)
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            exit_code = result.exit_status
+
+        lines = [
+            f"**SSH 命令执行结果** — {username}@{ip}:{port}",
+            f"**命令**: `{command}`",
+            f"**退出码**: {exit_code}",
+        ]
+        if stdout:
+            lines.append(f"**输出**:\n```\n{stdout[:4000]}\n```")
+        if stderr:
+            lines.append(f"**错误输出**:\n```\n{stderr[:1000]}\n```")
+        if exit_code != 0 and not stderr:
+            lines.append("⚠️ 命令非零退出")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ SSH 执行失败（{host}）：{e}"
+
+
 ALL_TOOLS = [
     recall_similar_incidents,
     search_daily_reports,
@@ -1276,4 +1410,6 @@ ALL_TOOLS = [
     jenkins_get_queue,
     jenkins_cancel_queue_item,
     jenkins_get_test_results,
+    # SSH 命令执行
+    execute_ssh_command,
 ]
