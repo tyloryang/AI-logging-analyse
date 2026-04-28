@@ -1,61 +1,59 @@
 <template>
   <div class="cron-view">
-    <div class="page-header">
+    <div class="cron-header">
       <div class="header-left">
-        <h1>定时任务</h1>
-        <span class="subtitle">Ansible Playbook 定时调度</span>
+        <h2>定时任务</h2>
+        <span class="subtitle">基于 SSH 的内置计划执行</span>
       </div>
-      <div class="header-right">
-        <button class="btn-primary" @click="openCreate">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          新建定时任务
-        </button>
-        <button class="btn-ghost" @click="fetchCrons">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-          刷新
-        </button>
-      </div>
+      <button class="btn btn-primary" @click="openCreate">+ 新建定时任务</button>
     </div>
 
     <div class="table-wrap">
-      <div v-if="loading" class="loading-row"><div class="spinner"></div> 加载中…</div>
+      <div v-if="loading" class="empty-state"><div class="spinner"></div></div>
+      <div v-else-if="!crons.length" class="empty-state">
+        <span class="icon">⏰</span><p>暂无定时任务</p>
+      </div>
       <table v-else class="cron-table">
-        <thead><tr>
-          <th>名称</th><th>Cron</th><th>Playbook</th><th>状态</th><th>上次执行</th><th>最后结果</th><th>操作</th>
-        </tr></thead>
+        <thead>
+          <tr>
+            <th>名称</th><th>命令</th><th>Cron</th><th>目标</th><th>状态</th><th>上次运行</th><th>上次结果</th><th>操作</th>
+          </tr>
+        </thead>
         <tbody>
-          <tr v-if="!crons.length"><td colspan="7" class="empty">暂无定时任务</td></tr>
           <tr v-for="c in crons" :key="c.id">
-            <td class="name-cell">{{ c.name }}</td>
-            <td><code class="cron-code">{{ c.cron }}</code></td>
-            <td class="mono small muted">{{ c.playbook }}</td>
+            <td class="cron-name">{{ c.name }}</td>
+            <td class="cron-cmd mono">{{ c.command }}</td>
+            <td class="mono small">{{ c.cron }}</td>
+            <td class="small">{{ targetLabel(c) }}</td>
             <td>
-              <span class="toggle-switch" :class="{ on: c.enabled }" @click="toggleCron(c)">
+              <span class="status-badge" :class="c.enabled ? 'enabled' : 'disabled'">
                 {{ c.enabled ? '启用' : '停用' }}
               </span>
             </td>
-            <td class="muted small">{{ c.last_run ? fmtTime(c.last_run) : '—' }}</td>
+            <td class="small">{{ fmt(c.last_run) }}</td>
             <td>
-              <span v-if="c.last_status" class="status-badge" :class="c.last_status">{{ STATUS_LABEL[c.last_status] || c.last_status }}</span>
-              <span v-else class="muted">—</span>
+              <span v-if="c.last_status" class="status-badge" :class="c.last_status">
+                {{ STATUS[c.last_status] || c.last_status }}
+              </span>
+              <span v-else class="small">—</span>
             </td>
-            <td class="action-cell">
-              <button class="btn-icon run" title="立即执行" @click="runNow(c)">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <td class="actions-cell">
+              <button class="btn btn-xs btn-outline" @click="toggleEnabled(c)" :title="c.enabled ? '停用' : '启用'">
+                {{ c.enabled ? '停用' : '启用' }}
               </button>
-              <button class="btn-icon edit" title="编辑" @click="openEdit(c)">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              <button class="btn btn-xs btn-primary" @click="runNow(c)" :disabled="runningId === c.id">
+                <span v-if="runningId === c.id" class="spinner-sm"></span>
+                {{ runningId === c.id ? '执行中' : '▶ 立即' }}
               </button>
-              <button class="btn-icon del" title="删除" @click="deleteCron(c.id)">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
-              </button>
+              <button class="btn btn-xs btn-outline" @click="openEdit(c)">编辑</button>
+              <button class="btn btn-xs btn-danger" @click="deleteCron(c.id)">删除</button>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <!-- Create / Edit Modal -->
+    <!-- 创建/编辑弹窗 -->
     <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
       <div class="modal">
         <div class="modal-header">
@@ -63,42 +61,57 @@
           <button class="close-btn" @click="showModal = false">✕</button>
         </div>
         <div class="modal-body">
-          <div class="form-row">
-            <label>任务名称</label>
-            <input v-model="form.name" class="form-input" placeholder="我的定时任务" />
+          <div class="form-group required"><label>任务名称</label><input v-model="form.name" placeholder="e.g. 每日磁盘检查" /></div>
+          <div class="form-group required">
+            <label>执行命令</label>
+            <textarea v-model="form.command" rows="3" placeholder="df -h&#10;free -m" />
+          </div>
+          <div class="form-group required">
+            <label>Cron 表达式 <span class="form-hint">分 时 日 月 周</span></label>
+            <input v-model="form.cron" placeholder="0 9 * * *" />
+            <div class="cron-presets">
+              <button v-for="p in PRESETS" :key="p.v" class="preset-btn" @click="form.cron = p.v">{{ p.label }}</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>目标主机</label>
+            <select v-model="form.mode" class="form-select">
+              <option value="group">按分组</option>
+              <option value="hosts">指定主机</option>
+            </select>
+          </div>
+          <div v-if="form.mode === 'group'" class="form-group">
+            <label>选择分组</label>
+            <select v-model="form.host_group" class="form-select">
+              <option value="">请选择...</option>
+              <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.host_count || 0 }}台）</option>
+            </select>
+          </div>
+          <div v-else class="form-group">
+            <label>选择主机</label>
+            <div class="host-check-list">
+              <label v-for="h in cmdbHosts" :key="h.id" class="host-check-item">
+                <input type="checkbox" :value="h.id" v-model="form.host_ids" />
+                <span>{{ h.hostname }}</span><span class="mono small">{{ h.ip }}</span>
+                <span v-if="!h.ssh_saved" class="no-ssh">无SSH</span>
+              </label>
+            </div>
           </div>
           <div class="form-row">
-            <label>Cron 表达式</label>
-            <input v-model="form.cron" class="form-input" placeholder="0 9 * * *" />
-            <div class="cron-hint">分 时 日 月 星期 — 例：每天9点 = <code>0 9 * * *</code></div>
+            <div class="form-group"><label>超时（秒）</label><input v-model.number="form.timeout" type="number" min="5" /></div>
+            <div class="form-group" style="justify-content:flex-end;padding-top:18px">
+              <label class="check-label"><input type="checkbox" v-model="form.enabled" /> 启用</label>
+            </div>
           </div>
-          <div class="form-row">
-            <label>Playbook 路径</label>
-            <input v-model="form.playbook" class="form-input" placeholder="/etc/ansible/site.yml" list="pb-list2" />
-            <datalist id="pb-list2">
-              <option v-for="pb in playbooks" :key="pb" :value="pb" />
-            </datalist>
+          <div class="form-group"><label>描述（可选）</label><input v-model="form.description" /></div>
+          <div v-if="formError" class="form-error">{{ formError }}</div>
+          <div class="form-actions">
+            <button class="btn btn-outline" @click="showModal = false">取消</button>
+            <button class="btn btn-primary" @click="save" :disabled="saving">
+              <span v-if="saving" class="spinner-sm"></span>
+              {{ editId ? '保存' : '创建' }}
+            </button>
           </div>
-          <div class="form-row">
-            <label>Inventory</label>
-            <input v-model="form.inventory" class="form-input" placeholder="hosts" />
-          </div>
-          <div class="form-row">
-            <label>Extra Vars (JSON)</label>
-            <textarea v-model="form.extraVarsStr" class="form-textarea" placeholder='{"key": "value"}'></textarea>
-          </div>
-          <div class="form-row">
-            <label>状态</label>
-            <label class="checkbox-row"><input type="checkbox" v-model="form.enabled" /> 启用</label>
-          </div>
-          <div class="form-row">
-            <label>描述</label>
-            <input v-model="form.description" class="form-input" placeholder="可选" />
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn-ghost" @click="showModal = false">取消</button>
-          <button class="btn-primary" @click="submitCron" :disabled="saving">{{ saving ? '保存中…' : '保存' }}</button>
         </div>
       </div>
     </div>
@@ -109,15 +122,41 @@
 import { ref, onMounted } from 'vue'
 import { api } from '../api/index.js'
 
-const STATUS_LABEL = { pending: '等待', running: '执行中', success: '成功', failed: '失败' }
+const STATUS  = { pending: '等待', running: '执行中', success: '成功', failed: '失败', partial: '部分失败' }
+const PRESETS = [
+  { label: '每天 09:00', v: '0 9 * * *' },
+  { label: '每小时',     v: '0 * * * *' },
+  { label: '每 5 分钟',  v: '*/5 * * * *' },
+  { label: '每周一 09:00', v: '0 9 * * 1' },
+  { label: '每月1日',    v: '0 9 1 * *' },
+]
 
 const crons     = ref([])
-const playbooks = ref([])
+const groups    = ref([])
+const cmdbHosts = ref([])
 const loading   = ref(false)
+const runningId = ref('')
 const showModal = ref(false)
+const editId    = ref('')
 const saving    = ref(false)
-const editId    = ref(null)
-const form      = ref({ name: '', cron: '0 9 * * *', playbook: '', inventory: 'hosts', extraVarsStr: '', enabled: true, description: '' })
+const formError = ref('')
+
+const defaultForm = () => ({
+  name: '', command: '', cron: '0 9 * * *',
+  mode: 'group', host_group: '', host_ids: [],
+  timeout: 60, enabled: true, description: '',
+})
+const form = ref(defaultForm())
+
+function fmt(ts) { return ts ? ts.replace('T', ' ').slice(0, 16) : '—' }
+
+function targetLabel(c) {
+  if (c.host_group) {
+    const g = groups.value.find(g => g.id === c.host_group)
+    return g ? `分组: ${g.name}` : `分组: ${c.host_group}`
+  }
+  return c.host_ids?.length ? `${c.host_ids.length} 台主机` : '未配置'
+}
 
 async function fetchCrons() {
   loading.value = true
@@ -125,108 +164,139 @@ async function fetchCrons() {
   finally { loading.value = false }
 }
 
-async function fetchPlaybooks() {
-  // 未配置 ANSIBLE_BASE_DIR 时后端直接返回 []，此处做容错
-  try { playbooks.value = await api.ansiblePlaybooks() } catch { playbooks.value = [] }
+async function runNow(c) {
+  runningId.value = c.id
+  try {
+    await api.ansibleRunCron(c.id)
+    await fetchCrons()
+  } catch (e) {
+    alert(`触发失败: ${typeof e === 'string' ? e : JSON.stringify(e)}`)
+  } finally {
+    runningId.value = ''
+  }
 }
 
-function openCreate() { editId.value = null; form.value = { name: '', cron: '0 9 * * *', playbook: '', inventory: 'hosts', extraVarsStr: '', enabled: true, description: '' }; showModal.value = true }
-function openEdit(c) {
-  editId.value = c.id
-  form.value = { name: c.name, cron: c.cron, playbook: c.playbook, inventory: c.inventory, extraVarsStr: c.extra_vars ? JSON.stringify(c.extra_vars) : '', enabled: c.enabled, description: c.description || '' }
+async function toggleEnabled(c) {
+  await api.ansibleUpdateCron(c.id, { ...c, enabled: !c.enabled, mode: c.host_group ? 'group' : 'hosts' }).catch(() => {})
+  await fetchCrons()
+}
+
+async function deleteCron(id) {
+  if (!confirm('确认删除该定时任务？')) return
+  await api.ansibleDeleteCron(id).catch(() => {})
+  await fetchCrons()
+}
+
+function openCreate() {
+  editId.value  = ''
+  form.value    = defaultForm()
+  formError.value = ''
   showModal.value = true
 }
 
-async function submitCron() {
-  if (!form.value.name || !form.value.cron || !form.value.playbook) return
+function openEdit(c) {
+  editId.value = c.id
+  formError.value = ''
+  form.value = {
+    name: c.name, command: c.command, cron: c.cron,
+    mode: c.host_group ? 'group' : 'hosts',
+    host_group: c.host_group || '',
+    host_ids:   c.host_ids || [],
+    timeout:    c.timeout || 60,
+    enabled:    c.enabled,
+    description: c.description || '',
+  }
+  showModal.value = true
+}
+
+async function save() {
+  formError.value = ''
+  const f = form.value
+  if (!f.name.trim())    { formError.value = '任务名称不能为空'; return }
+  if (!f.command.trim()) { formError.value = '执行命令不能为空'; return }
+  if (!f.cron.trim())    { formError.value = 'Cron 表达式不能为空'; return }
   saving.value = true
+  const payload = {
+    name: f.name, command: f.command, cron: f.cron,
+    host_group:  f.mode === 'group' ? f.host_group : '',
+    host_ids:    f.mode === 'hosts' ? f.host_ids : [],
+    timeout:     f.timeout, enabled: f.enabled, description: f.description,
+  }
   try {
-    let extra = {}
-    try { extra = form.value.extraVarsStr ? JSON.parse(form.value.extraVarsStr) : {} } catch { }
-    const payload = { name: form.value.name, cron: form.value.cron, playbook: form.value.playbook, inventory: form.value.inventory, extra_vars: extra, enabled: form.value.enabled, description: form.value.description }
     if (editId.value) await api.ansibleUpdateCron(editId.value, payload)
     else await api.ansibleCreateCron(payload)
     showModal.value = false
     await fetchCrons()
-  } catch (e) { alert(`保存失败: ${e}`) }
-  finally { saving.value = false }
+  } catch (e) {
+    formError.value = typeof e === 'string' ? e : '保存失败'
+  } finally {
+    saving.value = false
+  }
 }
 
-async function toggleCron(c) {
-  try {
-    await api.ansibleUpdateCron(c.id, { ...c, enabled: !c.enabled })
-    await fetchCrons()
-  } catch { }
-}
-
-async function runNow(c) {
-  try { await api.ansibleRunCron(c.id); await fetchCrons() } catch (e) { alert(`触发失败: ${e}`) }
-}
-
-async function deleteCron(id) {
-  if (!confirm('确认删除？')) return
-  try { await api.ansibleDeleteCron(id); await fetchCrons() } catch { }
-}
-
-function fmtTime(ts) { return ts ? ts.replace('T', ' ').replace('Z', '').slice(0, 16) : '—' }
-
-onMounted(() => { Promise.all([fetchCrons(), fetchPlaybooks()]) })
+onMounted(() => {
+  Promise.all([
+    fetchCrons(),
+    api.listGroups().then(r => { groups.value = r.data || [] }).catch(() => {}),
+    api.getHosts().then(r => { cmdbHosts.value = r.data || [] }).catch(() => {}),
+  ])
+})
 </script>
 
 <style scoped>
-.cron-view { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-primary); }
-.page-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 12px; border-bottom: 1px solid rgba(255,255,255,0.07); flex-shrink: 0; }
-.header-left h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
-.subtitle { font-size: 12px; color: var(--text-muted, #6e7681); }
-.header-right { display: flex; gap: 8px; }
-.btn-primary { display: flex; align-items: center; gap: 5px; background: var(--accent, #388bfd); border: none; color: #fff; border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; font-weight: 500; }
-.btn-ghost   { display: flex; align-items: center; gap: 5px; background: var(--bg-hover); border: 1px solid var(--border); color: var(--text-primary); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
-
-.table-wrap { flex: 1; overflow: auto; padding: 12px 20px; }
-.loading-row { display: flex; align-items: center; gap: 8px; padding: 40px; justify-content: center; color: var(--text-muted); }
-.spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.1); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+.cron-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; padding: 20px; gap: 14px; background: var(--bg-base); color: var(--text-primary); }
+.cron-header { display: flex; justify-content: space-between; align-items: center; }
+.header-left h2 { font-size: 18px; font-weight: 600; margin: 0; }
+.subtitle { font-size: 12px; color: var(--text-muted); margin-left: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-outline { background: transparent; border-color: var(--border); color: var(--text-primary); }
+.btn-danger  { background: rgba(248,81,73,.08); color: var(--error); border-color: rgba(248,81,73,.3); }
+.btn-xs { padding: 2px 8px; font-size: 11px; }
+.table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
+.cron-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cron-table thead { position: sticky; top: 0; }
+.cron-table th { padding: 9px 12px; background: var(--bg-header, var(--bg-base)); border-bottom: 1px solid var(--border); text-align: left; font-size: 11px; color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+.cron-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; }
+.cron-name { font-weight: 500; }
+.cron-cmd { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.mono { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; }
+.small { font-size: 12px; color: var(--text-muted); }
+.actions-cell { display: flex; gap: 4px; }
+.status-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+.status-badge.enabled  { background: rgba(63,185,80,.12); color: var(--success); }
+.status-badge.disabled { background: var(--bg-hover); color: var(--text-muted); }
+.status-badge.success  { background: rgba(63,185,80,.12); color: var(--success); }
+.status-badge.failed   { background: rgba(248,81,73,.12); color: var(--error); }
+.status-badge.partial  { background: rgba(210,153,34,.12); color: var(--warning); }
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 160px; gap: 8px; color: var(--text-muted); }
+.empty-state .icon { font-size: 32px; }
+.spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+.spinner-sm { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-.cron-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.cron-table th { text-align: left; padding: 8px 10px; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-base); }
-.cron-table td { padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
-.cron-table tr:hover td { background: rgba(255,255,255,0.03); }
-.empty { text-align: center; color: var(--text-muted); padding: 40px !important; }
-
-.name-cell { font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cron-code { font-family: 'Cascadia Code', 'Consolas', monospace; background: rgba(56,139,253,0.08); color: #388bfd; border: 1px solid rgba(56,139,253,0.2); padding: 2px 7px; border-radius: 5px; font-size: 11px; }
-.cron-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
-.cron-hint code { font-family: 'Cascadia Code', 'Consolas', monospace; color: #388bfd; }
-
-.toggle-switch { padding: 2px 10px; border-radius: 10px; font-size: 10.5px; font-weight: 500; cursor: pointer; user-select: none; }
-.toggle-switch.on  { background: rgba(63,185,80,0.15);  color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
-.toggle-switch:not(.on) { background: var(--bg-hover); color: var(--text-muted); border: 1px solid var(--border); }
-
-.status-badge { padding: 2px 8px; border-radius: 10px; font-size: 10.5px; font-weight: 500; }
-.status-badge.success { background: rgba(63,185,80,0.15); color: #3fb950; }
-.status-badge.failed  { background: rgba(248,81,73,0.15); color: #f85149; }
-.status-badge.running { background: rgba(56,139,253,0.15); color: #388bfd; }
-
-.action-cell { display: flex; gap: 6px; }
-.btn-icon { background: none; border: none; cursor: pointer; padding: 4px; border-radius: 4px; color: var(--text-muted); }
-.btn-icon.run:hover  { color: #3fb950; background: rgba(63,185,80,0.1); }
-.btn-icon.edit:hover { color: #388bfd; background: rgba(56,139,253,0.1); }
-.btn-icon.del:hover  { color: #f85149; background: rgba(248,81,73,0.1); }
-
-.mono  { font-family: 'Cascadia Code', 'Consolas', monospace; }
-.small { font-size: 11px; }
-.muted { color: var(--text-muted, #6e7681); }
-
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
-.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.07); font-weight: 600; font-size: 14px; }
+/* 弹窗 */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; width: 540px; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 14px; color: var(--text-primary); }
+.modal-body { overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.form-group { display: flex; flex-direction: column; gap: 5px; }
+.form-group.required label::after { content: ' *'; color: var(--error); }
+.form-group label { font-size: 12px; color: var(--text-muted); }
+.form-hint { font-weight: 400; font-style: italic; }
+.form-group input, .form-group textarea, .form-select { padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input, var(--bg-base)); color: var(--text-primary); font-size: 13px; width: 100%; box-sizing: border-box; }
+.form-group textarea { resize: vertical; font-family: 'Cascadia Code', 'Consolas', monospace; }
+.form-row { display: flex; gap: 12px; }
+.form-row .form-group { flex: 1; }
+.check-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-primary); }
+.cron-presets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.preset-btn { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; }
+.preset-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.host-check-list { display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px; background: var(--bg-input, var(--bg-base)); }
+.host-check-item { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+.host-check-item:hover { background: var(--bg-hover); }
+.no-ssh { font-size: 10px; padding: 1px 5px; border-radius: 8px; background: rgba(248,81,73,.12); color: var(--error); }
+.form-error { color: var(--error); font-size: 12px; padding: 6px 10px; background: rgba(248,81,73,.08); border-radius: 5px; }
+.form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .close-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; }
-.modal-body { overflow: auto; padding: 16px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.07); }
-.form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-.form-row label { font-size: 11.5px; color: var(--text-muted); font-weight: 500; }
-.form-input, .form-textarea { background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); padding: 7px 10px; font-size: 12px; outline: none; }
-.form-input:focus, .form-textarea:focus { border-color: var(--accent); }
-.form-textarea { resize: vertical; min-height: 60px; font-family: 'Cascadia Code', 'Consolas', monospace; }
-.checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); cursor: pointer; }
 </style>
