@@ -22,6 +22,9 @@ def _load_json(path: Path):
 
 
 def _resolve_auth(host_ip: str) -> dict:
+    backend_key = BACKEND_DIR / ".ssh_key"
+    if backend_key.exists() and not os.getenv("SSH_KEY_FILE"):
+        os.environ["SSH_KEY_FILE"] = str(backend_key)
     sys.path.insert(0, str(BACKEND_DIR))
     from state import decrypt_password  # pylint: disable=import-error
 
