@@ -1308,22 +1308,18 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                     yield "data: [DONE]\n\n"
                     return
 
-            # 从 Prometheus 获取有指标的主机（用 ip:9100 匹配）
-            instances = [f"{h['ip']}:9100" for h in target_hosts]
+            # 从 Prometheus 获取全量指标（不按 instance 过滤，因为 node-exporter 的 instance 是主机名而非 ip:port）
             try:
-                prom_results = await prom.inspect_hosts(instances=instances)
+                prom_results = await prom.inspect_hosts(instances=None)
             except Exception:
                 prom_results = []
 
-            # 建立 ip → prom_result 映射
+            # 建立 ip → prom_result 映射（通过 Prometheus 返回的 ip 字段匹配）
             prom_map: dict[str, dict] = {}
             for r in prom_results:
                 ip = r.get("ip", "")
-                if not ip:
-                    # instance 格式 ip:9100，解析 ip
-                    inst = r.get("instance", "")
-                    ip = inst.split(":")[0] if ":" in inst else inst
-                prom_map[ip] = r
+                if ip:
+                    prom_map[ip] = r
 
             # 合并：CMDB 主机为基准
             results = []
