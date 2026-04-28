@@ -58,35 +58,44 @@
       </div>
     </div>
 
-    <!-- ══ AI 分析输入 ══ -->
-    <div class="ai-analyze-box card">
-      <div class="ai-analyze-header">
+    <!-- ══ AI 分析输入（可收起）══ -->
+    <div class="ai-analyze-box card" :class="{ collapsed: aiBoxCollapsed }">
+      <div class="ai-analyze-header" @click="aiBoxCollapsed = !aiBoxCollapsed" style="cursor:pointer">
         <span class="ai-icon-wrap">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M9 11V7a3 3 0 016 0v4"/><circle cx="9" cy="16" r="1" fill="currentColor"/><circle cx="15" cy="16" r="1" fill="currentColor"/></svg>
         </span>
-        <span class="ai-analyze-title">输入 AI 分析</span>
+        <span class="ai-analyze-title">AI 分析</span>
         <span class="ai-model-badge">{{ aiModelName }}</span>
+        <span v-if="analyzing" class="ai-analyzing-indicator">分析中...</span>
+        <span class="ai-collapse-btn" :title="aiBoxCollapsed ? '展开' : '收起'">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+            :style="{ transform: aiBoxCollapsed ? 'rotate(-90deg)' : 'rotate(0)', transition: 'transform .2s' }">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </span>
       </div>
-      <div class="ai-analyze-input-row">
-        <input
-          v-model="analyzeQuestion"
-          class="ai-analyze-input"
-          placeholder="描述问题或直接问：当前最需要关注什么？"
-          @keydown.enter="startAnalyze"
-          :disabled="analyzing"
-        />
-        <button class="btn-analyze" @click="startAnalyze" :disabled="analyzing || !analyzeQuestion.trim()">
-          <span v-if="analyzing" class="spinner-sm"></span>
-          <span v-else>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-          </span>
-          {{ analyzing ? '分析中...' : '分析' }}
-        </button>
-      </div>
-      <!-- AI 分析结果 -->
-      <div v-if="analyzeResult" class="ai-analyze-result">
-        <div class="ai-analyze-content" v-html="renderAnalysis(analyzeResult)"></div>
-        <span v-if="analyzing" class="cursor-blink"></span>
+      <div v-show="!aiBoxCollapsed" class="ai-analyze-body">
+        <div class="ai-analyze-input-row">
+          <input
+            v-model="analyzeQuestion"
+            class="ai-analyze-input"
+            placeholder="描述问题或直接问：当前最需要关注什么？"
+            @keydown.enter="startAnalyze"
+            :disabled="analyzing"
+          />
+          <button class="btn-analyze" @click="startAnalyze" :disabled="analyzing || !analyzeQuestion.trim()">
+            <span v-if="analyzing" class="spinner-sm"></span>
+            <span v-else>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </span>
+            {{ analyzing ? '分析中...' : '分析' }}
+          </button>
+        </div>
+        <!-- AI 分析结果 -->
+        <div v-if="analyzeResult" class="ai-analyze-result">
+          <div class="ai-analyze-content" v-html="renderAnalysis(analyzeResult)"></div>
+          <span v-if="analyzing" class="cursor-blink"></span>
+        </div>
       </div>
     </div>
 
@@ -313,6 +322,7 @@ const overview = reactive({
 })
 
 // AI 分析状态
+const aiBoxCollapsed  = ref(true)   // 默认收起
 const analyzeQuestion = ref('')
 const analyzeResult   = ref('')
 const analyzing       = ref(false)
@@ -353,6 +363,7 @@ async function loadAll() {
 async function startAnalyze() {
   const q = analyzeQuestion.value.trim()
   if (!q || analyzing.value) return
+  aiBoxCollapsed.value = false   // 开始分析时自动展开
   analyzing.value = true
   analyzeResult.value = ''
 
@@ -401,6 +412,7 @@ async function startAnalyze() {
 // 点击服务卡片 → 预填问题
 function askAI(service) {
   analyzeQuestion.value = `分析 ${service} 服务当前异常，给出根因和处理建议`
+  aiBoxCollapsed.value = false
   startAnalyze()
 }
 
@@ -521,10 +533,17 @@ onMounted(() => {
 .grafana-bar { background: linear-gradient(90deg, var(--success) 0%, transparent 100%); }
 
 /* ── AI 分析框 ── */
-.ai-analyze-box { padding: 14px 18px; }
+.ai-analyze-box { padding: 14px 18px; transition: padding .2s; }
+.ai-analyze-box.collapsed { padding: 10px 18px; }
 .ai-analyze-header {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 0;
+  user-select: none;
 }
+.ai-analyze-body { margin-top: 10px; }
+.ai-collapse-btn { margin-left: auto; color: var(--text-muted); display: flex; align-items: center; }
+.ai-analyzing-indicator { font-size: 11px; color: var(--accent); margin-left: 4px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 .ai-icon-wrap {
   width: 24px; height: 24px; border-radius: 6px;
   background: var(--accent-dim); color: var(--accent);
