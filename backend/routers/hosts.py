@@ -1025,10 +1025,32 @@ def _build_arthas_command(pid: int, arthas_command: str) -> str:
 WORKDIR=/tmp/aiops-java-tools
 BOOT="$WORKDIR/arthas-boot.jar"
 mkdir -p "$WORKDIR"
-if ! command -v java >/dev/null 2>&1; then
-  echo "java 命令不存在，无法执行 Arthas" >&2
+
+# 自动探测 java 路径（不依赖 PATH）
+_find_java() {{
+  # 1. PATH 里直接找
+  if command -v java >/dev/null 2>&1; then echo "java"; return; fi
+  # 2. 从目标 JVM 进程的符号链接找
+  local exe
+  exe=$(readlink -f /proc/{pid}/exe 2>/dev/null)
+  if [ -n "$exe" ] && [ -x "$exe" ]; then echo "$exe"; return; fi
+  # 3. 从进程 JAVA_HOME 环境变量找
+  local jhome
+  jhome=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^JAVA_HOME=' | cut -d= -f2)
+  if [ -n "$jhome" ] && [ -x "$jhome/bin/java" ]; then echo "$jhome/bin/java"; return; fi
+  # 4. 常见安装路径
+  for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java /opt/jdk*/bin/java /opt/java/*/bin/java; do
+    [ -x "$p" ] && {{ echo "$p"; return; }}
+  done
+  echo ""
+}}
+JAVA=$(_find_java)
+if [ -z "$JAVA" ]; then
+  echo "未找到 java 命令，请确认 JDK 已安装或 /proc/{pid} 进程存在" >&2
   exit 2
 fi
+echo "使用 Java: $JAVA"
+
 if [ ! -s "$BOOT" ]; then
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL -o "$BOOT" https://arthas.aliyun.com/arthas-boot.jar
@@ -1039,7 +1061,7 @@ if [ ! -s "$BOOT" ]; then
     exit 2
   fi
 fi
-java -jar "$BOOT" {pid} -c {shlex.quote(arthas_command)}
+"$JAVA" -jar "$BOOT" {pid} --action exec --command {shlex.quote(arthas_command)} 2>&1
 """
 
 
@@ -1049,8 +1071,21 @@ WORKDIR=/tmp/aiops-java-tools
 PROFILE_HOME="$WORKDIR/async-profiler"
 ARCH="$(uname -m)"
 mkdir -p "$WORKDIR"
-if ! command -v java >/dev/null 2>&1; then
-  echo "java 命令不存在，无法生成火焰图" >&2
+
+_find_java() {{
+  if command -v java >/dev/null 2>&1; then echo "java"; return; fi
+  local exe; exe=$(readlink -f /proc/{pid}/exe 2>/dev/null)
+  if [ -n "$exe" ] && [ -x "$exe" ]; then echo "$exe"; return; fi
+  local jhome; jhome=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^JAVA_HOME=' | cut -d= -f2)
+  if [ -n "$jhome" ] && [ -x "$jhome/bin/java" ]; then echo "$jhome/bin/java"; return; fi
+  for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java /opt/jdk*/bin/java /opt/java/*/bin/java; do
+    [ -x "$p" ] && {{ echo "$p"; return; }}
+  done
+  echo ""
+}}
+JAVA=$(_find_java)
+if [ -z "$JAVA" ]; then
+  echo "未找到 java 命令，请确认 JDK 已安装" >&2
   exit 2
 fi
 case "$ARCH" in
