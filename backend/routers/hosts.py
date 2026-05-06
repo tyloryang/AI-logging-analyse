@@ -113,6 +113,61 @@ class HostUpdateRequest(BaseModel):
     labels:        Optional[dict] = None
 
 
+class BatchCredentialRequest(BaseModel):
+    host_ids:      Optional[list] = None   # None = 全部可见主机
+    group:         Optional[str] = None    # 按分组过滤（与 host_ids 互斥）
+    credential_id: Optional[str] = None
+    ssh_user:      Optional[str] = None
+    ssh_port:      Optional[int] = None
+    ssh_password:  Optional[str] = None
+
+
+@router.post("/api/hosts/batch-credential")
+async def batch_apply_credential(body: BatchCredentialRequest, user: User = Depends(current_user)):
+    """批量为主机应用 SSH 凭证或密码。"""
+    if not body.credential_id and not body.ssh_password:
+        raise HTTPException(status_code=400, detail="必须提供凭证 ID 或 SSH 密码")
+
+    all_hosts = load_hosts_list()
+    visible = _filter_hosts_by_user(all_hosts, user)
+
+    if body.host_ids:
+        visible = [h for h in visible if h.get("id") in set(body.host_ids)]
+    elif body.group:
+        visible = [h for h in visible if h.get("group") == body.group]
+
+    if not visible:
+        return {"ok": True, "updated": 0}
+
+    ids_to_update = {h["id"] for h in visible}
+    now = _NOW()
+    updated = 0
+    for h in all_hosts:
+        if h.get("id") not in ids_to_update:
+            continue
+        if body.credential_id:
+            h["credential_id"] = body.credential_id
+            h["ssh_password"] = ""
+            creds = {c["id"]: c for c in load_credentials()}
+            cred = creds.get(body.credential_id, {})
+            if not body.ssh_user:
+                h["ssh_user"] = cred.get("username", h.get("ssh_user") or "root")
+            if not body.ssh_port:
+                h["ssh_port"] = cred.get("port", h.get("ssh_port") or 22)
+        else:
+            h["ssh_password"] = encrypt_password(body.ssh_password)
+            h["credential_id"] = ""
+        if body.ssh_user:
+            h["ssh_user"] = body.ssh_user
+        if body.ssh_port:
+            h["ssh_port"] = body.ssh_port
+        h["updated_at"] = now
+        updated += 1
+
+    save_hosts_list(all_hosts)
+    return {"ok": True, "updated": updated}
+
+
 @router.get("/api/hosts")
 async def list_hosts(user: User = Depends(current_user)):
     """获取主机列表（非管理员只能看自己分组内的主机）。"""

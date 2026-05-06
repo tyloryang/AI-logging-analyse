@@ -48,6 +48,7 @@
           <button class="btn btn-primary" @click="openAdd">+ 添加主机</button>
           <button class="btn btn-outline" @click="downloadExport" title="导出 Excel">📥 导出</button>
           <button class="btn btn-outline" @click="showImportModal = true" title="从 Excel/CSV 导入">📤 导入</button>
+          <button class="btn btn-outline" @click="openBatchCred" title="批量为主机应用 SSH 凭证">🔑 批量应用凭证</button>
           <button class="btn btn-sync" :disabled="syncingAll" @click="runSyncAll" title="SSH 同步所有有凭证的主机">
             <span v-if="syncingAll" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
             <span v-else>⟳</span> 一键同步
@@ -602,6 +603,80 @@
       </div>
     </div>
 
+    <!-- 批量应用凭证弹窗 -->
+    <div v-if="showBatchCredModal" class="modal-mask" @click.self="showBatchCredModal = false">
+      <div class="host-modal" style="max-width:480px">
+        <div class="modal-header">
+          <span>批量应用 SSH 凭证</span>
+          <button class="close-btn" @click="showBatchCredModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            为多台主机统一设置 SSH 登录凭证，覆盖原有配置。
+          </p>
+
+          <!-- 目标主机 -->
+          <div class="form-group">
+            <label>应用范围</label>
+            <select v-model="batchCredForm.scope" class="filter-select" style="width:100%">
+              <option value="all">全部主机（{{ hosts.length }} 台）</option>
+              <option value="filtered">当前筛选（{{ filteredHosts.length }} 台）</option>
+              <option v-for="g in groups" :key="g.id" :value="'group:' + g.id">
+                分组：{{ g.name }}（{{ g.host_count || 0 }} 台）
+              </option>
+            </select>
+          </div>
+
+          <!-- 凭证类型 -->
+          <div class="form-group">
+            <label>凭证方式</label>
+            <select v-model="batchCredForm.mode" class="filter-select" style="width:100%">
+              <option value="credential">凭证库</option>
+              <option value="password">直接输入密码</option>
+            </select>
+          </div>
+
+          <!-- 凭证库 -->
+          <div v-if="batchCredForm.mode === 'credential'" class="form-group">
+            <label>选择凭证</label>
+            <select v-model="batchCredForm.credential_id" class="filter-select" style="width:100%">
+              <option value="">请选择凭证</option>
+              <option v-for="c in credentials" :key="c.id" :value="c.id">{{ credentialOptionLabel(c) }}</option>
+            </select>
+          </div>
+
+          <!-- 直接密码 -->
+          <template v-else>
+            <div class="form-row" style="gap:10px">
+              <div class="form-group" style="flex:1">
+                <label>SSH 用户名</label>
+                <input v-model="batchCredForm.ssh_user" placeholder="root" />
+              </div>
+              <div class="form-group" style="width:90px">
+                <label>端口</label>
+                <input v-model.number="batchCredForm.ssh_port" type="number" min="1" max="65535" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>SSH 密码</label>
+              <input v-model="batchCredForm.ssh_password" type="password" placeholder="加密存储" autocomplete="new-password" />
+            </div>
+          </template>
+
+          <div v-if="batchCredError" class="form-error">{{ batchCredError }}</div>
+          <div v-if="batchCredResult" class="import-result ok">{{ batchCredResult }}</div>
+
+          <div class="form-actions">
+            <button class="btn btn-outline" @click="showBatchCredModal = false">取消</button>
+            <button class="btn btn-primary" @click="doBatchCred" :disabled="batchCredSaving">
+              <span v-if="batchCredSaving" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+              应用凭证
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 删除确认弹窗 -->
     <div v-if="deleteTarget" class="modal-mask" @click.self="deleteTarget = null">
       <div class="confirm-modal">
@@ -1072,6 +1147,82 @@ async function runSyncAll() {
     syncAllFail.value   = syncAllTotal.value - syncAllSuccess.value
   } finally {
     syncingAll.value = false
+  }
+}
+
+// ── 批量应用凭证 ──────────────────────────────────────────────────────────────
+const showBatchCredModal = ref(false)
+const batchCredSaving    = ref(false)
+const batchCredError     = ref('')
+const batchCredResult    = ref('')
+
+const batchCredForm = reactive({
+  scope:         'all',
+  mode:          'credential',
+  credential_id: '',
+  ssh_user:      'root',
+  ssh_port:      22,
+  ssh_password:  '',
+})
+
+function openBatchCred() {
+  batchCredError.value  = ''
+  batchCredResult.value = ''
+  batchCredForm.scope         = 'all'
+  batchCredForm.mode          = credentials.value.length ? 'credential' : 'password'
+  batchCredForm.credential_id = credentials.value[0]?.id || ''
+  batchCredForm.ssh_user      = 'root'
+  batchCredForm.ssh_port      = 22
+  batchCredForm.ssh_password  = ''
+  showBatchCredModal.value = true
+}
+
+async function doBatchCred() {
+  batchCredError.value  = ''
+  batchCredResult.value = ''
+
+  if (batchCredForm.mode === 'credential' && !batchCredForm.credential_id) {
+    batchCredError.value = '请选择凭证'; return
+  }
+  if (batchCredForm.mode === 'password' && !batchCredForm.ssh_password) {
+    batchCredError.value = 'SSH 密码不能为空'; return
+  }
+
+  const payload = { mode: batchCredForm.mode }
+
+  // 确定目标范围
+  const scope = batchCredForm.scope
+  if (scope === 'filtered') {
+    payload.host_ids = filteredHosts.value.map(h => h.id)
+  } else if (scope.startsWith('group:')) {
+    payload.group = scope.slice(6)
+  }
+  // scope === 'all' → 不传 host_ids/group，后端默认全部
+
+  if (batchCredForm.mode === 'credential') {
+    payload.credential_id = batchCredForm.credential_id
+  } else {
+    payload.ssh_user     = batchCredForm.ssh_user || 'root'
+    payload.ssh_port     = batchCredForm.ssh_port || 22
+    payload.ssh_password = batchCredForm.ssh_password
+  }
+
+  batchCredSaving.value = true
+  try {
+    const res = await fetch('/api/hosts/batch-credential', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || '操作失败')
+    batchCredResult.value = `已成功更新 ${data.updated} 台主机的凭证`
+    await loadHosts()
+  } catch (e) {
+    batchCredError.value = e?.message || '操作失败'
+  } finally {
+    batchCredSaving.value = false
   }
 }
 
