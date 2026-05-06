@@ -125,6 +125,7 @@
               <th>负责人</th>
               <th>机房</th>
               <th>分组</th>
+              <th class="th-sort" @click="setSort('last_sync_at')">上次同步<span class="sort-icon">{{ sortKey==='last_sync_at'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
               <th>操作</th>
             </tr>
           </thead>
@@ -171,6 +172,10 @@
               <td class="small-text">{{ h.owner || '-' }}</td>
               <td class="small-text">{{ h.datacenter || '-' }}</td>
               <td><span v-if="h.group && groupMap[h.group]" class="group-badge-inline">{{ groupMap[h.group] }}</span><span v-else>-</span></td>
+              <td class="small-text sync-time-cell" :title="h.last_sync_at || '从未同步'">
+                <span v-if="h.last_sync_at" :class="syncTimeClass(h.last_sync_at)">{{ relativeTime(h.last_sync_at) }}</span>
+                <span v-else class="no-sync">—</span>
+              </td>
               <td class="action-cell" @click.stop>
                 <button class="btn btn-outline btn-xs" @click="openEdit(h)" title="编辑">✏</button>
                 <button class="btn btn-outline btn-xs" @click="openSSH(h)" title="SSH 连接">>_</button>
@@ -396,6 +401,12 @@
         </div>
         <div class="detail-row"><span class="dl">录入时间</span><span class="dv small-text">{{ selectedHost.created_at }}</span></div>
         <div class="detail-row"><span class="dl">更新时间</span><span class="dv small-text">{{ selectedHost.updated_at }}</span></div>
+        <div class="detail-row">
+          <span class="dl">上次同步</span>
+          <span class="dv small-text" :class="selectedHost.last_sync_at ? '' : 'text-muted'">
+            {{ selectedHost.last_sync_at || '从未同步' }}
+          </span>
+        </div>
         <div v-if="selectedHostSyncState?.statusMsg" class="sync-msg" :class="selectedHostSyncState?.ok === false ? 'err' : 'ok'">
           <span v-if="selectedHostSyncState?.statusMsg">{{ selectedHostSyncState.statusMsg }}</span>
         </div>
@@ -1267,6 +1278,23 @@ const _SVC_COLOR_MAP = {
 function svcColor(svcName) { return _SVC_COLOR_MAP[svcName] || 'default' }
 function cpuClass(cpu) { return cpu >= 50 ? 'cpu-high' : cpu >= 20 ? 'cpu-mid' : '' }
 
+function relativeTime(dateStr) {
+  if (!dateStr) return '—'
+  const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
+  if (diff < 60)   return `${diff}秒前`
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}天前`
+  return dateStr.slice(0, 10)
+}
+function syncTimeClass(dateStr) {
+  if (!dateStr) return 'no-sync'
+  const hours = (Date.now() - new Date(dateStr).getTime()) / 3600000
+  if (hours > 72) return 'sync-stale'
+  if (hours > 24) return 'sync-warn'
+  return 'sync-ok'
+}
+
 async function loadProcesses(host) {
   if (!host) return
   procLoading.value = true
@@ -1755,6 +1783,11 @@ async function deleteGroup(g) {
 .proc-cpu { font-size: 11px; font-weight: 600; }
 .proc-cpu.cpu-high { color: var(--error); }
 .proc-cpu.cpu-mid  { color: var(--warning); }
+.sync-time-cell { white-space: nowrap; }
+.sync-ok    { color: var(--success, #3fb950); }
+.sync-warn  { color: var(--warning, #d29922); }
+.sync-stale { color: var(--error, #f85149); }
+.no-sync    { color: var(--text-muted); }
 .proc-mem { font-size: 11px; color: var(--text-muted); }
 .proc-meta-row { display: flex; gap: 6px; font-size: 10px; color: var(--text-muted); }
 .proc-args { font-size: 10px; color: var(--text-muted); font-family: 'Cascadia Code','Consolas',monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; cursor: help; }

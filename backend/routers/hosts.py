@@ -807,10 +807,12 @@ async def sync_host_info(host_id: str):
         raise HTTPException(status_code=400, detail="SSH 连接成功但未获取到系统信息，请确认 shell 可正常执行")
 
     # 更新字段
+    now = _NOW()
     for k, v in info.items():
         if v is not None:
             host[k] = v
-    host["updated_at"] = _NOW()
+    host["last_sync_at"] = now
+    host["updated_at"] = now
     hosts[idx] = host
     save_hosts_list(hosts)
 
@@ -873,10 +875,12 @@ async def sync_all_hosts(user: User = Depends(current_user)):
             h = id_to_host.get(host_id)
 
             if res["ok"] and h:
+                now = _NOW()
                 for k, v in res["info"].items():
                     if v is not None:
                         h[k] = v
-                h["updated_at"] = _NOW()
+                h["last_sync_at"] = now
+                h["updated_at"] = now
                 success += 1
                 yield f"data: {json.dumps({'type':'progress','id':host_id,'hostname':res['hostname'],'ip':res['ip'],'ok':True,'updated':res['info'],'success':success,'fail':fail,'total':total}, ensure_ascii=False)}\n\n"
             else:
