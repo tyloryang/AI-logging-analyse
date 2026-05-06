@@ -596,7 +596,8 @@ def _ssh_error_msg(e: Exception, host: dict | None = None) -> str:
             f"当前连接超时 {_HOST_SYNC_SSH_CONNECT_TIMEOUT:g}s，可通过 HOST_SYNC_SSH_CONNECT_TIMEOUT 调整"
         )
     if isinstance(e, _assh.PermissionDenied):
-        return "SSH 认证失败，请检查用户名和密码是否正确"
+        source = "SSH 凭证" if host and host.get("credential_id") else "SSH 配置"
+        return f"SSH 认证失败，请检查{source}中的用户名、密码和端口是否正确，并确认目标主机允许密码登录"
     if isinstance(e, _assh.ConnectionLost):
         return "SSH 连接中断"
     if isinstance(e, _assh.DisconnectError):
@@ -610,6 +611,17 @@ def _ssh_error_msg(e: Exception, host: dict | None = None) -> str:
     if isinstance(e, ValueError):
         return msg or name
     return f"{name}：{msg}" if msg else name
+
+
+def _decode_credential_password(raw_password: str) -> str | None:
+    if not raw_password:
+        return None
+    try:
+        return decrypt_password(raw_password)
+    except Exception as exc:
+        if raw_password.startswith("gAAAAA"):
+            raise ValueError("SSH 凭证解密失败，请检查 SSH_FERNET_KEY 是否与保存凭证时一致，或重新保存该凭证") from exc
+        return raw_password
 
 
 def _to_int(value: str) -> int | None:
@@ -660,10 +672,7 @@ async def _ssh_sync(host: dict) -> dict:
             port = int(cred.get("port") or port)
             raw = cred.get("password", "")
             if raw:
-                try:
-                    password = decrypt_password(raw)
-                except Exception:
-                    password = raw
+                password = _decode_credential_password(raw)
 
     # 主机自身密码
     if not password:
@@ -1033,12 +1042,10 @@ def _resolve_host_ssh_auth(host: dict) -> tuple[str, str, int, str]:
         cred = next((c for c in creds if c.get("id") == cred_id), None)
         if cred:
             username = str(cred.get("username") or username).strip() or username
+            port = int(cred.get("port") or port)
             raw_pw = cred.get("password", "")
             if raw_pw:
-                try:
-                    password = decrypt_password(raw_pw)
-                except Exception:
-                    password = raw_pw
+                password = _decode_credential_password(raw_pw)
 
     if not password:
         enc_pw = host.get("ssh_password", "")
@@ -1081,14 +1088,20 @@ async def _ssh_run(host: dict, command: str, timeout: float):
 
 def _build_arthas_command(pid: int, arthas_command: str) -> str:
     return f"""set -e
+# 清除代理，避免 curl/wget 走本地代理隧道失败
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy no_proxy NO_PROXY 2>/dev/null || true
+
 WORKDIR=/tmp/aiops-java-tools
 BOOT="$WORKDIR/arthas-boot.jar"
 mkdir -p "$WORKDIR"
 
-# 自动探测 java 路径（不依赖 PATH）
+# 自动探测 java 路径，并为 Arthas 归一化 JAVA_HOME（JDK8 下不能落到 .../jre）
 _find_java() {{
-  # 1. PATH 里直接找
-  if command -v java >/dev/null 2>&1; then echo "java"; return; fi
+  # 1. PATH 里直接找，并解析为真实路径
+  if command -v java >/dev/null 2>&1; then
+    readlink -f "$(command -v java)" 2>/dev/null || command -v java
+    return
+  fi
   # 2. 从目标 JVM 进程的符号链接找
   local exe
   exe=$(readlink -f /proc/{pid}/exe 2>/dev/null)
@@ -1096,27 +1109,80 @@ _find_java() {{
   # 3. 从进程 JAVA_HOME 环境变量找
   local jhome
   jhome=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^JAVA_HOME=' | cut -d= -f2)
+  if [ -n "$jhome" ] && [ "${{jhome%/jre}}" != "$jhome" ]; then
+    jhome="${{jhome%/jre}}"
+  fi
   if [ -n "$jhome" ] && [ -x "$jhome/bin/java" ]; then echo "$jhome/bin/java"; return; fi
+  if [ -n "$jhome" ] && [ -x "$jhome/jre/bin/java" ]; then echo "$jhome/jre/bin/java"; return; fi
   # 4. 常见安装路径
   for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java /opt/jdk*/bin/java /opt/java/*/bin/java; do
-    [ -x "$p" ] && {{ echo "$p"; return; }}
+    [ -x "$p" ] && {{ readlink -f "$p" 2>/dev/null || echo "$p"; return; }}
   done
   echo ""
 }}
+
+_find_jdk_home() {{
+  local java_path="$1"
+  local jhome=""
+  if [ -n "$java_path" ]; then
+    java_path=$(readlink -f "$java_path" 2>/dev/null || echo "$java_path")
+    case "$java_path" in
+      */jre/bin/java) jhome=$(dirname "$(dirname "$(dirname "$java_path")")") ;;
+      */bin/java) jhome=$(dirname "$(dirname "$java_path")") ;;
+    esac
+  fi
+  if [ -z "$jhome" ]; then
+    jhome=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^JAVA_HOME=' | cut -d= -f2)
+  fi
+  if [ -n "$jhome" ] && [ "${{jhome%/jre}}" != "$jhome" ]; then
+    jhome="${{jhome%/jre}}"
+  fi
+  if [ -n "$jhome" ] && [ -f "$jhome/lib/tools.jar" ]; then
+    echo "$jhome"
+    return
+  fi
+  if [ -n "$jhome" ] && [ -x "$jhome/bin/javac" ]; then
+    echo "$jhome"
+    return
+  fi
+  echo "$jhome"
+}}
+
 JAVA=$(_find_java)
 if [ -z "$JAVA" ]; then
   echo "未找到 java 命令，请确认 JDK 已安装或 /proc/{pid} 进程存在" >&2
   exit 2
 fi
+JAVA_HOME=$(_find_jdk_home "$JAVA")
+if [ -n "$JAVA_HOME" ]; then
+  export JAVA_HOME
+fi
 echo "使用 Java: $JAVA"
+echo "使用 JAVA_HOME: $JAVA_HOME"
+
+_download_file() {{
+  local url="$1"
+  local output="$2"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl --noproxy '*' -fsSL -o "$output" "$url" && return 0
+    echo "curl 下载失败: $url" >&2
+    return 1
+  fi
+
+  if command -v wget >/dev/null 2>&1; then
+    wget --no-proxy -qO "$output" "$url" && return 0
+    echo "wget 下载失败: $url" >&2
+    return 1
+  fi
+
+  echo "缺少 curl/wget，无法下载文件: $url" >&2
+  return 1
+}}
 
 if [ ! -s "$BOOT" ]; then
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$BOOT" https://arthas.aliyun.com/arthas-boot.jar
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$BOOT" https://arthas.aliyun.com/arthas-boot.jar
-  else
-    echo "缺少 curl/wget，无法下载 Arthas" >&2
+  if ! _download_file https://arthas.aliyun.com/arthas-boot.jar "$BOOT"; then
+    echo "下载 Arthas 失败，请检查目标机外网访问或代理配置" >&2
     exit 2
   fi
 fi
@@ -1126,19 +1192,29 @@ fi
 
 def _build_async_profiler_command(pid: int, seconds: int, event: str, remote_output: str) -> str:
     return f"""set -e
+# 清除代理，避免 curl/wget 走本地代理隧道失败
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy no_proxy NO_PROXY 2>/dev/null || true
+
 WORKDIR=/tmp/aiops-java-tools
 PROFILE_HOME="$WORKDIR/async-profiler"
 ARCH="$(uname -m)"
 mkdir -p "$WORKDIR"
 
 _find_java() {{
-  if command -v java >/dev/null 2>&1; then echo "java"; return; fi
+  if command -v java >/dev/null 2>&1; then
+    readlink -f "$(command -v java)" 2>/dev/null || command -v java
+    return
+  fi
   local exe; exe=$(readlink -f /proc/{pid}/exe 2>/dev/null)
   if [ -n "$exe" ] && [ -x "$exe" ]; then echo "$exe"; return; fi
   local jhome; jhome=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^JAVA_HOME=' | cut -d= -f2)
+  if [ -n "$jhome" ] && [ "${{jhome%/jre}}" != "$jhome" ]; then
+    jhome="${{jhome%/jre}}"
+  fi
   if [ -n "$jhome" ] && [ -x "$jhome/bin/java" ]; then echo "$jhome/bin/java"; return; fi
+  if [ -n "$jhome" ] && [ -x "$jhome/jre/bin/java" ]; then echo "$jhome/jre/bin/java"; return; fi
   for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java /opt/jdk*/bin/java /opt/java/*/bin/java; do
-    [ -x "$p" ] && {{ echo "$p"; return; }}
+    [ -x "$p" ] && {{ readlink -f "$p" 2>/dev/null || echo "$p"; return; }}
   done
   echo ""
 }}
@@ -1147,6 +1223,26 @@ if [ -z "$JAVA" ]; then
   echo "未找到 java 命令，请确认 JDK 已安装" >&2
   exit 2
 fi
+_download_file() {{
+  local url="$1"
+  local output="$2"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl --noproxy '*' -fsSL -o "$output" "$url" && return 0
+    echo "curl 下载失败: $url" >&2
+    return 1
+  fi
+
+  if command -v wget >/dev/null 2>&1; then
+    wget --no-proxy -qO "$output" "$url" && return 0
+    echo "wget 下载失败: $url" >&2
+    return 1
+  fi
+
+  echo "缺少 curl/wget，无法下载文件: $url" >&2
+  return 1
+}}
+
 case "$ARCH" in
   x86_64|amd64) PKG="linux-x64" ;;
   aarch64|arm64) PKG="linux-arm64" ;;
@@ -1159,12 +1255,8 @@ if [ ! -x "$PROFILE_HOME/profiler.sh" ]; then
   cd "$WORKDIR"
   rm -rf "$PROFILE_HOME" async-profiler async-profiler-*.tar.gz async-profiler-*
   URL="https://github.com/async-profiler/async-profiler/releases/download/v3.0/async-profiler-3.0-$PKG.tar.gz"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$URL" -o async-profiler.tar.gz
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO async-profiler.tar.gz "$URL"
-  else
-    echo "缺少 curl/wget，无法下载 async-profiler" >&2
+  if ! _download_file "$URL" async-profiler.tar.gz; then
+    echo "下载 async-profiler 失败，请检查目标机外网访问或代理配置" >&2
     exit 2
   fi
   tar -xzf async-profiler.tar.gz
