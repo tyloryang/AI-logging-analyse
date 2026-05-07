@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime
 
+from firecrawl_client import FirecrawlClient, FirecrawlConfigError
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from state import loki, prom
@@ -75,6 +76,36 @@ def _list_sse_mcp_tools_sync(sse_url: str) -> list:
     return asyncio.run(_inner())
 
 
+def _call_streamable_http_mcp_sync(server_url: str, method: str, params: dict) -> list:
+    """在全新事件循环中同步执行 streamable HTTP MCP 调用。"""
+    async def _inner():
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        async with streamablehttp_client(server_url) as (read, write, _get_session_id):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(method, params)
+        return result.content or []
+
+    return asyncio.run(_inner())
+
+
+def _list_streamable_http_mcp_tools_sync(server_url: str) -> list:
+    """在全新事件循环中同步列出 streamable HTTP MCP 工具。"""
+    async def _inner():
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        async with streamablehttp_client(server_url) as (read, write, _get_session_id):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resp = await session.list_tools()
+        return resp.tools
+
+    return asyncio.run(_inner())
+
+
 def _normalize_sse_url(sse_url: str) -> str:
     url = sse_url.rstrip("/")
     if not url.endswith("/sse"):
@@ -106,6 +137,24 @@ async def _call_sse_mcp(mcp_name: str, sse_url: str, method: str, params: dict) 
         return f"**MCP [{mcp_name}] 返回结果**\n{output[:3000]}"
     except Exception as exc:
         return f"SSE MCP 调用失败：{exc}"
+
+
+async def _call_streamable_http_mcp_raw(server_url: str, method: str, params: dict) -> str:
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        content = await loop.run_in_executor(
+            pool, lambda: _call_streamable_http_mcp_sync(server_url.rstrip("/"), method, params)
+        )
+    return _mcp_content_to_text(content)
+
+
+async def _call_streamable_http_mcp(mcp_name: str, server_url: str, method: str, params: dict) -> str:
+    """通过 MCP SDK 正确调用 streamable HTTP 类型的 MCP 服务器。"""
+    try:
+        output = await _call_streamable_http_mcp_raw(server_url, method, params)
+        return f"**MCP [{mcp_name}] 杩斿洖缁撴灉**\n{output[:3000]}"
+    except Exception as exc:
+        return f"Streamable HTTP MCP 调用失败：{exc}"
 
 
 @tool
@@ -310,6 +359,90 @@ async def recall_similar_incidents(query: str, top_k: int = 3) -> str:
 
 
 @tool
+async def firecrawl_search_web(
+    query: str,
+    limit: int = 5,
+    include_domains: str = "",
+    scrape_content: bool = False,
+) -> str:
+    """Search current external web pages or official docs. Use this for vendor docs, release notes, external troubleshooting guides, or other web content that may have changed recently.
+    query=search query, limit=max 10 results, include_domains=optional comma-separated hostnames like 'docs.firecrawl.dev,kubernetes.io', scrape_content=true to include markdown for each result.
+    """
+    client = FirecrawlClient.from_env()
+    try:
+        payload = await client.search(
+            query=query,
+            limit=limit,
+            include_domains=[item.strip() for item in include_domains.split(",") if item.strip()],
+            scrape_content=scrape_content,
+        )
+    except FirecrawlConfigError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Firecrawl search failed: {exc}"
+
+    data = payload.get("data") or {}
+    if isinstance(data, list):
+        results = list(data)
+    else:
+        results = list(data.get("web") or [])
+        if not results:
+            results = list(data.get("news") or [])
+    if not results:
+        return f"No Firecrawl search results found for: {query}"
+
+    lines = [f"Firecrawl search results for: {query}"]
+    for index, item in enumerate(results[: max(1, min(limit, 10))], 1):
+        metadata = item.get("metadata") or {}
+        title = item.get("title") or metadata.get("title") or item.get("url") or "(untitled)"
+        url = item.get("url") or metadata.get("url") or metadata.get("sourceURL") or ""
+        description = item.get("description") or item.get("snippet") or metadata.get("description") or ""
+        markdown = (item.get("markdown") or "").strip()
+
+        lines.append(f"{index}. {title}")
+        if url:
+            lines.append(f"   URL: {url}")
+        if description:
+            lines.append(f"   Summary: {description[:300]}")
+        if markdown:
+            excerpt = re.sub(r"\s+", " ", markdown)[:700]
+            lines.append(f"   Markdown: {excerpt}")
+    return "\n".join(lines)
+
+
+@tool
+async def firecrawl_scrape_url(url: str) -> str:
+    """Scrape a known external URL into clean markdown. Use this after web search or when the user already provided a URL."""
+    client = FirecrawlClient.from_env()
+    try:
+        payload = await client.scrape(url)
+    except FirecrawlConfigError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Firecrawl scrape failed: {exc}"
+
+    data = payload.get("data") or {}
+    metadata = data.get("metadata") or {}
+    title = metadata.get("title") or metadata.get("sourceURL") or url
+    final_url = metadata.get("url") or metadata.get("sourceURL") or url
+    status_code = metadata.get("statusCode", "-")
+    markdown = (data.get("markdown") or "").strip()
+    excerpt = markdown[:4000] if markdown else ""
+
+    lines = [
+        f"Firecrawl scrape: {title}",
+        f"URL: {final_url}",
+        f"HTTP status: {status_code}",
+    ]
+    if excerpt:
+        lines.append("")
+        lines.append(excerpt)
+    else:
+        lines.append("No markdown content was returned.")
+    return "\n".join(lines)
+
+
+@tool
 async def search_daily_reports(keyword: str = "", days: int = 30, limit: int = 8) -> str:
     """搜索历史运维日报/巡检日报/慢日志报告。
     keyword=关键词或问题描述（支持语义搜索，如"网络故障""磁盘满""calico"）。
@@ -430,6 +563,64 @@ async def search_daily_reports(keyword: str = "", days: int = 30, limit: int = 8
         return "\n".join(lines)
     except Exception as e:
         return f"搜索历史日报失败：{e}"
+
+
+@tool
+async def export_report_pdf(report_type: str = "daily") -> str:
+    """生成运维报告并导出为可下载的 PDF（HTML 格式，浏览器打印即可存为 PDF）。
+    report_type: 'daily'=运维日报（默认），'inspect'=主机巡检报告。
+    用户说「生成PDF报告」「导出报告」「生成运维日报PDF」时调用。
+    返回报告摘要和下载链接。
+    """
+    import httpx as _httpx
+    from state import APP_URL as _APP_URL
+
+    base_url = (_APP_URL or "http://localhost:8000").rstrip("/")
+
+    try:
+        # 1. 触发生成报告（调用内部 API）
+        if report_type == "inspect":
+            gen_url = f"{base_url}/api/report/inspect/generate"
+        else:
+            gen_url = f"{base_url}/api/report/generate"
+
+        report_id = None
+        title = ""
+        score = 0
+        errors = 0
+
+        async with _httpx.AsyncClient(timeout=120) as client:
+            async with client.stream("GET", gen_url) as resp:
+                if resp.status_code != 200:
+                    return f"报告生成失败（HTTP {resp.status_code}）"
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: __META__"):
+                        import json as _json
+                        try:
+                            meta = _json.loads(line[len("data: __META__"):])
+                            report_id = meta.get("id")
+                            title     = meta.get("title", "")
+                            score     = meta.get("health_score", 0)
+                            errors    = meta.get("total_errors", 0)
+                        except Exception:
+                            pass
+                    elif line == "data: [DONE]":
+                        break
+
+        if not report_id:
+            return "报告生成成功，但未获取到报告 ID，请在「分析报告」页面手动下载。"
+
+        download_url = f"{base_url}/api/report/{report_id}/export.html"
+        return (
+            f"✅ 报告已生成：**{title}**\n\n"
+            f"- 健康评分：{score}/100\n"
+            f"- 错误数：{errors}\n\n"
+            f"📄 **PDF 下载链接**（浏览器打开后按 Ctrl+P → 另存为 PDF）：\n"
+            f"{download_url}\n\n"
+            f"或在「分析报告」页面找到该报告，点击「导出 PDF」按钮。"
+        )
+    except Exception as e:
+        return f"报告生成异常：{e}"
 
 
 # ── Kubernetes 工具 ────────────────────────────────────────────────────────────
@@ -952,8 +1143,11 @@ async def call_mcp_tool(
                 return await _call_es_mcp_list_indices(mcp["name"], url, body)
             return await _call_sse_mcp(mcp["name"], url, action, body)
 
+        elif mcp_type == "streamable_http":
+            return await _call_streamable_http_mcp(mcp["name"], url, action, body)
+
         else:
-            return f"MCP 类型 '{mcp_type}' 暂不支持在线调用（支持 http / sse 类型）"
+            return f"MCP 类型 '{mcp_type}' 暂不支持在线调用（支持 http / sse / streamable_http 类型）"
 
     except FileNotFoundError:
         return "agent_config.json 不存在，请先在智能体配置页面保存配置"
@@ -1014,6 +1208,16 @@ async def list_mcp_tools(mcp_name: str) -> str:
                 tools = [{"name": t.name, "description": t.description or ""} for t in raw_tools]
             except Exception as e:
                 return f"获取 SSE MCP 工具列表失败：{e}"
+        elif mcp_type == "streamable_http":
+            try:
+                loop = asyncio.get_event_loop()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    raw_tools = await loop.run_in_executor(
+                        pool, lambda: _list_streamable_http_mcp_tools_sync(url.rstrip("/"))
+                    )
+                tools = [{"name": t.name, "description": t.description or ""} for t in raw_tools]
+            except Exception as e:
+                return f"获取 streamable HTTP MCP 工具列表失败：{e}"
         else:
             import httpx
             async with httpx.AsyncClient(timeout=10) as client:
@@ -1062,7 +1266,7 @@ async def list_available_mcps() -> str:
         lines = [f"**已启用 MCP（共 {len(enabled)} 个）**\n"]
         for m in enabled:
             t = m.get('type', '?')
-            callable_mark = "" if t in ("http", "sse") else " [不支持在线调用]"
+            callable_mark = "" if t in ("http", "sse", "streamable_http") else " [不支持在线调用]"
             lines.append(f"- {m['name']}  类型:{t}  地址:{m.get('url','?')}{callable_mark}")
         return "\n".join(lines)
     except Exception as exc:
@@ -1547,7 +1751,10 @@ async def execute_ssh_command(
 
 ALL_TOOLS = [
     recall_similar_incidents,
+    firecrawl_search_web,
+    firecrawl_scrape_url,
     search_daily_reports,
+    export_report_pdf,
     query_error_logs,
     count_errors_by_service,
     get_services_list,

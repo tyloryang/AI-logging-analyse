@@ -177,6 +177,11 @@
                   @click="exportReport('json')"
                   title="导出完整报告 JSON"
                 >JSON</button>
+                <button
+                  class="btn-export-r btn-export-pdf"
+                  @click="exportPdf"
+                  title="导出为 PDF（浏览器打开后 Ctrl+P → 另存为 PDF）"
+                >📄 PDF</button>
               </div>
               <button v-if="!generating" class="btn btn-outline" @click="generateReport" title="重新生成">
                 🔄 重新生成
@@ -782,6 +787,12 @@ function exportReport(fmt) {
   }
 }
 
+function exportPdf() {
+  const r = currentReport.value
+  if (!r?.id) return
+  window.open(`/api/report/${r.id}/export.html`, '_blank', 'noopener')
+}
+
 function _downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a   = document.createElement('a')
@@ -1036,6 +1047,10 @@ onMounted(async () => {
   border-radius: 4px; color: var(--text-secondary);
   cursor: pointer; transition: .15s;
 }
+.btn-export-pdf {
+  background: #eff6ff; border-color: #93c5fd; color: #1d4ed8;
+}
+.btn-export-pdf:hover { background: #dbeafe; }
 .btn-export-r:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* 慢日志报告专用样式 */

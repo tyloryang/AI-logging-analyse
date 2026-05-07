@@ -173,7 +173,10 @@
               <td class="small-text">{{ h.datacenter || '-' }}</td>
               <td><span v-if="h.group && groupMap[h.group]" class="group-badge-inline">{{ groupMap[h.group] }}</span><span v-else>-</span></td>
               <td class="small-text sync-time-cell" :title="h.last_sync_at ? formatEast8DateTime(h.last_sync_at) : '从未同步'">
-                <span v-if="h.last_sync_at" :class="syncTimeClass(h.last_sync_at)">{{ relativeTime(h.last_sync_at) }}</span>
+                <div v-if="h.last_sync_at" class="sync-time-stack">
+                  <span :class="syncTimeClass(h.last_sync_at)">{{ formatEast8DateTime(h.last_sync_at) }}</span>
+                  <span class="sync-time-relative">{{ relativeTime(h.last_sync_at) }}</span>
+                </div>
                 <span v-else class="no-sync">—</span>
               </td>
               <td class="action-cell" @click.stop>
@@ -1333,8 +1336,7 @@ function relativeTime(dateStr) {
   if (diff < 60)   return `${diff}秒前`
   if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
   if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
-  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}天前`
-  return formatEast8DateTime(dateStr)
+  return `${Math.floor(diff / 86400)}天前`
 }
 function syncTimeClass(dateStr) {
   if (!dateStr) return 'no-sync'
@@ -1834,7 +1836,9 @@ async function deleteGroup(g) {
 .proc-cpu { font-size: 11px; font-weight: 600; }
 .proc-cpu.cpu-high { color: var(--error); }
 .proc-cpu.cpu-mid  { color: var(--warning); }
-.sync-time-cell { white-space: nowrap; }
+.sync-time-cell { white-space: normal; min-width: 168px; }
+.sync-time-stack { display: flex; flex-direction: column; line-height: 1.25; }
+.sync-time-relative { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
 .sync-ok    { color: var(--success, #3fb950); }
 .sync-warn  { color: var(--warning, #d29922); }
 .sync-stale { color: var(--error, #f85149); }

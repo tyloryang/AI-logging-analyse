@@ -735,6 +735,145 @@ async def get_report(report_id: str):
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+@router.get("/api/report/{report_id}/export.html")
+async def export_report_html(report_id: str):
+    """将报告渲染为可打印 HTML，浏览器 Ctrl+P → 另存为 PDF 即可。"""
+    p = REPORTS_DIR / f"{report_id}.json"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    data = json.loads(p.read_text(encoding="utf-8"))
+    html = _render_report_html(data)
+    encoded = quote(f"{data.get('title', report_id)}.html")
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename*=UTF-8\'\'{encoded}'},
+    )
+
+
+def _render_report_html(data: dict) -> str:
+    title       = data.get("title", "运维报告")
+    created_at  = data.get("created_at", "")[:19].replace("T", " ")
+    score       = data.get("health_score", "-")
+    score_color = "#22c55e" if int(score or 0) >= 80 else ("#f59e0b" if int(score or 0) >= 60 else "#ef4444")
+    ai_text     = data.get("ai_analysis", "（暂无 AI 分析）")
+    report_type = data.get("type", "daily")
+
+    # 转义 HTML 特殊字符
+    def esc(s): return str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+    # AI 分析：Markdown 粗转 HTML（加粗、换行、标题）
+    def md2html(text):
+        import re
+        lines, out = text.split("\n"), []
+        for ln in lines:
+            ln = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', ln)
+            ln = re.sub(r'^#{1,3}\s+(.+)', r'<h4>\1</h4>', ln)
+            ln = re.sub(r'^[-*]\s+', '• ', ln)
+            out.append(f'<p>{ln}</p>' if not ln.startswith('<h4>') else ln)
+        return "\n".join(out)
+
+    # top10 错误表格
+    top10 = data.get("top10_errors", [])
+    top10_rows = "".join(
+        f"<tr><td>{esc(r.get('service',''))}</td><td style='text-align:right'>{esc(r.get('count',''))}</td></tr>"
+        for r in top10
+    )
+    top10_block = f"""
+    <h3>Top 错误服务</h3>
+    <table><thead><tr><th>服务</th><th>错误数</th></tr></thead>
+    <tbody>{top10_rows}</tbody></table>""" if top10 else ""
+
+    # 节点状态 / 巡检状态
+    node = data.get("node_status", {})
+    summary = data.get("summary", {})
+    stats_block = ""
+    if node or summary:
+        items = []
+        if node:
+            items += [f"节点正常: {node.get('normal',0)}", f"节点异常: {node.get('abnormal',0)}"]
+        if summary:
+            items += [f"主机总数: {summary.get('total',0)}",
+                      f"正常: {summary.get('normal',0)}",
+                      f"警告: {summary.get('warning',0)}",
+                      f"严重: {summary.get('critical',0)}"]
+        stats_block = "<div class='stats-row'>" + "".join(
+            f"<div class='stat-card'>{esc(i)}</div>" for i in items
+        ) + "</div>"
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{esc(title)}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: "PingFang SC","Microsoft YaHei",Arial,sans-serif; font-size: 13px;
+          color: #1a1a2e; background: #fff; padding: 32px 40px; max-width: 900px; margin: auto; }}
+  h1 {{ font-size: 22px; color: #1e3a8a; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-bottom: 6px; }}
+  h2 {{ font-size: 16px; color: #1e40af; margin: 24px 0 10px; border-left: 4px solid #3b82f6; padding-left: 10px; }}
+  h3 {{ font-size: 14px; color: #374151; margin: 18px 0 8px; }}
+  h4 {{ font-size: 13px; font-weight: 700; margin: 10px 0 4px; color: #1f2937; }}
+  .meta {{ color: #6b7280; font-size: 12px; margin-bottom: 18px; }}
+  .score-badge {{ display: inline-block; padding: 4px 14px; border-radius: 999px;
+                  background: {score_color}22; color: {score_color};
+                  font-size: 14px; font-weight: 700; border: 1px solid {score_color}55; }}
+  .kv-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 14px 0; }}
+  .kv-card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+              padding: 12px 14px; text-align: center; }}
+  .kv-card .val {{ font-size: 20px; font-weight: 700; color: #1e3a8a; }}
+  .kv-card .lbl {{ font-size: 11px; color: #6b7280; margin-top: 2px; }}
+  .stats-row {{ display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }}
+  .stat-card {{ background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+                padding: 8px 16px; font-size: 12px; color: #1d4ed8; }}
+  .ai-section {{ background: #fafafa; border: 1px solid #e5e7eb; border-radius: 10px;
+                 padding: 20px; margin: 10px 0; line-height: 1.8; }}
+  .ai-section p {{ margin: 4px 0; color: #374151; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }}
+  th {{ background: #eff6ff; color: #1d4ed8; padding: 8px 12px; text-align: left;
+        border-bottom: 2px solid #bfdbfe; }}
+  td {{ padding: 7px 12px; border-bottom: 1px solid #f3f4f6; }}
+  tr:nth-child(even) td {{ background: #f9fafb; }}
+  .footer {{ margin-top: 32px; padding-top: 12px; border-top: 1px solid #e5e7eb;
+             color: #9ca3af; font-size: 11px; text-align: center; }}
+  @media print {{
+    body {{ padding: 20px; }}
+    .no-print {{ display: none !important; }}
+    a {{ text-decoration: none; color: inherit; }}
+    @page {{ margin: 15mm 15mm; size: A4; }}
+  }}
+</style>
+</head>
+<body>
+<div class="no-print" style="background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;
+     padding:10px 16px;margin-bottom:20px;font-size:12px;color:#1d4ed8;display:flex;align-items:center;gap:10px;">
+  <span>💡 在浏览器按 <strong>Ctrl+P</strong>（Mac: ⌘+P），选择「另存为 PDF」即可导出 PDF 文件。</span>
+  <button onclick="window.print()" style="margin-left:auto;padding:5px 14px;background:#3b82f6;color:#fff;
+    border:none;border-radius:6px;cursor:pointer;font-size:12px;">打印 / 存为 PDF</button>
+</div>
+
+<h1>{esc(title)}</h1>
+<div class="meta">生成时间：{esc(created_at)} &nbsp;·&nbsp; 报告类型：{"运维日报" if report_type == "daily" else "主机巡检"}</div>
+
+<div class="kv-grid">
+  <div class="kv-card"><div class="val"><span class="score-badge">{esc(score)}</span></div><div class="lbl">健康评分</div></div>
+  <div class="kv-card"><div class="val">{esc(data.get("total_errors", 0))}</div><div class="lbl">错误总数</div></div>
+  <div class="kv-card"><div class="val">{esc(data.get("service_count", 0))}</div><div class="lbl">服务数</div></div>
+  <div class="kv-card"><div class="val">{esc(data.get("active_alerts", 0))}</div><div class="lbl">告警数</div></div>
+</div>
+
+{stats_block}
+
+<h2>AI 分析摘要</h2>
+<div class="ai-section">{md2html(esc(ai_text))}</div>
+
+{top10_block}
+
+<div class="footer">由 SxDevOps AIOps 平台生成 · {esc(created_at)}</div>
+</body>
+</html>"""
+
+
 # ── 通知推送 ──────────────────────────────────────────────────────────────────
 
 class NotifyRequest(BaseModel):
