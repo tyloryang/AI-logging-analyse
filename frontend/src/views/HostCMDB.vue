@@ -125,7 +125,7 @@
               <th>负责人</th>
               <th>机房</th>
               <th>分组</th>
-              <th class="th-sort" @click="setSort('last_sync_at')">上次同步<span class="sort-icon">{{ sortKey==='last_sync_at'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
+              <th class="th-sort" @click="setSort('last_sync_at')">最新同步<span class="sort-icon">{{ sortKey==='last_sync_at'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
               <th>操作</th>
             </tr>
           </thead>
@@ -172,7 +172,7 @@
               <td class="small-text">{{ h.owner || '-' }}</td>
               <td class="small-text">{{ h.datacenter || '-' }}</td>
               <td><span v-if="h.group && groupMap[h.group]" class="group-badge-inline">{{ groupMap[h.group] }}</span><span v-else>-</span></td>
-              <td class="small-text sync-time-cell" :title="h.last_sync_at || '从未同步'">
+              <td class="small-text sync-time-cell" :title="h.last_sync_at ? formatEast8DateTime(h.last_sync_at) : '从未同步'">
                 <span v-if="h.last_sync_at" :class="syncTimeClass(h.last_sync_at)">{{ relativeTime(h.last_sync_at) }}</span>
                 <span v-else class="no-sync">—</span>
               </td>
@@ -383,7 +383,7 @@
             <div class="disk-status-meta">{{ gbText(disk.used_gb) }} / {{ gbText(disk.size_gb) }}，剩余 {{ gbText(disk.avail_gb) }}</div>
           </div>
         </div>
-        <div v-if="selectedHost.metrics_updated_at" class="detail-row"><span class="dl">状态时间</span><span class="dv small-text">{{ selectedHost.metrics_updated_at }}</span></div>
+        <div v-if="selectedHost.metrics_updated_at" class="detail-row"><span class="dl">状态时间</span><span class="dv small-text">{{ formatEast8DateTime(selectedHost.metrics_updated_at) }}</span></div>
         <div class="detail-row"><span class="dl">状态</span><span class="dv">{{ statusLabel(selectedHost.status) }}</span></div>
         <div class="detail-row"><span class="dl">环境</span><span class="dv">{{ envLabel(selectedHost.env) }}</span></div>
         <div class="detail-row"><span class="dl">用途</span><span class="dv">{{ selectedHost.role || '-' }}</span></div>
@@ -399,12 +399,12 @@
             <span v-for="(v, k) in selectedHost.labels" :key="k" class="label-chip-detail">{{ k }}={{ v }}</span>
           </span>
         </div>
-        <div class="detail-row"><span class="dl">录入时间</span><span class="dv small-text">{{ selectedHost.created_at }}</span></div>
-        <div class="detail-row"><span class="dl">更新时间</span><span class="dv small-text">{{ selectedHost.updated_at }}</span></div>
+        <div class="detail-row"><span class="dl">录入时间</span><span class="dv small-text">{{ formatEast8DateTime(selectedHost.created_at) }}</span></div>
+        <div class="detail-row"><span class="dl">更新时间</span><span class="dv small-text">{{ formatEast8DateTime(selectedHost.updated_at) }}</span></div>
         <div class="detail-row">
-          <span class="dl">上次同步</span>
+          <span class="dl">最新同步</span>
           <span class="dv small-text" :class="selectedHost.last_sync_at ? '' : 'text-muted'">
-            {{ selectedHost.last_sync_at || '从未同步' }}
+            {{ selectedHost.last_sync_at ? formatEast8DateTime(selectedHost.last_sync_at) : '从未同步' }}
           </span>
         </div>
         <div v-if="selectedHostSyncState?.statusMsg" class="sync-msg" :class="selectedHostSyncState?.ok === false ? 'err' : 'ok'">
@@ -1278,18 +1278,69 @@ const _SVC_COLOR_MAP = {
 function svcColor(svcName) { return _SVC_COLOR_MAP[svcName] || 'default' }
 function cpuClass(cpu) { return cpu >= 50 ? 'cpu-high' : cpu >= 20 ? 'cpu-mid' : '' }
 
+const DISPLAY_TIMEZONE = 'Asia/Shanghai'
+const DISPLAY_TIMEZONE_LABEL = 'UTC+8'
+const east8DateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: DISPLAY_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
+function parseServerTime(value) {
+  if (!value) return null
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
+  if (typeof value !== 'string') {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }
+
+  const raw = value.trim()
+  if (!raw) return null
+
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw)
+    ? raw
+    : `${raw.replace(' ', 'T')}Z`
+  const parsed = new Date(normalized)
+  if (!Number.isNaN(parsed.getTime())) return parsed
+
+  const fallback = new Date(raw)
+  return Number.isNaN(fallback.getTime()) ? null : fallback
+}
+
+function formatEast8DateTime(value) {
+  const parsed = parseServerTime(value)
+  if (!parsed) return value || '-'
+
+  const parts = Object.fromEntries(
+    east8DateTimeFormatter
+      .formatToParts(parsed)
+      .filter(part => part.type !== 'literal')
+      .map(part => [part.type, part.value])
+  )
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${DISPLAY_TIMEZONE_LABEL}`
+}
+
 function relativeTime(dateStr) {
   if (!dateStr) return '—'
-  const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
+  const parsed = parseServerTime(dateStr)
+  if (!parsed) return '—'
+  const diff = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000))
   if (diff < 60)   return `${diff}秒前`
   if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
   if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
   if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}天前`
-  return dateStr.slice(0, 10)
+  return formatEast8DateTime(dateStr)
 }
 function syncTimeClass(dateStr) {
   if (!dateStr) return 'no-sync'
-  const hours = (Date.now() - new Date(dateStr).getTime()) / 3600000
+  const parsed = parseServerTime(dateStr)
+  if (!parsed) return 'no-sync'
+  const hours = (Date.now() - parsed.getTime()) / 3600000
   if (hours > 72) return 'sync-stale'
   if (hours > 24) return 'sync-warn'
   return 'sync-ok'
