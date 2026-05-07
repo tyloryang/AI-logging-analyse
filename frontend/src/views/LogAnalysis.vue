@@ -236,9 +236,18 @@
               </tbody>
             </table>
           </div>
+          <!-- 加载更多 -->
+          <div v-if="hasMore || loadingMore" class="load-more-bar">
+            <button class="btn-load-more" :disabled="loadingMore" @click="loadMore">
+              <span v-if="loadingMore" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+              <span v-else>↓</span>
+              {{ loadingMore ? '加载中...' : `加载更多（已加载 ${totalLoaded} 条）` }}
+            </button>
+          </div>
+
           <!-- 分页 -->
           <div class="log-pagination">
-            <span class="pg-info">第 {{ currentPage }} / {{ totalPages }} 页，每页 {{ pageSize }} 条</span>
+            <span class="pg-info">第 {{ currentPage }} / {{ totalPages }} 页，每页 {{ pageSize }} 条（共加载 {{ totalLoaded }} 条）</span>
             <div class="pg-btns">
               <button class="pg-btn" :disabled="currentPage <= 1" @click="currentPage = 1">«</button>
               <button class="pg-btn" :disabled="currentPage <= 1" @click="currentPage--">‹</button>
@@ -629,6 +638,10 @@ function timeParams() {
 const logs         = ref([])
 const levelFilter  = ref('')
 const loadingLogs  = ref(false)
+const loadingMore  = ref(false)
+const hasMore      = ref(false)
+const nextCursorNs = ref(null)
+const totalLoaded  = ref(0)
 const analyzingAI  = ref(false)
 const aiContent    = ref('')
 
@@ -804,17 +817,44 @@ async function loadLogs() {
   loadingLogs.value = true
   logs.value = []
   currentPage.value = 1
+  hasMore.value = false
+  nextCursorNs.value = null
+  totalLoaded.value = 0
   try {
     const r = await api.getLogs({
       service:  selectedService.value || undefined,
       level:    levelFilter.value || undefined,
-      limit:    2000,
+      limit:    200,
       keyword:  keyword.value || undefined,
       ...timeParams(),
     })
     logs.value = r.data
+    hasMore.value      = r.has_more ?? false
+    nextCursorNs.value = r.next_cursor_ns ?? null
+    totalLoaded.value  = r.data?.length ?? 0
   } finally {
     loadingLogs.value = false
+  }
+}
+
+async function loadMore() {
+  if (!hasMore.value || !nextCursorNs.value || loadingMore.value) return
+  loadingMore.value = true
+  try {
+    const r = await api.getLogs({
+      service:    selectedService.value || undefined,
+      level:      levelFilter.value || undefined,
+      limit:      200,
+      keyword:    keyword.value || undefined,
+      cursor_ns:  nextCursorNs.value,
+      ...timeParams(),
+    })
+    logs.value = [...logs.value, ...(r.data || [])]
+    hasMore.value      = r.has_more ?? false
+    nextCursorNs.value = r.next_cursor_ns ?? null
+    totalLoaded.value  = logs.value.length
+  } finally {
+    loadingMore.value = false
   }
 }
 
@@ -1254,6 +1294,20 @@ onMounted(() => {
   padding: 5px 12px; border-radius: 6px; font-size: 12px;
   cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
 }
+
+/* 加载更多 */
+.load-more-bar {
+  display: flex; justify-content: center;
+  padding: 10px 14px; border-top: 1px solid var(--border);
+}
+.btn-load-more {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 20px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-base); color: var(--text-primary);
+  transition: background .12s;
+}
+.btn-load-more:hover:not(:disabled) { background: var(--bg-hover); }
+.btn-load-more:disabled { opacity: .55; cursor: not-allowed; }
 
 /* 分页 */
 .log-pagination {

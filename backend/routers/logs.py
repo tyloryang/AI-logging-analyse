@@ -63,24 +63,33 @@ async def get_services_grouped():
 async def get_logs(
     service: Optional[str] = Query(None, description="服务名称"),
     hours: int = Query(24, description="查询时长（小时）"),
-    limit: int = Query(2000, le=10000, description="返回条数"),
+    limit: int = Query(200, le=1000, description="每页条数（游标分页）"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn/info"),
     keyword: Optional[str] = Query(None, description="关键字过滤（不区分大小写）"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式，如 2024-01-01T00:00"),
     end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式，如 2024-01-01T23:59"),
+    cursor_ns: Optional[int] = Query(None, description="游标：上一页最旧条目的纳秒时间戳，续页时传入"),
 ):
-    """查询日志"""
+    """查询日志（游标分页，每页 limit 条，不超过 Loki 4MB 响应限制）"""
     try:
-        logs = await loki.query_logs(
+        result = await loki.query_logs_page(
             service=service,
             hours=hours,
-            limit=limit,
+            page_size=limit,
+            cursor_ns=cursor_ns,
             level=level or None,
             keyword=keyword or None,
             start_ns=_parse_time_ns(start_time),
             end_ns=_parse_time_ns(end_time),
         )
-        return {"data": logs, "total": len(logs), "service": service, "hours": hours}
+        return {
+            "data": result["data"],
+            "has_more": result["has_more"],
+            "next_cursor_ns": result["next_cursor_ns"],
+            "total": len(result["data"]),
+            "service": service,
+            "hours": hours,
+        }
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 

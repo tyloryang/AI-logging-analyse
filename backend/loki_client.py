@@ -62,37 +62,48 @@ class LokiClient:
         limit: int,
         direction: str,
     ) -> list[dict]:
-        """向 Loki 发送单次 query_range 请求，返回解析后的日志列表。"""
-        kwargs = dict(
-            url=f"{self.base_url}/loki/api/v1/query_range",
-            headers=self._headers(),
-            params={
-                "query": query,
-                "start": str(start),
-                "end": str(end),
-                "limit": str(limit),
-                "direction": direction,
-            },
-        )
-        if self.auth:
-            kwargs["auth"] = self.auth
-        resp = await client.get(**kwargs)
-        resp.raise_for_status()
-        data = resp.json()
+        """向 Loki 发送单次 query_range 请求，返回解析后的日志列表。
+        遇到 400/413（响应体过大）时自动减半 limit 重试最多 2 次。"""
+        cur_limit = limit
+        for attempt in range(3):
+            kwargs = dict(
+                url=f"{self.base_url}/loki/api/v1/query_range",
+                headers=self._headers(),
+                params={
+                    "query": query,
+                    "start": str(start),
+                    "end": str(end),
+                    "limit": str(cur_limit),
+                    "direction": direction,
+                },
+            )
+            if self.auth:
+                kwargs["auth"] = self.auth
+            resp = await client.get(**kwargs)
 
-        rows = []
-        for stream in data.get("data", {}).get("result", []):
-            labels = stream.get("stream", {})
-            for ts_ns, line in stream.get("values", []):
-                ts_sec = int(ts_ns) / 1e9
-                dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
-                rows.append({
-                    "timestamp": dt.strftime("%Y-%m-%d %H:%M:%S"),
-                    "timestamp_ns": ts_ns,
-                    "line": line,
-                    "labels": labels,
-                })
-        return rows
+            # 400/413 通常是响应体超限，减半重试
+            if resp.status_code in (400, 413) and attempt < 2:
+                body = resp.text.lower()
+                if any(k in body for k in ("too many", "limit", "size", "large", "bytes")):
+                    cur_limit = max(50, cur_limit // 2)
+                    continue
+            resp.raise_for_status()
+
+            data = resp.json()
+            rows = []
+            for stream in data.get("data", {}).get("result", []):
+                labels = stream.get("stream", {})
+                for ts_ns, line in stream.get("values", []):
+                    ts_sec = int(ts_ns) / 1e9
+                    dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
+                    rows.append({
+                        "timestamp": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        "timestamp_ns": ts_ns,
+                        "line": line,
+                        "labels": labels,
+                    })
+            return rows
+        return []
 
     async def query_range(
         self,
@@ -145,6 +156,49 @@ class LokiClient:
 
         results.sort(key=lambda x: x["timestamp_ns"], reverse=True)
         return results[:limit]
+
+    async def query_logs_page(
+        self,
+        service: Optional[str] = None,
+        hours: float = 24,
+        page_size: int = 200,
+        cursor_ns: Optional[int] = None,
+        level: Optional[str] = None,
+        keyword: Optional[str] = None,
+        start_ns: Optional[int] = None,
+        end_ns: Optional[int] = None,
+    ) -> dict:
+        """游标分页查询日志，每次只向 Loki 请求 page_size 条，不会触发 4MB 限制。
+        cursor_ns: 上一页最旧条目的纳秒时间戳，续页从该时间之前取。
+        返回 {data, has_more, next_cursor_ns}
+        """
+        now_ns = int(time.time() * 1e9)
+        s_ns = start_ns if start_ns is not None else int(now_ns - hours * 3600 * 1e9)
+        # 有游标时从游标往前取，否则从 end_ns / now 开始
+        e_ns = (cursor_ns - 1) if cursor_ns is not None else (end_ns if end_ns is not None else now_ns)
+
+        svc_label = await self._detect_service_label()
+        base = f'{{{svc_label}="{service}"}}' if service else f'{{{svc_label}=~".+"}}'
+
+        if level in ("error", "err"):
+            query = f'{base} |~ "(?i)(error|exception|fatal|panic)"'
+        elif level in ("warn", "warning"):
+            query = f'{base} |~ "(?i)(warn|warning)"'
+        else:
+            query = base
+
+        if keyword:
+            safe_kw = re.escape(keyword).replace('\\', '\\\\')
+            query += f' |~ "(?i){safe_kw}"'
+
+        safe_size = min(page_size, self.LOKI_PAGE_SIZE)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            rows = await self._fetch_page(client, query, s_ns, e_ns, safe_size, "backward")
+
+        rows.sort(key=lambda x: x["timestamp_ns"], reverse=True)
+        has_more = len(rows) >= safe_size
+        next_cursor = int(rows[-1]["timestamp_ns"]) if rows and has_more else None
+        return {"data": rows, "has_more": has_more, "next_cursor_ns": next_cursor}
 
     async def _detect_service_label(self) -> str:
         """自动探测服务标签：优先用 app，没有则用 job"""
