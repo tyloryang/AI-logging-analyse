@@ -260,8 +260,10 @@
       </div>
       <svg v-else
         class="k8s-topo-svg"
-        :viewBox="`0 0 ${TOPO_W} ${topoH}`"
-        preserveAspectRatio="xMidYMid meet"
+        :viewBox="`0 0 ${topoW} ${topoH}`"
+        :width="topoW"
+        :height="topoH"
+        preserveAspectRatio="xMinYMin meet"
       >
         <defs>
           <pattern id="tg" width="36" height="36" patternUnits="userSpaceOnUse">
@@ -283,7 +285,7 @@
           <text v-for="lbl in TOPO_LAYERS" :key="lbl.id"
             x="16" :y="lbl.y - 4" class="topo-layer-txt">{{ lbl.label }}</text>
           <line v-for="lbl in TOPO_LAYERS" :key="'tl'+lbl.id"
-            :x1="110" :y1="lbl.y - 4" :x2="TOPO_W-16" :y2="lbl.y - 4"
+            :x1="110" :y1="lbl.y - 4" :x2="topoW-16" :y2="lbl.y - 4"
             stroke="rgba(56,189,248,0.08)" stroke-width="1" stroke-dasharray="4 8"/>
         </g>
 
@@ -400,26 +402,38 @@ import { api } from '../api/index.js'
 const SVG_W = 1440
 const SVG_H = 920
 
-// K8s 拓扑图常量
-const TOPO_W   = 1280
-const SVC_W    = 160, SVC_H    = 72
-const DEP_W    = 155, DEP_H    = 68
-const POD_W    = 145, POD_H    = 40
-const NODE_W   = 200, NODE_H   = 76
+// K8s 拓扑图常量（节点尺寸）
+const SVC_W  = 168, SVC_H  = 74
+const DEP_W  = 162, DEP_H  = 70
+const POD_W  = 138, POD_H  = 38
+const NODE_W = 200, NODE_H = 76
+const MIN_SPACING = 196   // 节点中心最小间距（px）
+const PAD_X       = 60    // 左右内边距
 
-// 各层中心 Y 坐标
-const TOPO_Y = { svc: 110, dep: 270, pod: 430, node: 590 }
+// 动态画布宽度：按最宽层的节点数计算，保证 MIN_SPACING
+const topoW = computed(() => {
+  const ns = Math.max(
+    k8sServices.value.length    || 1,
+    k8sDeployments.value.length || 1,
+    topoPods.value.length       || 1,
+    k8sNodes.value.length       || 1,
+  )
+  return Math.max(1280, ns * MIN_SPACING + PAD_X * 2)
+})
+
+// 各层中心 Y 坐标（去掉 Pod 层，Pod 折叠到 Deployment 卡片里）
+const TOPO_Y = { svc: 110, dep: 290, pod: 460, node: 620 }
 
 // 层标签
-const TOPO_LAYERS = [
-  { id: 'svc',  y: TOPO_Y.svc  - SVC_H/2  - 10, label: 'SERVICE 层' },
-  { id: 'dep',  y: TOPO_Y.dep  - DEP_H/2  - 10, label: 'DEPLOYMENT 层' },
-  { id: 'pod',  y: TOPO_Y.pod  - POD_H/2  - 10, label: 'POD 层' },
-  { id: 'node', y: TOPO_Y.node - NODE_H/2 - 10, label: 'NODE 层' },
-]
+const TOPO_LAYERS = computed(() => [
+  { id: 'svc',  y: TOPO_Y.svc  - SVC_H/2  - 12, label: 'SERVICE 层' },
+  { id: 'dep',  y: TOPO_Y.dep  - DEP_H/2  - 12, label: 'DEPLOYMENT / WORKLOAD 层' },
+  { id: 'pod',  y: TOPO_Y.pod  - POD_H/2  - 12, label: 'POD 层' },
+  { id: 'node', y: TOPO_Y.node - NODE_H/2 - 12, label: 'NODE 层' },
+])
 
-// 画布总高 = 最底层 + padding + 底部 padding
-const topoH = computed(() => TOPO_Y.node + NODE_H/2 + 50)
+// 画布总高
+const topoH = computed(() => TOPO_Y.node + NODE_H/2 + 60)
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const view     = ref('arch')
@@ -639,9 +653,10 @@ function podsByNode(name) {
 }
 
 // ── 拓扑布局计算 ──────────────────────────────────────────────────────
-function spreadX(count, w = TOPO_W, pad = 60) {
+function spreadX(count, w, pad = PAD_X) {
   if (!count) return []
-  const usable = w - pad * 2
+  const W = w ?? topoW.value
+  const usable = W - pad * 2
   return Array.from({ length: count }, (_, i) =>
     pad + usable * (i + 0.5) / count
   )
@@ -673,9 +688,9 @@ const topoDeployments = computed(() => {
   })
 })
 
-// Pod 节点（最多取前 N 个，按 deployment 排列）
+// Pod 节点（最多取前 24 个）
 const topoPods = computed(() => {
-  const MAX = 20
+  const MAX = 24
   const pods = k8sPods.value.slice(0, MAX)
   const xs = spreadX(pods.length)
   return pods.map((p, i) => ({ ...p, x: xs[i] ?? 640 }))
@@ -882,8 +897,9 @@ onMounted(() => {})
 .leg-sep { height: 1px; background: #21262d; margin: 2px 0; }
 
 /* ── K8s 服务拓扑图 ──────────────────────────────────────── */
+/* 外层横向 + 纵向滚动，SVG 按实际内容宽度展开 */
 .k8s-wrap { flex: 1; overflow: auto; display: flex; flex-direction: column; }
-.k8s-topo-svg { width: 100%; max-width: 1280px; height: auto; display: block; margin: 0 auto; }
+.k8s-topo-svg { height: auto; display: block; min-width: 100%; }
 
 .k8s-topbar {
   display: flex; align-items: center; justify-content: space-between;
