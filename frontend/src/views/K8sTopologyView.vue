@@ -264,69 +264,94 @@
         <rect width="100%" height="100%" fill="#f8fafc"/>
         <rect width="100%" height="100%" fill="url(#k8s-grid)"/>
 
-        <!-- Node 卡片行 -->
-        <g v-for="(nd, ni) in k8sNodes" :key="nd.name">
-          <!-- Node 背景 -->
-          <rect :x="20" :y="ni*K8S_ROW_H + 20"
-            width="200" :height="K8S_ROW_H - 24"
-            rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1"/>
-          <text :x="32" :y="ni*K8S_ROW_H + 42" class="k8s-node-name">{{ nd.name }}</text>
-          <text :x="32" :y="ni*K8S_ROW_H + 58" class="k8s-node-role">{{ nd.roles }} · {{ nd.version }}</text>
-          <circle :cx="196" :cy="ni*K8S_ROW_H + 42" r="6"
+        <!-- Node 行（动态高度，显示全部 Pod）-->
+        <g v-for="nd in k8sNodes" :key="nd.name">
+          <!-- Node 卡片 -->
+          <rect
+            :x="20" :y="nodeYMap[nd.name]"
+            :width="K8S_NODE_W" :height="nodeRowH(nd.name)"
+            rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+          <!-- 顶部色条 -->
+          <rect :x="20" :y="nodeYMap[nd.name]" :width="K8S_NODE_W" height="4"
+            rx="4" :fill="nd.ready ? '#22c55e' : '#ef4444'"/>
+          <!-- Node 名称 -->
+          <text :x="34" :y="nodeYMap[nd.name] + 24" class="k8s-node-name">{{ nd.name }}</text>
+          <!-- 角色 & 版本 -->
+          <text :x="34" :y="nodeYMap[nd.name] + 40" class="k8s-node-role">{{ nd.roles }}</text>
+          <text :x="34" :y="nodeYMap[nd.name] + 54" class="k8s-node-role">{{ nd.version }}</text>
+          <!-- CPU/内存 -->
+          <text :x="34" :y="nodeYMap[nd.name] + 70" class="k8s-node-role">
+            CPU {{ nd.cpu || '-' }} · MEM {{ nd.memory || '-' }}
+          </text>
+          <!-- 状态圆点 -->
+          <circle :cx="K8S_NODE_W" :cy="nodeYMap[nd.name] + 18" r="7"
             :fill="nd.ready ? '#22c55e' : '#ef4444'"
             :class="nd.ready ? 'k8s-dot-pulse' : ''"/>
+          <!-- Pod 数量 -->
+          <text :x="34" :y="nodeYMap[nd.name] + nodeRowH(nd.name) - 10"
+            class="k8s-node-role" style="fill:#3b82f6">
+            {{ nodeRowPods(nd.name).length }} Pods
+          </text>
 
           <!-- Pod chips -->
-          <g v-for="(pod, pi) in podsByNode(nd.name).slice(0, 8)" :key="pod.name">
+          <g v-for="(pod, pi) in nodeRowPods(nd.name)" :key="pod.name">
             <rect
-              :x="240 + (pi % 4) * 175"
-              :y="ni*K8S_ROW_H + 20 + Math.floor(pi/4) * 44"
-              width="165" height="36"
+              :x="K8S_NODE_W + 28 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
+              :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP)"
+              :width="K8S_POD_W" :height="K8S_POD_H"
               rx="8"
-              :fill="podColor(pod.phase) + '20'"
-              :stroke="podColor(pod.phase) + '60'"
-              stroke-width="1"
-            />
+              :fill="podColor(pod.phase) + '18'"
+              :stroke="podColor(pod.phase) + '70'"
+              stroke-width="1.2"/>
+            <!-- 状态点 -->
             <circle
-              :cx="252 + (pi % 4) * 175"
-              :cy="ni*K8S_ROW_H + 38 + Math.floor(pi/4) * 44"
-              r="5" :fill="podColor(pod.phase)"
+              :cx="K8S_NODE_W + 44 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
+              :cy="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + K8S_POD_H/2 - 6"
+              r="4" :fill="podColor(pod.phase)"
               :class="pod.phase==='Running' ? 'k8s-dot-pulse' : ''"/>
+            <!-- Pod 名称 -->
             <text
-              :x="263 + (pi % 4) * 175"
-              :y="ni*K8S_ROW_H + 42 + Math.floor(pi/4) * 44"
-              class="pod-name">{{ truncate(pod.name, 14) }}</text>
+              :x="K8S_NODE_W + 54 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
+              :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + 18"
+              class="pod-name">{{ truncate(pod.name, 18) }}</text>
+            <!-- Namespace -->
             <text
-              :x="263 + (pi % 4) * 175"
-              :y="ni*K8S_ROW_H + 52 + Math.floor(pi/4) * 44"
-              class="pod-ns">{{ pod.namespace }}</text>
+              :x="K8S_NODE_W + 54 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
+              :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + 33"
+              class="pod-ns">{{ pod.namespace }} · {{ pod.phase }}</text>
           </g>
 
-          <!-- 连接线：Node → Pods -->
+          <!-- 连接动效：Node → 第一行 Pods -->
           <g v-if="animOn">
-            <g v-for="(pod, pi) in podsByNode(nd.name).slice(0,8)" :key="'c'+pi">
+            <g v-for="(pod, pi) in nodeRowPods(nd.name).slice(0, K8S_PODS_PER_ROW)" :key="'c'+pi">
               <path
-                :id="`k8sp-${ni}-${pi}`"
-                :d="`M220,${ni*K8S_ROW_H + 45} C230,${ni*K8S_ROW_H+45} 230,${ni*K8S_ROW_H + 38 + Math.floor(pi/4)*44} ${240+(pi%4)*175},${ni*K8S_ROW_H + 38 + Math.floor(pi/4)*44}`"
-                fill="none" stroke="#3b82f630" stroke-width="1"/>
-              <circle r="3" fill="#60a5fa80" filter="url(#k8s-glow)">
-                <animateMotion :dur="(1.2 + pi*0.15)+'s'" repeatCount="indefinite" :begin="(pi*0.2)+'s'">
-                  <mpath :href="`#k8sp-${ni}-${pi}`"/>
+                :id="`k8sp-${nd.name}-${pi}`"
+                :d="`M${K8S_NODE_W+20},${nodeYMap[nd.name] + nodeRowH(nd.name)/2}
+                     C${K8S_NODE_W+28},${nodeYMap[nd.name] + nodeRowH(nd.name)/2}
+                     ${K8S_NODE_W+28},${nodeYMap[nd.name] + 10 + K8S_POD_H/2}
+                     ${K8S_NODE_W+28 + pi*(K8S_POD_W+K8S_POD_GAP)},${nodeYMap[nd.name] + 10 + K8S_POD_H/2}`"
+                fill="none" stroke="#3b82f625" stroke-width="1"/>
+              <circle r="3" fill="#60a5fa70" filter="url(#k8s-glow)">
+                <animateMotion :dur="(1.0 + pi*0.12)+'s'" repeatCount="indefinite" :begin="(pi*0.18)+'s'">
+                  <mpath :href="`#k8sp-${nd.name}-${pi}`"/>
                 </animateMotion>
               </circle>
             </g>
           </g>
         </g>
 
-        <!-- 统计信息 -->
-        <g :transform="`translate(20, ${k8sNodes.length * K8S_ROW_H + 28})`">
-          <rect x="0" y="0" :width="K8S_W - 40" height="48" rx="10"
-            fill="#eff6ff" stroke="#93c5fd" stroke-width="1"/>
-          <text x="16" y="22" class="stat-label">集群概览</text>
-          <text x="16" y="40" class="stat-val">节点 {{ k8sNodes.length }}</text>
-          <text x="100" y="40" class="stat-val">Pods {{ k8sPods.length }}</text>
-          <text x="200" y="40" class="stat-val">Running {{ k8sPods.filter(p=>p.phase==='Running').length }}</text>
-          <text x="330" y="40" class="stat-val ok-text">{{ k8sPods.filter(p=>p.phase==='Running').length }} / {{ k8sPods.length }}</text>
+        <!-- 底部统计栏 -->
+        <g :transform="`translate(20, ${k8sSvgH - 62})`">
+          <rect x="0" y="0" :width="K8S_W - 40" height="50" rx="10"
+            fill="#eff6ff" stroke="#93c5fd" stroke-width="1.2"/>
+          <text x="16" y="20" class="stat-label">集群概览</text>
+          <text x="16" y="38" class="stat-val">节点 {{ k8sNodes.length }}</text>
+          <text x="110" y="38" class="stat-val">Pods {{ k8sPods.length }}</text>
+          <text x="230" y="38" class="stat-val">Running {{ k8sPods.filter(p=>p.phase==='Running').length }}</text>
+          <text x="400" y="38" class="stat-val">Pending {{ k8sPods.filter(p=>p.phase==='Pending').length }}</text>
+          <text x="530" y="38" class="stat-val ok-text">
+            {{ Math.round(k8sPods.filter(p=>p.phase==='Running').length / Math.max(1,k8sPods.length) * 100) }}% 健康
+          </text>
         </g>
       </svg>
     </div>
@@ -340,8 +365,12 @@ import { api } from '../api/index.js'
 // ── 常量 ──────────────────────────────────────────────────────────────
 const SVG_W = 1440
 const SVG_H = 920
-const K8S_W = 960
-const K8S_ROW_H = 100
+const K8S_W      = 1280   // K8s 视图宽度
+const K8S_PODS_PER_ROW = 5  // 每行显示 Pod 数
+const K8S_POD_W  = 192    // 每个 Pod chip 宽
+const K8S_POD_H  = 44     // 每个 Pod chip 高
+const K8S_POD_GAP = 10    // Pod 间距
+const K8S_NODE_W = 220    // 左侧 Node 卡片宽度
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const view     = ref('arch')
@@ -353,9 +382,33 @@ const archWrap = ref(null)
 const k8sNodes = ref([])
 const k8sPods  = ref([])
 
-const k8sSvgH = computed(() =>
-  Math.max(400, k8sNodes.value.length * K8S_ROW_H + 100)
-)
+// 计算每个 Node 行的 Pod 数和行高
+function nodeRowPods(name) {
+  return podsByNode(name)
+}
+function nodeRowH(name) {
+  const count = nodeRowPods(name).length
+  const rows  = Math.max(1, Math.ceil(count / K8S_PODS_PER_ROW))
+  return 28 + rows * (K8S_POD_H + K8S_POD_GAP) + 16
+}
+
+// 累计 Y 偏移（每个 Node 行高度不同）
+const nodeYMap = computed(() => {
+  const map = {}
+  let y = 20
+  for (const nd of k8sNodes.value) {
+    map[nd.name] = y
+    y += nodeRowH(nd.name) + 14
+  }
+  return map
+})
+
+const k8sSvgH = computed(() => {
+  if (!k8sNodes.value.length) return 400
+  let h = 20
+  for (const nd of k8sNodes.value) h += nodeRowH(nd.name) + 14
+  return h + 72
+})
 
 const tooltip = ref({
   show: false, x: 0, y: 0,
@@ -363,13 +416,16 @@ const tooltip = ref({
   rows: [], calls: [],
 })
 
-// ── 层标签 ────────────────────────────────────────────────────────────
+// ── 层标签（放在层间空白区，不与节点重叠）─────────────────────────
+// 节点y: L0=92±36, L1=228±36, L2=378±41, L3=518±33, L4=668±32
+// 间隔: L0底128→L1顶192→ 取160; L1底264→L2顶337→ 取300
+//        L2底419→L3顶485→ 取452; L3底551→L4顶636→ 取593
 const LAYER_LABELS = [
-  { id: 0, y:  92, text: '用户入口' },
-  { id: 1, y: 228, text: '前端层' },
-  { id: 2, y: 378, text: '应用层' },
-  { id: 3, y: 518, text: '数据/中间件层' },
-  { id: 4, y: 668, text: '可观测性 & 外部服务' },
+  { id: 0, y:  32, text: '用户入口' },
+  { id: 1, y: 160, text: '前端层' },
+  { id: 2, y: 300, text: '应用层' },
+  { id: 3, y: 452, text: '数据 / 中间件层' },
+  { id: 4, y: 593, text: '可观测性 & 外部服务' },
 ]
 
 // ── 分组框 ────────────────────────────────────────────────────────────
@@ -682,8 +738,8 @@ onMounted(() => {})
 .leg-sep { height: 1px; background: #21262d; margin: 2px 0; }
 
 /* ── K8s 服务图 ─────────────────────────────────────────── */
-.k8s-wrap { flex: 1; overflow: auto; padding: 12px; display: flex; justify-content: center; }
-.k8s-svg { width: 100%; max-width: 960px; height: auto; display: block; }
+.k8s-wrap { flex: 1; overflow: auto; padding: 12px; }
+.k8s-svg { width: 100%; max-width: 1280px; height: auto; display: block; margin: 0 auto; }
 .k8s-loading, .k8s-empty {
   display: flex; flex-direction: column; align-items: center;
   justify-content: center; height: 200px; color: #8b949e; gap: 12px;
