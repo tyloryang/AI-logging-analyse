@@ -338,8 +338,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../api/index.js'
 
 // ── 常量 ──────────────────────────────────────────────────────────────
-const SVG_W = 1300
-const SVG_H = 820
+const SVG_W = 1440
+const SVG_H = 920
 const K8S_W = 960
 const K8S_ROW_H = 100
 
@@ -365,149 +365,81 @@ const tooltip = ref({
 
 // ── 层标签 ────────────────────────────────────────────────────────────
 const LAYER_LABELS = [
-  { id: 0, y:  78, text: '用户入口' },
-  { id: 1, y: 178, text: '前端层' },
-  { id: 2, y: 298, text: '应用层' },
-  { id: 3, y: 428, text: '数据/中间件层' },
-  { id: 4, y: 568, text: '可观测性平台' },
-  { id: 5, y: 688, text: '外部 AI 服务' },
+  { id: 0, y:  92, text: '用户入口' },
+  { id: 1, y: 228, text: '前端层' },
+  { id: 2, y: 378, text: '应用层' },
+  { id: 3, y: 518, text: '数据/中间件层' },
+  { id: 4, y: 668, text: '可观测性 & 外部服务' },
 ]
 
 // ── 分组框 ────────────────────────────────────────────────────────────
 const GROUPS = [
-  { id: 'k8s',  x: 95,  y: 145, w: 1170, h: 450, color: '#3b82f6', label: 'Kubernetes Cluster (192.168.9.221)' },
-  { id: 'obs',  x: 108, y: 496, w: 860,  h: 110, color: '#22c55e', label: '可观测性数据层' },
-  { id: 'ext',  x: 108, y: 640, w: 540,  h: 100, color: '#a855f7', label: '外部 AI & 通知服务' },
+  { id: 'k8s', x: 90, y: 148, w: 1320, h: 490, color: '#3b82f6', label: 'Kubernetes Cluster (192.168.9.221)' },
+  { id: 'ext', x: 90, y: 640, w: 1320, h: 115, color: '#a855f7', label: '可观测性 & 外部 AI & 通知服务' },
 ]
 
-// ── 节点定义（固定坐标） ──────────────────────────────────────────────
+// ── 节点定义（1440 画布，均匀分布，消除重叠）────────────────────────
+// x 为节点中心，y 为节点中心
 const archNodes = ref([
-  // 层 0 – 用户入口
-  {
-    id: 'user', name: '用户浏览器', icon: '🌐', port: ':30090',
-    x: 200, y: 78, w: 130, h: 72, grad: 'blue', color: '#3b82f6',
-    status: 'ok', pulse: true,
-    detail: { 协议: 'HTTP/HTTPS', 端口: '30090', 路由: 'Vue Router Hash' },
-    calls: ['Frontend'],
-  },
-  {
-    id: 'feishu_in', name: '飞书机器人', icon: '💬', port: 'Webhook',
-    x: 440, y: 78, w: 130, h: 72, grad: 'teal', color: '#14b8a6',
-    status: 'ok', pulse: false,
-    detail: { 触发: '关键词 @ 机器人', 协议: 'HTTPS Webhook', 通知: '双向' },
-    calls: ['Feishu Bot'],
-  },
-  {
-    id: 'jenkins_in', name: 'Jenkins CI', icon: '⚙️', port: ':8080',
-    x: 680, y: 78, w: 130, h: 72, grad: 'orange', color: '#f59e0b',
-    status: 'ok', pulse: false,
-    detail: { 版本: 'Jenkins 2.x', 连接: 'Multi-instance', 视图: '分 Views 管理' },
-    calls: ['Backend API'],
-  },
 
-  // 层 1 – 前端
-  {
-    id: 'frontend', name: 'Frontend', icon: '⚡', port: 'Vue 3.5.13',
-    x: 200, y: 178, w: 140, h: 72, grad: 'teal', color: '#14b8a6',
-    status: 'ok', pulse: true,
-    detail: { 框架: 'Vue 3.5.13 + Vite', 端口: '30090 (NodePort)', 镜像: 'aiops-frontend:latest' },
-    calls: ['Backend API'],
-  },
-  {
-    id: 'feishu_bot', name: 'Feishu Bot', icon: '🤖', port: ':30801',
-    x: 440, y: 178, w: 140, h: 72, grad: 'teal', color: '#14b8a6',
-    status: 'ok', pulse: false,
-    detail: { 框架: 'FastAPI', 端口: '30801 (NodePort)', 功能: 'AI 消息处理' },
-    calls: ['Backend API'],
-  },
+  // ─── 层 0 y=92 · 用户入口（三节点均匀分布）────────────
+  { id:'user',       name:'用户浏览器', icon:'🌐', port:':30090',
+    x:230, y:92, w:136, h:72, grad:'blue',   color:'#3b82f6', status:'ok', pulse:true,
+    detail:{ 协议:'HTTP/HTTPS', 端口:'30090', 路由:'Vue Router Hash' }, calls:['Frontend'] },
+  { id:'feishu_in',  name:'飞书机器人', icon:'💬', port:'Webhook',
+    x:620, y:92, w:130, h:72, grad:'teal',   color:'#14b8a6', status:'ok', pulse:false,
+    detail:{ 触发:'关键词@机器人', 协议:'HTTPS Webhook', 通知:'双向' }, calls:['Feishu Bot'] },
+  { id:'jenkins_in', name:'Jenkins CI',  icon:'⚙️', port:':8080',
+    x:1010,y:92, w:130, h:72, grad:'orange', color:'#f59e0b', status:'ok', pulse:false,
+    detail:{ 版本:'Jenkins 2.x', 连接:'Multi-instance', 视图:'分Views管理' }, calls:['Backend API'] },
 
-  // 层 2 – 后端
-  {
-    id: 'backend', name: 'Backend API', icon: '🚀', port: 'FastAPI :30800',
-    x: 320, y: 298, w: 160, h: 80, grad: 'blue', color: '#3b82f6',
-    status: 'ok', pulse: true,
-    detail: {
-      框架: 'Python FastAPI', 端口: '30800 (NodePort)',
-      镜像: 'aiops-backend:latest', AI引擎: 'LangGraph ReAct'
-    },
-    calls: ['Loki', 'Prometheus', 'Redis', 'Elasticsearch', 'AI Provider', 'AlertManager'],
-  },
+  // ─── 层 1 y=228 · 前端层 ─────────────────────────────
+  { id:'frontend',   name:'Frontend',   icon:'⚡', port:'Vue 3.5.13',
+    x:230, y:228, w:140, h:72, grad:'teal',  color:'#14b8a6', status:'ok', pulse:true,
+    detail:{ 框架:'Vue 3.5.13+Vite', 端口:'30090(NodePort)', 镜像:'aiops-frontend' }, calls:['Backend API'] },
+  { id:'feishu_bot', name:'Feishu Bot', icon:'🤖', port:':30801',
+    x:620, y:228, w:140, h:72, grad:'teal',  color:'#14b8a6', status:'ok', pulse:false,
+    detail:{ 框架:'FastAPI', 端口:'30801(NodePort)', 功能:'AI消息处理' }, calls:['Backend API'] },
 
-  // 层 3 – 数据层
-  {
-    id: 'loki', name: 'Loki', icon: '📋', port: ':27478',
-    x: 130, y: 428, w: 120, h: 66, grad: 'orange', color: '#f59e0b',
-    status: 'ok', pulse: false,
-    detail: { 类型: '日志聚合', 地址: '192.168.9.221:27478', 认证: '无' },
-    calls: [],
-  },
-  {
-    id: 'prometheus', name: 'Prometheus', icon: '📈', port: ':24404',
-    x: 280, y: 428, w: 130, h: 66, grad: 'orange', color: '#f59e0b',
-    status: 'ok', pulse: false,
-    detail: { 类型: '指标监控', 地址: '192.168.9.221:24404', 采集: '15s/次' },
-    calls: [],
-  },
-  {
-    id: 'redis', name: 'Redis', icon: '⚡', port: ':6379',
-    x: 440, y: 428, w: 110, h: 66, grad: 'red', color: '#ef4444',
-    status: 'ok', pulse: false,
-    detail: { 类型: '缓存/消息队列', 版本: '7.x', 用途: 'Session & Queue' },
-    calls: [],
-  },
-  {
-    id: 'es', name: 'Elasticsearch', icon: '🔍', port: ':9200',
-    x: 584, y: 428, w: 150, h: 66, grad: 'green', color: '#22c55e',
-    status: 'ok', pulse: false,
-    detail: { 类型: '搜索 & 分析', 节点: '3 nodes', 用途: '日志/报告索引' },
-    calls: [],
-  },
-  {
-    id: 'alertmanager', name: 'AlertManager', icon: '🔔', port: ':30093',
-    x: 770, y: 428, w: 140, h: 66, grad: 'red', color: '#ef4444',
-    status: 'ok', pulse: false,
-    detail: { 类型: '告警路由', 地址: '192.168.9.221:30093', 接收器: 'AIOps Webhook' },
-    calls: ['Backend API'],
-  },
+  // ─── 层 2 y=378 · 应用层（Backend 居中）─────────────
+  { id:'backend', name:'Backend API', icon:'🚀', port:'FastAPI :30800',
+    x:660, y:378, w:172, h:82, grad:'blue', color:'#3b82f6', status:'ok', pulse:true,
+    detail:{ 框架:'Python FastAPI', 端口:'30800(NodePort)', 镜像:'aiops-backend', AI引擎:'LangGraph ReAct' },
+    calls:['Loki','Prometheus','Redis','Elasticsearch','AlertManager','Claude API','SkyWalking','飞书Open API'] },
 
-  // 层 4 – 可观测性
-  {
-    id: 'grafana', name: 'Grafana', icon: '📊', port: ':30300',
-    x: 130, y: 558, w: 120, h: 60, grad: 'orange', color: '#f59e0b',
-    status: 'ok', pulse: false,
-    detail: { 类型: '可视化大盘', 端口: '30300', 数据源: 'Prometheus + Loki' },
-    calls: [],
-  },
-  {
-    id: 'skywalking', name: 'SkyWalking', icon: '🔭', port: 'APM',
-    x: 290, y: 558, w: 140, h: 60, grad: 'purple', color: '#a855f7',
-    status: 'ok', pulse: false,
-    detail: { 类型: 'APM 链路追踪', 协议: 'gRPC/HTTP', 用途: 'Trace & Span' },
-    calls: [],
-  },
+  // ─── 层 3 y=518 · 数据/中间件（6节点等间距）────────
+  { id:'loki',         name:'Loki',          icon:'📋', port:':27478',
+    x:120, y:518, w:116, h:66, grad:'orange', color:'#f59e0b', status:'ok', pulse:false,
+    detail:{ 类型:'日志聚合', 地址:'192.168.9.221:27478', 认证:'无' }, calls:[] },
+  { id:'prometheus',   name:'Prometheus',    icon:'📈', port:':24404',
+    x:308, y:518, w:130, h:66, grad:'orange', color:'#f59e0b', status:'ok', pulse:false,
+    detail:{ 类型:'指标监控', 地址:'192.168.9.221:24404', 采集:'15s/次' }, calls:[] },
+  { id:'redis',        name:'Redis',         icon:'⚡', port:':6379',
+    x:504, y:518, w:116, h:66, grad:'red',    color:'#ef4444', status:'ok', pulse:false,
+    detail:{ 类型:'缓存/消息队列', 版本:'7.x', 用途:'Session & Queue' }, calls:[] },
+  { id:'es',           name:'Elasticsearch', icon:'🔍', port:':9200',
+    x:710, y:518, w:152, h:66, grad:'green',  color:'#22c55e', status:'ok', pulse:false,
+    detail:{ 类型:'搜索 & 分析', 节点:'3 nodes', 用途:'日志/报告索引' }, calls:[] },
+  { id:'alertmanager', name:'AlertManager',  icon:'🔔', port:':30093',
+    x:920, y:518, w:148, h:66, grad:'red',    color:'#ef4444', status:'ok', pulse:false,
+    detail:{ 类型:'告警路由', 地址:'192.168.9.221:30093', 接收器:'AIOps Webhook' }, calls:['Backend API'] },
+  { id:'grafana',      name:'Grafana',       icon:'📊', port:':30300',
+    x:1140,y:518, w:128, h:66, grad:'orange', color:'#f59e0b', status:'ok', pulse:false,
+    detail:{ 类型:'可视化大盘', 端口:'30300', 数据源:'Prometheus+Loki' }, calls:[] },
 
-  // 层 5 – 外部 AI
-  {
-    id: 'claude', name: 'Claude API', icon: '🧠', port: 'Anthropic',
-    x: 140, y: 683, w: 130, h: 66, grad: 'purple', color: '#a855f7',
-    status: 'ok', pulse: true,
-    detail: { 模型: 'claude-opus-4-6', 方式: 'SSE 流式', 功能: 'LangGraph Agent' },
-    calls: [],
-  },
-  {
-    id: 'qwen', name: 'Qwen / OpenAI', icon: '🤖', port: 'OpenAI 兼容',
-    x: 310, y: 683, w: 140, h: 66, grad: 'purple', color: '#a855f7',
-    status: 'ok', pulse: false,
-    detail: { 接口: 'OpenAI 兼容协议', 配置: 'AI_BASE_URL', 用途: '本地/私有 LLM' },
-    calls: [],
-  },
-  {
-    id: 'feishu_svc', name: '飞书 Open API', icon: '🪶', port: 'HTTPS',
-    x: 490, y: 683, w: 140, h: 66, grad: 'teal', color: '#14b8a6',
-    status: 'ok', pulse: false,
-    detail: { 端点: 'open.feishu.cn', 功能: '卡片消息 / Webhook', 触发: '告警 & 日报' },
-    calls: [],
-  },
+  // ─── 层 4 y=668 · 可观测性 & 外部（4节点等间距）────
+  { id:'skywalking',  name:'SkyWalking',   icon:'🔭', port:'APM',
+    x:220, y:668, w:138, h:64, grad:'purple', color:'#a855f7', status:'ok', pulse:false,
+    detail:{ 类型:'APM链路追踪', 协议:'gRPC/HTTP', 用途:'Trace & Span' }, calls:[] },
+  { id:'claude',      name:'Claude API',   icon:'🧠', port:'Anthropic',
+    x:570, y:668, w:134, h:64, grad:'purple', color:'#a855f7', status:'ok', pulse:true,
+    detail:{ 模型:'claude-opus-4-6', 方式:'SSE流式', 功能:'LangGraph Agent' }, calls:[] },
+  { id:'qwen',        name:'Qwen / OpenAI',icon:'🤖', port:'OpenAI兼容',
+    x:780, y:668, w:142, h:64, grad:'purple', color:'#a855f7', status:'ok', pulse:false,
+    detail:{ 接口:'OpenAI兼容协议', 配置:'AI_BASE_URL', 用途:'本地/私有LLM' }, calls:[] },
+  { id:'feishu_svc',  name:'飞书 Open API',icon:'🪶', port:'HTTPS',
+    x:1020,y:668, w:148, h:64, grad:'teal',   color:'#14b8a6', status:'ok', pulse:false,
+    detail:{ 端点:'open.feishu.cn', 功能:'卡片消息/Webhook', 触发:'告警 & 日报' }, calls:[] },
 ])
 
 // ── 连接线定义（自动计算贝塞尔曲线） ─────────────────────────────────
@@ -515,15 +447,17 @@ function nodeById(id) {
   return archNodes.value.find(n => n.id === id)
 }
 
-function edgePath(fromId, toId, offset = 0) {
+function edgePath(fromId, toId) {
   const a = nodeById(fromId)
   const b = nodeById(toId)
   if (!a || !b) return ''
-  const ax = a.x, ay = a.y + a.h / 2 + (a.y < b.y ? 0 : 0)
+  // 从源节点底部中心 → 目标节点顶部中心
+  // 使用"L形弯"：先垂直到层间中点，再水平，再垂直到目标
+  // 这样路径始终走层间空白区，不穿过其他节点
+  const ax = a.x, ay = a.y + a.h / 2
   const bx = b.x, by = b.y - b.h / 2
-  const mx = (ax + bx) / 2 + offset
-  const my = (ay + by) / 2
-  return `M${ax},${ay} C${mx},${ay + 30} ${mx},${by - 30} ${bx},${by}`
+  const midY = (ay + by) / 2
+  return `M${ax},${ay} C${ax},${midY} ${bx},${midY} ${bx},${by}`
 }
 
 function makePackets(count, baseDur, color) {
