@@ -143,7 +143,13 @@ const MENU = [
       { label: '审批流',   to: '/tickets/approval' },
     ],
   },
-  { id: 'container',  icon: 'container',  label: '容器管理', to: '/containers' },
+  {
+    id: 'container', icon: 'container', label: '容器管理',
+    children: [
+      { label: '容器列表', to: '/containers' },
+      { label: 'K8s 拓扑流图', to: '/k8s/topology' },
+    ],
+  },
   {
     id: 'middleware', icon: 'middleware', label: '中间件',
     children: [
