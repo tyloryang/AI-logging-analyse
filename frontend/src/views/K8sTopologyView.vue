@@ -1,626 +1,778 @@
 <template>
-  <div class="topo-page">
-    <!-- 顶部工具栏 -->
-    <div class="topo-toolbar">
-      <div class="topo-title">
-        <span class="topo-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M8.5 17.5L12 11M15.5 17.5L12 11"/></svg>
-        </span>
-        K8s 拓扑流图
+  <div class="arch-page" ref="pageEl">
+    <!-- 顶部控制栏 -->
+    <div class="arch-toolbar">
+      <div class="arch-brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+          <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+        </svg>
+        <span>AIOps 系统架构</span>
+        <span class="arch-subtitle">服务拓扑 & 调用关系</span>
       </div>
-      <div class="topo-controls">
-        <select v-model="selectedNs" class="ns-select" @change="loadData">
-          <option value="">全部命名空间</option>
-          <option v-for="ns in namespaces" :key="ns" :value="ns">{{ ns }}</option>
-        </select>
-        <label class="anim-toggle" title="切换流动动效">
-          <input type="checkbox" v-model="animEnabled" />
+      <div class="arch-controls">
+        <div class="view-tabs">
+          <button :class="['vtab', { active: view === 'arch' }]" @click="view='arch'">系统架构图</button>
+          <button :class="['vtab', { active: view === 'k8s' }]" @click="view='k8s'; loadK8s()">K8s 服务图</button>
+        </div>
+        <label class="toggle-pill">
+          <input type="checkbox" v-model="animOn"/>
+          <span class="pill-track"><span class="pill-thumb"></span></span>
           <span>流动动效</span>
         </label>
-        <button class="ctrl-btn" @click="loadData" :disabled="loading">
-          <span v-if="loading" class="spin"></span>
-          <span v-else>↺</span> 刷新
+        <button class="ctrl-btn" @click="view==='k8s' ? loadK8s() : null" :disabled="loading">
+          <span v-if="loading" class="spin-sm"></span>
+          <span v-else>↺</span>
         </button>
-        <button class="ctrl-btn" :class="{ active: viewMode==='pipeline' }" @click="viewMode='pipeline'">部署流程</button>
-        <button class="ctrl-btn" :class="{ active: viewMode==='cluster' }"  @click="viewMode='cluster'">集群拓扑</button>
       </div>
     </div>
 
-    <!-- 图例 -->
-    <div class="legend-bar">
-      <span class="leg-item"><i class="leg-dot ok"></i>Running</span>
-      <span class="leg-item"><i class="leg-dot warn"></i>Pending</span>
-      <span class="leg-item"><i class="leg-dot err"></i>Failed</span>
-      <span class="leg-item"><i class="leg-dot unknown"></i>Unknown</span>
-      <span class="leg-sep">|</span>
-      <span class="leg-item"><i class="leg-line flow"></i>数据流</span>
-      <span class="leg-info" v-if="summary">
-        节点 {{ summary.node_count }} &nbsp;·&nbsp;
-        Pod {{ summary.pod_count }} &nbsp;·&nbsp;
-        Deployment {{ summary.deployment_count }}
-      </span>
-    </div>
-
-    <!-- 部署流程视图 -->
-    <div v-if="viewMode === 'pipeline'" class="pipeline-wrap">
-      <svg class="pipeline-svg" :width="pipelineSvgW" :height="pipelineSvgH" ref="pipelineSvg">
+    <!-- 系统架构图 -->
+    <div v-show="view === 'arch'" class="canvas-wrap" ref="archWrap">
+      <svg
+        class="arch-svg"
+        :viewBox="`0 0 ${SVG_W} ${SVG_H}`"
+        preserveAspectRatio="xMidYMid meet"
+        ref="archSvg"
+        @mousemove="onMouseMove"
+        @mouseleave="tooltip.show = false"
+      >
         <defs>
-          <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L8,3 z" fill="var(--flow-color, #3b82f6)" />
-          </marker>
-          <!-- 发光滤镜 -->
-          <filter id="glow">
+          <!-- 背景网格 -->
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M40,0 L0,0 L0,40" fill="none" stroke="rgba(99,132,255,0.06)" stroke-width="1"/>
+          </pattern>
+          <!-- 粒子发光 -->
+          <filter id="glow-blue" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <filter id="glow-green" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="2.5" result="blur"/>
             <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
           </filter>
+          <filter id="node-shadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="rgba(0,0,0,0.4)"/>
+          </filter>
+          <!-- 箭头 -->
+          <marker id="arr-blue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#3b82f6"/>
+          </marker>
+          <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#22c55e"/>
+          </marker>
+          <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+          </marker>
+          <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#a855f7"/>
+          </marker>
+          <!-- 渐变 -->
+          <linearGradient id="grad-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#1e3a8a" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#1e40af" stop-opacity="0.7"/>
+          </linearGradient>
+          <linearGradient id="grad-green" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#14532d" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#166534" stop-opacity="0.7"/>
+          </linearGradient>
+          <linearGradient id="grad-orange" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#78350f" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#92400e" stop-opacity="0.7"/>
+          </linearGradient>
+          <linearGradient id="grad-purple" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#581c87" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#6b21a8" stop-opacity="0.7"/>
+          </linearGradient>
+          <linearGradient id="grad-teal" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#134e4a" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#115e59" stop-opacity="0.7"/>
+          </linearGradient>
+          <linearGradient id="grad-red" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#7f1d1d" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#991b1b" stop-opacity="0.7"/>
+          </linearGradient>
         </defs>
 
-        <!-- 连接路径 -->
+        <!-- 背景 -->
+        <rect width="100%" height="100%" fill="#0d1117"/>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <!-- 层标签 -->
+        <g class="layer-labels">
+          <text v-for="lbl in LAYER_LABELS" :key="lbl.id"
+            :x="30" :y="lbl.y"
+            class="layer-txt" text-anchor="start" dominant-baseline="middle">
+            {{ lbl.text }}
+          </text>
+          <line v-for="lbl in LAYER_LABELS" :key="'l'+lbl.id"
+            :x1="100" :y1="lbl.y" :x2="SVG_W - 20" :y2="lbl.y"
+            stroke="rgba(99,132,255,0.08)" stroke-width="1" stroke-dasharray="4 8"/>
+        </g>
+
+        <!-- 连接线（先渲染在节点之下） -->
         <g class="edges">
-          <path
-            v-for="e in pipelineEdges" :key="e.id"
-            :id="'ep-' + e.id"
+          <path v-for="e in archEdges" :key="e.id"
+            :id="'ae-' + e.id"
             :d="e.d"
             fill="none"
-            :stroke="e.color"
+            :stroke="e.color + '55'"
             stroke-width="1.5"
-            stroke-dasharray="6 4"
-            class="edge-path"
+            stroke-dasharray="6 5"
+            class="edge-dash"
+            :marker-end="'url(#arr-' + e.marker + ')'"
           />
         </g>
 
         <!-- 流动粒子 -->
-        <g v-if="animEnabled" class="packets">
-          <g v-for="e in pipelineEdges" :key="'pk-' + e.id">
+        <g v-if="animOn" class="particles">
+          <g v-for="e in archEdges" :key="'pk-'+e.id">
             <circle
-              v-for="(pk, pi) in e.packets"
-              :key="pi"
+              v-for="pk in e.packets" :key="pk.key"
               :r="pk.r"
               :fill="e.color"
-              filter="url(#glow)"
-              class="packet"
+              :filter="'url(#glow-' + (e.glowType || 'blue') + ')'"
             >
-              <animateMotion
-                :dur="pk.dur + 's'"
-                repeatCount="indefinite"
-                :begin="pk.begin + 's'"
-              >
-                <mpath :href="'#ep-' + e.id" />
+              <animateMotion :dur="pk.dur+'s'" repeatCount="indefinite" :begin="pk.begin+'s'" rotate="auto">
+                <mpath :href="'#ae-'+e.id"/>
               </animateMotion>
             </circle>
           </g>
         </g>
 
         <!-- 节点 -->
-        <g class="nodes">
-          <g
-            v-for="node in pipelineNodes"
-            :key="node.id"
-            :transform="`translate(${node.x}, ${node.y})`"
-            class="pnode"
-            :class="{ selected: selectedNode?.id === node.id }"
-            @click="selectedNode = node"
+        <g class="nodes" filter="url(#node-shadow)">
+          <g v-for="nd in archNodes" :key="nd.id"
+            class="arch-node"
+            :class="{ hovered: hoveredNode === nd.id }"
+            :transform="`translate(${nd.x},${nd.y})`"
+            @mouseenter="hoveredNode=nd.id; showTooltip(nd, $event)"
+            @mouseleave="hoveredNode=null; tooltip.show=false"
           >
-            <!-- 节点卡片背景 -->
-            <rect
-              :x="-node.w/2" :y="-node.h/2"
-              :width="node.w" :height="node.h"
-              rx="10" ry="10"
-              :class="['node-rect', node.status]"
+            <!-- 光晕脉冲背景 -->
+            <circle v-if="nd.pulse" cx="0" cy="0" :r="nd.w*0.6" :fill="nd.color+'15'" class="node-pulse"/>
+
+            <!-- 节点背景 -->
+            <rect :x="-nd.w/2" :y="-nd.h/2" :width="nd.w" :height="nd.h"
+              rx="12" ry="12"
+              :fill="'url(#grad-' + nd.grad + ')'"
+              :stroke="nd.color + '80'"
+              stroke-width="1.5"
             />
-            <!-- 顶部色条 -->
-            <rect
-              :x="-node.w/2" :y="-node.h/2"
-              :width="node.w" height="4"
-              rx="4" ry="4"
-              :class="['node-top', node.status]"
-            />
+            <!-- 顶部彩条 -->
+            <rect :x="-nd.w/2" :y="-nd.h/2" :width="nd.w" height="3"
+              rx="12" :fill="nd.color"/>
+
             <!-- 图标 -->
-            <text :y="-8" text-anchor="middle" class="node-icon">{{ node.icon }}</text>
-            <!-- 标签 -->
-            <text y="10" text-anchor="middle" class="node-label">{{ node.label }}</text>
-            <!-- 副标签 -->
-            <text y="24" text-anchor="middle" class="node-sublabel">{{ node.sublabel }}</text>
+            <text x="0" :y="-6" text-anchor="middle" dominant-baseline="middle"
+              class="node-icon">{{ nd.icon }}</text>
+
+            <!-- 主标签 -->
+            <text x="0" y="10" text-anchor="middle" class="node-name">{{ nd.name }}</text>
+
+            <!-- 端口/版本 -->
+            <text v-if="nd.port" x="0" y="24" text-anchor="middle" class="node-port">{{ nd.port }}</text>
+
             <!-- 状态点 -->
-            <circle
-              :cx="node.w/2 - 8" :cy="-node.h/2 + 8" r="5"
-              :class="['status-dot', node.status]"
+            <circle :cx="nd.w/2-8" :cy="-nd.h/2+8" r="5"
+              :fill="nd.status==='ok' ? '#22c55e' : nd.status==='warn' ? '#f59e0b' : '#6b7280'"
+              :class="nd.status==='ok' ? 'status-pulse-ok' : ''"/>
+
+            <!-- 选中高亮边框 -->
+            <rect v-if="hoveredNode===nd.id"
+              :x="-nd.w/2-2" :y="-nd.h/2-2" :width="nd.w+4" :height="nd.h+4"
+              rx="13" fill="none" :stroke="nd.color" stroke-width="2"
+              class="hover-ring"
             />
           </g>
         </g>
+
+        <!-- 分组框（K8s Cluster、外部服务） -->
+        <g class="group-boxes">
+          <rect v-for="grp in GROUPS" :key="grp.id"
+            :x="grp.x" :y="grp.y" :width="grp.w" :height="grp.h"
+            rx="16" fill="none" :stroke="grp.color" stroke-width="1"
+            stroke-dasharray="8 4" :fill-opacity="0.02"
+          />
+          <text v-for="grp in GROUPS" :key="'gt'+grp.id"
+            :x="grp.x + 14" :y="grp.y + 16"
+            class="grp-label" :fill="grp.color">{{ grp.label }}</text>
+        </g>
+
       </svg>
 
-      <!-- 节点详情面板 -->
-      <transition name="slide-in">
-        <div v-if="selectedNode" class="node-detail-panel">
-          <div class="ndp-header">
-            <span class="ndp-icon">{{ selectedNode.icon }}</span>
-            <div>
-              <div class="ndp-title">{{ selectedNode.label }}</div>
-              <div class="ndp-sub">{{ selectedNode.sublabel }}</div>
-            </div>
-            <button class="ndp-close" @click="selectedNode = null">✕</button>
-          </div>
-          <div class="ndp-body">
-            <div v-for="(v, k) in selectedNode.detail" :key="k" class="ndp-row">
-              <span class="ndp-key">{{ k }}</span>
-              <span class="ndp-val" :class="{ ok: v === 'Running' || v === 'Active', err: v === 'Failed' || v === 'Error' }">{{ v }}</span>
-            </div>
+      <!-- 悬浮工具提示 -->
+      <div v-if="tooltip.show" class="node-tooltip"
+        :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
+        <div class="tip-header">
+          <span class="tip-icon">{{ tooltip.icon }}</span>
+          <span class="tip-name">{{ tooltip.name }}</span>
+          <span class="tip-badge" :class="tooltip.status">{{ tooltip.statusText }}</span>
+        </div>
+        <div class="tip-rows">
+          <div v-for="r in tooltip.rows" :key="r.k" class="tip-row">
+            <span class="tip-key">{{ r.k }}</span>
+            <span class="tip-val">{{ r.v }}</span>
           </div>
         </div>
-      </transition>
+        <div v-if="tooltip.calls?.length" class="tip-calls">
+          <div class="tip-calls-title">调用关系</div>
+          <div v-for="c in tooltip.calls" :key="c" class="tip-call-item">→ {{ c }}</div>
+        </div>
+      </div>
+
+      <!-- 图例 -->
+      <div class="arch-legend">
+        <div class="leg-row"><span class="leg-line blue"></span>HTTP 调用</div>
+        <div class="leg-row"><span class="leg-line green"></span>数据读写</div>
+        <div class="leg-row"><span class="leg-line orange"></span>告警推送</div>
+        <div class="leg-row"><span class="leg-line purple"></span>AI 推理</div>
+        <div class="leg-sep"></div>
+        <div class="leg-row"><span class="leg-dot ok"></span>健康</div>
+        <div class="leg-row"><span class="leg-dot warn"></span>告警</div>
+        <div class="leg-row"><span class="leg-dot gray"></span>未知</div>
+      </div>
     </div>
 
-    <!-- 集群拓扑视图 -->
-    <div v-else class="cluster-wrap">
-      <div v-if="loading" class="topo-loading">
-        <div class="spin-lg"></div>
-        <p>加载集群数据...</p>
+    <!-- K8s 服务图 -->
+    <div v-show="view === 'k8s'" class="k8s-wrap">
+      <div v-if="loading" class="k8s-loading">
+        <div class="spin-lg"></div><p>加载 K8s 集群数据...</p>
       </div>
-      <div v-else-if="!nodes.length && !pods.length" class="topo-empty">
-        <p>暂无集群数据，请检查 K8s 配置</p>
+      <div v-else-if="!k8sNodes.length" class="k8s-empty">
+        <p>未获取到集群数据，请检查 K8s 配置</p>
       </div>
-      <div v-else class="cluster-layout">
-        <!-- 节点列 -->
-        <div class="node-col">
-          <div class="col-title">集群节点 ({{ nodes.length }})</div>
-          <div
-            v-for="n in nodes" :key="n.name"
-            class="k8s-node-card"
-            :class="{ selected: selectedClusterNode === n.name }"
-            @click="selectedClusterNode = selectedClusterNode === n.name ? null : n.name"
-          >
-            <div class="knc-header">
-              <span class="knc-dot" :class="n.ready ? 'ok' : 'err'"></span>
-              <span class="knc-name">{{ n.name }}</span>
-              <span class="knc-role">{{ n.roles }}</span>
-            </div>
-            <div class="knc-stats">
-              <span>CPU: {{ n.cpu || '-' }}</span>
-              <span>MEM: {{ n.memory || '-' }}</span>
-              <span class="knc-ver">{{ n.version }}</span>
-            </div>
-            <div class="knc-pods">
-              <span>Pods: {{ podsByNode(n.name).length }}</span>
-              <span class="knc-pod-ok">{{ podsByNode(n.name).filter(p=>p.phase==='Running').length }} Running</span>
-            </div>
-          </div>
-        </div>
+      <svg v-else
+        class="k8s-svg"
+        :viewBox="`0 0 ${K8S_W} ${k8sSvgH}`"
+        preserveAspectRatio="xMidYMid meet"
+        ref="k8sSvg"
+      >
+        <defs>
+          <pattern id="k8s-grid" width="32" height="32" patternUnits="userSpaceOnUse">
+            <path d="M32,0 L0,0 L0,32" fill="none" stroke="rgba(99,132,255,0.05)" stroke-width="1"/>
+          </pattern>
+          <filter id="k8s-glow">
+            <feGaussianBlur stdDeviation="3" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <marker id="k8s-arr" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L7,3 z" fill="#3b82f680"/>
+          </marker>
+        </defs>
 
-        <!-- SVG 连接线 -->
-        <svg class="cluster-svg" ref="clusterSvg" :height="clusterSvgH">
-          <defs>
-            <marker id="arr2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-              <path d="M0,0 L0,6 L6,3 z" fill="#3b82f680"/>
-            </marker>
-          </defs>
-          <g v-for="edge in clusterEdges" :key="edge.id">
-            <path
-              :id="'ce-'+edge.id"
-              :d="edge.d"
-              fill="none" stroke="#3b82f640" stroke-width="1.5"
-              marker-end="url(#arr2)"
+        <rect width="100%" height="100%" fill="#0d1117"/>
+        <rect width="100%" height="100%" fill="url(#k8s-grid)"/>
+
+        <!-- Node 卡片行 -->
+        <g v-for="(nd, ni) in k8sNodes" :key="nd.name">
+          <!-- Node 背景 -->
+          <rect :x="20" :y="ni*K8S_ROW_H + 20"
+            width="200" :height="K8S_ROW_H - 24"
+            rx="10" fill="#1e3a8a20" stroke="#3b82f640" stroke-width="1"/>
+          <text :x="32" :y="ni*K8S_ROW_H + 42" class="k8s-node-name">{{ nd.name }}</text>
+          <text :x="32" :y="ni*K8S_ROW_H + 58" class="k8s-node-role">{{ nd.roles }} · {{ nd.version }}</text>
+          <circle :cx="196" :cy="ni*K8S_ROW_H + 42" r="6"
+            :fill="nd.ready ? '#22c55e' : '#ef4444'"
+            :class="nd.ready ? 'k8s-dot-pulse' : ''"/>
+
+          <!-- Pod chips -->
+          <g v-for="(pod, pi) in podsByNode(nd.name).slice(0, 8)" :key="pod.name">
+            <rect
+              :x="240 + (pi % 4) * 175"
+              :y="ni*K8S_ROW_H + 20 + Math.floor(pi/4) * 44"
+              width="165" height="36"
+              rx="8"
+              :fill="podColor(pod.phase) + '20'"
+              :stroke="podColor(pod.phase) + '60'"
+              stroke-width="1"
             />
-            <g v-if="animEnabled">
-              <circle
-                v-for="i in 2" :key="i"
-                r="3" fill="#60a5fa80"
-              >
-                <animateMotion :dur="(1.5 + i*0.4)+'s'" repeatCount="indefinite" :begin="(i*0.6)+'s'">
-                  <mpath :href="'#ce-'+edge.id"/>
+            <circle
+              :cx="252 + (pi % 4) * 175"
+              :cy="ni*K8S_ROW_H + 38 + Math.floor(pi/4) * 44"
+              r="5" :fill="podColor(pod.phase)"
+              :class="pod.phase==='Running' ? 'k8s-dot-pulse' : ''"/>
+            <text
+              :x="263 + (pi % 4) * 175"
+              :y="ni*K8S_ROW_H + 42 + Math.floor(pi/4) * 44"
+              class="pod-name">{{ truncate(pod.name, 14) }}</text>
+            <text
+              :x="263 + (pi % 4) * 175"
+              :y="ni*K8S_ROW_H + 52 + Math.floor(pi/4) * 44"
+              class="pod-ns">{{ pod.namespace }}</text>
+          </g>
+
+          <!-- 连接线：Node → Pods -->
+          <g v-if="animOn">
+            <g v-for="(pod, pi) in podsByNode(nd.name).slice(0,8)" :key="'c'+pi">
+              <path
+                :id="`k8sp-${ni}-${pi}`"
+                :d="`M220,${ni*K8S_ROW_H + 45} C230,${ni*K8S_ROW_H+45} 230,${ni*K8S_ROW_H + 38 + Math.floor(pi/4)*44} ${240+(pi%4)*175},${ni*K8S_ROW_H + 38 + Math.floor(pi/4)*44}`"
+                fill="none" stroke="#3b82f630" stroke-width="1"/>
+              <circle r="3" fill="#60a5fa80" filter="url(#k8s-glow)">
+                <animateMotion :dur="(1.2 + pi*0.15)+'s'" repeatCount="indefinite" :begin="(pi*0.2)+'s'">
+                  <mpath :href="`#k8sp-${ni}-${pi}`"/>
                 </animateMotion>
               </circle>
             </g>
           </g>
-        </svg>
+        </g>
 
-        <!-- Pod 列 -->
-        <div class="pod-col">
-          <div class="col-title">
-            Pods ({{ filteredPods.length }})
-            <span v-if="selectedClusterNode" class="filter-hint">
-              · 节点 {{ selectedClusterNode }}
-              <button class="clear-filter" @click="selectedClusterNode = null">×</button>
-            </span>
-          </div>
-          <div class="pod-grid">
-            <div
-              v-for="p in filteredPods.slice(0, 60)" :key="p.name"
-              class="pod-chip"
-              :class="podPhaseClass(p.phase)"
-              :title="`${p.namespace}/${p.name}\n状态: ${p.phase}\n节点: ${p.node_name}`"
-            >
-              <span class="pod-chip-dot"></span>
-              <span class="pod-chip-name">{{ p.name }}</span>
-              <span class="pod-chip-ns">{{ p.namespace }}</span>
-            </div>
-            <div v-if="filteredPods.length > 60" class="pod-more">+{{ filteredPods.length - 60 }} 更多</div>
-          </div>
-        </div>
-      </div>
+        <!-- 统计信息 -->
+        <g :transform="`translate(20, ${k8sNodes.length * K8S_ROW_H + 28})`">
+          <rect x="0" y="0" :width="K8S_W - 40" height="48" rx="10"
+            fill="#1e3a8a15" stroke="#3b82f630" stroke-width="1"/>
+          <text x="16" y="22" class="stat-label">集群概览</text>
+          <text x="16" y="40" class="stat-val">节点 {{ k8sNodes.length }}</text>
+          <text x="100" y="40" class="stat-val">Pods {{ k8sPods.length }}</text>
+          <text x="200" y="40" class="stat-val">Running {{ k8sPods.filter(p=>p.phase==='Running').length }}</text>
+          <text x="330" y="40" class="stat-val ok-text">{{ k8sPods.filter(p=>p.phase==='Running').length }} / {{ k8sPods.length }}</text>
+        </g>
+      </svg>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../api/index.js'
 
+// ── 常量 ──────────────────────────────────────────────────────────────
+const SVG_W = 1300
+const SVG_H = 820
+const K8S_W = 960
+const K8S_ROW_H = 100
+
 // ── 状态 ──────────────────────────────────────────────────────────────
-const viewMode    = ref('pipeline')
-const animEnabled = ref(true)
-const loading     = ref(false)
-const selectedNs  = ref('')
-const namespaces  = ref([])
-const summary     = ref(null)
-const nodes       = ref([])
-const pods        = ref([])
-const selectedNode        = ref(null)
-const selectedClusterNode = ref(null)
-const pipelineSvg = ref(null)
-const clusterSvg  = ref(null)
+const view     = ref('arch')
+const animOn   = ref(true)
+const loading  = ref(false)
+const hoveredNode = ref(null)
+const pageEl   = ref(null)
+const archWrap = ref(null)
+const k8sNodes = ref([])
+const k8sPods  = ref([])
 
-// ── 流程视图布局常量 ──────────────────────────────────────────────────
-const PIPE_COLS  = 7   // 每行节点数
-const NODE_W     = 110
-const NODE_H     = 70
-const COL_GAP    = 60
-const ROW_GAP    = 80
-const PAD_X      = 60
-const PAD_Y      = 60
+const k8sSvgH = computed(() =>
+  Math.max(400, k8sNodes.value.length * K8S_ROW_H + 100)
+)
 
-const pipelineSvgW = computed(() => PIPE_COLS * (NODE_W + COL_GAP) + PAD_X * 2 - COL_GAP)
-const pipelineSvgH = computed(() => Math.ceil(PIPELINE_STAGES.length / PIPE_COLS) * (NODE_H + ROW_GAP) + PAD_Y * 2)
+const tooltip = ref({
+  show: false, x: 0, y: 0,
+  icon: '', name: '', status: '', statusText: '',
+  rows: [], calls: [],
+})
 
-// ── K8s 部署流程阶段定义 ──────────────────────────────────────────────
-const PIPELINE_STAGES = [
-  { id: 'code',     label: 'Code Push',   sublabel: 'Git Repository', icon: '📝', color: '#6366f1', detail: { 平台: 'GitHub/GitLab', 分支: 'main', 触发: '自动' } },
-  { id: 'ci',       label: 'CI Build',    sublabel: 'Jenkins/Actions', icon: '⚙️', color: '#8b5cf6', detail: { 工具: 'Jenkins', 步骤: 'Build & Test', 耗时: '~3min' } },
-  { id: 'image',    label: 'Image Build', sublabel: 'Docker Build',   icon: '🐳', color: '#3b82f6', detail: { 基础镜像: 'python:3.11', 仓库: 'Registry', 缓存: '启用' } },
-  { id: 'registry', label: 'Registry',    sublabel: 'Image Push',     icon: '📦', color: '#0ea5e9', detail: { 地址: '192.168.9.221:5000', 认证: '已配置', Tag: 'latest' } },
-  { id: 'deploy',   label: 'K8s Deploy',  sublabel: 'kubectl apply',  icon: '🚀', color: '#10b981', detail: { 命名空间: 'aiops', 策略: 'RollingUpdate', 副本: '1' } },
-  { id: 'rs',       label: 'ReplicaSet',  sublabel: 'Pod Template',   icon: '📋', color: '#14b8a6', detail: { 期望副本: '1', 当前副本: '1', 就绪: '1' } },
-  { id: 'pod',      label: 'Pod',         sublabel: 'Running',        icon: '🟢', color: '#22c55e', detail: { 状态: 'Running', 重启次数: '0', IP: '动态分配' } },
-  { id: 'svc',      label: 'Service',     sublabel: 'ClusterIP',      icon: '🔌', color: '#f59e0b', detail: { 类型: 'NodePort', 端口: '8000→30800', 协议: 'TCP' } },
-  { id: 'ingress',  label: 'Ingress',     sublabel: 'HTTP Route',     icon: '🌐', color: '#ef4444', detail: { 控制器: 'nginx', TLS: '未启用', 路由: '/' } },
-  { id: 'user',     label: '用户访问',    sublabel: 'End User',       icon: '👤', color: '#ec4899', detail: { 协议: 'HTTP', 端口: '30090', 响应: '200 OK' } },
+// ── 层标签 ────────────────────────────────────────────────────────────
+const LAYER_LABELS = [
+  { id: 0, y:  78, text: '用户入口' },
+  { id: 1, y: 178, text: '前端层' },
+  { id: 2, y: 298, text: '应用层' },
+  { id: 3, y: 428, text: '数据/中间件层' },
+  { id: 4, y: 568, text: '可观测性平台' },
+  { id: 5, y: 688, text: '外部 AI 服务' },
 ]
 
-// ── 计算节点坐标 ─────────────────────────────────────────────────────
-const pipelineNodes = computed(() => {
-  return PIPELINE_STAGES.map((s, i) => {
-    const col = i % PIPE_COLS
-    const row = Math.floor(i / PIPE_COLS)
-    // 偶数行从左到右，奇数行从右到左（蛇形布局）
-    const actualCol = row % 2 === 0 ? col : (PIPE_COLS - 1 - col)
-    return {
-      ...s,
-      w: NODE_W, h: NODE_H,
-      x: PAD_X + actualCol * (NODE_W + COL_GAP) + NODE_W / 2,
-      y: PAD_Y + row * (NODE_H + ROW_GAP) + NODE_H / 2,
-      status: 'ok',
-    }
-  })
-})
+// ── 分组框 ────────────────────────────────────────────────────────────
+const GROUPS = [
+  { id: 'k8s',  x: 95,  y: 145, w: 1170, h: 450, color: '#3b82f6', label: 'Kubernetes Cluster (192.168.9.221)' },
+  { id: 'obs',  x: 108, y: 496, w: 860,  h: 110, color: '#22c55e', label: '可观测性数据层' },
+  { id: 'ext',  x: 108, y: 640, w: 540,  h: 100, color: '#a855f7', label: '外部 AI & 通知服务' },
+]
 
-// ── 生成边（贝塞尔曲线）──────────────────────────────────────────────
-const FLOW_COLORS = ['#6366f1','#3b82f6','#0ea5e9','#10b981','#22c55e','#f59e0b','#ef4444','#ec4899','#8b5cf6']
+// ── 节点定义（固定坐标） ──────────────────────────────────────────────
+const archNodes = ref([
+  // 层 0 – 用户入口
+  {
+    id: 'user', name: '用户浏览器', icon: '🌐', port: ':30090',
+    x: 200, y: 78, w: 130, h: 72, grad: 'blue', color: '#3b82f6',
+    status: 'ok', pulse: true,
+    detail: { 协议: 'HTTP/HTTPS', 端口: '30090', 路由: 'Vue Router Hash' },
+    calls: ['Frontend'],
+  },
+  {
+    id: 'feishu_in', name: '飞书机器人', icon: '💬', port: 'Webhook',
+    x: 440, y: 78, w: 130, h: 72, grad: 'teal', color: '#14b8a6',
+    status: 'ok', pulse: false,
+    detail: { 触发: '关键词 @ 机器人', 协议: 'HTTPS Webhook', 通知: '双向' },
+    calls: ['Feishu Bot'],
+  },
+  {
+    id: 'jenkins_in', name: 'Jenkins CI', icon: '⚙️', port: ':8080',
+    x: 680, y: 78, w: 130, h: 72, grad: 'orange', color: '#f59e0b',
+    status: 'ok', pulse: false,
+    detail: { 版本: 'Jenkins 2.x', 连接: 'Multi-instance', 视图: '分 Views 管理' },
+    calls: ['Backend API'],
+  },
 
-const pipelineEdges = computed(() => {
-  const ns = pipelineNodes.value
-  const edges = []
-  for (let i = 0; i < ns.length - 1; i++) {
-    const a = ns[i], b = ns[i + 1]
-    const sameRow = Math.floor(i / PIPE_COLS) === Math.floor((i + 1) / PIPE_COLS)
-    let d
-    if (sameRow) {
-      // 同行：水平S型曲线
-      const mx = (a.x + b.x) / 2
-      d = `M${a.x + a.w/2},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x - b.w/2},${b.y}`
-    } else {
-      // 换行：垂直U型曲线（蛇形转弯）
-      const row = Math.floor(i / PIPE_COLS)
-      const isEvenRow = row % 2 === 0
-      const edgeX = isEvenRow ? a.x + a.w/2 + 30 : a.x - a.w/2 - 30
-      d = [
-        `M${a.x + (isEvenRow ? a.w/2 : -a.w/2)},${a.y}`,
-        `C${edgeX},${a.y} ${edgeX},${b.y} ${b.x + (isEvenRow ? -b.w/2 : b.w/2)},${b.y}`,
-      ].join(' ')
-    }
-    // 每条边 2~3 个粒子，不同延迟
-    const packets = [
-      { r: 4, dur: 2.2, begin: 0 },
-      { r: 3, dur: 2.2, begin: 0.8 },
-      { r: 2.5, dur: 2.2, begin: 1.5 },
-    ]
-    edges.push({
-      id: `${i}to${i+1}`,
-      d,
-      color: FLOW_COLORS[i % FLOW_COLORS.length],
-      packets,
-    })
+  // 层 1 – 前端
+  {
+    id: 'frontend', name: 'Frontend', icon: '⚡', port: 'Vue 3.5.13',
+    x: 200, y: 178, w: 140, h: 72, grad: 'teal', color: '#14b8a6',
+    status: 'ok', pulse: true,
+    detail: { 框架: 'Vue 3.5.13 + Vite', 端口: '30090 (NodePort)', 镜像: 'aiops-frontend:latest' },
+    calls: ['Backend API'],
+  },
+  {
+    id: 'feishu_bot', name: 'Feishu Bot', icon: '🤖', port: ':30801',
+    x: 440, y: 178, w: 140, h: 72, grad: 'teal', color: '#14b8a6',
+    status: 'ok', pulse: false,
+    detail: { 框架: 'FastAPI', 端口: '30801 (NodePort)', 功能: 'AI 消息处理' },
+    calls: ['Backend API'],
+  },
+
+  // 层 2 – 后端
+  {
+    id: 'backend', name: 'Backend API', icon: '🚀', port: 'FastAPI :30800',
+    x: 320, y: 298, w: 160, h: 80, grad: 'blue', color: '#3b82f6',
+    status: 'ok', pulse: true,
+    detail: {
+      框架: 'Python FastAPI', 端口: '30800 (NodePort)',
+      镜像: 'aiops-backend:latest', AI引擎: 'LangGraph ReAct'
+    },
+    calls: ['Loki', 'Prometheus', 'Redis', 'Elasticsearch', 'AI Provider', 'AlertManager'],
+  },
+
+  // 层 3 – 数据层
+  {
+    id: 'loki', name: 'Loki', icon: '📋', port: ':27478',
+    x: 130, y: 428, w: 120, h: 66, grad: 'orange', color: '#f59e0b',
+    status: 'ok', pulse: false,
+    detail: { 类型: '日志聚合', 地址: '192.168.9.221:27478', 认证: '无' },
+    calls: [],
+  },
+  {
+    id: 'prometheus', name: 'Prometheus', icon: '📈', port: ':24404',
+    x: 280, y: 428, w: 130, h: 66, grad: 'orange', color: '#f59e0b',
+    status: 'ok', pulse: false,
+    detail: { 类型: '指标监控', 地址: '192.168.9.221:24404', 采集: '15s/次' },
+    calls: [],
+  },
+  {
+    id: 'redis', name: 'Redis', icon: '⚡', port: ':6379',
+    x: 440, y: 428, w: 110, h: 66, grad: 'red', color: '#ef4444',
+    status: 'ok', pulse: false,
+    detail: { 类型: '缓存/消息队列', 版本: '7.x', 用途: 'Session & Queue' },
+    calls: [],
+  },
+  {
+    id: 'es', name: 'Elasticsearch', icon: '🔍', port: ':9200',
+    x: 584, y: 428, w: 150, h: 66, grad: 'green', color: '#22c55e',
+    status: 'ok', pulse: false,
+    detail: { 类型: '搜索 & 分析', 节点: '3 nodes', 用途: '日志/报告索引' },
+    calls: [],
+  },
+  {
+    id: 'alertmanager', name: 'AlertManager', icon: '🔔', port: ':30093',
+    x: 770, y: 428, w: 140, h: 66, grad: 'red', color: '#ef4444',
+    status: 'ok', pulse: false,
+    detail: { 类型: '告警路由', 地址: '192.168.9.221:30093', 接收器: 'AIOps Webhook' },
+    calls: ['Backend API'],
+  },
+
+  // 层 4 – 可观测性
+  {
+    id: 'grafana', name: 'Grafana', icon: '📊', port: ':30300',
+    x: 130, y: 558, w: 120, h: 60, grad: 'orange', color: '#f59e0b',
+    status: 'ok', pulse: false,
+    detail: { 类型: '可视化大盘', 端口: '30300', 数据源: 'Prometheus + Loki' },
+    calls: [],
+  },
+  {
+    id: 'skywalking', name: 'SkyWalking', icon: '🔭', port: 'APM',
+    x: 290, y: 558, w: 140, h: 60, grad: 'purple', color: '#a855f7',
+    status: 'ok', pulse: false,
+    detail: { 类型: 'APM 链路追踪', 协议: 'gRPC/HTTP', 用途: 'Trace & Span' },
+    calls: [],
+  },
+
+  // 层 5 – 外部 AI
+  {
+    id: 'claude', name: 'Claude API', icon: '🧠', port: 'Anthropic',
+    x: 140, y: 683, w: 130, h: 66, grad: 'purple', color: '#a855f7',
+    status: 'ok', pulse: true,
+    detail: { 模型: 'claude-opus-4-6', 方式: 'SSE 流式', 功能: 'LangGraph Agent' },
+    calls: [],
+  },
+  {
+    id: 'qwen', name: 'Qwen / OpenAI', icon: '🤖', port: 'OpenAI 兼容',
+    x: 310, y: 683, w: 140, h: 66, grad: 'purple', color: '#a855f7',
+    status: 'ok', pulse: false,
+    detail: { 接口: 'OpenAI 兼容协议', 配置: 'AI_BASE_URL', 用途: '本地/私有 LLM' },
+    calls: [],
+  },
+  {
+    id: 'feishu_svc', name: '飞书 Open API', icon: '🪶', port: 'HTTPS',
+    x: 490, y: 683, w: 140, h: 66, grad: 'teal', color: '#14b8a6',
+    status: 'ok', pulse: false,
+    detail: { 端点: 'open.feishu.cn', 功能: '卡片消息 / Webhook', 触发: '告警 & 日报' },
+    calls: [],
+  },
+])
+
+// ── 连接线定义（自动计算贝塞尔曲线） ─────────────────────────────────
+function nodeById(id) {
+  return archNodes.value.find(n => n.id === id)
+}
+
+function edgePath(fromId, toId, offset = 0) {
+  const a = nodeById(fromId)
+  const b = nodeById(toId)
+  if (!a || !b) return ''
+  const ax = a.x, ay = a.y + a.h / 2 + (a.y < b.y ? 0 : 0)
+  const bx = b.x, by = b.y - b.h / 2
+  const mx = (ax + bx) / 2 + offset
+  const my = (ay + by) / 2
+  return `M${ax},${ay} C${mx},${ay + 30} ${mx},${by - 30} ${bx},${by}`
+}
+
+function makePackets(count, baseDur, color) {
+  return Array.from({ length: count }, (_, i) => ({
+    key: i,
+    r: 3.5 - i * 0.4,
+    dur: baseDur + i * 0.3,
+    begin: i * (baseDur / count),
+  }))
+}
+
+const archEdges = computed(() => [
+  // 用户 → 前端
+  { id:'u-fe',  fromId:'user',     toId:'frontend',    color:'#3b82f6', marker:'blue',   glowType:'blue',   packets: makePackets(3,2.0) },
+  // 飞书 → Feishu Bot
+  { id:'fs-fb', fromId:'feishu_in',toId:'feishu_bot',  color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,2.5) },
+  // Jenkins → Backend
+  { id:'jk-be', fromId:'jenkins_in',toId:'backend',    color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.8) },
+  // 前端 → Backend
+  { id:'fe-be', fromId:'frontend', toId:'backend',     color:'#3b82f6', marker:'blue',   glowType:'blue',   packets: makePackets(3,1.8) },
+  // Feishu Bot → Backend
+  { id:'fb-be', fromId:'feishu_bot',toId:'backend',    color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,2.2) },
+  // Backend → Loki
+  { id:'be-lk', fromId:'backend',  toId:'loki',        color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(3,1.6) },
+  // Backend → Prometheus
+  { id:'be-pm', fromId:'backend',  toId:'prometheus',  color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(3,1.8) },
+  // Backend → Redis
+  { id:'be-rd', fromId:'backend',  toId:'redis',       color:'#ef4444', marker:'blue',   glowType:'blue',   packets: makePackets(2,1.4) },
+  // Backend → ES
+  { id:'be-es', fromId:'backend',  toId:'es',          color:'#22c55e', marker:'green',  glowType:'green',  packets: makePackets(2,2.0) },
+  // Backend → AlertManager
+  { id:'be-am', fromId:'backend',  toId:'alertmanager',color:'#ef4444', marker:'orange', glowType:'blue',   packets: makePackets(2,3.0) },
+  // AlertManager → Backend (回调)
+  { id:'am-be', fromId:'alertmanager',toId:'backend',  color:'#ef4444', marker:'orange', glowType:'blue',   packets: makePackets(1,2.5) },
+  // Loki → Grafana
+  { id:'lk-gf', fromId:'loki',     toId:'grafana',     color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.2) },
+  // Prometheus → Grafana
+  { id:'pm-gf', fromId:'prometheus',toId:'grafana',    color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.0) },
+  // Backend → Claude
+  { id:'be-cl', fromId:'backend',  toId:'claude',      color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(3,1.5) },
+  // Backend → Qwen
+  { id:'be-qw', fromId:'backend',  toId:'qwen',        color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(2,2.0) },
+  // Backend → 飞书服务
+  { id:'be-fs', fromId:'backend',  toId:'feishu_svc',  color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,3.5) },
+  // Backend → SkyWalking
+  { id:'be-sw', fromId:'backend',  toId:'skywalking',  color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(2,2.4) },
+].map(e => ({
+  ...e,
+  d: edgePath(e.fromId, e.toId),
+})))
+
+// ── 工具提示 ──────────────────────────────────────────────────────────
+function showTooltip(nd, evt) {
+  const wrap = archWrap.value
+  if (!wrap) return
+  const rect = wrap.getBoundingClientRect()
+  tooltip.value = {
+    show: true,
+    x: evt.clientX - rect.left + 14,
+    y: evt.clientY - rect.top - 10,
+    icon: nd.icon,
+    name: nd.name,
+    status: nd.status,
+    statusText: nd.status === 'ok' ? '正常' : nd.status === 'warn' ? '告警' : '未知',
+    rows: Object.entries(nd.detail || {}).map(([k, v]) => ({ k, v })),
+    calls: nd.calls || [],
   }
-  return edges
-})
-
-// ── 集群拓扑 ─────────────────────────────────────────────────────────
-const filteredPods = computed(() => {
-  if (!selectedClusterNode.value) return pods.value
-  return pods.value.filter(p => p.node_name === selectedClusterNode.value)
-})
-
-const clusterSvgH = computed(() => Math.max(300, nodes.value.length * 88))
-
-const clusterEdges = computed(() => {
-  const edges = []
-  nodes.value.forEach((n, ni) => {
-    const nodePods = podsByNode(n.name)
-    nodePods.slice(0, 5).forEach((p, pi) => {
-      const y1 = ni * 88 + 40
-      const y2 = pi * 52 + 26
-      edges.push({
-        id: `${ni}-${pi}`,
-        d: `M5,${y1} C50,${y1} 50,${y2} 95,${y2}`,
-      })
-    })
-  })
-  return edges
-})
-
-function podsByNode(nodeName) {
-  return pods.value.filter(p => p.node_name === nodeName)
 }
 
-function podPhaseClass(phase) {
-  if (phase === 'Running')   return 'ok'
-  if (phase === 'Pending')   return 'warn'
-  if (phase === 'Succeeded') return 'ok'
-  if (phase === 'Failed')    return 'err'
-  return 'unknown'
+function onMouseMove(evt) {
+  if (!tooltip.value.show) return
+  const wrap = archWrap.value
+  if (!wrap) return
+  const rect = wrap.getBoundingClientRect()
+  tooltip.value.x = evt.clientX - rect.left + 14
+  tooltip.value.y = evt.clientY - rect.top - 10
 }
 
-// ── 数据加载 ─────────────────────────────────────────────────────────
-async function loadData() {
+// ── K8s 数据 ──────────────────────────────────────────────────────────
+async function loadK8s() {
   loading.value = true
   try {
-    const [sumRes, nodeRes, podRes, nsRes] = await Promise.allSettled([
-      api.k8sSummary(),
-      api.k8sNodes(),
-      api.k8sPods(null, selectedNs.value || undefined),
-      api.k8sNamespaces(),
-    ])
-    if (sumRes.status === 'fulfilled') summary.value = sumRes.value?.data ?? sumRes.value
-    if (nodeRes.status === 'fulfilled') nodes.value = nodeRes.value?.data ?? nodeRes.value ?? []
-    if (podRes.status === 'fulfilled')  pods.value  = podRes.value?.data  ?? podRes.value  ?? []
-    if (nsRes.status === 'fulfilled')   namespaces.value = nsRes.value?.data ?? nsRes.value ?? []
-
-    // 用真实数据更新流程节点状态
-    await updatePipelineStatus()
-  } catch (e) {
-    console.error('K8s topology load error:', e)
+    const [nr, pr] = await Promise.allSettled([api.k8sNodes(), api.k8sPods()])
+    k8sNodes.value = (nr.status === 'fulfilled' ? (nr.value?.data ?? nr.value ?? []) : [])
+    k8sPods.value  = (pr.status === 'fulfilled' ? (pr.value?.data ?? pr.value ?? []) : [])
   } finally {
     loading.value = false
   }
 }
 
-async function updatePipelineStatus() {
-  // 根据 Pod 运行状态更新 pipeline 节点状态
-  const hasRunning = pods.value.some(p => p.phase === 'Running')
-  const hasFailed  = pods.value.some(p => p.phase === 'Failed')
-  // 找 deploy/pod 节点更新状态
-  const deployIdx = PIPELINE_STAGES.findIndex(s => s.id === 'deploy')
-  const podIdx    = PIPELINE_STAGES.findIndex(s => s.id === 'pod')
-  if (deployIdx >= 0 && pipelineNodes.value[deployIdx]) {
-    pipelineNodes.value[deployIdx].status = hasRunning ? 'ok' : hasFailed ? 'err' : 'warn'
-  }
-  if (podIdx >= 0 && pipelineNodes.value[podIdx]) {
-    const running = pods.value.filter(p => p.phase === 'Running').length
-    PIPELINE_STAGES[podIdx].sublabel = `Running: ${running}`
-    PIPELINE_STAGES[podIdx].detail['运行中'] = String(running)
-    PIPELINE_STAGES[podIdx].detail['总数']   = String(pods.value.length)
-  }
+function podsByNode(name) {
+  return k8sPods.value.filter(p => p.node_name === name)
 }
 
-onMounted(loadData)
+function podColor(phase) {
+  return phase === 'Running' ? '#22c55e' : phase === 'Pending' ? '#f59e0b' : phase === 'Failed' ? '#ef4444' : '#6b7280'
+}
+
+function truncate(s, n) {
+  return s && s.length > n ? s.slice(0, n) + '…' : (s || '')
+}
+
+onMounted(() => {})
 </script>
 
 <style scoped>
-/* ── 布局 ──────────────────────────────────────────────── */
-.topo-page {
+/* ── 页面布局 ────────────────────────────────────────────── */
+.arch-page {
   display: flex; flex-direction: column;
-  height: 100%; overflow: hidden;
-  background: var(--bg-base); color: var(--text-primary);
+  height: 100%; background: #0d1117; color: #e6edf3; overflow: hidden;
 }
-.topo-toolbar {
+
+/* ── 工具栏 ─────────────────────────────────────────────── */
+.arch-toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 20px; border-bottom: 1px solid var(--border);
-  background: var(--bg-card); flex-shrink: 0; flex-wrap: wrap; gap: 8px;
+  padding: 10px 20px; background: #161b22;
+  border-bottom: 1px solid #21262d; flex-shrink: 0; flex-wrap: wrap; gap: 8px;
 }
-.topo-title {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 16px; font-weight: 700;
+.arch-brand { display: flex; align-items: center; gap: 10px; }
+.brand-icon { width: 20px; height: 20px; stroke: #58a6ff; }
+.arch-brand > span:first-of-type { font-size: 15px; font-weight: 700; color: #f0f6fc; }
+.arch-subtitle { font-size: 11px; color: #8b949e; margin-left: 4px; }
+.arch-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.view-tabs { display: flex; background: #0d1117; border-radius: 8px; padding: 3px; gap: 2px; border: 1px solid #21262d; }
+.vtab { padding: 5px 14px; border-radius: 6px; border: none; background: transparent; color: #8b949e; cursor: pointer; font-size: 12px; transition: .15s; }
+.vtab.active { background: #1f6feb; color: #fff; }
+.vtab:hover:not(.active) { color: #e6edf3; background: #21262d; }
+
+.toggle-pill { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: #8b949e; user-select: none; }
+.toggle-pill input { display: none; }
+.pill-track { width: 32px; height: 18px; background: #21262d; border-radius: 9px; position: relative; transition: background .2s; }
+.toggle-pill input:checked ~ .pill-track { background: #1f6feb; }
+.pill-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; transition: left .2s; }
+.toggle-pill input:checked ~ .pill-track .pill-thumb { left: 16px; }
+
+.ctrl-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid #21262d; background: #0d1117; color: #8b949e; border-radius: 8px; cursor: pointer; font-size: 14px; transition: .15s; }
+.ctrl-btn:hover { color: #e6edf3; border-color: #58a6ff; }
+.ctrl-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── 画布区域 ────────────────────────────────────────────── */
+.canvas-wrap {
+  flex: 1; overflow: auto; position: relative;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 12px;
 }
-.topo-icon { width: 20px; height: 20px; color: var(--accent); }
-.topo-icon svg { width: 20px; height: 20px; }
-.topo-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ns-select {
-  padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border);
-  background: var(--bg-base); color: var(--text-primary); font-size: 12px;
-}
-.ctrl-btn {
-  padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border);
-  background: var(--bg-base); color: var(--text-primary); cursor: pointer;
-  font-size: 12px; display: inline-flex; align-items: center; gap: 5px; transition: .15s;
-}
-.ctrl-btn:hover { background: var(--bg-hover); }
-.ctrl-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-.ctrl-btn:disabled { opacity: .5; cursor: not-allowed; }
-.anim-toggle {
-  display: flex; align-items: center; gap: 5px; cursor: pointer;
-  font-size: 12px; color: var(--text-muted);
+.arch-svg {
+  width: 100%; max-width: 1300px;
+  height: auto; min-height: 400px;
+  display: block;
 }
 
-/* ── 图例 ──────────────────────────────────────────────── */
-.legend-bar {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 7px 20px; background: var(--bg-card);
-  border-bottom: 1px solid var(--border); font-size: 12px; flex-shrink: 0;
-}
-.leg-item { display: flex; align-items: center; gap: 5px; color: var(--text-muted); }
-.leg-dot  { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.leg-dot.ok      { background: #22c55e; }
-.leg-dot.warn    { background: #f59e0b; }
-.leg-dot.err     { background: #ef4444; }
-.leg-dot.unknown { background: #94a3b8; }
-.leg-line { display: inline-block; width: 24px; height: 2px; background: linear-gradient(90deg,#3b82f6,#60a5fa); border-radius: 1px; vertical-align: middle; }
-.leg-line.flow { animation: legFlow 1.5s linear infinite; background-size: 200% 100%; }
-@keyframes legFlow { from { background-position: 0 0; } to { background-position: -100% 0; } }
-.leg-sep  { color: var(--border); }
-.leg-info { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+/* ── SVG 文本样式 ────────────────────────────────────────── */
+.layer-txt { fill: #3b4957; font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.node-icon { font-size: 18px; }
+.node-name { fill: #e6edf3; font-size: 11.5px; font-weight: 700; }
+.node-port { fill: #8b949e; font-size: 9.5px; }
+.grp-label { font-size: 10px; font-weight: 600; opacity: 0.7; }
 
-/* ── 流程视图 ──────────────────────────────────────────── */
-.pipeline-wrap {
-  flex: 1; overflow: auto; position: relative; padding: 20px;
-  display: flex; gap: 16px;
-}
-.pipeline-svg { flex-shrink: 0; }
+/* ── 节点动效 ────────────────────────────────────────────── */
+.arch-node { cursor: pointer; transition: filter .2s; }
+.arch-node:hover { filter: brightness(1.3); }
 
-/* 路径动效 */
-.edge-path { animation: dashMove 8s linear infinite; }
-@keyframes dashMove { to { stroke-dashoffset: -60; } }
-
-/* 节点 */
-.pnode { cursor: pointer; transition: filter .2s; }
-.pnode:hover { filter: brightness(1.15); }
-.pnode.selected .node-rect { filter: drop-shadow(0 0 8px #3b82f6); }
-
-.node-rect {
-  fill: var(--bg-card); stroke-width: 1.5;
-  transition: all .2s;
-}
-.node-rect.ok      { stroke: #22c55e44; }
-.node-rect.warn    { stroke: #f59e0b44; }
-.node-rect.err     { stroke: #ef444444; }
-.node-rect:hover   { fill: var(--bg-hover); }
-
-.node-top.ok      { fill: #22c55e; }
-.node-top.warn    { fill: #f59e0b; }
-.node-top.err     { fill: #ef4444; }
-.node-top         { fill: #3b82f6; }
-
-.node-icon  { font-size: 20px; dominant-baseline: middle; }
-.node-label { font-size: 11px; font-weight: 700; fill: var(--text-primary); }
-.node-sublabel { font-size: 9.5px; fill: var(--text-muted); }
-
-.status-dot { stroke: var(--bg-card); stroke-width: 1.5; }
-.status-dot.ok      { fill: #22c55e; }
-.status-dot.warn    { fill: #f59e0b; }
-.status-dot.err     { fill: #ef4444; animation: pulse-err 1.5s ease-in-out infinite; }
-@keyframes pulse-err { 0%,100% { r: 5; opacity: 1; } 50% { r: 7; opacity: .6; } }
-
-/* 粒子流动 */
-.packet { filter: url(#glow); }
-
-/* ── 节点详情面板 ────────────────────────────────────────── */
-.node-detail-panel {
-  width: 220px; flex-shrink: 0; background: var(--bg-card);
-  border: 1px solid var(--border); border-radius: 14px;
-  overflow: hidden; align-self: flex-start; position: sticky; top: 0;
-}
-.ndp-header {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 14px 14px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-hover);
-}
-.ndp-icon  { font-size: 24px; }
-.ndp-title { font-size: 13px; font-weight: 700; }
-.ndp-sub   { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-.ndp-close { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 16px; }
-.ndp-body  { padding: 10px 14px; }
-.ndp-row   { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
-.ndp-row:last-child { border-bottom: none; }
-.ndp-key   { color: var(--text-muted); }
-.ndp-val   { font-weight: 600; }
-.ndp-val.ok  { color: #22c55e; }
-.ndp-val.err { color: #ef4444; }
-
-.slide-in-enter-active, .slide-in-leave-active { transition: all .2s; }
-.slide-in-enter-from, .slide-in-leave-to { transform: translateX(20px); opacity: 0; }
-
-/* ── 集群拓扑视图 ────────────────────────────────────────── */
-.cluster-wrap {
-  flex: 1; overflow: auto; padding: 20px;
-}
-.topo-loading, .topo-empty {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  height: 200px; color: var(--text-muted); gap: 12px;
-}
-.cluster-layout {
-  display: grid; grid-template-columns: 260px 100px 1fr; gap: 0; min-height: 400px;
-}
-.node-col, .pod-col {
-  display: flex; flex-direction: column; gap: 10px;
-}
-.col-title {
-  font-size: 13px; font-weight: 700; color: var(--text-muted);
-  padding: 0 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
-  display: flex; align-items: center; gap: 6px;
-}
-.filter-hint { font-size: 11px; font-weight: 400; color: var(--accent); }
-.clear-filter {
-  background: none; border: none; cursor: pointer; color: var(--text-muted);
-  font-size: 14px; padding: 0 2px;
+.node-pulse { animation: nodePulse 2.5s ease-in-out infinite; transform-origin: center; }
+@keyframes nodePulse {
+  0%, 100% { opacity: .15; transform: scale(1); }
+  50%       { opacity: .35; transform: scale(1.3); }
 }
 
-/* K8s 节点卡片 */
-.k8s-node-card {
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: .15s;
+.status-pulse-ok { animation: dotPulse 2s ease-in-out infinite; }
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; r: 5; }
+  50%       { opacity: .4; r: 7; }
 }
-.k8s-node-card:hover { background: var(--bg-hover); }
-.k8s-node-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #3b82f630; }
-.knc-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.knc-dot    { width: 7px; height: 7px; border-radius: 50%; }
-.knc-dot.ok  { background: #22c55e; }
-.knc-dot.err { background: #ef4444; animation: pulse-err 1.5s ease-in-out infinite; }
-.knc-name   { font-size: 12px; font-weight: 700; flex: 1; }
-.knc-role   { font-size: 10px; background: #3b82f615; color: var(--accent); padding: 1px 6px; border-radius: 4px; }
-.knc-stats  { display: flex; gap: 8px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap; }
-.knc-ver    { margin-left: auto; font-size: 10px; color: var(--text-muted); }
-.knc-pods   { display: flex; gap: 8px; font-size: 11px; margin-top: 4px; color: var(--text-muted); }
-.knc-pod-ok { color: #22c55e; }
 
-/* SVG 连接 */
-.cluster-svg { overflow: visible; width: 100%; }
+.edge-dash { animation: dashFlow 6s linear infinite; }
+@keyframes dashFlow { to { stroke-dashoffset: -44; } }
 
-/* Pod chips */
-.pod-grid {
-  display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
-}
-.pod-chip {
-  display: flex; align-items: center; gap: 5px;
-  padding: 4px 8px; border-radius: 6px; font-size: 11px;
-  border: 1px solid transparent; cursor: default; max-width: 220px;
-  overflow: hidden;
-}
-.pod-chip.ok      { background: #22c55e15; border-color: #22c55e30; }
-.pod-chip.warn    { background: #f59e0b15; border-color: #f59e0b30; }
-.pod-chip.err     { background: #ef444415; border-color: #ef444430; }
-.pod-chip.unknown { background: var(--bg-hover); border-color: var(--border); }
-.pod-chip-dot {
-  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-}
-.ok .pod-chip-dot    { background: #22c55e; }
-.warn .pod-chip-dot  { background: #f59e0b; }
-.err .pod-chip-dot   { background: #ef4444; }
-.unknown .pod-chip-dot { background: #94a3b8; }
-.pod-chip-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
-.pod-chip-ns   { color: var(--text-muted); font-size: 10px; white-space: nowrap; flex-shrink: 0; }
-.pod-more      { font-size: 11px; color: var(--text-muted); padding: 4px 8px; align-self: center; }
+.hover-ring { animation: ringPulse .6s ease-in-out infinite alternate; }
+@keyframes ringPulse { from { opacity: .5; } to { opacity: 1; } }
 
-/* spinner */
-.spin    { width: 13px; height: 13px; border-radius: 50%; border: 2px solid rgba(56,139,253,.2); border-top-color: var(--accent); animation: spin .7s linear infinite; display: inline-block; }
-.spin-lg { width: 32px; height: 32px; border-radius: 50%; border: 3px solid rgba(56,139,253,.15); border-top-color: var(--accent); animation: spin .7s linear infinite; }
+/* ── 工具提示 ────────────────────────────────────────────── */
+.node-tooltip {
+  position: absolute; z-index: 100; pointer-events: none;
+  background: #161b22; border: 1px solid #30363d;
+  border-radius: 12px; padding: 12px 14px; min-width: 200px; max-width: 280px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.6);
+}
+.tip-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.tip-icon { font-size: 18px; }
+.tip-name { font-size: 13px; font-weight: 700; color: #f0f6fc; flex: 1; }
+.tip-badge { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; }
+.tip-badge.ok   { background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40; }
+.tip-badge.warn { background: #f59e0b20; color: #f59e0b; border: 1px solid #f59e0b40; }
+.tip-rows { display: flex; flex-direction: column; gap: 5px; }
+.tip-row { display: flex; justify-content: space-between; font-size: 11px; }
+.tip-key { color: #8b949e; }
+.tip-val { color: #e6edf3; font-weight: 500; text-align: right; max-width: 160px; }
+.tip-calls { margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; }
+.tip-calls-title { font-size: 10px; color: #8b949e; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
+.tip-call-item { font-size: 11px; color: #58a6ff; padding: 1px 0; }
+
+/* ── 图例 ────────────────────────────────────────────────── */
+.arch-legend {
+  position: absolute; bottom: 20px; right: 20px;
+  background: #161b22cc; border: 1px solid #21262d;
+  border-radius: 10px; padding: 10px 14px;
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 11px; backdrop-filter: blur(4px);
+}
+.leg-row { display: flex; align-items: center; gap: 7px; color: #8b949e; }
+.leg-line { display: inline-block; width: 22px; height: 2px; border-radius: 1px; }
+.leg-line.blue   { background: #3b82f6; }
+.leg-line.green  { background: #22c55e; }
+.leg-line.orange { background: #f59e0b; }
+.leg-line.purple { background: #a855f7; }
+.leg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.leg-dot.ok   { background: #22c55e; }
+.leg-dot.warn { background: #f59e0b; }
+.leg-dot.gray { background: #6b7280; }
+.leg-sep { height: 1px; background: #21262d; margin: 2px 0; }
+
+/* ── K8s 服务图 ─────────────────────────────────────────── */
+.k8s-wrap { flex: 1; overflow: auto; padding: 12px; display: flex; justify-content: center; }
+.k8s-svg { width: 100%; max-width: 960px; height: auto; display: block; }
+.k8s-loading, .k8s-empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; height: 200px; color: #8b949e; gap: 12px;
+}
+.k8s-node-name { fill: #e6edf3; font-size: 12px; font-weight: 700; }
+.k8s-node-role { fill: #8b949e; font-size: 10px; }
+.pod-name { fill: #e6edf3; font-size: 10.5px; font-weight: 600; dominant-baseline: middle; }
+.pod-ns   { fill: #8b949e; font-size: 9.5px; dominant-baseline: middle; }
+.stat-label { fill: #8b949e; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.stat-val   { fill: #e6edf3; font-size: 12px; font-weight: 600; }
+.ok-text    { fill: #22c55e; }
+
+.k8s-dot-pulse { animation: dotPulse 2s ease-in-out infinite; }
+
+/* ── 加载动画 ────────────────────────────────────────────── */
+.spin-sm {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid #21262d; border-top-color: #58a6ff;
+  animation: spin .7s linear infinite; display: inline-block;
+}
+.spin-lg {
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 3px solid #21262d; border-top-color: #58a6ff;
+  animation: spin .7s linear infinite;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
