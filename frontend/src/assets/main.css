@@ -56,50 +56,61 @@
   color-scheme: light;
 }
 
+/* ─── Dark theme: k8study.cn inspired ─────────────────────────────
+   深海蓝 + 电蓝 accent + 绿色健康状态
+   参考 k8study 技术可视化平台配色
+   ──────────────────────────────────────────────────────────────── */
 [data-theme="dark"] {
-  --accent-rgb: 99, 164, 255;
-  --success-rgb: 58, 200, 158;
-  --warning-rgb: 245, 169, 69;
-  --error-rgb: 255, 105, 95;
+  --accent-rgb: 56, 189, 248;     /* sky-400 — 比默认蓝更鲜亮 */
+  --success-rgb: 34, 197, 94;
+  --warning-rgb: 251, 191, 36;
+  --error-rgb: 248, 113, 113;
 
-  --bg-base: #06101f;
-  --bg-card: #0d182b;
-  --bg-panel: rgba(9, 18, 36, 0.86);
-  --bg-surface: #101f36;
-  --bg-hover: rgba(99, 164, 255, 0.1);
-  --bg-active: rgba(99, 164, 255, 0.14);
-  --bg-input: rgba(7, 16, 30, 0.9);
-  --bg-sidebar: #020916;
-  --bg-sidebar-elevated: rgba(255, 255, 255, 0.04);
-  --bg-sidebar-active: rgba(99, 164, 255, 0.18);
-  --bg-sidebar-hover: rgba(255, 255, 255, 0.06);
+  /* 背景层次：极深海军 → 深蓝 → 蓝灰 */
+  --bg-base:    #0d1117;           /* GitHub dark / k8study 背景 */
+  --bg-card:    #161b22;           /* 卡片面板 */
+  --bg-panel:   rgba(13, 17, 23, 0.92);
+  --bg-surface: #1c2333;           /* 次级表面 */
+  --bg-hover:   rgba(56, 189, 248, 0.08);
+  --bg-active:  rgba(56, 189, 248, 0.14);
+  --bg-input:   rgba(13, 17, 23, 0.8);
+  --bg-sidebar: #0a0f1a;           /* 更深的侧边栏 */
+  --bg-sidebar-elevated: rgba(255, 255, 255, 0.03);
+  --bg-sidebar-active:   rgba(56, 189, 248, 0.16);
+  --bg-sidebar-hover:    rgba(255, 255, 255, 0.05);
 
-  --border: rgba(164, 188, 228, 0.14);
-  --border-light: rgba(164, 188, 228, 0.08);
-  --border-strong: rgba(164, 188, 228, 0.18);
-  --border-accent: rgba(99, 164, 255, 0.42);
-  --shell-border: rgba(164, 188, 228, 0.12);
+  /* 边框：低调蓝灰 */
+  --border:        rgba(48, 54, 61, 0.9);
+  --border-light:  rgba(48, 54, 61, 0.5);
+  --border-strong: rgba(99, 122, 161, 0.3);
+  --border-accent: rgba(56, 189, 248, 0.45);
+  --shell-border:  rgba(48, 54, 61, 0.7);
 
-  --text-primary: #edf4ff;
-  --text-secondary: #b4c4de;
-  --text-muted: #7d93b7;
-  --text-sidebar: rgba(189, 208, 239, 0.75);
-  --text-sidebar-strong: #f3f7ff;
+  /* 文字：高对比白 → 冷灰 */
+  --text-primary:       #e6edf3;
+  --text-secondary:     #8d96a0;
+  --text-muted:         #586069;
+  --text-sidebar:       rgba(139, 148, 158, 0.85);
+  --text-sidebar-strong: #e6edf3;
 
-  --accent: #63a4ff;
-  --accent-hover: #8bb9ff;
-  --accent-dim: rgba(99, 164, 255, 0.14);
-  --accent-soft: rgba(99, 164, 255, 0.22);
-  --success: #3ac89e;
-  --warning: #f5a945;
-  --error: #ff695f;
-  --info: #63a4ff;
+  /* Accent: 电蓝 (sky blue) */
+  --accent:       #38bdf8;
+  --accent-hover: #7dd3fc;
+  --accent-dim:   rgba(56, 189, 248, 0.12);
+  --accent-soft:  rgba(56, 189, 248, 0.20);
 
-  --shadow-sm: 0 14px 28px rgba(0, 0, 0, 0.24);
-  --shadow: 0 22px 52px rgba(0, 0, 0, 0.34);
-  --shadow-md: 0 28px 70px rgba(0, 0, 0, 0.42);
-  --shadow-accent: 0 0 0 1px var(--border-accent), 0 18px 44px rgba(41, 89, 168, 0.24);
-  --shell-shadow: 0 24px 72px rgba(0, 0, 0, 0.38);
+  /* 语义色 */
+  --success: #22c55e;   /* 鲜绿 — Running 状态 */
+  --warning: #fbbf24;   /* 琥珀 — Pending/Warning */
+  --error:   #f87171;   /* 软红 — Error/Failed */
+  --info:    #38bdf8;
+
+  /* 阴影：带蓝色调 */
+  --shadow-sm:     0 1px 3px rgba(0,0,0,0.4), 0 8px 16px rgba(0,0,0,0.24);
+  --shadow:        0 4px 16px rgba(0,0,0,0.5), 0 16px 40px rgba(0,0,0,0.3);
+  --shadow-md:     0 8px 32px rgba(0,0,0,0.6);
+  --shadow-accent: 0 0 0 1px var(--border-accent), 0 0 20px rgba(56,189,248,0.12);
+  --shell-shadow:  0 24px 72px rgba(0,0,0,0.5);
 
   color-scheme: dark;
 }

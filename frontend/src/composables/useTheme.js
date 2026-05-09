@@ -17,7 +17,7 @@ function applyTheme(id) {
 
 // 旧版存的是 'dark' 表示无 attribute，新版反过来——迁移一次
 const _stored = localStorage.getItem(STORAGE_KEY)
-const currentTheme = ref(_stored || 'light')
+const currentTheme = ref(_stored || 'dark')
 applyTheme(currentTheme.value)
 
 export function useTheme() {

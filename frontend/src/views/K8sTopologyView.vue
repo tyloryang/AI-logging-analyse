@@ -40,7 +40,7 @@
         <defs>
           <!-- 背景网格 -->
           <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path d="M40,0 L0,0 L0,40" fill="none" stroke="rgba(99,132,255,0.12)" stroke-width="1"/>
+            <path d="M40,0 L0,0 L0,40" fill="none" stroke="rgba(56,189,248,0.07)" stroke-width="1"/>
           </pattern>
           <!-- 粒子发光 -->
           <filter id="glow-blue" x="-50%" y="-50%" width="200%" height="200%">
@@ -69,33 +69,33 @@
           </marker>
           <!-- 渐变 -->
           <linearGradient id="grad-blue" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#dbeafe" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#eff6ff" stop-opacity="1"/>
+            <stop offset="0%" stop-color="#0c2038" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#0f2d52" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-green" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#dcfce7" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#f0fdf4" stop-opacity="1"/>
+            <stop offset="0%" stop-color="#0a1f15" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#0d2b1c" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-orange" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#fef3c7" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#fffbeb" stop-opacity="1"/>
+            <stop offset="0%" stop-color="#1f1506" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#291c08" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-purple" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#f3e8ff" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#faf5ff" stop-opacity="1"/>
+            <stop offset="0%" stop-color="#160d29" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#1d1136" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-teal" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#ccfbf1" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#f0fdfa" stop-opacity="1"/>
+            <stop offset="0%" stop-color="#071e1f" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#0a282a" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-red" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#fee2e2" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#fff5f5" stop-opacity="1"/>
+            <stop offset="0%" stop-color="#200c0c" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#2d0f0f" stop-opacity="1"/>
           </linearGradient>
         </defs>
 
         <!-- 背景 -->
-        <rect width="100%" height="100%" fill="#f8fafc"/>
+        <rect width="100%" height="100%" fill="#0d1117"/>
         <rect width="100%" height="100%" fill="url(#grid)"/>
 
         <!-- 层标签 -->
@@ -633,35 +633,35 @@ onMounted(() => {})
 /* ── 页面布局 ────────────────────────────────────────────── */
 .arch-page {
   display: flex; flex-direction: column;
-  height: 100%; background: #f1f5f9; color: #1e293b; overflow: hidden;
+  height: 100%; background: #0d1117; color: #e6edf3; overflow: hidden;
 }
 
 /* ── 工具栏 ─────────────────────────────────────────────── */
 .arch-toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 20px; background: #ffffff;
-  border-bottom: 1px solid #e2e8f0; flex-shrink: 0; flex-wrap: wrap; gap: 8px;
+  padding: 10px 20px; background: #161b22;
+  border-bottom: 1px solid rgba(48,54,61,0.9); flex-shrink: 0; flex-wrap: wrap; gap: 8px;
 }
 .arch-brand { display: flex; align-items: center; gap: 10px; }
-.brand-icon { width: 20px; height: 20px; stroke: #3b82f6; }
-.arch-brand > span:first-of-type { font-size: 15px; font-weight: 700; color: #0f172a; }
-.arch-subtitle { font-size: 11px; color: #64748b; margin-left: 4px; }
+.brand-icon { width: 20px; height: 20px; stroke: #38bdf8; }
+.arch-brand > span:first-of-type { font-size: 15px; font-weight: 700; color: #e6edf3; }
+.arch-subtitle { font-size: 11px; color: #586069; margin-left: 4px; }
 .arch-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-.view-tabs { display: flex; background: #f1f5f9; border-radius: 8px; padding: 3px; gap: 2px; border: 1px solid #e2e8f0; }
-.vtab { padding: 5px 14px; border-radius: 6px; border: none; background: transparent; color: #64748b; cursor: pointer; font-size: 12px; transition: .15s; }
-.vtab.active { background: #3b82f6; color: #fff; }
-.vtab:hover:not(.active) { color: #1e293b; background: #e2e8f0; }
+.view-tabs { display: flex; background: #0d1117; border-radius: 8px; padding: 3px; gap: 2px; border: 1px solid rgba(48,54,61,0.9); }
+.vtab { padding: 5px 14px; border-radius: 6px; border: none; background: transparent; color: #586069; cursor: pointer; font-size: 12px; transition: .15s; }
+.vtab.active { background: #38bdf8; color: #0d1117; font-weight: 600; }
+.vtab:hover:not(.active) { color: #e6edf3; background: rgba(255,255,255,0.06); }
 
-.toggle-pill { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: #64748b; user-select: none; }
+.toggle-pill { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: #8d96a0; user-select: none; }
 .toggle-pill input { display: none; }
-.pill-track { width: 32px; height: 18px; background: #cbd5e1; border-radius: 9px; position: relative; transition: background .2s; }
-.toggle-pill input:checked ~ .pill-track { background: #3b82f6; }
+.pill-track { width: 32px; height: 18px; background: rgba(48,54,61,0.9); border-radius: 9px; position: relative; transition: background .2s; }
+.toggle-pill input:checked ~ .pill-track { background: #38bdf8; }
 .pill-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; transition: left .2s; }
 .toggle-pill input:checked ~ .pill-track .pill-thumb { left: 16px; }
 
-.ctrl-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid #e2e8f0; background: #fff; color: #64748b; border-radius: 8px; cursor: pointer; font-size: 14px; transition: .15s; }
-.ctrl-btn:hover { color: #1e293b; border-color: #3b82f6; }
+.ctrl-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(48,54,61,0.9); background: #161b22; color: #8d96a0; border-radius: 8px; cursor: pointer; font-size: 14px; transition: .15s; }
+.ctrl-btn:hover { color: #38bdf8; border-color: rgba(56,189,248,0.45); }
 .ctrl-btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ── 画布区域 ────────────────────────────────────────────── */
@@ -677,11 +677,11 @@ onMounted(() => {})
 }
 
 /* ── SVG 文本样式 ────────────────────────────────────────── */
-.layer-txt { fill: #94a3b8; font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.layer-txt { fill: #586069; font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .node-icon { font-size: 18px; }
-.node-name { fill: #1e293b; font-size: 11.5px; font-weight: 700; }
-.node-port { fill: #64748b; font-size: 9.5px; }
-.grp-label { font-size: 10px; font-weight: 600; opacity: 0.8; }
+.node-name { fill: #e6edf3; font-size: 11.5px; font-weight: 700; }
+.node-port { fill: #8d96a0; font-size: 9.5px; }
+.grp-label { font-size: 10px; font-weight: 600; opacity: 0.7; }
 
 /* ── 节点动效 ────────────────────────────────────────────── */
 .arch-node { cursor: pointer; transition: filter .2s; }
@@ -708,34 +708,34 @@ onMounted(() => {})
 /* ── 工具提示 ────────────────────────────────────────────── */
 .node-tooltip {
   position: absolute; z-index: 100; pointer-events: none;
-  background: #ffffff; border: 1px solid #e2e8f0;
+  background: #161b22; border: 1px solid rgba(48,54,61,0.9);
   border-radius: 12px; padding: 12px 14px; min-width: 200px; max-width: 280px;
-  box-shadow: 0 8px 32px rgba(0,0,0,.12);
+  box-shadow: 0 8px 32px rgba(0,0,0,.6);
 }
 .tip-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .tip-icon { font-size: 18px; }
-.tip-name { font-size: 13px; font-weight: 700; color: #0f172a; flex: 1; }
+.tip-name { font-size: 13px; font-weight: 700; color: #e6edf3; flex: 1; }
 .tip-badge { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; }
-.tip-badge.ok   { background: #dcfce7; color: #16a34a; border: 1px solid #86efac; }
-.tip-badge.warn { background: #fef3c7; color: #d97706; border: 1px solid #fcd34d; }
+.tip-badge.ok   { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+.tip-badge.warn { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
 .tip-rows { display: flex; flex-direction: column; gap: 5px; }
 .tip-row { display: flex; justify-content: space-between; font-size: 11px; }
-.tip-key { color: #64748b; }
-.tip-val { color: #1e293b; font-weight: 500; text-align: right; max-width: 160px; }
-.tip-calls { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
-.tip-calls-title { font-size: 10px; color: #94a3b8; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
-.tip-call-item { font-size: 11px; color: #3b82f6; padding: 1px 0; }
+.tip-key { color: #586069; }
+.tip-val { color: #e6edf3; font-weight: 500; text-align: right; max-width: 160px; }
+.tip-calls { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(48,54,61,0.9); }
+.tip-calls-title { font-size: 10px; color: #586069; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
+.tip-call-item { font-size: 11px; color: #38bdf8; padding: 1px 0; }
 
 /* ── 图例 ────────────────────────────────────────────────── */
 .arch-legend {
   position: absolute; bottom: 20px; right: 20px;
-  background: #ffffffee; border: 1px solid #e2e8f0;
+  background: rgba(22,27,34,0.92); border: 1px solid rgba(48,54,61,0.9);
   border-radius: 10px; padding: 10px 14px;
   display: flex; flex-direction: column; gap: 5px;
-  font-size: 11px; backdrop-filter: blur(4px);
-  box-shadow: 0 2px 12px rgba(0,0,0,.08);
+  font-size: 11px; backdrop-filter: blur(8px);
+  box-shadow: 0 4px 24px rgba(0,0,0,.4);
 }
-.leg-row { display: flex; align-items: center; gap: 7px; color: #64748b; }
+.leg-row { display: flex; align-items: center; gap: 7px; color: #8d96a0; }
 .leg-line { display: inline-block; width: 22px; height: 2px; border-radius: 1px; }
 .leg-line.blue   { background: #3b82f6; }
 .leg-line.green  { background: #22c55e; }
