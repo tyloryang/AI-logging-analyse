@@ -507,30 +507,39 @@ onMounted(() => {
 .stat-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
   border-radius: var(--radius-card);
-  padding: 16px 20px;
+  padding: 20px 20px 16px;
   position: relative;
   overflow: hidden;
-  transition: border-color .15s;
+  transition: border-color .15s, box-shadow .15s;
 }
-.stat-card:hover { border-color: var(--border-accent); }
-.stat-card.stat-alert { border-color: rgba(248,81,73,0.3); }
-.stat-card.stat-warn  { border-color: rgba(210,153,34,0.3); }
+.stat-card:hover { box-shadow: var(--shadow-sm); }
+.stat-card.stat-alert {
+  border-left-color: var(--error);
+  background: linear-gradient(135deg, rgba(203,59,48,0.03) 0%, transparent 60%);
+}
+.stat-card.stat-warn {
+  border-left-color: var(--warning);
+  background: linear-gradient(135deg, rgba(181,112,22,0.03) 0%, transparent 60%);
+}
+.stat-card:not(.stat-alert):not(.stat-warn) { border-left-color: var(--accent); }
 .stat-num {
-  font-size: 32px; font-weight: 700;
-  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 36px; font-weight: 700;
+  font-family: 'Cascadia Code', 'Consolas', 'SF Mono', monospace;
   color: var(--text-primary); line-height: 1;
+  letter-spacing: -0.02em;
 }
 .num-alert   { color: var(--error); }
 .num-warn    { color: var(--warning); }
-.num-info    { color: var(--info, #58a6ff); }
+.num-info    { color: var(--accent); }
 .num-success { color: var(--success); }
-.stat-label  { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
-.stat-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; }
-.alert-bar   { background: linear-gradient(90deg, var(--error) 0%, transparent 100%); }
-.error-bar   { background: linear-gradient(90deg, var(--warning) 0%, transparent 100%); }
-.trace-bar   { background: linear-gradient(90deg, var(--info,#58a6ff) 0%, transparent 100%); }
-.grafana-bar { background: linear-gradient(90deg, var(--success) 0%, transparent 100%); }
+.stat-label  {
+  font-size: 11px; font-weight: 600;
+  color: var(--text-muted); margin-top: 8px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.stat-bar { display: none; }
 
 /* ── AI 分析框 ── */
 .ai-analyze-box { padding: 14px 18px; transition: padding .2s; }

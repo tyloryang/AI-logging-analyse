@@ -218,6 +218,7 @@
 
 <script setup>
 import { ref, computed, nextTick, reactive, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 
 // ── 图标 ──────────────────────────────────────────────────────────────
 const AGENT_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M9 11V7a3 3 0 0 1 6 0v4"/><circle cx="9" cy="16" r="1" fill="currentColor"/><circle cx="15" cy="16" r="1" fill="currentColor"/><path d="M12 3v2"/></svg>`
@@ -328,6 +329,7 @@ const TOOL_LABELS = {
 }
 
 // ── 状态 ──────────────────────────────────────────────────────────────
+const route = useRoute()
 const mode       = ref('chat')
 const messages   = ref([])
 const inputText  = ref('')
@@ -439,7 +441,24 @@ function newConversation() {
   clearChat()
 }
 
+function applyRoutePreset() {
+  const requestedMode = String(route.query.mode || '').trim()
+  if (requestedMode && MODES.some(item => item.key === requestedMode)) {
+    mode.value = requestedMode
+  }
+
+  const presetPrompt = String(route.query.prompt || '').trim()
+  if (!presetPrompt) return
+  inputText.value = presetPrompt
+  nextTick(() => {
+    if (!inputRef.value) return
+    inputRef.value.style.height = 'auto'
+    inputRef.value.style.height = Math.min(inputRef.value.scrollHeight, 160) + 'px'
+  })
+}
+
 onMounted(() => {
+  applyRoutePreset()
   loadHistoryList()
   fetchAiModel()
 })
@@ -851,14 +870,15 @@ function handleEvent(data, msg) {
 /* 用户气泡 */
 .user-bubble {
   max-width: 72%;
-  padding: 10px 14px;
-  border-radius: 14px 14px 2px 14px;
+  padding: 10px 16px;
+  border-radius: 10px 10px 2px 10px;
   background: var(--accent);
   color: #fff;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+  box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.25);
 }
 
 /* AI 消息 */
@@ -869,9 +889,10 @@ function handleEvent(data, msg) {
 }
 .assistant-avatar {
   width: 28px; height: 28px;
-  border-radius: 7px;
-  background: var(--accent-dim, rgba(99,102,241,.12));
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--accent-dim), var(--accent-soft));
   color: var(--accent);
+  border: 1px solid var(--border-accent);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
   margin-top: 2px;

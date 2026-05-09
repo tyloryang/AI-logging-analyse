@@ -238,14 +238,20 @@ onMounted(load)
 .groups-list { display: flex; flex-direction: column; gap: 10px; }
 
 .group-card {
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius-card); padding: 14px 16px;
-  border-left: 3px solid var(--border);
-  display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: box-shadow .15s;
 }
-.group-card.critical, .group-card.error { border-left-color: var(--error); }
-.group-card.warning { border-left-color: var(--warning); }
-.group-card.info    { border-left-color: var(--accent); }
+.group-card:hover { box-shadow: var(--shadow-sm); }
+.group-card.critical { border-left-color: var(--error); }
+.group-card.warning  { border-left-color: var(--warning); }
+.group-card.info     { border-left-color: var(--accent); }
 
 .group-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
