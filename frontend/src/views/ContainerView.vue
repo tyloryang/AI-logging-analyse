@@ -1044,8 +1044,8 @@ async function testActiveCluster() {
     const result = await api.k8sTestCluster(activeCluster.value.id)
     clusterTestResult.value = result.ok
     clusterTestMsg.value = result.ok
-      ? `连接成功，共 ${result.node_count} 个节点：${(result.nodes || []).join(', ')}（使用 ${result.resolved_kubeconfig || result.kubeconfig}）`
-      : `连接失败：${result.error}${result.resolved_kubeconfig ? `（解析后路径：${result.resolved_kubeconfig}）` : ''}`
+      ? `连接成功，共 ${result.node_count} 个节点：${(result.nodes || []).join(', ')}\n使用 kubeconfig：${result.resolved_kubeconfig || result.kubeconfig}${result.kubectl_command ? `\nkubectl 命令：${result.kubectl_command}` : ''}`
+      : `连接失败：${result.error}${result.resolved_kubeconfig ? `\n解析后路径：${result.resolved_kubeconfig}` : ''}${result.kubectl_command ? `\nkubectl 命令：${result.kubectl_command}` : ''}`
   } catch (e) {
     clusterTestResult.value = false
     clusterTestMsg.value = `测试失败：${e}`
@@ -1245,6 +1245,7 @@ onBeforeUnmount(() => { _destroyExec() })
 .cluster-banner.ok { background: rgba(26,127,55,0.08); border: 1px solid rgba(26,127,55,0.22); color: var(--success); }
 .cluster-banner.err,
 .error-banner { background: rgba(207,34,46,0.07); border: 1px solid rgba(207,34,46,0.25); color: var(--error); }
+.cluster-banner { white-space: pre-line; word-break: break-all; }
 .error-banner { display: flex; align-items: center; gap: 7px; }
 
 .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }

@@ -40,7 +40,7 @@
         <defs>
           <!-- 背景网格 -->
           <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path d="M40,0 L0,0 L0,40" fill="none" stroke="rgba(99,132,255,0.06)" stroke-width="1"/>
+            <path d="M40,0 L0,0 L0,40" fill="none" stroke="rgba(99,132,255,0.12)" stroke-width="1"/>
           </pattern>
           <!-- 粒子发光 -->
           <filter id="glow-blue" x="-50%" y="-50%" width="200%" height="200%">
@@ -69,33 +69,33 @@
           </marker>
           <!-- 渐变 -->
           <linearGradient id="grad-blue" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#1e3a8a" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#1e40af" stop-opacity="0.7"/>
+            <stop offset="0%" stop-color="#dbeafe" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#eff6ff" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-green" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#14532d" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#166534" stop-opacity="0.7"/>
+            <stop offset="0%" stop-color="#dcfce7" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#f0fdf4" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-orange" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#78350f" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#92400e" stop-opacity="0.7"/>
+            <stop offset="0%" stop-color="#fef3c7" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#fffbeb" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-purple" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#581c87" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#6b21a8" stop-opacity="0.7"/>
+            <stop offset="0%" stop-color="#f3e8ff" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#faf5ff" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-teal" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#134e4a" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#115e59" stop-opacity="0.7"/>
+            <stop offset="0%" stop-color="#ccfbf1" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#f0fdfa" stop-opacity="1"/>
           </linearGradient>
           <linearGradient id="grad-red" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#7f1d1d" stop-opacity="0.9"/>
-            <stop offset="100%" stop-color="#991b1b" stop-opacity="0.7"/>
+            <stop offset="0%" stop-color="#fee2e2" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#fff5f5" stop-opacity="1"/>
           </linearGradient>
         </defs>
 
         <!-- 背景 -->
-        <rect width="100%" height="100%" fill="#0d1117"/>
+        <rect width="100%" height="100%" fill="#f8fafc"/>
         <rect width="100%" height="100%" fill="url(#grid)"/>
 
         <!-- 层标签 -->
@@ -250,7 +250,7 @@
       >
         <defs>
           <pattern id="k8s-grid" width="32" height="32" patternUnits="userSpaceOnUse">
-            <path d="M32,0 L0,0 L0,32" fill="none" stroke="rgba(99,132,255,0.05)" stroke-width="1"/>
+            <path d="M32,0 L0,0 L0,32" fill="none" stroke="rgba(99,132,255,0.10)" stroke-width="1"/>
           </pattern>
           <filter id="k8s-glow">
             <feGaussianBlur stdDeviation="3" result="b"/>
@@ -261,7 +261,7 @@
           </marker>
         </defs>
 
-        <rect width="100%" height="100%" fill="#0d1117"/>
+        <rect width="100%" height="100%" fill="#f8fafc"/>
         <rect width="100%" height="100%" fill="url(#k8s-grid)"/>
 
         <!-- Node 卡片行 -->
@@ -269,7 +269,7 @@
           <!-- Node 背景 -->
           <rect :x="20" :y="ni*K8S_ROW_H + 20"
             width="200" :height="K8S_ROW_H - 24"
-            rx="10" fill="#1e3a8a20" stroke="#3b82f640" stroke-width="1"/>
+            rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1"/>
           <text :x="32" :y="ni*K8S_ROW_H + 42" class="k8s-node-name">{{ nd.name }}</text>
           <text :x="32" :y="ni*K8S_ROW_H + 58" class="k8s-node-role">{{ nd.roles }} · {{ nd.version }}</text>
           <circle :cx="196" :cy="ni*K8S_ROW_H + 42" r="6"
@@ -321,7 +321,7 @@
         <!-- 统计信息 -->
         <g :transform="`translate(20, ${k8sNodes.length * K8S_ROW_H + 28})`">
           <rect x="0" y="0" :width="K8S_W - 40" height="48" rx="10"
-            fill="#1e3a8a15" stroke="#3b82f630" stroke-width="1"/>
+            fill="#eff6ff" stroke="#93c5fd" stroke-width="1"/>
           <text x="16" y="22" class="stat-label">集群概览</text>
           <text x="16" y="40" class="stat-val">节点 {{ k8sNodes.length }}</text>
           <text x="100" y="40" class="stat-val">Pods {{ k8sPods.length }}</text>
@@ -633,35 +633,35 @@ onMounted(() => {})
 /* ── 页面布局 ────────────────────────────────────────────── */
 .arch-page {
   display: flex; flex-direction: column;
-  height: 100%; background: #0d1117; color: #e6edf3; overflow: hidden;
+  height: 100%; background: #f1f5f9; color: #1e293b; overflow: hidden;
 }
 
 /* ── 工具栏 ─────────────────────────────────────────────── */
 .arch-toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 20px; background: #161b22;
-  border-bottom: 1px solid #21262d; flex-shrink: 0; flex-wrap: wrap; gap: 8px;
+  padding: 10px 20px; background: #ffffff;
+  border-bottom: 1px solid #e2e8f0; flex-shrink: 0; flex-wrap: wrap; gap: 8px;
 }
 .arch-brand { display: flex; align-items: center; gap: 10px; }
-.brand-icon { width: 20px; height: 20px; stroke: #58a6ff; }
-.arch-brand > span:first-of-type { font-size: 15px; font-weight: 700; color: #f0f6fc; }
-.arch-subtitle { font-size: 11px; color: #8b949e; margin-left: 4px; }
+.brand-icon { width: 20px; height: 20px; stroke: #3b82f6; }
+.arch-brand > span:first-of-type { font-size: 15px; font-weight: 700; color: #0f172a; }
+.arch-subtitle { font-size: 11px; color: #64748b; margin-left: 4px; }
 .arch-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-.view-tabs { display: flex; background: #0d1117; border-radius: 8px; padding: 3px; gap: 2px; border: 1px solid #21262d; }
-.vtab { padding: 5px 14px; border-radius: 6px; border: none; background: transparent; color: #8b949e; cursor: pointer; font-size: 12px; transition: .15s; }
-.vtab.active { background: #1f6feb; color: #fff; }
-.vtab:hover:not(.active) { color: #e6edf3; background: #21262d; }
+.view-tabs { display: flex; background: #f1f5f9; border-radius: 8px; padding: 3px; gap: 2px; border: 1px solid #e2e8f0; }
+.vtab { padding: 5px 14px; border-radius: 6px; border: none; background: transparent; color: #64748b; cursor: pointer; font-size: 12px; transition: .15s; }
+.vtab.active { background: #3b82f6; color: #fff; }
+.vtab:hover:not(.active) { color: #1e293b; background: #e2e8f0; }
 
-.toggle-pill { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: #8b949e; user-select: none; }
+.toggle-pill { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: #64748b; user-select: none; }
 .toggle-pill input { display: none; }
-.pill-track { width: 32px; height: 18px; background: #21262d; border-radius: 9px; position: relative; transition: background .2s; }
-.toggle-pill input:checked ~ .pill-track { background: #1f6feb; }
+.pill-track { width: 32px; height: 18px; background: #cbd5e1; border-radius: 9px; position: relative; transition: background .2s; }
+.toggle-pill input:checked ~ .pill-track { background: #3b82f6; }
 .pill-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; transition: left .2s; }
 .toggle-pill input:checked ~ .pill-track .pill-thumb { left: 16px; }
 
-.ctrl-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid #21262d; background: #0d1117; color: #8b949e; border-radius: 8px; cursor: pointer; font-size: 14px; transition: .15s; }
-.ctrl-btn:hover { color: #e6edf3; border-color: #58a6ff; }
+.ctrl-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid #e2e8f0; background: #fff; color: #64748b; border-radius: 8px; cursor: pointer; font-size: 14px; transition: .15s; }
+.ctrl-btn:hover { color: #1e293b; border-color: #3b82f6; }
 .ctrl-btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ── 画布区域 ────────────────────────────────────────────── */
@@ -677,11 +677,11 @@ onMounted(() => {})
 }
 
 /* ── SVG 文本样式 ────────────────────────────────────────── */
-.layer-txt { fill: #3b4957; font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.layer-txt { fill: #94a3b8; font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .node-icon { font-size: 18px; }
-.node-name { fill: #e6edf3; font-size: 11.5px; font-weight: 700; }
-.node-port { fill: #8b949e; font-size: 9.5px; }
-.grp-label { font-size: 10px; font-weight: 600; opacity: 0.7; }
+.node-name { fill: #1e293b; font-size: 11.5px; font-weight: 700; }
+.node-port { fill: #64748b; font-size: 9.5px; }
+.grp-label { font-size: 10px; font-weight: 600; opacity: 0.8; }
 
 /* ── 节点动效 ────────────────────────────────────────────── */
 .arch-node { cursor: pointer; transition: filter .2s; }
@@ -708,33 +708,34 @@ onMounted(() => {})
 /* ── 工具提示 ────────────────────────────────────────────── */
 .node-tooltip {
   position: absolute; z-index: 100; pointer-events: none;
-  background: #161b22; border: 1px solid #30363d;
+  background: #ffffff; border: 1px solid #e2e8f0;
   border-radius: 12px; padding: 12px 14px; min-width: 200px; max-width: 280px;
-  box-shadow: 0 8px 32px rgba(0,0,0,.6);
+  box-shadow: 0 8px 32px rgba(0,0,0,.12);
 }
 .tip-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .tip-icon { font-size: 18px; }
-.tip-name { font-size: 13px; font-weight: 700; color: #f0f6fc; flex: 1; }
+.tip-name { font-size: 13px; font-weight: 700; color: #0f172a; flex: 1; }
 .tip-badge { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; }
-.tip-badge.ok   { background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40; }
-.tip-badge.warn { background: #f59e0b20; color: #f59e0b; border: 1px solid #f59e0b40; }
+.tip-badge.ok   { background: #dcfce7; color: #16a34a; border: 1px solid #86efac; }
+.tip-badge.warn { background: #fef3c7; color: #d97706; border: 1px solid #fcd34d; }
 .tip-rows { display: flex; flex-direction: column; gap: 5px; }
 .tip-row { display: flex; justify-content: space-between; font-size: 11px; }
-.tip-key { color: #8b949e; }
-.tip-val { color: #e6edf3; font-weight: 500; text-align: right; max-width: 160px; }
-.tip-calls { margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; }
-.tip-calls-title { font-size: 10px; color: #8b949e; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
-.tip-call-item { font-size: 11px; color: #58a6ff; padding: 1px 0; }
+.tip-key { color: #64748b; }
+.tip-val { color: #1e293b; font-weight: 500; text-align: right; max-width: 160px; }
+.tip-calls { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+.tip-calls-title { font-size: 10px; color: #94a3b8; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
+.tip-call-item { font-size: 11px; color: #3b82f6; padding: 1px 0; }
 
 /* ── 图例 ────────────────────────────────────────────────── */
 .arch-legend {
   position: absolute; bottom: 20px; right: 20px;
-  background: #161b22cc; border: 1px solid #21262d;
+  background: #ffffffee; border: 1px solid #e2e8f0;
   border-radius: 10px; padding: 10px 14px;
   display: flex; flex-direction: column; gap: 5px;
   font-size: 11px; backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0,0,0,.08);
 }
-.leg-row { display: flex; align-items: center; gap: 7px; color: #8b949e; }
+.leg-row { display: flex; align-items: center; gap: 7px; color: #64748b; }
 .leg-line { display: inline-block; width: 22px; height: 2px; border-radius: 1px; }
 .leg-line.blue   { background: #3b82f6; }
 .leg-line.green  { background: #22c55e; }
@@ -753,13 +754,13 @@ onMounted(() => {})
   display: flex; flex-direction: column; align-items: center;
   justify-content: center; height: 200px; color: #8b949e; gap: 12px;
 }
-.k8s-node-name { fill: #e6edf3; font-size: 12px; font-weight: 700; }
-.k8s-node-role { fill: #8b949e; font-size: 10px; }
-.pod-name { fill: #e6edf3; font-size: 10.5px; font-weight: 600; dominant-baseline: middle; }
-.pod-ns   { fill: #8b949e; font-size: 9.5px; dominant-baseline: middle; }
-.stat-label { fill: #8b949e; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
-.stat-val   { fill: #e6edf3; font-size: 12px; font-weight: 600; }
-.ok-text    { fill: #22c55e; }
+.k8s-node-name { fill: #1e293b; font-size: 12px; font-weight: 700; }
+.k8s-node-role { fill: #64748b; font-size: 10px; }
+.pod-name { fill: #1e293b; font-size: 10.5px; font-weight: 600; dominant-baseline: middle; }
+.pod-ns   { fill: #64748b; font-size: 9.5px; dominant-baseline: middle; }
+.stat-label { fill: #94a3b8; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.stat-val   { fill: #1e293b; font-size: 12px; font-weight: 600; }
+.ok-text    { fill: #16a34a; }
 
 .k8s-dot-pulse { animation: dotPulse 2s ease-in-out infinite; }
 

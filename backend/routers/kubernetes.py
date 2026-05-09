@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import uuid
 from pathlib import Path
 
@@ -24,6 +25,7 @@ _DATA_FILE = Path(__file__).parent.parent / "data" / "k8s_clusters.json"
 _DEFAULT_KUBECONFIG = os.path.join(os.path.dirname(__file__), "..", "data", "kubeconfig")
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_KUBECONFIG_PATH_SEPARATOR = os.pathsep
 
 
 class K8sClusterPayload(BaseModel):
@@ -98,7 +100,7 @@ def _save_clusters(clusters: list[dict]) -> None:
     )
 
 
-def _resolve_runtime_kubeconfig_path(raw_path: str) -> str:
+def _resolve_single_runtime_kubeconfig_path(raw_path: str) -> str:
     path_value = str(raw_path or "").strip()
     if not path_value:
         return ""
@@ -129,6 +131,98 @@ def _resolve_runtime_kubeconfig_path(raw_path: str) -> str:
             return str(candidate)
 
     return str((_PROJECT_ROOT / expanded).resolve(strict=False))
+
+
+def _split_kubeconfig_value(raw_path: str) -> list[str]:
+    path_value = str(raw_path or "").strip()
+    if not path_value:
+        return []
+    return [part.strip() for part in path_value.split(_KUBECONFIG_PATH_SEPARATOR) if part.strip()]
+
+
+def _resolve_runtime_kubeconfig_paths(raw_path: str) -> list[str]:
+    return [_resolve_single_runtime_kubeconfig_path(part) for part in _split_kubeconfig_value(raw_path)]
+
+
+def _resolve_runtime_kubeconfig_path(raw_path: str) -> str:
+    return _KUBECONFIG_PATH_SEPARATOR.join(_resolve_runtime_kubeconfig_paths(raw_path))
+
+
+def _resolve_kubeconfig_ref_path(raw_path: str, kubeconfig_path: str) -> str:
+    path_value = str(raw_path or "").strip()
+    if not path_value:
+        return ""
+
+    expanded = os.path.expandvars(os.path.expanduser(path_value))
+    if not expanded:
+        return ""
+
+    expanded_path = Path(expanded)
+    if expanded.startswith("/") or expanded_path.is_absolute():
+        return str(expanded_path.resolve(strict=False))
+
+    base_dir = Path(kubeconfig_path).resolve(strict=False).parent
+    return str((base_dir / expanded_path).resolve(strict=False))
+
+
+def _find_named_kubeconfig_entry(items: list[dict] | None, name: str) -> dict:
+    if not name:
+        return {}
+    for item in items or []:
+        if isinstance(item, dict) and str(item.get("name") or "") == name:
+            return item
+    return {}
+
+
+def _build_kubectl_command(cluster_id: str | None = None) -> str:
+    cluster = _get_cluster(cluster_id)
+    kubeconfig_paths = _resolve_runtime_kubeconfig_paths(cluster.get("kubeconfig") or "")
+    if not kubeconfig_paths:
+        return "kubectl"
+
+    parts = ["kubectl"]
+    kubeconfig_path = kubeconfig_paths[0]
+    kubeconfig_value = _KUBECONFIG_PATH_SEPARATOR.join(kubeconfig_paths)
+    if len(kubeconfig_paths) == 1:
+        parts.extend(["--kubeconfig", kubeconfig_path])
+
+    try:
+        import yaml
+
+        content = yaml.safe_load(Path(kubeconfig_path).read_text(encoding="utf-8")) or {}
+        selected_context_name = str(cluster.get("context") or "").strip() or str(content.get("current-context") or "").strip()
+        if selected_context_name:
+            parts.extend(["--context", selected_context_name])
+
+        context_entry = _find_named_kubeconfig_entry(content.get("contexts"), selected_context_name)
+        context_data = context_entry.get("context") if isinstance(context_entry, dict) else {}
+        cluster_name = str((context_data or {}).get("cluster") or "")
+        user_name = str((context_data or {}).get("user") or "")
+
+        cluster_entry = _find_named_kubeconfig_entry(content.get("clusters"), cluster_name)
+        cluster_data = cluster_entry.get("cluster") if isinstance(cluster_entry, dict) else {}
+        user_entry = _find_named_kubeconfig_entry(content.get("users"), user_name)
+        user_data = user_entry.get("user") if isinstance(user_entry, dict) else {}
+
+        ca_path = _resolve_kubeconfig_ref_path((cluster_data or {}).get("certificate-authority") or "", kubeconfig_path)
+        if ca_path:
+            parts.extend(["--certificate-authority", ca_path])
+        if (cluster_data or {}).get("insecure-skip-tls-verify") is True:
+            parts.append("--insecure-skip-tls-verify=true")
+
+        client_cert_path = _resolve_kubeconfig_ref_path((user_data or {}).get("client-certificate") or "", kubeconfig_path)
+        if client_cert_path:
+            parts.extend(["--client-certificate", client_cert_path])
+        client_key_path = _resolve_kubeconfig_ref_path((user_data or {}).get("client-key") or "", kubeconfig_path)
+        if client_key_path:
+            parts.extend(["--client-key", client_key_path])
+    except Exception as exc:
+        logger.debug("[k8s] build kubectl command failed for %s: %s", kubeconfig_path, exc)
+
+    command = " ".join(shlex.quote(part) for part in parts)
+    if len(kubeconfig_paths) > 1:
+        return f"KUBECONFIG={shlex.quote(kubeconfig_value)} {command}"
+    return command
 
 
 def _resolve_legacy_kubeconfig() -> str:
@@ -565,6 +659,7 @@ async def test_cluster(cluster_id: str, _: User = Depends(require_admin)):
             "kubeconfig": cluster["kubeconfig"],
             "resolved_kubeconfig": _resolve_runtime_kubeconfig_path(cluster.get("kubeconfig", "")),
             "context": cluster.get("context", ""),
+            "kubectl_command": _build_kubectl_command(cluster_id),
             "node_count": len(node_names),
             "nodes": node_names[:10],
         }
@@ -578,6 +673,7 @@ async def test_cluster(cluster_id: str, _: User = Depends(require_admin)):
             "kubeconfig": cluster.get("kubeconfig", "") if cluster else "",
             "resolved_kubeconfig": _resolve_runtime_kubeconfig_path(cluster.get("kubeconfig", "")) if cluster else "",
             "context": cluster.get("context", "") if cluster else "",
+            "kubectl_command": _build_kubectl_command(cluster_id) if cluster else "kubectl",
             "error": str(exc),
         }
 
