@@ -234,123 +234,157 @@
       </div>
     </div>
 
-    <!-- K8s 服务图 -->
+    <!-- K8s 服务图：4层拓扑 Service→Deployment→Pod→Node -->
     <div v-show="view === 'k8s'" class="k8s-wrap">
+      <!-- 顶部过滤 + 统计 -->
+      <div class="k8s-topbar">
+        <div class="k8s-topbar-stats">
+          <span class="tstat"><span class="tstat-dot ok"></span>节点 {{ k8sNodes.length }}</span>
+          <span class="tstat"><span class="tstat-dot blue"></span>服务 {{ k8sServices.length }}</span>
+          <span class="tstat"><span class="tstat-dot purple"></span>Deployment {{ k8sDeployments.length }}</span>
+          <span class="tstat"><span class="tstat-dot ok"></span>Running {{ k8sPods.filter(p=>p.status==='Running').length }}/{{ k8sPods.length }}</span>
+          <span v-if="k8sPods.filter(p=>p.status==='Failed').length" class="tstat">
+            <span class="tstat-dot err"></span>Failed {{ k8sPods.filter(p=>p.status==='Failed').length }}
+          </span>
+        </div>
+        <button class="ctrl-btn" @click="loadK8s()" :disabled="loading">
+          <span v-if="loading" class="spin-sm"></span><span v-else>↺</span>
+        </button>
+      </div>
+
       <div v-if="loading" class="k8s-loading">
         <div class="spin-lg"></div><p>加载 K8s 集群数据...</p>
       </div>
-      <div v-else-if="!k8sNodes.length" class="k8s-empty">
+      <div v-else-if="!k8sNodes.length && !k8sServices.length" class="k8s-empty">
         <p>未获取到集群数据，请检查 K8s 配置</p>
       </div>
       <svg v-else
-        class="k8s-svg"
-        :viewBox="`0 0 ${K8S_W} ${k8sSvgH}`"
+        class="k8s-topo-svg"
+        :viewBox="`0 0 ${TOPO_W} ${topoH}`"
         preserveAspectRatio="xMidYMid meet"
-        ref="k8sSvg"
       >
         <defs>
-          <pattern id="k8s-grid" width="32" height="32" patternUnits="userSpaceOnUse">
-            <path d="M32,0 L0,0 L0,32" fill="none" stroke="rgba(99,132,255,0.10)" stroke-width="1"/>
+          <pattern id="tg" width="36" height="36" patternUnits="userSpaceOnUse">
+            <path d="M36,0 L0,0 L0,36" fill="none" stroke="rgba(56,189,248,0.06)" stroke-width="1"/>
           </pattern>
-          <filter id="k8s-glow">
-            <feGaussianBlur stdDeviation="3" result="b"/>
+          <filter id="tglow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="2.5" result="b"/>
             <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
           </filter>
-          <marker id="k8s-arr" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L7,3 z" fill="#3b82f680"/>
+          <marker id="tarr" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L7,3 z" fill="#38bdf850"/>
           </marker>
         </defs>
+        <rect width="100%" height="100%" fill="#0d1117"/>
+        <rect width="100%" height="100%" fill="url(#tg)"/>
 
-        <rect width="100%" height="100%" fill="#f8fafc"/>
-        <rect width="100%" height="100%" fill="url(#k8s-grid)"/>
+        <!-- 层标签 -->
+        <g>
+          <text v-for="lbl in TOPO_LAYERS" :key="lbl.id"
+            x="16" :y="lbl.y - 4" class="topo-layer-txt">{{ lbl.label }}</text>
+          <line v-for="lbl in TOPO_LAYERS" :key="'tl'+lbl.id"
+            :x1="110" :y1="lbl.y - 4" :x2="TOPO_W-16" :y2="lbl.y - 4"
+            stroke="rgba(56,189,248,0.08)" stroke-width="1" stroke-dasharray="4 8"/>
+        </g>
 
-        <!-- Node 行（动态高度，显示全部 Pod）-->
-        <g v-for="nd in k8sNodes" :key="nd.name">
-          <!-- Node 卡片 -->
-          <rect
-            :x="20" :y="nodeYMap[nd.name]"
-            :width="K8S_NODE_W" :height="nodeRowH(nd.name)"
-            rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
-          <!-- 顶部色条（nd.status: 'Ready'/'NotReady'/'Unknown'） -->
-          <rect :x="20" :y="nodeYMap[nd.name]" :width="K8S_NODE_W" height="4"
-            rx="4" :fill="isNodeReady(nd) ? '#22c55e' : '#ef4444'"/>
-          <!-- Node 名称 -->
-          <text :x="34" :y="nodeYMap[nd.name] + 24" class="k8s-node-name">{{ nd.name }}</text>
-          <!-- 角色 & 版本 -->
-          <text :x="34" :y="nodeYMap[nd.name] + 40" class="k8s-node-role">{{ nd.roles }}</text>
-          <text :x="34" :y="nodeYMap[nd.name] + 54" class="k8s-node-role">{{ nd.version }}</text>
-          <!-- OS -->
-          <text :x="34" :y="nodeYMap[nd.name] + 70" class="k8s-node-role">
-            {{ nd.os || nd.arch || '' }}
-          </text>
-          <!-- 状态圆点 -->
-          <circle :cx="K8S_NODE_W" :cy="nodeYMap[nd.name] + 18" r="7"
-            :fill="isNodeReady(nd) ? '#22c55e' : '#ef4444'"
-            :class="isNodeReady(nd) ? 'k8s-dot-pulse' : ''"/>
-          <!-- Pod 数量 -->
-          <text :x="34" :y="nodeYMap[nd.name] + nodeRowH(nd.name) - 10"
-            class="k8s-node-role" style="fill:#3b82f6">
-            {{ nodeRowPods(nd.name).length }} Pods
-          </text>
+        <!-- 连接线（先渲染在节点之下） -->
+        <g class="topo-edges">
+          <path v-for="e in topoEdges" :key="e.id"
+            :id="'te-'+e.id" :d="e.d"
+            fill="none" :stroke="e.color+'40'" stroke-width="1.2"
+            stroke-dasharray="5 4" class="topo-edge-dash"
+            marker-end="url(#tarr)"/>
+        </g>
 
-          <!-- Pod chips（pod.status 是状态字符串，pod.node 是节点名） -->
-          <g v-for="(pod, pi) in nodeRowPods(nd.name)" :key="pod.name">
-            <rect
-              :x="K8S_NODE_W + 28 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
-              :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP)"
-              :width="K8S_POD_W" :height="K8S_POD_H"
-              rx="8"
-              :fill="podColor(pod.status) + '18'"
-              :stroke="podColor(pod.status) + '70'"
-              stroke-width="1.2"/>
-            <!-- 状态点 -->
-            <circle
-              :cx="K8S_NODE_W + 44 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
-              :cy="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + K8S_POD_H/2 - 6"
-              r="4" :fill="podColor(pod.status)"
-              :class="pod.status==='Running' ? 'k8s-dot-pulse' : ''"/>
-            <!-- Pod 名称 -->
-            <text
-              :x="K8S_NODE_W + 54 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
-              :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + 18"
-              class="pod-name">{{ truncate(pod.name, 18) }}</text>
-            <!-- Namespace · 状态 -->
-            <text
-              :x="K8S_NODE_W + 54 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
-              :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + 33"
-              class="pod-ns">{{ pod.namespace }} · {{ pod.status }}</text>
-          </g>
-
-          <!-- 连接动效：Node → 第一行 Pods -->
-          <g v-if="animOn">
-            <g v-for="(pod, pi) in nodeRowPods(nd.name).slice(0, K8S_PODS_PER_ROW)" :key="'c'+pi">
-              <path
-                :id="`k8sp-${nd.name}-${pi}`"
-                :d="`M${K8S_NODE_W+20},${nodeYMap[nd.name] + nodeRowH(nd.name)/2}
-                     C${K8S_NODE_W+28},${nodeYMap[nd.name] + nodeRowH(nd.name)/2}
-                     ${K8S_NODE_W+28},${nodeYMap[nd.name] + 10 + K8S_POD_H/2}
-                     ${K8S_NODE_W+28 + pi*(K8S_POD_W+K8S_POD_GAP)},${nodeYMap[nd.name] + 10 + K8S_POD_H/2}`"
-                fill="none" stroke="#3b82f625" stroke-width="1"/>
-              <circle r="3" fill="#60a5fa70" filter="url(#k8s-glow)">
-                <animateMotion :dur="(1.0 + pi*0.12)+'s'" repeatCount="indefinite" :begin="(pi*0.18)+'s'">
-                  <mpath :href="`#k8sp-${nd.name}-${pi}`"/>
-                </animateMotion>
-              </circle>
-            </g>
+        <!-- 流量粒子 -->
+        <g v-if="animOn">
+          <g v-for="e in topoEdges" :key="'tp-'+e.id">
+            <circle v-for="pk in e.packets" :key="pk.i"
+              :r="pk.r" :fill="e.color" filter="url(#tglow)">
+              <animateMotion :dur="pk.dur+'s'" repeatCount="indefinite" :begin="pk.begin+'s'">
+                <mpath :href="'#te-'+e.id"/>
+              </animateMotion>
+            </circle>
           </g>
         </g>
 
-        <!-- 底部统计栏 -->
-        <g :transform="`translate(20, ${k8sSvgH - 62})`">
-          <rect x="0" y="0" :width="K8S_W - 40" height="50" rx="10"
-            fill="#eff6ff" stroke="#93c5fd" stroke-width="1.2"/>
-          <text x="16" y="20" class="stat-label">集群概览</text>
-          <text x="16" y="38" class="stat-val">节点 {{ k8sNodes.length }}</text>
-          <text x="110" y="38" class="stat-val">Pods {{ k8sPods.length }}</text>
-          <text x="230" y="38" class="stat-val">Running {{ k8sPods.filter(p=>p.status==='Running').length }}</text>
-          <text x="400" y="38" class="stat-val">Pending {{ k8sPods.filter(p=>p.status==='Pending').length }}</text>
-          <text x="530" y="38" class="stat-val ok-text">
-            {{ Math.round(k8sPods.filter(p=>p.status==='Running').length / Math.max(1,k8sPods.length) * 100) }}% 健康
+        <!-- Services 层 -->
+        <g v-for="(svc, si) in topoSvcs" :key="'s'+si"
+          :transform="`translate(${svc.x},${TOPO_Y.svc})`">
+          <!-- 外框 -->
+          <rect :x="-SVC_W/2" :y="-SVC_H/2" :width="SVC_W" :height="SVC_H"
+            rx="10" :fill="svc.fill" :stroke="svc.stroke" stroke-width="1.5"/>
+          <!-- 顶部色条 -->
+          <rect :x="-SVC_W/2" :y="-SVC_H/2" :width="SVC_W" height="3"
+            rx="3" :fill="svc.stroke"/>
+          <!-- Service 类型 badge -->
+          <rect :x="SVC_W/2-42" :y="-SVC_H/2+6" width="38" height="14" rx="3"
+            :fill="svc.type==='NodePort'?'rgba(56,189,248,0.2)':'rgba(139,92,246,0.15)'"/>
+          <text :x="SVC_W/2-23" :y="-SVC_H/2+16" text-anchor="middle" class="topo-badge-txt"
+            :fill="svc.type==='NodePort'?'#38bdf8':'#a78bfa'">{{ svc.type }}</text>
+          <!-- 名称 -->
+          <text x="0" :y="-8" text-anchor="middle" class="topo-node-name">{{ truncate(svc.name,16) }}</text>
+          <!-- 端口 -->
+          <text x="0" y="9" text-anchor="middle" class="topo-node-sub">{{ svc.ports }}</text>
+          <!-- 状态点 -->
+          <circle :cx="SVC_W/2-7" :cy="-SVC_H/2+8" r="4.5" fill="#22c55e" class="k8s-dot-pulse"/>
+          <!-- Namespace -->
+          <text x="0" y="24" text-anchor="middle" class="topo-ns-txt">{{ svc.namespace }}</text>
+        </g>
+
+        <!-- Deployments 层 -->
+        <g v-for="(dep, di) in topoDeployments" :key="'d'+di"
+          :transform="`translate(${dep.x},${TOPO_Y.dep})`">
+          <rect :x="-DEP_W/2" :y="-DEP_H/2" :width="DEP_W" :height="DEP_H"
+            rx="10" :fill="dep.fill" :stroke="dep.stroke" stroke-width="1.5"/>
+          <rect :x="-DEP_W/2" :y="-DEP_H/2" :width="DEP_W" height="3"
+            rx="3" :fill="dep.stroke"/>
+          <!-- 名称 -->
+          <text x="0" y="-8" text-anchor="middle" class="topo-node-name">{{ truncate(dep.name,16) }}</text>
+          <!-- 副本状态 -->
+          <text x="0" y="9" text-anchor="middle" class="topo-node-sub">
+            {{ dep.ready }}/{{ dep.desired }} 副本
+          </text>
+          <!-- 状态点 -->
+          <circle :cx="DEP_W/2-7" :cy="-DEP_H/2+8" r="4.5"
+            :fill="dep.ready===dep.desired && dep.desired>0 ? '#22c55e' : dep.ready>0 ? '#fbbf24' : '#f87171'"
+            :class="dep.ready===dep.desired && dep.desired>0 ? 'k8s-dot-pulse' : ''"/>
+          <!-- Namespace -->
+          <text x="0" y="24" text-anchor="middle" class="topo-ns-txt">{{ dep.namespace }}</text>
+        </g>
+
+        <!-- Pods 层 -->
+        <g v-for="(pod, pi) in topoPods" :key="'p'+pi"
+          :transform="`translate(${pod.x},${TOPO_Y.pod})`">
+          <rect :x="-POD_W/2" :y="-POD_H/2" :width="POD_W" :height="POD_H"
+            rx="8" :fill="podColor(pod.status)+'18'" :stroke="podColor(pod.status)+'70'" stroke-width="1.2"/>
+          <!-- 状态点 -->
+          <circle :cx="-POD_W/2+10" cy="0" r="4"
+            :fill="podColor(pod.status)"
+            :class="pod.status==='Running'?'k8s-dot-pulse':''"/>
+          <!-- Pod 名称 -->
+          <text :x="-POD_W/2+20" y="-5" class="topo-pod-name">{{ truncate(pod.name,14) }}</text>
+          <text :x="-POD_W/2+20" y="9" class="topo-pod-sub">{{ pod.status }}</text>
+        </g>
+
+        <!-- Nodes 层 -->
+        <g v-for="(nd, ni) in topoNodes" :key="'n'+ni"
+          :transform="`translate(${nd.x},${TOPO_Y.node})`">
+          <rect :x="-NODE_W/2" :y="-NODE_H/2" :width="NODE_W" :height="NODE_H"
+            rx="10" fill="#0f1e30" :stroke="isNodeReady(nd) ? '#22c55e55' : '#f8717155'" stroke-width="1.5"/>
+          <rect :x="-NODE_W/2" :y="-NODE_H/2" :width="NODE_W" height="3"
+            rx="3" :fill="isNodeReady(nd) ? '#22c55e' : '#f87171'"/>
+          <!-- 名称 -->
+          <text x="0" y="-14" text-anchor="middle" class="topo-node-name">{{ nd.name }}</text>
+          <text x="0" y="2" text-anchor="middle" class="topo-node-sub">{{ nd.roles }}</text>
+          <text x="0" y="17" text-anchor="middle" class="topo-ns-txt">{{ nd.version }}</text>
+          <!-- 状态 -->
+          <circle :cx="NODE_W/2-8" :cy="-NODE_H/2+8" r="5"
+            :fill="isNodeReady(nd) ? '#22c55e' : '#f87171'"
+            :class="isNodeReady(nd) ? 'k8s-dot-pulse' : ''"/>
+          <!-- Pod 数 -->
+          <text :x="NODE_W/2-8" :y="-NODE_H/2+28" text-anchor="middle" class="topo-badge-txt" fill="#38bdf8">
+            {{ podsByNode(nd.name).length }}
           </text>
         </g>
       </svg>
@@ -365,12 +399,27 @@ import { api } from '../api/index.js'
 // ── 常量 ──────────────────────────────────────────────────────────────
 const SVG_W = 1440
 const SVG_H = 920
-const K8S_W      = 1280   // K8s 视图宽度
-const K8S_PODS_PER_ROW = 5  // 每行显示 Pod 数
-const K8S_POD_W  = 192    // 每个 Pod chip 宽
-const K8S_POD_H  = 44     // 每个 Pod chip 高
-const K8S_POD_GAP = 10    // Pod 间距
-const K8S_NODE_W = 220    // 左侧 Node 卡片宽度
+
+// K8s 拓扑图常量
+const TOPO_W   = 1280
+const SVC_W    = 160, SVC_H    = 72
+const DEP_W    = 155, DEP_H    = 68
+const POD_W    = 145, POD_H    = 40
+const NODE_W   = 200, NODE_H   = 76
+
+// 各层中心 Y 坐标
+const TOPO_Y = { svc: 110, dep: 270, pod: 430, node: 590 }
+
+// 层标签
+const TOPO_LAYERS = [
+  { id: 'svc',  y: TOPO_Y.svc  - SVC_H/2  - 10, label: 'SERVICE 层' },
+  { id: 'dep',  y: TOPO_Y.dep  - DEP_H/2  - 10, label: 'DEPLOYMENT 层' },
+  { id: 'pod',  y: TOPO_Y.pod  - POD_H/2  - 10, label: 'POD 层' },
+  { id: 'node', y: TOPO_Y.node - NODE_H/2 - 10, label: 'NODE 层' },
+]
+
+// 画布总高 = 最底层 + padding + 底部 padding
+const topoH = computed(() => TOPO_Y.node + NODE_H/2 + 50)
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const view     = ref('arch')
@@ -379,40 +428,12 @@ const loading  = ref(false)
 const hoveredNode = ref(null)
 const pageEl   = ref(null)
 const archWrap = ref(null)
-const k8sNodes = ref([])
-const k8sPods  = ref([])
+const k8sNodes       = ref([])
+const k8sPods        = ref([])
+const k8sServices    = ref([])
+const k8sDeployments = ref([])
 
-// 计算每个 Node 行的 Pod 数和行高
-// 注意：后端返回字段是 pod.node（不是 node_name），pod.status（不是 phase）
-function nodeRowPods(name) {
-  return k8sPods.value.filter(p => p.node === name)
-}
-function nodeRowH(name) {
-  const count = nodeRowPods(name).length
-  const rows  = Math.max(1, Math.ceil(count / K8S_PODS_PER_ROW))
-  return 28 + rows * (K8S_POD_H + K8S_POD_GAP) + 16
-}
-function isNodeReady(nd) {
-  return nd.status === 'Ready'
-}
-
-// 累计 Y 偏移（每个 Node 行高度不同）
-const nodeYMap = computed(() => {
-  const map = {}
-  let y = 20
-  for (const nd of k8sNodes.value) {
-    map[nd.name] = y
-    y += nodeRowH(nd.name) + 14
-  }
-  return map
-})
-
-const k8sSvgH = computed(() => {
-  if (!k8sNodes.value.length) return 400
-  let h = 20
-  for (const nd of k8sNodes.value) h += nodeRowH(nd.name) + 14
-  return h + 72
-})
+function isNodeReady(nd) { return nd.status === 'Ready' }
 
 const tooltip = ref({
   show: false, x: 0, y: 0,
@@ -600,9 +621,14 @@ function onMouseMove(evt) {
 async function loadK8s() {
   loading.value = true
   try {
-    const [nr, pr] = await Promise.allSettled([api.k8sNodes(), api.k8sPods()])
-    k8sNodes.value = (nr.status === 'fulfilled' ? (nr.value?.data ?? nr.value ?? []) : [])
-    k8sPods.value  = (pr.status === 'fulfilled' ? (pr.value?.data ?? pr.value ?? []) : [])
+    const [nr, pr, sr, dr] = await Promise.allSettled([
+      api.k8sNodes(), api.k8sPods(), api.k8sServices(), api.k8sDeployments(),
+    ])
+    const pick = r => r.status === 'fulfilled' ? (r.value?.data ?? r.value ?? []) : []
+    k8sNodes.value       = pick(nr)
+    k8sPods.value        = pick(pr)
+    k8sServices.value    = pick(sr)
+    k8sDeployments.value = pick(dr)
   } finally {
     loading.value = false
   }
@@ -611,6 +637,114 @@ async function loadK8s() {
 function podsByNode(name) {
   return k8sPods.value.filter(p => p.node === name)
 }
+
+// ── 拓扑布局计算 ──────────────────────────────────────────────────────
+function spreadX(count, w = TOPO_W, pad = 60) {
+  if (!count) return []
+  const usable = w - pad * 2
+  return Array.from({ length: count }, (_, i) =>
+    pad + usable * (i + 0.5) / count
+  )
+}
+
+// 服务节点（含端口、颜色）
+const topoSvcs = computed(() => {
+  const xs = spreadX(k8sServices.value.length)
+  return k8sServices.value.map((s, i) => ({
+    ...s, x: xs[i] ?? 640,
+    ports: (s.ports || []).join(' · ').slice(0, 22) || '-',
+    fill:  s.type === 'NodePort' ? 'rgba(56,189,248,0.08)' : 'rgba(139,92,246,0.06)',
+    stroke: s.type === 'NodePort' ? '#38bdf8' : '#a78bfa',
+  }))
+})
+
+// Deployment 节点
+const topoDeployments = computed(() => {
+  const xs = spreadX(k8sDeployments.value.length)
+  return k8sDeployments.value.map((d, i) => {
+    const ok = d.ready === d.desired && d.desired > 0
+    return {
+      ...d, x: xs[i] ?? 640,
+      ready:   d.ready   ?? d.readyReplicas   ?? 0,
+      desired: d.desired ?? d.replicas        ?? 0,
+      fill:   ok ? 'rgba(34,197,94,0.06)' : d.ready > 0 ? 'rgba(251,191,36,0.06)' : 'rgba(248,113,113,0.06)',
+      stroke: ok ? '#22c55e'              : d.ready > 0 ? '#fbbf24'               : '#f87171',
+    }
+  })
+})
+
+// Pod 节点（最多取前 N 个，按 deployment 排列）
+const topoPods = computed(() => {
+  const MAX = 20
+  const pods = k8sPods.value.slice(0, MAX)
+  const xs = spreadX(pods.length)
+  return pods.map((p, i) => ({ ...p, x: xs[i] ?? 640 }))
+})
+
+// Node 节点
+const topoNodes = computed(() => {
+  const xs = spreadX(k8sNodes.value.length)
+  return k8sNodes.value.map((n, i) => ({ ...n, x: xs[i] ?? 640 }))
+})
+
+// ── 连接线 ────────────────────────────────────────────────────────────
+function elbowPath(x1, y1, x2, y2) {
+  const mid = (y1 + y2) / 2
+  return `M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`
+}
+function mkPackets(color, n = 2, baseDur = 1.8) {
+  return Array.from({ length: n }, (_, i) => ({
+    i, r: 3.5 - i * 0.5, dur: baseDur + i * 0.35, begin: i * baseDur / n,
+  }))
+}
+
+const topoEdges = computed(() => {
+  const edges = []
+  let eid = 0
+
+  // Service → Deployment (name prefix match)
+  topoSvcs.value.forEach(svc => {
+    const base = svc.name.replace(/-(svc|service|headless|np)$/i, '').toLowerCase()
+    topoDeployments.value.forEach(dep => {
+      const db = dep.name.toLowerCase()
+      if (db.startsWith(base) || base.startsWith(db)) {
+        edges.push({
+          id: `sd-${eid++}`, d: elbowPath(svc.x, TOPO_Y.svc + SVC_H/2, dep.x, TOPO_Y.dep - DEP_H/2),
+          color: svc.type === 'NodePort' ? '#38bdf8' : '#a78bfa',
+          packets: mkPackets(svc.type === 'NodePort' ? '#38bdf8' : '#a78bfa', 3, 1.6),
+        })
+      }
+    })
+  })
+
+  // Deployment → Pod (name prefix match, limit connections)
+  topoDeployments.value.forEach(dep => {
+    topoPods.value
+      .filter(p => p.name.toLowerCase().startsWith(dep.name.toLowerCase()))
+      .slice(0, 4)
+      .forEach(pod => {
+        edges.push({
+          id: `dp-${eid++}`, d: elbowPath(dep.x, TOPO_Y.dep + DEP_H/2, pod.x, TOPO_Y.pod - POD_H/2),
+          color: dep.stroke,
+          packets: mkPackets(dep.stroke, 2, 2.0),
+        })
+      })
+  })
+
+  // Pod → Node
+  topoPods.value.forEach(pod => {
+    const nd = topoNodes.value.find(n => n.name === pod.node)
+    if (nd) {
+      edges.push({
+        id: `pn-${eid++}`, d: elbowPath(pod.x, TOPO_Y.pod + POD_H/2, nd.x, TOPO_Y.node - NODE_H/2),
+        color: podColor(pod.status),
+        packets: mkPackets(podColor(pod.status), 1, 2.4),
+      })
+    }
+  })
+
+  return edges
+})
 
 function podColor(status) {
   // 后端返回 pod.status，可能值：Running / Pending / Failed / Succeeded / Unknown / NotReady
@@ -747,13 +881,39 @@ onMounted(() => {})
 .leg-dot.gray { background: #6b7280; }
 .leg-sep { height: 1px; background: #21262d; margin: 2px 0; }
 
-/* ── K8s 服务图 ─────────────────────────────────────────── */
-.k8s-wrap { flex: 1; overflow: auto; padding: 12px; }
-.k8s-svg { width: 100%; max-width: 1280px; height: auto; display: block; margin: 0 auto; }
+/* ── K8s 服务拓扑图 ──────────────────────────────────────── */
+.k8s-wrap { flex: 1; overflow: auto; display: flex; flex-direction: column; }
+.k8s-topo-svg { width: 100%; max-width: 1280px; height: auto; display: block; margin: 0 auto; }
+
+.k8s-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 16px; background: #161b22; border-bottom: 1px solid rgba(48,54,61,0.9);
+  flex-shrink: 0;
+}
+.k8s-topbar-stats { display: flex; gap: 16px; flex-wrap: wrap; }
+.tstat { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #8d96a0; }
+.tstat-dot { width: 7px; height: 7px; border-radius: 50%; }
+.tstat-dot.ok   { background: #22c55e; }
+.tstat-dot.blue { background: #38bdf8; }
+.tstat-dot.purple { background: #a78bfa; }
+.tstat-dot.err  { background: #f87171; }
+
 .k8s-loading, .k8s-empty {
   display: flex; flex-direction: column; align-items: center;
   justify-content: center; height: 200px; color: #8b949e; gap: 12px;
 }
+
+/* SVG 텍스트 스타일 */
+.topo-layer-txt { fill: #3c444e; font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.topo-node-name { fill: #e6edf3; font-size: 11.5px; font-weight: 700; }
+.topo-node-sub  { fill: #8d96a0; font-size: 10px; }
+.topo-ns-txt    { fill: #586069; font-size: 9.5px; }
+.topo-badge-txt { font-size: 9px; font-weight: 700; }
+.topo-pod-name  { fill: #e6edf3; font-size: 10.5px; font-weight: 600; dominant-baseline: middle; }
+.topo-pod-sub   { fill: #8d96a0; font-size: 9.5px; dominant-baseline: middle; }
+
+.topo-edge-dash { animation: dashFlow 6s linear infinite; }
+@keyframes dashFlow { to { stroke-dashoffset: -36; } }
 .k8s-node-name { fill: #1e293b; font-size: 12px; font-weight: 700; }
 .k8s-node-role { fill: #64748b; font-size: 10px; }
 .pod-name { fill: #1e293b; font-size: 10.5px; font-weight: 600; dominant-baseline: middle; }
