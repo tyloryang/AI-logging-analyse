@@ -271,54 +271,54 @@
             :x="20" :y="nodeYMap[nd.name]"
             :width="K8S_NODE_W" :height="nodeRowH(nd.name)"
             rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
-          <!-- 顶部色条 -->
+          <!-- 顶部色条（nd.status: 'Ready'/'NotReady'/'Unknown'） -->
           <rect :x="20" :y="nodeYMap[nd.name]" :width="K8S_NODE_W" height="4"
-            rx="4" :fill="nd.ready ? '#22c55e' : '#ef4444'"/>
+            rx="4" :fill="isNodeReady(nd) ? '#22c55e' : '#ef4444'"/>
           <!-- Node 名称 -->
           <text :x="34" :y="nodeYMap[nd.name] + 24" class="k8s-node-name">{{ nd.name }}</text>
           <!-- 角色 & 版本 -->
           <text :x="34" :y="nodeYMap[nd.name] + 40" class="k8s-node-role">{{ nd.roles }}</text>
           <text :x="34" :y="nodeYMap[nd.name] + 54" class="k8s-node-role">{{ nd.version }}</text>
-          <!-- CPU/内存 -->
+          <!-- OS -->
           <text :x="34" :y="nodeYMap[nd.name] + 70" class="k8s-node-role">
-            CPU {{ nd.cpu || '-' }} · MEM {{ nd.memory || '-' }}
+            {{ nd.os || nd.arch || '' }}
           </text>
           <!-- 状态圆点 -->
           <circle :cx="K8S_NODE_W" :cy="nodeYMap[nd.name] + 18" r="7"
-            :fill="nd.ready ? '#22c55e' : '#ef4444'"
-            :class="nd.ready ? 'k8s-dot-pulse' : ''"/>
+            :fill="isNodeReady(nd) ? '#22c55e' : '#ef4444'"
+            :class="isNodeReady(nd) ? 'k8s-dot-pulse' : ''"/>
           <!-- Pod 数量 -->
           <text :x="34" :y="nodeYMap[nd.name] + nodeRowH(nd.name) - 10"
             class="k8s-node-role" style="fill:#3b82f6">
             {{ nodeRowPods(nd.name).length }} Pods
           </text>
 
-          <!-- Pod chips -->
+          <!-- Pod chips（pod.status 是状态字符串，pod.node 是节点名） -->
           <g v-for="(pod, pi) in nodeRowPods(nd.name)" :key="pod.name">
             <rect
               :x="K8S_NODE_W + 28 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
               :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP)"
               :width="K8S_POD_W" :height="K8S_POD_H"
               rx="8"
-              :fill="podColor(pod.phase) + '18'"
-              :stroke="podColor(pod.phase) + '70'"
+              :fill="podColor(pod.status) + '18'"
+              :stroke="podColor(pod.status) + '70'"
               stroke-width="1.2"/>
             <!-- 状态点 -->
             <circle
               :cx="K8S_NODE_W + 44 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
               :cy="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + K8S_POD_H/2 - 6"
-              r="4" :fill="podColor(pod.phase)"
-              :class="pod.phase==='Running' ? 'k8s-dot-pulse' : ''"/>
+              r="4" :fill="podColor(pod.status)"
+              :class="pod.status==='Running' ? 'k8s-dot-pulse' : ''"/>
             <!-- Pod 名称 -->
             <text
               :x="K8S_NODE_W + 54 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
               :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + 18"
               class="pod-name">{{ truncate(pod.name, 18) }}</text>
-            <!-- Namespace -->
+            <!-- Namespace · 状态 -->
             <text
               :x="K8S_NODE_W + 54 + (pi % K8S_PODS_PER_ROW) * (K8S_POD_W + K8S_POD_GAP)"
               :y="nodeYMap[nd.name] + 10 + Math.floor(pi / K8S_PODS_PER_ROW) * (K8S_POD_H + K8S_POD_GAP) + 33"
-              class="pod-ns">{{ pod.namespace }} · {{ pod.phase }}</text>
+              class="pod-ns">{{ pod.namespace }} · {{ pod.status }}</text>
           </g>
 
           <!-- 连接动效：Node → 第一行 Pods -->
@@ -347,10 +347,10 @@
           <text x="16" y="20" class="stat-label">集群概览</text>
           <text x="16" y="38" class="stat-val">节点 {{ k8sNodes.length }}</text>
           <text x="110" y="38" class="stat-val">Pods {{ k8sPods.length }}</text>
-          <text x="230" y="38" class="stat-val">Running {{ k8sPods.filter(p=>p.phase==='Running').length }}</text>
-          <text x="400" y="38" class="stat-val">Pending {{ k8sPods.filter(p=>p.phase==='Pending').length }}</text>
+          <text x="230" y="38" class="stat-val">Running {{ k8sPods.filter(p=>p.status==='Running').length }}</text>
+          <text x="400" y="38" class="stat-val">Pending {{ k8sPods.filter(p=>p.status==='Pending').length }}</text>
           <text x="530" y="38" class="stat-val ok-text">
-            {{ Math.round(k8sPods.filter(p=>p.phase==='Running').length / Math.max(1,k8sPods.length) * 100) }}% 健康
+            {{ Math.round(k8sPods.filter(p=>p.status==='Running').length / Math.max(1,k8sPods.length) * 100) }}% 健康
           </text>
         </g>
       </svg>
@@ -383,13 +383,17 @@ const k8sNodes = ref([])
 const k8sPods  = ref([])
 
 // 计算每个 Node 行的 Pod 数和行高
+// 注意：后端返回字段是 pod.node（不是 node_name），pod.status（不是 phase）
 function nodeRowPods(name) {
-  return podsByNode(name)
+  return k8sPods.value.filter(p => p.node === name)
 }
 function nodeRowH(name) {
   const count = nodeRowPods(name).length
   const rows  = Math.max(1, Math.ceil(count / K8S_PODS_PER_ROW))
   return 28 + rows * (K8S_POD_H + K8S_POD_GAP) + 16
+}
+function isNodeReady(nd) {
+  return nd.status === 'Ready'
 }
 
 // 累计 Y 偏移（每个 Node 行高度不同）
@@ -605,11 +609,17 @@ async function loadK8s() {
 }
 
 function podsByNode(name) {
-  return k8sPods.value.filter(p => p.node_name === name)
+  return k8sPods.value.filter(p => p.node === name)
 }
 
-function podColor(phase) {
-  return phase === 'Running' ? '#22c55e' : phase === 'Pending' ? '#f59e0b' : phase === 'Failed' ? '#ef4444' : '#6b7280'
+function podColor(status) {
+  // 后端返回 pod.status，可能值：Running / Pending / Failed / Succeeded / Unknown / NotReady
+  if (!status) return '#6b7280'
+  if (status === 'Running')   return '#22c55e'
+  if (status === 'Pending')   return '#f59e0b'
+  if (status === 'Succeeded') return '#3b82f6'
+  if (status === 'Failed')    return '#ef4444'
+  return '#94a3b8'
 }
 
 function truncate(s, n) {
