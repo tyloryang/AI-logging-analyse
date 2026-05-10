@@ -149,8 +149,9 @@ const MENU = [
   {
     id: 'container', icon: 'container', label: '容器管理',
     children: [
-      { label: '容器列表', to: '/containers' },
-      { label: 'K8s 拓扑流图', to: '/k8s/topology' },
+      { label: '容器列表',      to: '/containers' },
+      { label: 'K8s 拓扑流图',  to: '/k8s/topology' },
+      { label: 'K8s 资源关系图', to: '/k8s/relations' },
     ],
   },
   {

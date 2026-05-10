@@ -30,7 +30,8 @@ const routes = [
 
   // ── 6. 容器管理 ───────────────────────────────────────────────
   { path: '/containers', component: () => import('../views/ContainerView.vue'), name: 'containers' },
-  { path: '/k8s/topology', component: () => import('../views/K8sTopologyView.vue'), name: 'k8s-topology' },
+  { path: '/k8s/topology',   component: () => import('../views/K8sTopologyView.vue'),         name: 'k8s-topology' },
+  { path: '/k8s/relations',  component: () => import('../views/K8sResourceRelationView.vue'),  name: 'k8s-relations' },
 
   // ── 7. 中间件 ─────────────────────────────────────────────────
   { path: '/middleware',    component: () => import('../views/MiddlewareView.vue'),     name: 'middleware' },
