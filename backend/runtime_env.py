@@ -29,6 +29,7 @@ _SETTINGS_ENV_MAPPING = {
     "ai_provider": "AI_PROVIDER",
     "ai_base_url": "AI_BASE_URL",
     "ai_model": "AI_MODEL",
+    "ai_wire_api": "AI_WIRE_API",
     "ai_enable_thinking": "AI_ENABLE_THINKING",
     "feishu_bot_app_id": "FEISHU_BOT_APP_ID",
     "feishu_bot_app_secret": "FEISHU_BOT_APP_SECRET",

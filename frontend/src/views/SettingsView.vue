@@ -226,6 +226,22 @@
           </span>
         </div>
 
+        <!-- 模型预设快选 -->
+        <div class="field-group preset-group">
+          <div class="preset-label">快速预设 <span class="preset-hint">选择后自动填入参数</span></div>
+          <div class="preset-list">
+            <button v-for="p in MODEL_PRESETS" :key="p.id"
+              class="preset-btn"
+              :class="{ active: form.ai_model === p.model }"
+              @click="applyPreset(p)"
+              :title="p.desc">
+              <span class="preset-logo">{{ p.logo }}</span>
+              <span class="preset-name">{{ p.name }}</span>
+              <span class="preset-model">{{ p.model }}</span>
+            </button>
+          </div>
+        </div>
+
         <div class="field-group">
           <div class="field-row">
             <div class="field">
@@ -237,17 +253,25 @@
             </div>
             <div class="field">
               <label>模型名称</label>
-              <input v-model="form.ai_model" :placeholder="form.ai_provider === 'anthropic' ? 'claude-opus-4-6' : 'Qwen3-32B'" />
+              <input v-model="form.ai_model" :placeholder="form.ai_provider === 'anthropic' ? 'claude-opus-4-6' : 'qwen3-32b'" />
             </div>
           </div>
           <div class="field" v-if="form.ai_provider === 'openai'">
             <label>Base URL</label>
-            <input v-model="form.ai_base_url" placeholder="http://192.168.x.x:8000/v1" />
+            <input v-model="form.ai_base_url" placeholder="https://api.vveai.com/v1" />
+          </div>
+          <div class="field" v-if="form.ai_provider === 'openai'">
+            <label>Wire API <span class="field-hint">chat=标准对话；responses=GPT-5等新模型；留空自动识别</span></label>
+            <select v-model="form.ai_wire_api">
+              <option value="">自动识别（推荐）</option>
+              <option value="chat">chat（Qwen/DeepSeek/普通OpenAI兼容）</option>
+              <option value="responses">responses（GPT-5/o3/o4等）</option>
+            </select>
           </div>
           <div class="field" v-if="form.ai_provider === 'openai'">
             <label class="checkbox-line">
               <input v-model="form.ai_enable_thinking" type="checkbox" />
-              开启 Thinking 模式（仅部分模型支持，如 QwQ；Qwen3 等默认应关闭）
+              开启 Thinking 扩展思考（QwQ/DeepSeek-R1 等推理模型；Qwen3 非流式必须关闭）
             </label>
           </div>
           <div class="field">
@@ -588,6 +612,51 @@ const grafanaBoards = ref([])
 const showAddBoard  = ref(false)
 const newBoard = reactive({ title: '', uid: '', url: '' })
 
+// ── 模型预设（防止手动配错参数）────────────────────────────────────────
+const MODEL_PRESETS = [
+  // Qwen 系列
+  { id:'qwen3-32b',   logo:'🌟', name:'Qwen3-32B',   model:'qwen3-32b',
+    provider:'openai', wire_api:'chat', enable_thinking:false,
+    desc:'阿里通义千问3 32B，chat模式，自动关闭thinking' },
+  { id:'qwen3-8b',    logo:'⚡', name:'Qwen3-8B',    model:'qwen3-8b',
+    provider:'openai', wire_api:'chat', enable_thinking:false,
+    desc:'Qwen3 8B，轻量快速' },
+  { id:'qwen2.5-72b', logo:'🔷', name:'Qwen2.5-72B', model:'qwen2.5-72b-instruct',
+    provider:'openai', wire_api:'chat', enable_thinking:false,
+    desc:'Qwen2.5 72B，稳定兼容' },
+  { id:'qwq-32b',     logo:'🧠', name:'QwQ-32B',     model:'qwq-32b',
+    provider:'openai', wire_api:'chat', enable_thinking:true,
+    desc:'QwQ 推理模型，开启thinking' },
+  // DeepSeek 系列
+  { id:'deepseek-r1', logo:'🔥', name:'DeepSeek-R1', model:'deepseek-r1',
+    provider:'openai', wire_api:'chat', enable_thinking:true,
+    desc:'DeepSeek R1 推理模型' },
+  { id:'deepseek-v3', logo:'🚀', name:'DeepSeek-V3', model:'deepseek-chat',
+    provider:'openai', wire_api:'chat', enable_thinking:false,
+    desc:'DeepSeek-V3 对话模型' },
+  // Anthropic
+  { id:'claude-opus',   logo:'🟣', name:'Claude Opus 4',   model:'claude-opus-4-7',
+    provider:'anthropic', wire_api:'', enable_thinking:false,
+    desc:'Claude Opus 最新版' },
+  { id:'claude-sonnet', logo:'💜', name:'Claude Sonnet 4', model:'claude-sonnet-4-6',
+    provider:'anthropic', wire_api:'', enable_thinking:false,
+    desc:'Claude Sonnet 均衡版' },
+  // GPT/OpenAI
+  { id:'gpt-5',   logo:'🟢', name:'GPT-5',   model:'gpt-5',
+    provider:'openai', wire_api:'responses', enable_thinking:false,
+    desc:'OpenAI GPT-5，需要responses API' },
+]
+
+function applyPreset(p) {
+  form.ai_provider       = p.provider
+  form.ai_model          = p.model
+  form.ai_wire_api       = p.wire_api
+  form.ai_enable_thinking = p.enable_thinking
+  if (p.provider === 'anthropic') {
+    form.ai_base_url = ''
+  }
+}
+
 const form = reactive({
   prometheus_url:           '',
   prometheus_username:      '',
@@ -605,6 +674,7 @@ const form = reactive({
   ai_base_url:              '',
   ai_model:                 '',
   ai_api_key:               '',
+  ai_wire_api:              '',
   ai_enable_thinking:       false,
   agent_executor:           'langgraph',
   agent_external_command:   '',
@@ -689,6 +759,7 @@ function applySettings(s) {
   form.ai_provider = s.ai_provider || 'anthropic'
   form.ai_base_url = s.ai_base_url || ''
   form.ai_model = s.ai_model || ''
+  form.ai_wire_api = s.ai_wire_api || ''
   form.ai_enable_thinking = !!s.ai_enable_thinking
   form.agent_executor = s.agent_executor || 'langgraph'
   form.agent_external_command = s.agent_external_command || ''
@@ -843,6 +914,7 @@ async function testAI() {
       base_url: form.ai_base_url,
       model: form.ai_model,
       api_key: form.ai_api_key,
+      wire_api: form.ai_wire_api || undefined,
     }
     const r = await api.testAI(payload)
     aiTestResult.value = r.ok
@@ -916,6 +988,23 @@ async function saveSettings() {
 .conn-badge.ok   { border-color: rgba(63,185,80,.3); color: var(--success); background: rgba(63,185,80,.08); }
 .conn-badge.err  { border-color: rgba(248,81,73,.3); color: var(--error);   background: rgba(248,81,73,.08); }
 .badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+/* 模型预设 */
+.preset-group { padding-bottom: 4px; }
+.preset-label { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.preset-hint  { font-weight: 400; font-size: 11px; }
+.preset-list  { display: flex; flex-wrap: wrap; gap: 6px; }
+.preset-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg-surface); cursor: pointer; transition: .15s; text-align: left;
+}
+.preset-btn:hover { border-color: var(--accent); background: var(--bg-hover); }
+.preset-btn.active { border-color: var(--accent); background: var(--accent-dim); }
+.preset-logo { font-size: 14px; }
+.preset-name { font-size: 11.5px; font-weight: 600; color: var(--text-primary); }
+.preset-model { font-size: 10px; color: var(--text-muted); font-family: monospace; }
+.field-hint { font-weight: 400; font-size: 11px; color: var(--text-muted); margin-left: 4px; }
 
 .field-group { display: flex; flex-direction: column; gap: 14px; }
 .field-row   { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

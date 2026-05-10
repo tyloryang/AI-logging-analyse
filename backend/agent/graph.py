@@ -236,14 +236,33 @@ def _get_llm(runtime_overrides: dict | None = None):
         base_url = os.getenv("AI_BASE_URL", "")
         api_key  = os.getenv("AI_API_KEY", "EMPTY") or "EMPTY"
         model    = str(runtime_overrides.get("model_name", "")).strip() or os.getenv("AI_MODEL", "gpt-4")
-        wire_api = os.getenv("AI_WIRE_API", "chat")
 
         if not base_url:
             raise ValueError("AI_PROVIDER=openai 时必须设置 AI_BASE_URL")
 
+        # ── 自动识别模型类型，防止手动配错 ────────────────────────────────
+        model_lower = model.lower()
+
+        # Qwen3 系列："思考模型"，必须用 chat API + enable_thinking=false (非流式)
+        # 包含：qwen3-xxx、qwq-xxx
+        is_qwen3 = model_lower.startswith(("qwen3-", "qwq-"))
+
+        # 需要 Responses API 的模型（OpenAI gpt-5/o3/o4 系列）
+        is_responses_model = model_lower.startswith(("o1", "o3", "o4", "gpt-5"))
+
+        # 配置优先级：settings.json(wire_api) > 自动推断 > ConfigMap
+        wire_api_cfg = os.getenv("AI_WIRE_API", "").strip().lower()
+        if wire_api_cfg:
+            wire_api = wire_api_cfg          # 用户显式配置优先
+        elif is_qwen3:
+            wire_api = "chat"                # Qwen3 强制 chat
+        elif is_responses_model:
+            wire_api = "responses"           # GPT-5/O 系列用 responses
+        else:
+            wire_api = "chat"                # 其他模型默认 chat
+
         if wire_api == "responses":
-            # 代理只支持 /v1/responses（如 gpt-5 等新模型），使用自定义模型类
-            logger.info("[agent] 使用 Responses API 模式（AI_WIRE_API=responses）")
+            logger.info("[agent] 使用 Responses API 模式 model=%s", model)
             from agent.llm_responses import ResponsesApiChatModel
             return ResponsesApiChatModel(
                 base_url=base_url,
@@ -254,16 +273,32 @@ def _get_llm(runtime_overrides: dict | None = None):
 
         import httpx
         from langchain_openai import ChatOpenAI
-        enable_thinking_env = os.getenv("AI_ENABLE_THINKING", "0").lower()
-        enable_thinking = enable_thinking_env in ("1", "true", "yes")
-        # openai SDK 不认识 enable_thinking，通过 extra_body 透传给代理
+
+        # enable_thinking: Qwen3 强制 false（非流式调用必须），其他模型走配置
+        enable_thinking_cfg = os.getenv("AI_ENABLE_THINKING", "").strip().lower()
+        if is_qwen3:
+            enable_thinking = False          # Qwen3 非流式强制 false
+        elif enable_thinking_cfg in ("1", "true", "yes"):
+            enable_thinking = True
+        else:
+            enable_thinking = False
+
+        logger.info(
+            "[agent] ChatOpenAI model=%s wire=%s thinking=%s",
+            model, wire_api, enable_thinking,
+        )
+        extra: dict = {}
+        if is_qwen3 or enable_thinking_cfg:
+            # 只在 Qwen3 或显式配置时传该参数，避免影响不认识此参数的代理
+            extra["enable_thinking"] = enable_thinking
+
         return ChatOpenAI(
             base_url=base_url,
             api_key=api_key,
             model=model,
             max_tokens=4096,
             http_async_client=httpx.AsyncClient(trust_env=False),
-            extra_body={"enable_thinking": enable_thinking},
+            extra_body=extra or None,
         )
 
     # 默认 Anthropic
