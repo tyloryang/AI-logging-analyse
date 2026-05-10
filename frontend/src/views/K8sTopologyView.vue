@@ -15,6 +15,17 @@
           <button :class="['vtab', { active: view === 'arch' }]" @click="view='arch'">系统架构图</button>
           <button :class="['vtab', { active: view === 'k8s' }]" @click="view='k8s'; loadK8s()">K8s 服务图</button>
         </div>
+        <!-- 系统架构子模式 -->
+        <div v-if="view === 'arch'" class="view-tabs" style="margin-left:4px">
+          <button :class="['vtab', { active: archMode === 'app' }]" @click="archMode='app'">应用架构</button>
+          <button :class="['vtab', { active: archMode === 'deploy' }]" @click="archMode='deploy'">K8s 部署流程</button>
+        </div>
+        <!-- 缩放控制 -->
+        <div v-if="view === 'arch'" class="zoom-btns">
+          <button class="ctrl-btn" @click="zoomIn" title="放大 (+)">＋</button>
+          <button class="ctrl-btn" @click="zoomOut" title="缩小 (-)">－</button>
+          <button class="ctrl-btn" @click="fitView" title="适应窗口" style="font-size:11px">Fit</button>
+        </div>
         <label class="toggle-pill">
           <input type="checkbox" v-model="animOn"/>
           <span class="pill-track"><span class="pill-thumb"></span></span>
@@ -29,13 +40,19 @@
 
     <!-- 系统架构图 -->
     <div v-show="view === 'arch'" class="canvas-wrap" ref="archWrap">
-      <svg
+
+      <!-- 应用架构 / K8s 部署流程 切换 -->
+      <svg v-show="archMode === 'app'"
         class="arch-svg"
-        :viewBox="`0 0 ${SVG_W} ${SVG_H}`"
-        preserveAspectRatio="xMidYMid meet"
+        :viewBox="vbStr"
+        preserveAspectRatio="xMinYMin meet"
         ref="archSvg"
-        @mousemove="onMouseMove"
-        @mouseleave="tooltip.show = false"
+        :style="{ cursor: svgDrag.active ? 'grabbing' : 'grab' }"
+        @wheel.prevent="onArchWheel"
+        @mousedown="onArchDragStart"
+        @mousemove="onArchDragMove($event); onMouseMove($event)"
+        @mouseup="onArchDragEnd"
+        @mouseleave="onArchDragEnd(); tooltip.show=false"
       >
         <defs>
           <!-- 背景网格 -->
@@ -231,6 +248,88 @@
         <div class="leg-row"><span class="leg-dot ok"></span>健康</div>
         <div class="leg-row"><span class="leg-dot warn"></span>告警</div>
         <div class="leg-row"><span class="leg-dot gray"></span>未知</div>
+      </div>
+
+      <!-- ─────── K8s 部署流程视图 ─────── -->
+      <div v-show="archMode === 'deploy'" class="deploy-flow-wrap">
+        <svg class="deploy-svg"
+          :viewBox="`0 0 ${DSVG_W} ${DSVG_H}`"
+          preserveAspectRatio="xMidYMid meet"
+        >
+          <defs>
+            <pattern id="dg" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M40,0 L0,0 L0,40" fill="none" stroke="rgba(56,189,248,0.07)" stroke-width="1"/>
+            </pattern>
+            <filter id="dglow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="2.5" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <marker id="darr-blue"   markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#38bdf8"/></marker>
+            <marker id="darr-orange" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#fbbf24"/></marker>
+            <marker id="darr-green"  markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#22c55e"/></marker>
+            <marker id="darr-purple" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#a78bfa"/></marker>
+          </defs>
+          <rect width="100%" height="100%" fill="#0d1117"/>
+          <rect width="100%" height="100%" fill="url(#dg)"/>
+
+          <!-- 区域标注 -->
+          <rect x="20" y="20" width="560" height="720" rx="14"
+            fill="none" stroke="#38bdf840" stroke-width="1" stroke-dasharray="8 4"/>
+          <text x="32" y="38" class="d-zone-lbl" fill="#38bdf880">← YAML 部署流程</text>
+          <rect x="620" y="20" width="560" height="720" rx="14"
+            fill="none" stroke="#22c55e40" stroke-width="1" stroke-dasharray="8 4"/>
+          <text x="632" y="38" class="d-zone-lbl" fill="#22c55e80">访问流量路由 →</text>
+          <rect x="200" y="770" :width="DSVG_W-400" height="140" rx="14"
+            fill="#161b22" stroke="#fbbf2440" stroke-width="1.5" stroke-dasharray="6 3"/>
+          <text x="220" y="790" class="d-zone-lbl" fill="#fbbf2480">Worker Node</text>
+
+          <!-- 部署流程连线 -->
+          <g>
+            <path v-for="e in deployEdges" :key="e.id"
+              :id="'de-'+e.id" :d="e.d"
+              fill="none" :stroke="e.color+'60'" stroke-width="1.5"
+              stroke-dasharray="6 4" class="edge-dash"
+              :marker-end="`url(#darr-${e.marker})`"/>
+            <!-- 步骤序号标注 -->
+            <g v-for="e in deployEdges.filter(e=>e.label)" :key="'el-'+e.id">
+              <rect :x="e.lx-24" :y="e.ly-9" width="48" height="17" rx="4"
+                :fill="e.color+'20'" :stroke="e.color+'50'" stroke-width="1"/>
+              <text :x="e.lx" :y="e.ly+4" text-anchor="middle" class="d-edge-lbl" :fill="e.color">{{ e.label }}</text>
+            </g>
+          </g>
+
+          <!-- 流动粒子 -->
+          <g v-if="animOn">
+            <g v-for="e in deployEdges" :key="'dp-'+e.id">
+              <circle v-for="pk in e.packets" :key="pk.i"
+                :r="pk.r" :fill="e.color" filter="url(#dglow)">
+                <animateMotion :dur="pk.dur+'s'" repeatCount="indefinite" :begin="pk.begin+'s'">
+                  <mpath :href="'#de-'+e.id"/>
+                </animateMotion>
+              </circle>
+            </g>
+          </g>
+
+          <!-- 节点 -->
+          <g v-for="nd in deployNodes" :key="nd.id">
+            <!-- 节点卡片 -->
+            <rect :x="nd.x-nd.w/2" :y="nd.y-nd.h/2" :width="nd.w" :height="nd.h"
+              rx="10" :fill="nd.fill" :stroke="nd.stroke" stroke-width="1.5"/>
+            <rect :x="nd.x-nd.w/2" :y="nd.y-nd.h/2" :width="nd.w" height="3"
+              rx="3" :fill="nd.stroke"/>
+            <!-- 步骤圆圈 -->
+            <circle v-if="nd.step" :cx="nd.x-nd.w/2+14" :cy="nd.y-nd.h/2+14" r="10"
+              :fill="nd.stroke" fill-opacity="0.25"/>
+            <text v-if="nd.step" :x="nd.x-nd.w/2+14" :y="nd.y-nd.h/2+18"
+              text-anchor="middle" class="d-step-num" :fill="nd.stroke">{{ nd.step }}</text>
+            <!-- 图标 -->
+            <text :x="nd.x" :y="nd.y - 6" text-anchor="middle" class="d-node-icon">{{ nd.icon }}</text>
+            <!-- 名称 -->
+            <text :x="nd.x" :y="nd.y + 10" text-anchor="middle" class="d-node-name">{{ nd.name }}</text>
+            <!-- 副标题 -->
+            <text v-if="nd.sub" :x="nd.x" :y="nd.y + 24" text-anchor="middle" class="d-node-sub">{{ nd.sub }}</text>
+          </g>
+        </svg>
       </div>
     </div>
 
@@ -435,13 +534,58 @@ const TOPO_LAYERS = computed(() => [
 // 画布总高
 const topoH = computed(() => TOPO_Y.node + NODE_H/2 + 60)
 
+// ── 部署流程 SVG 尺寸 ──────────────────────────────────────────────────
+const DSVG_W = 1240
+const DSVG_H = 960
+
 // ── 状态 ──────────────────────────────────────────────────────────────
 const view     = ref('arch')
+const archMode = ref('app')   // 'app' | 'deploy'
 const animOn   = ref(true)
 const loading  = ref(false)
 const hoveredNode = ref(null)
 const pageEl   = ref(null)
 const archWrap = ref(null)
+
+// ── 缩放 / 拖拽状态 ────────────────────────────────────────────────────
+import { reactive } from 'vue'
+const vb = reactive({ x: 0, y: 0, w: SVG_W, h: SVG_H })
+const vbStr = computed(() => `${vb.x} ${vb.y} ${vb.w} ${vb.h}`)
+const svgDrag = reactive({ active: false, sx: 0, sy: 0, vbx0: 0, vby0: 0 })
+
+function zoomAt(factor, cx, cy) {
+  const newW = Math.max(400, Math.min(SVG_W * 3.5, vb.w / factor))
+  const newH = newW * SVG_H / SVG_W
+  vb.x = cx - (cx - vb.x) * (newW / vb.w)
+  vb.y = cy - (cy - vb.y) * (newH / vb.h)
+  vb.w = newW; vb.h = newH
+}
+function zoomIn()  { zoomAt(1.25, vb.x + vb.w/2, vb.y + vb.h/2) }
+function zoomOut() { zoomAt(0.80, vb.x + vb.w/2, vb.y + vb.h/2) }
+function fitView() { vb.x=0; vb.y=0; vb.w=SVG_W; vb.h=SVG_H }
+
+function onArchWheel(e) {
+  const svg = archSvg.value; if (!svg) return
+  const rect = svg.getBoundingClientRect()
+  const mx = (e.clientX - rect.left) / rect.width  * vb.w + vb.x
+  const my = (e.clientY - rect.top)  / rect.height * vb.h + vb.y
+  zoomAt(e.deltaY < 0 ? 1.15 : 0.87, mx, my)
+}
+function onArchDragStart(e) {
+  if (e.button !== 0 || e.target.closest('.arch-node')) return
+  svgDrag.active = true
+  svgDrag.sx = e.clientX; svgDrag.sy = e.clientY
+  svgDrag.vbx0 = vb.x;    svgDrag.vby0 = vb.y
+}
+function onArchDragMove(e) {
+  if (!svgDrag.active) return
+  const svg = archSvg.value; if (!svg) return
+  const rect = svg.getBoundingClientRect()
+  const sx = vb.w / rect.width, sy = vb.h / rect.height
+  vb.x = svgDrag.vbx0 - (e.clientX - svgDrag.sx) * sx
+  vb.y = svgDrag.vby0 - (e.clientY - svgDrag.sy) * sy
+}
+function onArchDragEnd() { svgDrag.active = false }
 const k8sNodes       = ref([])
 const k8sPods        = ref([])
 const k8sServices    = ref([])
@@ -630,6 +774,102 @@ function onMouseMove(evt) {
   tooltip.value.x = evt.clientX - rect.left + 14
   tooltip.value.y = evt.clientY - rect.top - 10
 }
+
+// ── K8s 部署流程图节点 & 连线 ─────────────────────────────────────────
+// 两列并排：左=YAML部署流程，右=流量访问路径，底部共享 Node/Pod
+const DW = 168, DH = 72  // 部署流节点尺寸
+
+// 辅助：生成粒子
+function dPkts(n, dur, color) {
+  return Array.from({length:n}, (_,i) => ({ i, r:3.5-i*0.5, dur:dur+i*0.3, begin:i*dur/n }))
+}
+
+const deployNodes = computed(() => {
+  // 左列 x=310, 右列 x=930, 底部收敛 x=620
+  const L = 310, R = 930, C = 620
+  return [
+    // ─ 左：YAML 部署流程 ─────────────────────────────────────
+    { id:'ci',     step:1, icon:'👨‍💻', name:'Developer / CI',  sub:'kubectl apply',
+      x:L, y:80,  w:DW, h:DH, fill:'#0c2038', stroke:'#38bdf8' },
+    { id:'apisvr', step:2, icon:'⚙️',  name:'API Server',       sub:':6443  认证/准入',
+      x:L, y:220, w:DW, h:DH, fill:'#0c2038', stroke:'#38bdf8' },
+    { id:'etcd',   step:2, icon:'🗄️',  name:'etcd',             sub:':2379  持久化状态',
+      x:L+230, y:220, w:DW, h:DH, fill:'#160d29', stroke:'#a78bfa' },
+    { id:'ctrlmgr',step:3, icon:'🔄',  name:'Controller Manager', sub:'维护期望状态',
+      x:L, y:370, w:DW, h:DH, fill:'#071e1f', stroke:'#22d3ee' },
+    { id:'sched',  step:4, icon:'📅',  name:'Scheduler',        sub:'选择目标 Node',
+      x:L, y:510, w:DW, h:DH, fill:'#0a1f15', stroke:'#22c55e' },
+    { id:'kubelet',step:5, icon:'🤖',  name:'Kubelet',          sub:'Node Agent',
+      x:C-80, y:750, w:DW, h:DH, fill:'#1f1506', stroke:'#fbbf24' },
+    { id:'cri',    step:6, icon:'🐳',  name:'Container Runtime', sub:'containerd / CRI',
+      x:C-80, y:880, w:DW+10, h:DH, fill:'#0c2038', stroke:'#38bdf8' },
+
+    // ─ 右：流量访问路径 ──────────────────────────────────────
+    { id:'ext',    step:1, icon:'🌐', name:'External User',    sub:'Internet / Browser',
+      x:R, y:80,  w:DW, h:DH, fill:'#0c2038', stroke:'#38bdf8' },
+    { id:'nodeport',step:2,icon:'🚪', name:'NodePort / Ingress',sub:':30090 / :30800',
+      x:R, y:220, w:DW+10, h:DH, fill:'#0c2038', stroke:'#38bdf8' },
+    { id:'kproxy', step:3, icon:'🔀', name:'kube-proxy',       sub:'IPVS / iptables',
+      x:R, y:370, w:DW, h:DH, fill:'#160d29', stroke:'#a78bfa' },
+    { id:'svc',    step:4, icon:'🔌', name:'Service',          sub:'ClusterIP 负载均衡',
+      x:R, y:510, w:DW+10, h:DH, fill:'#071e1f', stroke:'#22d3ee' },
+
+    // ─ 底部：Node / Pod（两列汇聚）────────────────────────────
+    { id:'pod', step:7, icon:'🟢', name:'Pod (Running)',     sub:'应用容器 · 状态上报',
+      x:C+60, y:880, w:DW+20, h:DH, fill:'#0a1f15', stroke:'#22c55e' },
+  ]
+})
+
+// 边辅助：取节点坐标
+function dn(id) { return deployNodes.value.find(n=>n.id===id) }
+function dElbow(a, b) {
+  if (!a||!b) return ''
+  const ay=a.y+a.h/2, by=b.y-b.h/2, mid=(ay+by)/2
+  return `M${a.x},${ay} C${a.x},${mid} ${b.x},${mid} ${b.x},${by}`
+}
+// 水平边（API Server ↔ etcd）
+function dHoriz(a, b) {
+  if (!a||!b) return `M${a?.x||0},${a?.y||0} L${b?.x||0},${b?.y||0}`
+  const ax = a.x+a.w/2, bx = b.x-b.w/2, my = (a.y+b.y)/2
+  return `M${ax},${a.y} C${ax+30},${a.y} ${bx-30},${b.y} ${bx},${b.y}`
+}
+
+const deployEdges = computed(() => {
+  const nodes = deployNodes.value
+  const edges = []
+  const addE = (id, fromId, toId, color, marker, label, pkts=2, dur=1.8) => {
+    const a=dn(fromId), b=dn(toId)
+    if (!a||!b) return
+    const d = fromId==='apisvr'&&toId==='etcd' ? dHoriz(a,b) : dElbow(a,b)
+    // 标签位置：中点
+    const pts = d.match(/\d+(\.\d+)?/g)?.map(Number) || []
+    const lx = a.x+(b.x-a.x)*0.5, ly = a.y+(b.y-a.y)*0.5
+    edges.push({ id, d, color, marker, label, lx, ly,
+      packets: dPkts(pkts, dur, color) })
+  }
+
+  // 部署流程（左列）
+  addE('ci-api',   'ci',    'apisvr',  '#38bdf8', 'blue',   '① apply',    3, 1.6)
+  addE('api-etc',  'apisvr','etcd',    '#a78bfa', 'purple', '② persist',  2, 2.0)
+  addE('etc-api',  'etcd',  'apisvr',  '#a78bfa', 'purple', '③ watch',    1, 2.5)
+  addE('api-cm',   'apisvr','ctrlmgr', '#22d3ee', 'blue',   '④ notify',   2, 1.8)
+  addE('cm-api',   'ctrlmgr','apisvr', '#22d3ee', 'blue',   null, 1, 2.2)
+  addE('api-sch',  'apisvr','sched',   '#22c55e', 'green',  '⑤ schedule', 2, 1.9)
+  addE('sch-kub',  'sched', 'kubelet', '#fbbf24', 'orange', '⑥ assign',   2, 1.7)
+  addE('kub-cri',  'kubelet','cri',    '#38bdf8', 'blue',   '⑦ CRI',      2, 1.5)
+  addE('cri-pod',  'cri',   'pod',     '#22c55e', 'green',  '⑧ create',   3, 1.4)
+
+  // 流量路径（右列）
+  addE('ext-np',   'ext',    'nodeport','#38bdf8', 'blue',   'HTTP req',   3, 1.5)
+  addE('np-kp',    'nodeport','kproxy',  '#a78bfa', 'purple', 'route',      2, 1.8)
+  addE('kp-svc',   'kproxy', 'svc',     '#22d3ee', 'blue',   'ClusterIP',  2, 1.9)
+  addE('svc-pod',  'svc',    'pod',     '#22c55e', 'green',  '→ Pod',      3, 1.6)
+
+  // 状态回写
+  addE('pod-api',  'pod',   'apisvr',  '#fbbf24', 'orange', 'status',     1, 3.0)
+
+  return edges
+})
 
 // ── K8s 数据 ──────────────────────────────────────────────────────────
 async function loadK8s() {
@@ -930,6 +1170,19 @@ onMounted(() => {})
 
 .topo-edge-dash { animation: dashFlow 6s linear infinite; }
 @keyframes dashFlow { to { stroke-dashoffset: -36; } }
+
+/* ── 缩放控制 ──────────────────────────────────────── */
+.zoom-btns { display: flex; gap: 2px; }
+
+/* ── K8s 部署流程视图 ────────────────────────────────── */
+.deploy-flow-wrap { flex: 1; overflow: auto; padding: 8px; }
+.deploy-svg { width: 100%; max-width: 1240px; height: auto; display: block; margin: 0 auto; }
+.d-zone-lbl { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.d-node-icon { font-size: 18px; dominant-baseline: middle; }
+.d-node-name { fill: #e6edf3; font-size: 11.5px; font-weight: 700; }
+.d-node-sub  { fill: #8d96a0; font-size: 10px; }
+.d-step-num  { font-size: 9px; font-weight: 800; }
+.d-edge-lbl  { font-size: 9.5px; font-weight: 600; }
 .k8s-node-name { fill: #1e293b; font-size: 12px; font-weight: 700; }
 .k8s-node-role { fill: #64748b; font-size: 10px; }
 .pod-name { fill: #1e293b; font-size: 10.5px; font-weight: 600; dominant-baseline: middle; }
