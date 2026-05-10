@@ -604,7 +604,24 @@ function onArchDragMove(e) {
 }
 function onArchDragEnd() { svgDrag.active = false }
 
-// ── K8s 服务图 缩放/拖拽 ────────────────────────────────────────────
+// ── K8s 数据 refs（必须在所有依赖它们的 computed/watch 之前）────────
+const k8sNodes       = ref([])
+const k8sPods        = ref([])
+const k8sServices    = ref([])
+const k8sDeployments = ref([])
+
+// 动态画布宽度（紧跟 refs 之后，后续所有 zoom/watch 都可安全引用）
+const topoW = computed(() => {
+  const ns = Math.max(
+    k8sServices.value.length    || 1,
+    k8sDeployments.value.length || 1,
+    Math.min(k8sPods.value.length, 24) || 1,
+    k8sNodes.value.length       || 1,
+  )
+  return Math.max(1280, ns * MIN_SPACING + PAD_X * 2)
+})
+
+// ── K8s 服务图 缩放/拖拽（topoW 已在上方定义，无 TDZ）───────────────
 const k8sSvgEl = ref(null)
 const k8sVb   = reactive({ x: 0, y: 0, w: 0, h: 0 })
 const k8sVbStr = computed(() => {
@@ -614,7 +631,6 @@ const k8sVbStr = computed(() => {
 })
 const k8sDrag = reactive({ active: false, sx: 0, sy: 0, vbx0: 0, vby0: 0 })
 
-// 当拓扑数据变化时重置 viewBox
 watch([topoW, topoH], ([w, h]) => { k8sVb.w = w; k8sVb.h = h })
 
 function k8sZoomAt(factor, cx, cy) {
@@ -654,22 +670,6 @@ function onK8sDragMove(e) {
   k8sVb.y = k8sDrag.vby0 - (e.clientY - k8sDrag.sy) * sy
 }
 function onK8sDragEnd() { k8sDrag.active = false }
-
-const k8sNodes       = ref([])
-const k8sPods        = ref([])
-const k8sServices    = ref([])
-const k8sDeployments = ref([])
-
-// 动态画布宽度（用原始 ref.value.length，避免引用尚未定义的 computed）
-const topoW = computed(() => {
-  const ns = Math.max(
-    k8sServices.value.length    || 1,
-    k8sDeployments.value.length || 1,
-    Math.min(k8sPods.value.length, 24) || 1,  // topoPods 限 24 个
-    k8sNodes.value.length       || 1,
-  )
-  return Math.max(1280, ns * MIN_SPACING + PAD_X * 2)
-})
 
 function isNodeReady(nd) { return nd.status === 'Ready' }
 
