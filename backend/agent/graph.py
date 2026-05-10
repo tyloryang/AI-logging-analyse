@@ -19,6 +19,38 @@ REACT_GUIDELINES = (
     "- 工具失败时要继续尝试备用工具或降级方案，并在最终回答里说明已尝试的路径。\n\n"
 )
 
+# 四层思考框架（参考 Hermes Memory v4 设计理念）
+# L1 感知层：类比 Hermes Typed Schema — 先分类，不同类型任务触发不同策略
+# L2 检索层：类比 Hermes 5路检索融合 — 多源并发，不做单一路径检索
+# L3 推理层：类比 Hindsight Mental Models — 跨维度关联，找根因
+# L4 沉淀层：类比 Hermes 反思层 — 每次输出都提炼可复用模式
+FOUR_LAYER_THINKING = (
+    "【四层思考框架 — 请严格按层推进】\n\n"
+    "═══ L1 · 感知层 ═══\n"
+    "首先识别任务类型（故障排查/性能分析/K8s运维/巡检/报告生成），\n"
+    "锁定关键实体（服务名/主机IP/命名空间/时间范围），\n"
+    "输出1句：「本次任务：<类型>，核心实体：<实体>」\n\n"
+    "═══ L2 · 检索层 ═══\n"
+    "多源并发收集数据（不要串行等待）：\n"
+    "• 日志通道：query_error_logs / query_recent_logs\n"
+    "• 指标通道：get_host_metrics / count_errors_by_service\n"
+    "• 集群通道：get_k8s_pods / get_k8s_nodes / get_k8s_summary\n"
+    "• 记忆通道：recall_similar_incidents / search_daily_reports\n"
+    "每次工具调用前输出：「[L2-检索] 调用 <工具> 原因：<1句>」\n\n"
+    "═══ L3 · 推理层 ═══\n"
+    "跨维度关联分析（严格遵循）：\n"
+    "• 时间维度：「异常首次出现：<时间>，持续：<时长>」\n"
+    "• 实体维度：「最异常服务/主机：<名称>，错误率：<数值>」\n"
+    "• 因果维度：「触发链路：<A> → <B> → <C>（逐步推导，不跳步）」\n"
+    "• 热度维度：优先处理错误频次最高、影响范围最广的问题\n\n"
+    "═══ L4 · 沉淀层 ═══\n"
+    "最终输出必须包含：\n"
+    "① 根因：<1-2句精准判断>\n"
+    "② 影响：<受影响服务/用户范围>\n"
+    "③ 建议：<优先级排序的3步操作>\n"
+    "④ 经验提炼：「规律：如果[<触发条件>]，则检查[<检查点>]」（可复用运维模式）\n\n"
+)
+
 SYSTEM_PROMPTS = {
     "guided": (
         "你是一个“引导式多轮对话”助手（Wizard）。你的目标不是一次性给出最终答案，"
@@ -185,7 +217,7 @@ SYSTEM_PROMPTS = {
 }
 
 
-def _get_llm():
+def _get_llm(runtime_overrides: dict | None = None):
     """与 ai_analyzer.py 读取完全相同的环境变量，确保配置一致"""
     try:
         from runtime_env import refresh_runtime_settings_env
@@ -194,12 +226,16 @@ def _get_llm():
     except Exception:
         pass
 
-    provider = os.getenv("AI_PROVIDER", "anthropic").lower()
+    runtime_overrides = runtime_overrides or {}
+    provider = (
+        str(runtime_overrides.get("model_provider", "")).strip().lower()
+        or os.getenv("AI_PROVIDER", "anthropic").lower()
+    )
 
     if provider == "openai":
         base_url = os.getenv("AI_BASE_URL", "")
         api_key  = os.getenv("AI_API_KEY", "EMPTY") or "EMPTY"
-        model    = os.getenv("AI_MODEL", "gpt-4")
+        model    = str(runtime_overrides.get("model_name", "")).strip() or os.getenv("AI_MODEL", "gpt-4")
         wire_api = os.getenv("AI_WIRE_API", "chat")
 
         if not base_url:
@@ -232,7 +268,7 @@ def _get_llm():
 
     # 默认 Anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    model   = os.getenv("AI_MODEL", "claude-opus-4-6")
+    model   = str(runtime_overrides.get("model_name", "")).strip() or os.getenv("AI_MODEL", "claude-opus-4-6")
     if not api_key:
         raise ValueError("AI_PROVIDER=anthropic 时必须设置 ANTHROPIC_API_KEY")
 
@@ -277,7 +313,7 @@ def _build_mcp_context(mcps: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_graph(mode: str = "chat", checkpointer=None):
+def build_graph(mode: str = "chat", checkpointer=None, runtime_overrides: dict | None = None):
     """构建指定模式的 LangGraph ReAct 图（每次请求构建，轻量）"""
     # 动态读取真实 MCP 配置，替换提示词中的占位符
     mcps = _load_enabled_mcps()
@@ -304,7 +340,10 @@ def build_graph(mode: str = "chat", checkpointer=None):
 
     if mode != "guided":
         system_prompt = REACT_GUIDELINES + system_prompt
-    llm = _get_llm().bind_tools(ALL_TOOLS)
+    # 诊断类模式注入四层思考框架
+    if mode in ("rca", "inspect", "chat"):
+        system_prompt = FOUR_LAYER_THINKING + system_prompt
+    llm = _get_llm(runtime_overrides=runtime_overrides).bind_tools(ALL_TOOLS)
     tool_node = ToolNode(ALL_TOOLS)
 
     async def agent_node(state: MessagesState):

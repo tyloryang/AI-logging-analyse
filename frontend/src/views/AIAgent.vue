@@ -314,6 +314,18 @@
           <button class="trace-close" @click="showTrace = false">✕</button>
         </div>
 
+        <!-- 四层进度条 -->
+        <div class="trace-layers-bar">
+          <div v-for="(lm, lk) in LAYER_META" :key="lk"
+            class="trace-layer-pill"
+            :class="{ active: traceItems.some(t => t.layer === lk) }"
+            :style="{ '--lc': lm.color }">
+            <span class="tlp-key">{{ lk }}</span>
+            <span class="tlp-name">{{ lm.label }}</span>
+            <span class="tlp-cnt">{{ traceItems.filter(t => t.layer === lk).length }}</span>
+          </div>
+        </div>
+
         <div class="trace-body">
           <div v-if="!traceItems.length" class="trace-empty">
             <div class="trace-empty-icon">⟳</div>
@@ -327,6 +339,11 @@
             <div class="trace-item-head">
               <!-- 步骤序号 -->
               <span class="trace-step">{{ idx + 1 }}</span>
+              <!-- 四层标签 -->
+              <span class="trace-layer-badge"
+                :style="{ background: item.lmeta?.bg, color: item.lmeta?.color, border: '1px solid '+(item.lmeta?.color||'#888')+'44' }">
+                {{ item.layer }}·{{ item.lmeta?.label }}
+              </span>
               <!-- 状态图标 -->
               <span class="trace-status-dot" :class="item.pending ? 'spin' : 'ok'"></span>
               <!-- 工具名 + 类型图标 -->
@@ -603,16 +620,41 @@ const TOOL_TYPE_MAP = {
   call_mcp_tool:         { type:'mcp',     color:'#38bdf8', icon:'🔌', label:'MCP 工具' },
 }
 
-// 从所有消息中提取 Trace 条目（带类型信息）
+// 工具 → 所属四层思考层级
+const TOOL_LAYER_MAP = {
+  // L2 检索层工具
+  query_error_logs:          'L2', query_recent_logs: 'L2',
+  count_errors_by_service:   'L2', get_host_metrics:  'L2',
+  get_k8s_summary:           'L2', get_k8s_pods:      'L2',
+  get_k8s_nodes:             'L2', get_k8s_namespaces:'L2',
+  get_k8s_deployments:       'L2', get_k8s_services:  'L2',
+  recall_similar_incidents:  'L2', search_daily_reports:'L2',
+  get_services_list:         'L2', get_middleware_summary:'L2',
+  firecrawl_search_web:      'L2', firecrawl_scrape_url:'L2',
+  // L3 推理/执行工具
+  run_ssh_command:           'L3', inspect_all_hosts: 'L3',
+  call_mcp_tool:             'L3', list_mcp_tools:    'L3',
+  // L4 沉淀/输出工具
+  export_report_pdf:         'L4', search_daily_reports_detail:'L4',
+}
+const LAYER_META = {
+  L1: { label:'感知', color:'#38bdf8', bg:'rgba(56,189,248,.15)' },
+  L2: { label:'检索', color:'#fbbf24', bg:'rgba(251,191,36,.12)' },
+  L3: { label:'推理', color:'#22c55e', bg:'rgba(34,197,94,.12)'  },
+  L4: { label:'沉淀', color:'#a78bfa', bg:'rgba(167,139,250,.12)' },
+}
+
+// 从所有消息中提取 Trace 条目（带类型+层级信息）
 const traceItems = computed(() => {
   const items = []
   messages.value.forEach(msg => {
     if (msg.role !== 'assistant') return
     ;(msg.toolCalls || []).forEach(tc => {
-      const meta = TOOL_TYPE_MAP[tc.tool] || { type:'generic', color:'#8d96a0', icon:'⚙️', label: tc.tool }
+      const meta  = TOOL_TYPE_MAP[tc.tool] || { type:'generic', color:'#8d96a0', icon:'⚙️', label: tc.tool }
+      const layer = TOOL_LAYER_MAP[tc.tool] || 'L2'
+      const lmeta = LAYER_META[layer]
       const input  = tc.input  || {}
       const output = tc.output || ''
-      // 生成摘要
       const inputKeys  = Object.keys(input).slice(0, 2).map(k => `${k}=${JSON.stringify(input[k]).slice(0,20)}`).join(' ')
       const outputLine = typeof output === 'string' ? output.split('\n')[0].slice(0, 60) : ''
       items.push({
@@ -622,9 +664,9 @@ const traceItems = computed(() => {
         typeIcon:      meta.icon,
         type:          meta.type,
         color:         meta.color,
+        layer, lmeta,
         pending:       tc.pending,
-        input:         input,
-        output:        output,
+        input,  output,
         inputSummary:  inputKeys || null,
         outputSummary: outputLine || null,
         elapsed:       tc.elapsed || null,
@@ -1936,6 +1978,21 @@ onBeforeUnmount(() => {
   background: var(--bg-card); border-left: 1px solid var(--border);
   overflow: hidden;
 }
+/* 四层进度条 */
+.trace-layers-bar {
+  display: flex; gap: 4px; padding: 8px 10px 0;
+  border-bottom: 1px solid var(--border-light); padding-bottom: 8px;
+}
+.trace-layer-pill {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 5px 4px; border-radius: 8px; border: 1px solid var(--border-light);
+  background: var(--bg-surface); opacity: .4; transition: .2s;
+}
+.trace-layer-pill.active { opacity: 1; border-color: var(--lc); background: color-mix(in srgb, var(--lc) 12%, transparent); }
+.tlp-key  { font-size: 9px; font-weight: 800; color: var(--lc); letter-spacing: .04em; }
+.tlp-name { font-size: 9px; color: var(--text-muted); }
+.tlp-cnt  { font-size: 11px; font-weight: 700; color: var(--text-primary); }
+
 .trace-header {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 14px; border-bottom: 1px solid var(--border);
@@ -1964,6 +2021,7 @@ onBeforeUnmount(() => {
   padding: 8px 10px; flex-wrap: wrap;
 }
 .trace-step { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); font-size: 9px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.trace-layer-badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; flex-shrink: 0; letter-spacing: .04em; }
 .trace-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .trace-status-dot.ok   { background: var(--success); }
 .trace-status-dot.spin { border: 2px solid rgba(251,191,36,.3); border-top-color: var(--warning); animation: spin .8s linear infinite; }
