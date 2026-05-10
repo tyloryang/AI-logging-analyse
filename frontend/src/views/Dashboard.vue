@@ -301,9 +301,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { api } from '../api/index.js'
+import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 
 const router = useRouter()
 
@@ -327,35 +328,47 @@ const analyzeQuestion = ref('')
 const analyzeResult   = ref('')
 const analyzing       = ref(false)
 const aiModelName     = ref('AI')
+let overviewAbortController = null
+let overviewRequestId = 0
+let dashboardMounted = true
+
+function isRequestCanceled(error) {
+  return error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || error?.name === 'AbortError'
+}
 
 // ── 读取 AI 模型名 ────────────────────────────────────────────────────
 async function fetchAiModel() {
   try {
-    const r = await api.healthCheck()
-    const p = r.ai_provider || ''
-    if (p.startsWith('Anthropic')) aiModelName.value = 'Claude'
-    else {
-      const m = p.match(/\((.+)\)/)
-      aiModelName.value = m ? m[1].slice(0, 10) : (p.slice(0, 10) || 'AI')
-    }
+    const r = await fetchHealthStatus()
+    if (!dashboardMounted) return
+    aiModelName.value = getAiModelShort(r.ai_provider || '')
   } catch { /* ignore */ }
 }
 
 // ── 加载总览数据 ──────────────────────────────────────────────────────
 async function loadAll() {
+  const requestId = ++overviewRequestId
+  overviewAbortController?.abort()
+  const controller = new AbortController()
+  overviewAbortController = controller
   loading.value = true
   try {
-    const resp = await fetch(`/api/observability/overview?hours=${hours.value}`, {
-      credentials: 'include',
-    })
-    if (resp.ok) {
-      const data = await resp.json()
-      Object.assign(overview, data)
-    }
+    const data = await api.observabilityOverview(
+      { hours: hours.value },
+      { signal: controller.signal },
+    )
+    if (!dashboardMounted || requestId !== overviewRequestId) return
+    Object.assign(overview, data)
   } catch (e) {
+    if (isRequestCanceled(e)) return
     console.warn('[obs] 加载总览失败:', e)
   } finally {
-    loading.value = false
+    if (requestId === overviewRequestId) {
+      loading.value = false
+    }
+    if (overviewAbortController === controller) {
+      overviewAbortController = null
+    }
   }
 }
 
@@ -442,6 +455,12 @@ function renderAnalysis(text) {
 onMounted(() => {
   loadAll()
   fetchAiModel()
+})
+
+onBeforeUnmount(() => {
+  dashboardMounted = false
+  overviewAbortController?.abort()
+  overviewAbortController = null
 })
 </script>
 

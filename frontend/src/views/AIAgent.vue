@@ -217,26 +217,21 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, reactive, onMounted } from 'vue'
+import { ref, computed, nextTick, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
+import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 
 // ── 图标 ──────────────────────────────────────────────────────────────
 const AGENT_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M9 11V7a3 3 0 0 1 6 0v4"/><circle cx="9" cy="16" r="1" fill="currentColor"/><circle cx="15" cy="16" r="1" fill="currentColor"/><path d="M12 3v2"/></svg>`
 
 // ── AI 模型短名（从健康检查读取） ─────────────────────────────────────
 const aiModelShort = ref('AI')
+let aiModelMounted = true
 async function fetchAiModel() {
   try {
-    const r = await fetch('/api/health', { credentials: 'include' })
-    if (r.ok) {
-      const d = await r.json()
-      const p = d.ai_provider || ''
-      if (p.startsWith('Anthropic')) aiModelShort.value = 'Claude'
-      else {
-        const m = p.match(/\((.+)\)/)
-        aiModelShort.value = m ? m[1].slice(0, 10) : (p.slice(0, 10) || 'AI')
-      }
-    }
+    const data = await fetchHealthStatus()
+    if (!aiModelMounted) return
+    aiModelShort.value = getAiModelShort(data.ai_provider || '')
   } catch { /* ignore */ }
 }
 
@@ -461,6 +456,10 @@ onMounted(() => {
   applyRoutePreset()
   loadHistoryList()
   fetchAiModel()
+})
+
+onBeforeUnmount(() => {
+  aiModelMounted = false
 })
 
 // ── 工具函数 ──────────────────────────────────────────────────────────

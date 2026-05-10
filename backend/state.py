@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import uuid
+from copy import deepcopy
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -21,6 +22,33 @@ logger = logging.getLogger(__name__)
 # ── 配置常量（settings.json 优先级高于 .env）────────────────────────────────
 
 SETTINGS_FILE = Path("./data/settings.json")
+_JSON_FILE_CACHE: dict[Path, tuple[int, int, object]] = {}
+
+
+def _read_cached_json(path: Path):
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        _JSON_FILE_CACHE.pop(path, None)
+        return None
+
+    cached = _JSON_FILE_CACHE.get(path)
+    signature = (stat.st_mtime_ns, stat.st_size)
+    if cached and cached[:2] == signature:
+        return deepcopy(cached[2])
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    _JSON_FILE_CACHE[path] = (signature[0], signature[1], data)
+    return deepcopy(data)
+
+
+def _write_cached_json(path: Path, data, *, ensure_parent: bool = False) -> None:
+    if ensure_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    stat = path.stat()
+    _JSON_FILE_CACHE[path] = (stat.st_mtime_ns, stat.st_size, deepcopy(data))
 
 
 def _load_settings() -> dict:
@@ -100,7 +128,7 @@ def load_hosts_list() -> list[dict]:
     """新格式：主机列表（手动录入，UUID 主键）。"""
     if CMDB_FILE.exists():
         try:
-            data = json.loads(CMDB_FILE.read_text(encoding="utf-8"))
+            data = _read_cached_json(CMDB_FILE)
             if isinstance(data, list):
                 # 确保每条记录都有 id
                 changed = False
@@ -109,7 +137,7 @@ def load_hosts_list() -> list[dict]:
                         h["id"] = str(uuid.uuid4())
                         changed = True
                 if changed:
-                    CMDB_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    _write_cached_json(CMDB_FILE, data)
                 return data
             # 兼容旧 dict 格式：自动迁移为列表并回写，确保 ID 稳定
             now = __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -152,7 +180,7 @@ def load_hosts_list() -> list[dict]:
                 host.setdefault("updated_at", now)
                 result.append(host)
             # 回写 list 格式，ID 固定下来
-            CMDB_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_cached_json(CMDB_FILE, result)
             logger.info("[CMDB] 旧格式自动迁移完成，共 %d 台主机", len(result))
             return result
         except Exception as exc:
@@ -161,7 +189,7 @@ def load_hosts_list() -> list[dict]:
 
 
 def save_hosts_list(hosts: list[dict]) -> None:
-    CMDB_FILE.write_text(json.dumps(hosts, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_cached_json(CMDB_FILE, hosts)
 
 
 def load_cmdb() -> dict:
@@ -188,12 +216,14 @@ def save_cmdb(data: dict) -> None:
 
 def load_credentials() -> list[dict]:
     if CREDENTIALS_FILE.exists():
-        return json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
+        data = _read_cached_json(CREDENTIALS_FILE)
+        if isinstance(data, list):
+            return data
     return []
 
 
 def save_credentials(data: list[dict]) -> None:
-    CREDENTIALS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_cached_json(CREDENTIALS_FILE, data)
 
 
 # ── 慢日志定时报告目标配置 ────────────────────────────────────────────────────
@@ -236,7 +266,7 @@ def _normalize_group(group: dict) -> dict:
 def load_groups() -> list[dict]:
     if GROUPS_FILE.exists():
         try:
-            data = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+            data = _read_cached_json(GROUPS_FILE)
             if isinstance(data, list):
                 return [_normalize_group(item) for item in data if isinstance(item, dict)]
         except Exception:
@@ -245,24 +275,24 @@ def load_groups() -> list[dict]:
 
 
 def save_groups(data: list[dict]) -> None:
-    GROUPS_FILE.parent.mkdir(exist_ok=True)
     normalized = [_normalize_group(item) for item in data if isinstance(item, dict)]
-    GROUPS_FILE.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_cached_json(GROUPS_FILE, normalized, ensure_parent=True)
 
 
 def load_user_groups() -> dict[str, list[str]]:
     """返回 {user_id: [group_id, ...]}，表示每个普通用户可访问的 CMDB 分组。"""
     if USER_GROUPS_FILE.exists():
         try:
-            return json.loads(USER_GROUPS_FILE.read_text(encoding="utf-8"))
+            data = _read_cached_json(USER_GROUPS_FILE)
+            if isinstance(data, dict):
+                return data
         except Exception:
             pass
     return {}
 
 
 def save_user_groups(data: dict[str, list[str]]) -> None:
-    USER_GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    USER_GROUPS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_cached_json(USER_GROUPS_FILE, data, ensure_parent=True)
 
 
 def get_user_allowed_groups(user_id: str) -> list[str] | None:
@@ -274,15 +304,16 @@ def get_user_allowed_groups(user_id: str) -> list[str] | None:
 def load_user_k8s_clusters() -> dict[str, list[str]]:
     if K8S_USER_CLUSTERS_FILE.exists():
         try:
-            return json.loads(K8S_USER_CLUSTERS_FILE.read_text(encoding="utf-8"))
+            data = _read_cached_json(K8S_USER_CLUSTERS_FILE)
+            if isinstance(data, dict):
+                return data
         except Exception:
             pass
     return {}
 
 
 def save_user_k8s_clusters(data: dict[str, list[str]]) -> None:
-    K8S_USER_CLUSTERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    K8S_USER_CLUSTERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_cached_json(K8S_USER_CLUSTERS_FILE, data, ensure_parent=True)
 
 
 def get_user_allowed_k8s_clusters(user_id: str) -> list[str] | None:
@@ -304,15 +335,16 @@ _SLOWLOG_DEFAULTS = {
 def load_slowlog_targets() -> dict:
     if SLOWLOG_TARGETS_FILE.exists():
         try:
-            return json.loads(SLOWLOG_TARGETS_FILE.read_text(encoding="utf-8"))
+            data = _read_cached_json(SLOWLOG_TARGETS_FILE)
+            if isinstance(data, dict):
+                return data
         except Exception:
             pass
     return dict(_SLOWLOG_DEFAULTS)
 
 
 def save_slowlog_targets(data: dict) -> None:
-    SLOWLOG_TARGETS_FILE.parent.mkdir(exist_ok=True)
-    SLOWLOG_TARGETS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_cached_json(SLOWLOG_TARGETS_FILE, data, ensure_parent=True)
 
 
 def encrypt_password(plain: str) -> str:

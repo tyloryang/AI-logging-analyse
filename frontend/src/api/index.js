@@ -5,6 +5,9 @@ const http = axios.create({ baseURL: '/api', timeout: 120000 })
 http.interceptors.response.use(
   r => r.data,
   e => {
+    if (axios.isCancel(e)) {
+      return Promise.reject(e)
+    }
     if (e?.response?.status === 401 && !window.location.hash.includes('/login')) {
       window.location.href = '/#/login'
     }
@@ -14,17 +17,17 @@ http.interceptors.response.use(
 
 export const api = {
   // 服务列表
-  getServices:        () => http.get('/services'),
-  getServicesGrouped: () => http.get('/services/grouped'),
+  getServices:        (config = {}) => http.get('/services', config),
+  getServicesGrouped: (config = {}) => http.get('/services/grouped', config),
   // 日志
-  getLogs:        (params) => http.get('/logs', { params }),
+  getLogs:        (params, config = {}) => http.get('/logs', { ...config, params }),
   getErrorLogs:   (params) => http.get('/logs/errors', { params }),
   // 指标
   getErrorMetrics: (hours = 24) => http.get('/metrics/errors', { params: { hours } }),
   // 日志模板聚合
-  getTemplates:   (params) => http.get('/logs/templates', { params }),
+  getTemplates:   (params, config = {}) => http.get('/logs/templates', { ...config, params }),
   // 链路耗时分析
-  traceKeyword:   (params) => http.get('/logs/trace', { params }),
+  traceKeyword:   (params, config = {}) => http.get('/logs/trace', { ...config, params }),
   // 报告
   listReports:    () => http.get('/report/list'),
   getReport:      (id) => http.get(`/report/${id}`),
@@ -59,7 +62,7 @@ export const api = {
   getSlowlogTargets:  () => http.get('/report/slowlog/targets'),
   saveSlowlogTargets: (data) => http.put('/report/slowlog/targets', data),
   // 健康检查
-  healthCheck:    () => http.get('/health'),
+  healthCheck:    (config = {}) => http.get('/health', config),
   // 系统配置（管理员）
   getSettings:    () => http.get('/settings'),
   saveSettings:   (data) => http.put('/settings', data),
@@ -101,7 +104,7 @@ export const api = {
   swGetEndpointTopN:(params)             => http.get('/sw/endpoint-topn', { params }),
   swTest:           ()                   => http.get('/sw/test'),
   // 可观测性总览
-  observabilityOverview: (params) => http.get('/observability/overview', { params }),
+  observabilityOverview: (params, config = {}) => http.get('/observability/overview', { ...config, params }),
   // Grafana 看板管理
   observabilityGrafanaBoards: () => http.get('/observability/grafana/boards'),
   discoverGrafanaBoards: () => http.get('/observability/grafana/discover'),

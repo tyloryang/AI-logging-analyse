@@ -2,11 +2,13 @@
 
 路由前缀：/api/services  /api/logs  /api/metrics  /api/analyze
 """
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
@@ -14,6 +16,10 @@ from state import loki, analyzer, clusterer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_TEMPLATE_CACHE: TTLCache = TTLCache(maxsize=64, ttl=30)
+_TRACE_CACHE: TTLCache = TTLCache(maxsize=64, ttl=30)
+_TEMPLATE_LOCKS: dict[str, asyncio.Lock] = {}
+_TRACE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _parse_time_ns(dt_str: Optional[str]) -> Optional[int]:
@@ -33,6 +39,142 @@ def _parse_time_ns(dt_str: Optional[str]) -> Optional[int]:
         return int(dt.timestamp() * 1e9)
     except Exception:
         return None
+
+
+def _build_cache_key(prefix: str, *parts) -> str:
+    return json.dumps([prefix, *parts], ensure_ascii=False, separators=(",", ":"))
+
+
+async def _get_clustered_templates(
+    *,
+    service: Optional[str],
+    hours: int,
+    limit: int,
+    top_n: int,
+    level: Optional[str],
+    keyword: Optional[str],
+    start_ns: Optional[int],
+    end_ns: Optional[int],
+    use_scan_timeout: bool = False,
+) -> dict:
+    cache_key = _build_cache_key(
+        "templates",
+        service or "",
+        hours,
+        limit,
+        top_n,
+        level or "",
+        keyword or "",
+        start_ns or "",
+        end_ns or "",
+        use_scan_timeout,
+    )
+    cached = _TEMPLATE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    lock = _TEMPLATE_LOCKS.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        cached = _TEMPLATE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+        logs = await loki.query_logs(
+            service=service,
+            hours=hours,
+            limit=limit,
+            level=level,
+            keyword=keyword,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            use_scan_timeout=use_scan_timeout,
+        )
+        templates = clusterer.cluster(logs, top_n=top_n)
+        payload = {
+            "templates": templates,
+            "total_logs": len(logs),
+            "total_templates": len(templates),
+        }
+        _TEMPLATE_CACHE[cache_key] = payload
+        return payload
+
+
+async def _trace_keyword_result(
+    *,
+    keyword: str,
+    service: Optional[str],
+    hours: int,
+    start_ns: Optional[int],
+    end_ns: Optional[int],
+) -> dict:
+    cache_key = _build_cache_key(
+        "trace",
+        keyword,
+        service or "",
+        hours,
+        start_ns or "",
+        end_ns or "",
+    )
+    cached = _TRACE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    lock = _TRACE_LOCKS.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        cached = _TRACE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+        logs = await loki.query_logs(
+            service=service,
+            hours=hours,
+            limit=50000,
+            keyword=keyword,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            use_scan_timeout=True,
+        )
+        if not logs:
+            payload = {"found": False, "keyword": keyword, "log_count": 0}
+            _TRACE_CACHE[cache_key] = payload
+            return payload
+
+        sorted_logs = sorted(logs, key=lambda item: int(item["timestamp_ns"]))
+        first = sorted_logs[0]
+        last = sorted_logs[-1]
+        first_ns = int(first["timestamp_ns"])
+        last_ns = int(last["timestamp_ns"])
+        duration_ns = last_ns - first_ns
+        duration_ms = duration_ns / 1_000_000
+
+        if duration_ms < 1:
+            duration_str = f"{duration_ns / 1000:.1f} us"
+        elif duration_ms < 1000:
+            duration_str = f"{duration_ms:.3f} ms"
+        elif duration_ms < 60_000:
+            duration_str = f"{duration_ms / 1000:.3f} s"
+        else:
+            minutes = int(duration_ms // 60_000)
+            seconds = (duration_ms % 60_000) / 1000
+            duration_str = f"{minutes}m {seconds:.1f}s"
+
+        payload = {
+            "found": True,
+            "keyword": keyword,
+            "log_count": len(logs),
+            "first_ts": first["timestamp"],
+            "first_ts_ns": first_ns,
+            "first_log": first["line"][:300],
+            "first_service": first["labels"].get("app") or first["labels"].get("job") or "",
+            "last_ts": last["timestamp"],
+            "last_ts_ns": last_ns,
+            "last_log": last["line"][:300],
+            "last_service": last["labels"].get("app") or last["labels"].get("job") or "",
+            "duration_ms": duration_ms,
+            "duration_str": duration_str,
+        }
+        _TRACE_CACHE[cache_key] = payload
+        return payload
 
 
 # ── 服务列表 ──────────────────────────────────────────────────────────────────
@@ -135,17 +277,22 @@ async def get_log_templates(
 ):
     """Drain3 日志模板聚类：将重复日志归纳为带 <*> 占位符的模板"""
     try:
-        logs = await loki.query_logs(
-            service=service, hours=hours, limit=limit, level=level,
+        start_ns = _parse_time_ns(start_time)
+        end_ns = _parse_time_ns(end_time)
+        payload = await _get_clustered_templates(
+            service=service,
+            hours=hours,
+            limit=limit,
+            top_n=top_n,
+            level=level,
             keyword=keyword or None,
-            start_ns=_parse_time_ns(start_time),
-            end_ns=_parse_time_ns(end_time),
+            start_ns=start_ns,
+            end_ns=end_ns,
         )
-        templates = clusterer.cluster(logs, top_n=top_n)
         return {
-            "data": templates,
-            "total_logs": len(logs),
-            "total_templates": len(templates),
+            "data": payload["templates"],
+            "total_logs": payload["total_logs"],
+            "total_templates": payload["total_templates"],
             "service": service,
             "hours": hours,
         }
@@ -168,53 +315,15 @@ async def trace_keyword(
     最多扫描 50000 条匹配日志，返回首尾时间戳及耗时。
     """
     try:
-        logs = await loki.query_logs(
+        start_ns = _parse_time_ns(start_time)
+        end_ns = _parse_time_ns(end_time)
+        return await _trace_keyword_result(
+            keyword=keyword,
             service=service,
             hours=hours,
-            limit=50000,
-            keyword=keyword,
-            start_ns=_parse_time_ns(start_time),
-            end_ns=_parse_time_ns(end_time),
-            use_scan_timeout=True,   # 大量扫描使用 120s 超时
+            start_ns=start_ns,
+            end_ns=end_ns,
         )
-        if not logs:
-            return {"found": False, "keyword": keyword, "log_count": 0}
-
-        sorted_logs = sorted(logs, key=lambda x: int(x["timestamp_ns"]))
-        first = sorted_logs[0]
-        last  = sorted_logs[-1]
-
-        first_ns   = int(first["timestamp_ns"])
-        last_ns    = int(last["timestamp_ns"])
-        duration_ns = last_ns - first_ns
-        duration_ms = duration_ns / 1_000_000
-
-        if duration_ms < 1:
-            duration_str = f"{duration_ns / 1000:.1f} µs"
-        elif duration_ms < 1000:
-            duration_str = f"{duration_ms:.3f} ms"
-        elif duration_ms < 60_000:
-            duration_str = f"{duration_ms / 1000:.3f} s"
-        else:
-            minutes = int(duration_ms // 60_000)
-            seconds = (duration_ms % 60_000) / 1000
-            duration_str = f"{minutes}m {seconds:.1f}s"
-
-        return {
-            "found":        True,
-            "keyword":      keyword,
-            "log_count":    len(logs),
-            "first_ts":     first["timestamp"],
-            "first_ts_ns":  first_ns,
-            "first_log":    first["line"][:300],
-            "first_service": first["labels"].get("app") or first["labels"].get("job") or "",
-            "last_ts":      last["timestamp"],
-            "last_ts_ns":   last_ns,
-            "last_log":     last["line"][:300],
-            "last_service": last["labels"].get("app") or last["labels"].get("job") or "",
-            "duration_ms":  duration_ms,
-            "duration_str": duration_str,
-        }
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -232,14 +341,20 @@ async def analyze_templates_stream(
 ):
     """流式 AI 分析日志模板聚类（SSE）"""
     try:
-        logs = await loki.query_logs(
-            service=service, hours=hours, limit=10000, level=level or None,
+        start_ns = _parse_time_ns(start_time)
+        end_ns = _parse_time_ns(end_time)
+        payload = await _get_clustered_templates(
+            service=service,
+            hours=hours,
+            limit=10000,
+            top_n=30,
+            level=level or None,
             keyword=keyword or None,
-            start_ns=_parse_time_ns(start_time),
-            end_ns=_parse_time_ns(end_time),
+            start_ns=start_ns,
+            end_ns=end_ns,
             use_scan_timeout=True,
         )
-        templates = clusterer.cluster(logs, top_n=30)
+        templates = payload["templates"]
 
         if not templates:
             async def empty():

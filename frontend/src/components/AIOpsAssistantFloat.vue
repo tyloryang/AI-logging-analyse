@@ -154,6 +154,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 
 const route = useRoute()
 
@@ -170,6 +171,7 @@ const PROMPTS = {
 
 const open = ref(typeof window !== 'undefined' && window.localStorage.getItem('aiops-assistant-open') === '1')
 const aiModelShort = ref('AI')
+let floatMounted = true
 const convId = ref(genUUID())
 const historyList = ref([])
 const messages = ref([])
@@ -264,12 +266,9 @@ function toggleOpen() {
 
 async function fetchAiModel() {
   try {
-    const resp = await fetch('/api/health', { credentials: 'include' })
-    if (!resp.ok) return
-    const data = await resp.json()
-    const provider = data.ai_provider || ''
-    const match = provider.match(/\((.+)\)/)
-    aiModelShort.value = provider.startsWith('Anthropic') ? 'Claude' : (match ? match[1].slice(0, 10) : (provider.slice(0, 10) || 'AI'))
+    const data = await fetchHealthStatus()
+    if (!floatMounted) return
+    aiModelShort.value = getAiModelShort(data.ai_provider || '')
   } catch {}
 }
 
@@ -382,6 +381,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  floatMounted = false
   window.removeEventListener('keydown', onEsc)
   if (!streaming.value && messages.value.length) saveConversation()
 })

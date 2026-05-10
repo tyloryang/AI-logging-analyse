@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
@@ -23,6 +24,8 @@ from skywalking_client import sw_client, check_connectivity as sw_check
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/observability", tags=["observability"])
+_overview_cache: TTLCache = TTLCache(maxsize=8, ttl=15)
+_overview_locks: dict[int, asyncio.Lock] = {}
 
 # Grafana 看板定义（uid 与 Grafana 官方 dashboard uid 对齐）
 _GRAFANA_BOARD_DEFS = [
@@ -187,31 +190,44 @@ async def get_overview(hours: int = Query(1, ge=1, le=24)):
       - problem_services 有问题的服务（根因中心）
       - grafana_boards   看板列表
     """
-    (alert_count, recent_alerts), \
-    (error_count, error_breakdown), \
-    (trace_count, recent_traces) = await asyncio.gather(
-        _get_alert_count(),
-        _get_loki_error_count(hours),
-        _get_sw_trace_count(hours),
-    )
+    cache_key = f"overview:{hours}"
+    cached = _overview_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    problem_services = await _get_problem_services(error_breakdown, recent_alerts)
+    lock = _overview_locks.setdefault(hours, asyncio.Lock())
+    async with lock:
+        cached = _overview_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-    grafana_boards = _build_grafana_boards()
-    return {
-        "alert_count":      alert_count,
-        "error_count":      error_count,
-        "trace_count":      trace_count,
-        "grafana_count":    len(grafana_boards),
-        "hours":            hours,
-        "recent_alerts":    recent_alerts,
-        "recent_traces":    recent_traces,
-        "problem_services": problem_services,
-        "grafana_boards":   grafana_boards,
-        "grafana_url":      os.getenv("GRAFANA_URL", "").strip().rstrip("/"),
-        "error_breakdown":  error_breakdown,
-        "timestamp":        datetime.now(timezone.utc).isoformat(),
-    }
+        (alert_count, recent_alerts), \
+        (error_count, error_breakdown), \
+        (trace_count, recent_traces) = await asyncio.gather(
+            _get_alert_count(),
+            _get_loki_error_count(hours),
+            _get_sw_trace_count(hours),
+        )
+
+        problem_services = await _get_problem_services(error_breakdown, recent_alerts)
+        grafana_boards = _build_grafana_boards()
+
+        payload = {
+            "alert_count": alert_count,
+            "error_count": error_count,
+            "trace_count": trace_count,
+            "grafana_count": len(grafana_boards),
+            "hours": hours,
+            "recent_alerts": recent_alerts,
+            "recent_traces": recent_traces,
+            "problem_services": problem_services,
+            "grafana_boards": grafana_boards,
+            "grafana_url": os.getenv("GRAFANA_URL", "").strip().rstrip("/"),
+            "error_breakdown": error_breakdown,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        _overview_cache[cache_key] = payload
+        return payload
 
 
 # ══════════════════════════════════════════════════════════════════════════════

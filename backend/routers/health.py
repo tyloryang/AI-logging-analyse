@@ -1,62 +1,80 @@
-"""健康检查路由。
+"""Health check router.
 
-路由：GET /api/health
+Route: GET /api/health
 """
+
 import asyncio
 import logging
 from datetime import datetime, timezone
 
 import httpx
+from cachetools import TTLCache
 from fastapi import APIRouter
 
-from state import loki, prom, analyzer, LOKI_URL, LOKI_USERNAME, LOKI_PASSWORD, PROMETHEUS_URL
-from skywalking_client import check_connectivity as sw_check, SKYWALKING_OAP_URL
+from skywalking_client import SKYWALKING_OAP_URL, check_connectivity as sw_check
+from state import LOKI_URL, PROMETHEUS_URL, analyzer, loki, prom
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_health_cache: TTLCache = TTLCache(maxsize=1, ttl=10)
+_health_lock = asyncio.Lock()
 
-@router.get("/api/health")
-async def health():
-    async def _check_loki():
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as c:
-                kw = {"url": f"{LOKI_URL}/loki/api/v1/labels"}
-                if LOKI_USERNAME:
-                    kw["auth"] = (LOKI_USERNAME, LOKI_PASSWORD)
-                resp = await c.get(**kw)
-                return resp.status_code == 200
-        except Exception as e:
-            logger.warning("[health] Loki 连接失败: %s", e)
-            return False
 
-    async def _check_prom():
-        try:
-            await prom.query("up", timeout=5)
-            return True
-        except Exception as e:
-            logger.warning("[health] Prometheus 连接失败: %s", e)
-            return False
+async def _check_loki() -> bool:
+    try:
+        await loki._request_json("/loki/api/v1/labels", timeout=httpx.Timeout(5.0))
+        return True
+    except Exception as exc:
+        logger.warning("[health] Loki connectivity failed: %s", exc)
+        return False
 
+
+async def _check_prom() -> bool:
+    try:
+        await prom.query("up", timeout=5)
+        return True
+    except Exception as exc:
+        logger.warning("[health] Prometheus connectivity failed: %s", exc)
+        return False
+
+
+async def _build_health_payload() -> dict:
     loki_ok, prom_ok, sw_ok = await asyncio.gather(_check_loki(), _check_prom(), sw_check())
 
     try:
         ai_name = analyzer.provider_name
-        ai_ok   = True
-    except Exception as e:
-        ai_name = str(e)
-        ai_ok   = False
+        ai_ok = True
+    except Exception as exc:
+        ai_name = str(exc)
+        ai_ok = False
 
     return {
-        "status":               "ok",
-        "version":              "2.0",
-        "loki_connected":       loki_ok,
-        "loki_url":             LOKI_URL,
+        "status": "ok",
+        "version": "2.0",
+        "loki_connected": loki_ok,
+        "loki_url": LOKI_URL,
         "prometheus_connected": prom_ok,
-        "prometheus_url":       PROMETHEUS_URL,
-        "ai_provider":            ai_name,
-        "ai_ready":               ai_ok,
-        "skywalking_connected":   sw_ok,
-        "skywalking_url":         SKYWALKING_OAP_URL,
-        "timestamp":              datetime.now(timezone.utc).isoformat(),
+        "prometheus_url": PROMETHEUS_URL,
+        "ai_provider": ai_name,
+        "ai_ready": ai_ok,
+        "skywalking_connected": sw_ok,
+        "skywalking_url": SKYWALKING_OAP_URL,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/api/health")
+async def health():
+    cached = _health_cache.get("payload")
+    if cached is not None:
+        return cached
+
+    async with _health_lock:
+        cached = _health_cache.get("payload")
+        if cached is not None:
+            return cached
+
+        payload = await _build_health_payload()
+        _health_cache["payload"] = payload
+        return payload

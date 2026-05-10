@@ -1,6 +1,7 @@
 """Kubernetes 集群管理路由 — /api/k8s/*"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import shlex
 import uuid
 from pathlib import Path
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query, WebSocket, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -26,6 +28,8 @@ _DEFAULT_KUBECONFIG = os.path.join(os.path.dirname(__file__), "..", "data", "kub
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _KUBECONFIG_PATH_SEPARATOR = os.pathsep
+_SUMMARY_CACHE: TTLCache = TTLCache(maxsize=16, ttl=15)
+_SUMMARY_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class K8sClusterPayload(BaseModel):
@@ -423,6 +427,88 @@ def _job_status(item) -> str:
     if item.status.succeeded:
         return "Complete"
     return "Pending"
+
+
+def _fetch_core_summary_resources(cluster_id: str):
+    v1, _ = _get_client(cluster_id)
+    return v1.list_pod_for_all_namespaces(), v1.list_node()
+
+
+def _fetch_apps_summary_resources(cluster_id: str):
+    _, apps = _get_client(cluster_id)
+    return (
+        apps.list_deployment_for_all_namespaces(),
+        apps.list_daemon_set_for_all_namespaces(),
+        apps.list_stateful_set_for_all_namespaces(),
+    )
+
+
+def _fetch_batch_summary_resources(cluster_id: str):
+    batch = _get_batch_client(cluster_id)
+    return batch.list_job_for_all_namespaces(), batch.list_cron_job_for_all_namespaces()
+
+
+def _build_cluster_summary_payload(
+    cluster: dict,
+    pods,
+    deps,
+    daemonsets,
+    statefulsets,
+    jobs,
+    cronjobs,
+    nodes,
+) -> dict:
+    total_pods = len(pods.items)
+    running_pods = sum(1 for item in pods.items if _pod_status(item) == "Running")
+    total_deps = len(deps.items)
+    ready_deps = sum(
+        1
+        for item in deps.items
+        if (item.status.ready_replicas or 0) == (item.spec.replicas or 0) and item.spec.replicas
+    )
+    total_nodes = len(nodes.items)
+    ready_nodes = sum(
+        1
+        for item in nodes.items
+        if any(cond.type == "Ready" and cond.status == "True" for cond in (item.status.conditions or []))
+    )
+    total_daemonsets = len(daemonsets.items)
+    ready_daemonsets = sum(
+        1
+        for item in daemonsets.items
+        if (item.status.number_ready or 0) == (item.status.desired_number_scheduled or 0)
+    )
+    total_statefulsets = len(statefulsets.items)
+    ready_statefulsets = sum(
+        1
+        for item in statefulsets.items
+        if (item.status.ready_replicas or 0) == (item.spec.replicas or 0)
+    )
+    total_jobs = len(jobs.items)
+    complete_jobs = sum(1 for item in jobs.items if _job_status(item) == "Complete")
+    total_cronjobs = len(cronjobs.items)
+    active_cronjobs = sum(1 for item in cronjobs.items if item.status.active)
+    suspended_cronjobs = sum(1 for item in cronjobs.items if item.spec.suspend)
+
+    return {
+        "cluster": {
+            "id": cluster["id"],
+            "name": cluster["name"],
+            "context": cluster.get("context", ""),
+            "kubeconfig": cluster.get("kubeconfig", ""),
+        },
+        "pods": {"total": total_pods, "running": running_pods},
+        "deployments": {"total": total_deps, "ready": ready_deps},
+        "daemonSets": {"total": total_daemonsets, "ready": ready_daemonsets},
+        "statefulSets": {"total": total_statefulsets, "ready": ready_statefulsets},
+        "jobs": {"total": total_jobs, "complete": complete_jobs},
+        "cronJobs": {
+            "total": total_cronjobs,
+            "active": active_cronjobs,
+            "suspended": suspended_cronjobs,
+        },
+        "nodes": {"total": total_nodes, "ready": ready_nodes},
+    }
 
 
 def _normalize_resource_kind(kind: str) -> str:
@@ -1116,67 +1202,37 @@ async def cluster_summary(
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, apps = _get_client(cluster["id"])
-        batch = _get_batch_client(cluster["id"])
-        pods = v1.list_pod_for_all_namespaces()
-        deps = apps.list_deployment_for_all_namespaces()
-        daemonsets = apps.list_daemon_set_for_all_namespaces()
-        statefulsets = apps.list_stateful_set_for_all_namespaces()
-        jobs = batch.list_job_for_all_namespaces()
-        cronjobs = batch.list_cron_job_for_all_namespaces()
-        nodes = v1.list_node()
+        cache_key = cluster["id"]
+        cached = _SUMMARY_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
-        total_pods = len(pods.items)
-        running_pods = sum(1 for item in pods.items if _pod_status(item) == "Running")
-        total_deps = len(deps.items)
-        ready_deps = sum(
-            1
-            for item in deps.items
-            if (item.status.ready_replicas or 0) == (item.spec.replicas or 0) and item.spec.replicas
-        )
-        total_nodes = len(nodes.items)
-        ready_nodes = sum(
-            1
-            for item in nodes.items
-            if any(cond.type == "Ready" and cond.status == "True" for cond in (item.status.conditions or []))
-        )
-        total_daemonsets = len(daemonsets.items)
-        ready_daemonsets = sum(
-            1
-            for item in daemonsets.items
-            if (item.status.number_ready or 0) == (item.status.desired_number_scheduled or 0)
-        )
-        total_statefulsets = len(statefulsets.items)
-        ready_statefulsets = sum(
-            1
-            for item in statefulsets.items
-            if (item.status.ready_replicas or 0) == (item.spec.replicas or 0)
-        )
-        total_jobs = len(jobs.items)
-        complete_jobs = sum(1 for item in jobs.items if _job_status(item) == "Complete")
-        total_cronjobs = len(cronjobs.items)
-        active_cronjobs = sum(1 for item in cronjobs.items if item.status.active)
-        suspended_cronjobs = sum(1 for item in cronjobs.items if item.spec.suspend)
+        lock = _SUMMARY_LOCKS.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            cached = _SUMMARY_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
 
-        return {
-            "cluster": {
-                "id": cluster["id"],
-                "name": cluster["name"],
-                "context": cluster.get("context", ""),
-                "kubeconfig": cluster.get("kubeconfig", ""),
-            },
-            "pods": {"total": total_pods, "running": running_pods},
-            "deployments": {"total": total_deps, "ready": ready_deps},
-            "daemonSets": {"total": total_daemonsets, "ready": ready_daemonsets},
-            "statefulSets": {"total": total_statefulsets, "ready": ready_statefulsets},
-            "jobs": {"total": total_jobs, "complete": complete_jobs},
-            "cronJobs": {
-                "total": total_cronjobs,
-                "active": active_cronjobs,
-                "suspended": suspended_cronjobs,
-            },
-            "nodes": {"total": total_nodes, "ready": ready_nodes},
-        }
+            core_task = asyncio.to_thread(_fetch_core_summary_resources, cluster["id"])
+            apps_task = asyncio.to_thread(_fetch_apps_summary_resources, cluster["id"])
+            batch_task = asyncio.to_thread(_fetch_batch_summary_resources, cluster["id"])
+
+            (pods, nodes), \
+            (deps, daemonsets, statefulsets), \
+            (jobs, cronjobs) = await asyncio.gather(core_task, apps_task, batch_task)
+
+            payload = _build_cluster_summary_payload(
+                cluster,
+                pods,
+                deps,
+                daemonsets,
+                statefulsets,
+                jobs,
+                cronjobs,
+                nodes,
+            )
+            _SUMMARY_CACHE[cache_key] = payload
+            return payload
     except Exception as exc:
         logger.warning("[k8s] summary failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")

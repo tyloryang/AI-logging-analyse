@@ -562,7 +562,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { api, streamSSE } from '../api/index.js'
 
 // ── 公共状态 ─────────────────────────────
@@ -588,6 +588,15 @@ const customEnd   = ref('')
 // 关键字搜索
 const keyword      = ref('')
 let   searchTimer  = null
+let   servicesAbort = null
+let   logsAbort = null
+let   loadMoreAbort = null
+let   templatesAbort = null
+let   traceLogsAbort = null
+let   servicesRequestId = 0
+let   logsRequestId = 0
+let   loadMoreRequestId = 0
+let   templatesRequestId = 0
 
 const totalErrors = computed(() =>
   services.value.reduce((s, v) => s + v.error_count, 0)
@@ -733,6 +742,13 @@ function onLevelChange() {
 }
 
 // ── 模板聚合 AI ───────────────────────────
+function isCanceled(error) {
+  return error?.name === 'CanceledError' ||
+         error?.code === 'ERR_CANCELED' ||
+         error === 'canceled' ||
+         (typeof error === 'string' && error.toLowerCase() === 'canceled')
+}
+
 const tplAiContent  = ref('')
 const analyzingTplAI = ref(false)
 
@@ -792,10 +808,20 @@ function highlightWildcard(tpl) {
 
 // ── 数据加载 ─────────────────────────────
 async function loadServices() {
+  const requestId = ++servicesRequestId
+  servicesAbort?.abort()
+  const controller = new AbortController()
+  servicesAbort = controller
   loadingSvcs.value = true
   try {
     // 优先尝试分组接口
-    const rg = await api.getServicesGrouped().catch(() => null)
+    let rg = null
+    try {
+      rg = await api.getServicesGrouped({ signal: controller.signal })
+    } catch (error) {
+      if (isCanceled(error)) return
+    }
+    if (requestId !== servicesRequestId) return
     if (rg?.data?.length) {
       serviceGroups.value = rg.data
       // 自动展开第一个 namespace
@@ -803,17 +829,34 @@ async function loadServices() {
       // 平铺 services 保持兼容（totalErrors 等计算用）
       services.value = rg.data.flatMap(g => g.services)
     } else {
-      const r = await api.getServices()
+      const r = await api.getServices({ signal: controller.signal })
+      if (requestId !== servicesRequestId) return
       services.value = r.data
       serviceGroups.value = []
       openNs.value = new Set()
     }
+  } catch (error) {
+    if (!isCanceled(error)) {
+      services.value = []
+      serviceGroups.value = []
+      openNs.value = new Set()
+    }
   } finally {
-    loadingSvcs.value = false
+    if (requestId === servicesRequestId) {
+      loadingSvcs.value = false
+    }
+    if (servicesAbort === controller) {
+      servicesAbort = null
+    }
   }
 }
 
 async function loadLogs() {
+  const requestId = ++logsRequestId
+  logsAbort?.abort()
+  loadMoreAbort?.abort()
+  const controller = new AbortController()
+  logsAbort = controller
   loadingLogs.value = true
   logs.value = []
   currentPage.value = 1
@@ -827,18 +870,36 @@ async function loadLogs() {
       limit:    200,
       keyword:  keyword.value || undefined,
       ...timeParams(),
-    })
+    }, { signal: controller.signal })
+    if (requestId !== logsRequestId) return
     logs.value = r.data
     hasMore.value      = r.has_more ?? false
     nextCursorNs.value = r.next_cursor_ns ?? null
     totalLoaded.value  = r.data?.length ?? 0
+  } catch (error) {
+    if (!isCanceled(error)) {
+      logs.value = []
+      hasMore.value = false
+      nextCursorNs.value = null
+      totalLoaded.value = 0
+    }
   } finally {
-    loadingLogs.value = false
+    if (requestId === logsRequestId) {
+      loadingLogs.value = false
+    }
+    if (logsAbort === controller) {
+      logsAbort = null
+    }
   }
 }
 
 async function loadMore() {
   if (!hasMore.value || !nextCursorNs.value || loadingMore.value) return
+  const requestId = ++loadMoreRequestId
+  const baseLogsRequestId = logsRequestId
+  loadMoreAbort?.abort()
+  const controller = new AbortController()
+  loadMoreAbort = controller
   loadingMore.value = true
   try {
     const r = await api.getLogs({
@@ -848,17 +909,31 @@ async function loadMore() {
       keyword:    keyword.value || undefined,
       cursor_ns:  nextCursorNs.value,
       ...timeParams(),
-    })
+    }, { signal: controller.signal })
+    if (requestId !== loadMoreRequestId || baseLogsRequestId !== logsRequestId) return
     logs.value = [...logs.value, ...(r.data || [])]
     hasMore.value      = r.has_more ?? false
     nextCursorNs.value = r.next_cursor_ns ?? null
     totalLoaded.value  = logs.value.length
+  } catch (error) {
+    if (!isCanceled(error)) {
+      hasMore.value = false
+    }
   } finally {
-    loadingMore.value = false
+    if (requestId === loadMoreRequestId) {
+      loadingMore.value = false
+    }
+    if (loadMoreAbort === controller) {
+      loadMoreAbort = null
+    }
   }
 }
 
 async function loadTemplates() {
+  const requestId = ++templatesRequestId
+  templatesAbort?.abort()
+  const controller = new AbortController()
+  templatesAbort = controller
   loadingTemplates.value = true
   templates.value = []
   tplError.value = ''
@@ -870,13 +945,20 @@ async function loadTemplates() {
       level:    tplLevelFilter.value || undefined,
       keyword:  keyword.value || undefined,
       ...timeParams(),
-    })
+    }, { signal: controller.signal })
+    if (requestId !== templatesRequestId) return
     templates.value = r.data
     templateMeta.value = { total_logs: r.total_logs, total_templates: r.total_templates }
-  } catch (e) {
-    tplError.value = typeof e === 'string' ? e : (e?.message || '聚类请求失败，请检查后端连接')
+  } catch (error) {
+    if (isCanceled(error)) return
+    tplError.value = typeof error === 'string' ? error : (error?.message || '聚类请求失败，请检查后端连接')
   } finally {
-    loadingTemplates.value = false
+    if (requestId === templatesRequestId) {
+      loadingTemplates.value = false
+    }
+    if (templatesAbort === controller) {
+      templatesAbort = null
+    }
   }
 }
 
@@ -967,6 +1049,9 @@ async function runTrace() {
 
   // ── 第二步：加载匹配日志列表（独立加载，不影响结果展示）──
   if (traceData.found) {
+    traceLogsAbort?.abort()
+    const controller = new AbortController()
+    traceLogsAbort = controller
     loadingTraceLogs.value = true
     try {
       const logsR = await api.getLogs({
@@ -974,12 +1059,16 @@ async function runTrace() {
         service: selectedService.value || undefined,
         limit: 2000,
         ...tp,
-      })
+      }, { signal: controller.signal })
       traceLogs.value = [...(logsR.data || [])].reverse()  // 升序展示
-    } catch {
+    } catch (error) {
+      if (isCanceled(error)) return
       traceLogs.value = []  // 日志列表加载失败不影响耗时结果
     } finally {
       loadingTraceLogs.value = false
+      if (traceLogsAbort === controller) {
+        traceLogsAbort = null
+      }
     }
   }
 }
@@ -1065,6 +1154,15 @@ function startAIAnalysis() {
 onMounted(() => {
   loadServices()
   loadLogs()
+})
+
+onBeforeUnmount(() => {
+  clearTimeout(searchTimer)
+  servicesAbort?.abort()
+  logsAbort?.abort()
+  loadMoreAbort?.abort()
+  templatesAbort?.abort()
+  traceLogsAbort?.abort()
 })
 </script>
 
