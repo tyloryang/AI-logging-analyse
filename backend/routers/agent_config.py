@@ -49,6 +49,8 @@ _DEFAULT_CONFIG = {
         "definition": "你是一名资深 SRE 工程师，负责保障平台稳定性。你拥有丰富的故障排查经验，能够快速定位问题根因并给出修复建议。",
         "mcp_desc":   "你可以通过下方的 MCP 与 Redis、Nacos 通信，获取业务配置数据，也可以调用 Prometheus API 获取实时指标。",
         "skill_desc": "还可以通过调用 Skill 完成自动化巡检 order-service 等能力，以及执行 Ansible Playbook 对目标主机进行操作。",
+        "home_dir":   "",
+        "model_type": "anthropic",
         "skill_mode": "confirm",
         "max_turns":  20,
         "stream":     True,
@@ -78,9 +80,9 @@ _DEFAULT_CONFIG = {
         {"key": "show_trace", "name": "显示执行轨迹",  "desc": "飞书回复中展示 ReAct 工具调用步骤（关闭则只返回最终结果）",  "enabled": False},
     ],
     "models": [
-        {"id": "claude-opus",   "name": "claude-opus-4-6",  "provider": "Anthropic", "active": True},
-        {"id": "claude-sonnet", "name": "claude-sonnet-4-6","provider": "Anthropic", "active": False},
-        {"id": "qwen3-32b",     "name": "Qwen3-32B",         "provider": "Local",     "active": False},
+        {"id": "claude-opus",   "name": "claude-opus-4-6",  "provider": "Anthropic", "runtime_provider": "anthropic", "active": True},
+        {"id": "claude-sonnet", "name": "claude-sonnet-4-6","provider": "Anthropic", "runtime_provider": "anthropic", "active": False},
+        {"id": "qwen3-32b",     "name": "Qwen3-32B",         "provider": "Local",     "runtime_provider": "openai",    "active": False},
     ],
 }
 
@@ -117,6 +119,26 @@ def _load() -> dict:
                 if b["key"] not in existing_keys:
                     data.setdefault("behaviors", []).append(json.loads(json.dumps(b)))
                     mutated = True
+
+            basic = data.setdefault("basic", {})
+            for key, value in _DEFAULT_CONFIG["basic"].items():
+                if key not in basic:
+                    basic[key] = json.loads(json.dumps(value))
+                    mutated = True
+
+            default_model_map = {
+                item["id"]: item.get("runtime_provider", "")
+                for item in _DEFAULT_CONFIG.get("models", [])
+            }
+            for model in data.get("models", []):
+                if model.get("runtime_provider"):
+                    continue
+                provider = str(model.get("provider", "")).strip().lower()
+                runtime_provider = default_model_map.get(str(model.get("id", "")).strip())
+                if not runtime_provider:
+                    runtime_provider = "openai" if provider in {"openai", "local", "ollama"} else "anthropic"
+                model["runtime_provider"] = runtime_provider
+                mutated = True
 
             if mutated:
                 _save(data)
@@ -169,6 +191,8 @@ class BasicConfig(BaseModel):
     definition:   Optional[str] = None
     mcp_desc:     Optional[str] = None
     skill_desc:   Optional[str] = None
+    home_dir:     Optional[str] = None
+    model_type:   Optional[str] = None
     skill_mode:   Optional[str] = None
     max_turns:    Optional[int] = None
     stream:       Optional[bool] = None
@@ -180,6 +204,12 @@ async def save_config(body: BasicConfig):
     cfg = _load()
     basic = cfg.setdefault("basic", {})
     for field, value in body.model_dump(exclude_none=True).items():
+        if field == "home_dir":
+            basic[field] = str(value).strip()
+            continue
+        if field == "model_type":
+            basic[field] = str(value).strip().lower()
+            continue
         basic[field] = value
     _save(cfg)
     return {"ok": True, "basic": basic}

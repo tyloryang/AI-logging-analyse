@@ -65,6 +65,9 @@ async def _get_checkpointer():
 class AgentRequest(BaseModel):
     message: str = ""
     conv_id: str = ""   # 前端生成的会话 UUID，用于多轮历史隔离
+    home_dir: str = ""
+    model_name: str = ""
+    model_provider: str = ""
 
 
 def _sse(type_: str, **kwargs) -> str:
@@ -104,7 +107,15 @@ async def _save_incident(mode: str, user_query: str, full_summary: str,
         logger.warning("[agent] 保存到 Milvus 失败（不影响使用）: %s", exc)
 
 
-async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User | None = None):
+async def _stream_graph(
+    mode: str,
+    message: str,
+    conv_id: str = "",
+    user: User | None = None,
+    home_dir: str = "",
+    model_name: str = "",
+    model_provider: str = "",
+):
     """运行 LangGraph 图并将 astream_events 转换为 SSE 事件流"""
     response_parts: list[str] = []   # 累积 AI 文本，用于事后写入 Milvus
 
@@ -116,6 +127,11 @@ async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User |
         if user and not user.is_superuser:
             allowed_groups = get_user_allowed_groups(user.id) or []
             allowed_k8s_clusters = get_user_allowed_k8s_clusters(user.id) or []
+        runtime_overrides = {
+            "home_dir": home_dir.strip(),
+            "model_name": model_name.strip(),
+            "model_provider": model_provider.strip().lower(),
+        }
         config = {
             "configurable": {
                 "thread_id": thread_id,
@@ -123,6 +139,9 @@ async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User |
                 "is_superuser": user.is_superuser if user else True,
                 "allowed_groups": allowed_groups,
                 "allowed_k8s_clusters": allowed_k8s_clusters,
+                "home_dir": runtime_overrides["home_dir"],
+                "model_name": runtime_overrides["model_name"],
+                "model_provider": runtime_overrides["model_provider"],
             },
             "recursion_limit": 40,
         }
@@ -136,7 +155,12 @@ async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User |
         if executor_mode != "langgraph":
             logger.info("[agent] 使用外部执行器: %s", executor_mode)
             thread_id = conv_id or f"anon-{resolved_mode}"
-            result = await run_configured_executor(message, thread_id, channel="api")
+            result = await run_configured_executor(
+                message,
+                thread_id,
+                channel="api",
+                runtime_overrides=runtime_overrides,
+            )
             response_parts.append(result)
             yield _sse("token", text=result)
             yield _sse("done")
@@ -153,7 +177,7 @@ async def _stream_graph(mode: str, message: str, conv_id: str = "", user: User |
             return
 
         checkpointer = await _get_checkpointer()
-        graph = build_graph(resolved_mode, checkpointer=checkpointer)
+        graph = build_graph(resolved_mode, checkpointer=checkpointer, runtime_overrides=runtime_overrides)
         input_state = {"messages": [HumanMessage(content=message)]}
         async for event in graph.astream_events(input_state, config=config, version="v2"):
             kind = event.get("event", "")
@@ -239,28 +263,28 @@ _DEFAULT_MESSAGES = {
 @router.post("/rca")
 async def agent_rca(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["rca"]
-    return StreamingResponse(_stream_graph("rca", message, req.conv_id, user),
+    return StreamingResponse(_stream_graph("rca", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/inspect")
 async def agent_inspect(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["inspect"]
-    return StreamingResponse(_stream_graph("inspect", message, req.conv_id, user),
+    return StreamingResponse(_stream_graph("inspect", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/chat")
 async def agent_chat(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["chat"]
-    return StreamingResponse(_stream_graph("chat", message, req.conv_id, user),
+    return StreamingResponse(_stream_graph("chat", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/guided")
 async def agent_guided(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["guided"]
-    return StreamingResponse(_stream_graph("guided", message, req.conv_id, user),
+    return StreamingResponse(_stream_graph("guided", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 

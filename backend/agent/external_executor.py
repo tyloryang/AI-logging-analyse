@@ -67,6 +67,33 @@ def _get_external_workdir() -> str:
     return workdir or str(_REPO_ROOT)
 
 
+def _resolve_runtime_workdir(runtime_overrides: dict | None = None) -> str:
+    override = str((runtime_overrides or {}).get("home_dir", "")).strip()
+    if not override:
+        return _get_external_workdir()
+
+    candidate = Path(override)
+    if candidate.is_dir():
+        return str(candidate)
+    raise RuntimeError(f"工作目录不存在或不可访问: {override}")
+
+
+def _build_runtime_env(runtime_overrides: dict | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    overrides = runtime_overrides or {}
+    model_provider = str(overrides.get("model_provider", "")).strip().lower()
+    model_name = str(overrides.get("model_name", "")).strip()
+    home_dir = str(overrides.get("home_dir", "")).strip()
+
+    if model_provider:
+        env["AI_PROVIDER"] = model_provider
+    if model_name:
+        env["AI_MODEL"] = model_name
+    if home_dir:
+        env["AIOPS_EXTERNAL_AGENT_WORKDIR"] = home_dir
+    return env
+
+
 def _get_external_timeout() -> int:
     raw = os.getenv("AIOPS_EXTERNAL_AGENT_TIMEOUT", "").strip()
     try:
@@ -81,10 +108,16 @@ def _get_external_use_stdin() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def build_external_agent_prompt(user_prompt: str, session_id: str, channel: str = "") -> str:
+def build_external_agent_prompt(
+    user_prompt: str,
+    session_id: str,
+    channel: str = "",
+    workspace: str = "",
+) -> str:
+    resolved_workspace = workspace or str(_REPO_ROOT)
     return (
         "你正在作为本项目内嵌的外部 ReAct 智能体工作。\n"
-        f"- 当前项目目录：{_REPO_ROOT}\n"
+        f"- 当前项目目录：{resolved_workspace}\n"
         f"- 当前会话：{session_id or 'default'}\n"
         f"- 当前来源：{channel or 'api'}\n"
         "- 默认先分析再执行，可自主多步调用本地能力完成任务。\n"
@@ -121,8 +154,10 @@ async def run_aiops_cli_subprocess(
     prompt: str,
     session_id: str,
     on_token: TokenCallback | None = None,
+    runtime_overrides: dict | None = None,
 ) -> str:
     cli_path = _BACKEND_DIR / "aiops_cli.py"
+    workdir = _resolve_runtime_workdir(runtime_overrides)
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         str(cli_path),
@@ -131,7 +166,8 @@ async def run_aiops_cli_subprocess(
         prompt,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=str(_REPO_ROOT),
+        cwd=workdir,
+        env=_build_runtime_env(runtime_overrides),
     )
     stdout_task = asyncio.create_task(_read_stream(proc.stdout, on_token))
     stderr_task = asyncio.create_task(_read_stream(proc.stderr))
@@ -155,6 +191,7 @@ async def run_external_cli(
     session_id: str,
     channel: str = "",
     on_token: TokenCallback | None = None,
+    runtime_overrides: dict | None = None,
 ) -> str:
     command, args_text = _get_external_command()
     if not command:
@@ -169,10 +206,10 @@ async def run_external_cli(
         workspace=str(_REPO_ROOT),
     )
     args = shlex.split(args_text, posix=True) if args_text else []
-    prepared_prompt = build_external_agent_prompt(prompt, session_id, channel)
+    workdir = _resolve_runtime_workdir(runtime_overrides)
+    prepared_prompt = build_external_agent_prompt(prompt, session_id, channel, workspace=workdir)
     use_stdin = _get_external_use_stdin()
     timeout = _get_external_timeout()
-    workdir = _get_external_workdir()
 
     argv = [command, *args]
     if not use_stdin:
@@ -184,6 +221,7 @@ async def run_external_cli(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=workdir,
+        env=_build_runtime_env(runtime_overrides),
     )
 
     if use_stdin and proc.stdin is not None:
@@ -215,10 +253,22 @@ async def run_configured_executor(
     session_id: str,
     channel: str = "",
     on_token: TokenCallback | None = None,
+    runtime_overrides: dict | None = None,
 ) -> str:
     mode = get_agent_executor(channel)
     if mode == "aiops_cli":
-        return await run_aiops_cli_subprocess(prompt, session_id, on_token=on_token)
+        return await run_aiops_cli_subprocess(
+            prompt,
+            session_id,
+            on_token=on_token,
+            runtime_overrides=runtime_overrides,
+        )
     if mode == "external_cli":
-        return await run_external_cli(prompt, session_id, channel=channel, on_token=on_token)
+        return await run_external_cli(
+            prompt,
+            session_id,
+            channel=channel,
+            on_token=on_token,
+            runtime_overrides=runtime_overrides,
+        )
     raise RuntimeError(f"当前执行器模式不支持 subprocess 调用：{mode}")

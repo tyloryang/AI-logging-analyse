@@ -1305,13 +1305,41 @@ function parseServerTime(value) {
   const raw = value.trim()
   if (!raw) return null
 
-  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw)
-    ? raw
-    : `${raw.replace(' ', 'T')}Z`
-  const parsed = new Date(normalized)
-  if (!Number.isNaN(parsed.getTime())) return parsed
+  const normalized = raw.replace(' ', 'T')
+  if (/(?:Z|[+-]\d{2}:\d{2})$/i.test(normalized)) {
+    const parsed = new Date(normalized)
+    if (!Number.isNaN(parsed.getTime())) return parsed
+  } else {
+    const match = normalized.match(
+      /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?)?$/
+    )
+    if (match) {
+      const [
+        ,
+        year,
+        month,
+        day,
+        hour = '00',
+        minute = '00',
+        second = '00',
+        millisecond = '0',
+      ] = match
+      const parsed = new Date(
+        Date.UTC(
+          Number(year),
+          Number(month) - 1,
+          Number(day),
+          Number(hour) - 8,
+          Number(minute),
+          Number(second),
+          Number(millisecond.padEnd(3, '0'))
+        )
+      )
+      if (!Number.isNaN(parsed.getTime())) return parsed
+    }
+  }
 
-  const fallback = new Date(raw)
+  const fallback = new Date(normalized)
   return Number.isNaN(fallback.getTime()) ? null : fallback
 }
 
