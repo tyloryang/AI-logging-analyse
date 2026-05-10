@@ -538,17 +538,6 @@ const NODE_W = 200, NODE_H = 76
 const MIN_SPACING = 196   // 节点中心最小间距（px）
 const PAD_X       = 60    // 左右内边距
 
-// 动态画布宽度：按最宽层的节点数计算，保证 MIN_SPACING
-const topoW = computed(() => {
-  const ns = Math.max(
-    k8sServices.value.length    || 1,
-    k8sDeployments.value.length || 1,
-    topoPods.value.length       || 1,
-    k8sNodes.value.length       || 1,
-  )
-  return Math.max(1280, ns * MIN_SPACING + PAD_X * 2)
-})
-
 // 各层中心 Y 坐标（去掉 Pod 层，Pod 折叠到 Deployment 卡片里）
 const TOPO_Y = { svc: 110, dep: 290, pod: 460, node: 620 }
 
@@ -670,6 +659,17 @@ const k8sNodes       = ref([])
 const k8sPods        = ref([])
 const k8sServices    = ref([])
 const k8sDeployments = ref([])
+
+// 动态画布宽度（必须在上面 4 个 ref 之后定义，避免 TDZ）
+const topoW = computed(() => {
+  const ns = Math.max(
+    k8sServices.value.length    || 1,
+    k8sDeployments.value.length || 1,
+    topoPods.value.length       || 1,
+    k8sNodes.value.length       || 1,
+  )
+  return Math.max(1280, ns * MIN_SPACING + PAD_X * 2)
+})
 
 function isNodeReady(nd) { return nd.status === 'Ready' }
 
