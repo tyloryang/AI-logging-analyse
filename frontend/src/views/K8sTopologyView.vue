@@ -660,12 +660,12 @@ const k8sPods        = ref([])
 const k8sServices    = ref([])
 const k8sDeployments = ref([])
 
-// 动态画布宽度（必须在上面 4 个 ref 之后定义，避免 TDZ）
+// 动态画布宽度（用原始 ref.value.length，避免引用尚未定义的 computed）
 const topoW = computed(() => {
   const ns = Math.max(
     k8sServices.value.length    || 1,
     k8sDeployments.value.length || 1,
-    topoPods.value.length       || 1,
+    Math.min(k8sPods.value.length, 24) || 1,  // topoPods 限 24 个
     k8sNodes.value.length       || 1,
   )
   return Math.max(1280, ns * MIN_SPACING + PAD_X * 2)
