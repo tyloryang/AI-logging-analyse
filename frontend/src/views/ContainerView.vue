@@ -894,6 +894,21 @@ async function openResourceDetail(kind, row) {
   }
 }
 
+// 将 K8s 日志中的 UTC 时间戳（2026-05-10T05:37:26.564872329Z）转为东八区（2026-05-10 13:37:26 +08）
+function toCST(raw) {
+  if (!raw) return raw
+  return raw.replace(
+    /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z)/gm,
+    (_, dt) => {
+      const d = new Date(dt + 'Z')
+      // UTC+8 偏移
+      d.setTime(d.getTime() + 8 * 3600 * 1000)
+      const pad = n => String(n).padStart(2, '0')
+      return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} +08`
+    }
+  )
+}
+
 async function loadSelectedPodLogs() {
   if (!activeClusterId.value || !selectedLogPod.value || !logMeta.namespace) return
   logTailLines.value = clampTailLines(logTailLines.value)
@@ -908,7 +923,7 @@ async function loadSelectedPodLogs() {
       logTailLines.value,
     )
     logTailLines.value = result?.tailLines || logTailLines.value
-    logText.value = result?.logs || ''
+    logText.value = toCST(result?.logs || '')
   } catch (e) {
     logText.value = ''
     logError.value = `加载日志失败：${e}`
