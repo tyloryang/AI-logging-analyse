@@ -133,27 +133,43 @@
             :id="'ae-' + e.id"
             :d="e.d"
             fill="none"
-            :stroke="e.color + '55'"
-            stroke-width="1.5"
-            stroke-dasharray="6 5"
-            class="edge-dash"
+            :stroke="hoveredNode ? (isEdgeActive(e) ? e.color : e.color+'14') : e.color+'55'"
+            :stroke-width="hoveredNode && isEdgeActive(e) ? 2.5 : 1.5"
+            :stroke-dasharray="hoveredNode && isEdgeActive(e) ? '8 4' : '6 5'"
+            :opacity="hoveredNode ? (isEdgeActive(e) ? 1 : 0.12) : 1"
+            :class="{ 'edge-dash': true, 'edge-active': hoveredNode && isEdgeActive(e) }"
             :marker-end="'url(#arr-' + e.marker + ')'"
           />
         </g>
 
-        <!-- 流动粒子 -->
+        <!-- 流动粒子（hover 时只在关联边上显示，粒子更大更亮） -->
         <g v-if="animOn" class="particles">
-          <g v-for="e in archEdges" :key="'pk-'+e.id">
+          <g v-for="e in archEdges" :key="'pk-'+e.id"
+            :opacity="hoveredNode ? (isEdgeActive(e) ? 1 : 0) : 1">
             <circle
               v-for="pk in e.packets" :key="pk.key"
-              :r="pk.r"
+              :r="hoveredNode && isEdgeActive(e) ? pk.r * 1.4 : pk.r"
               :fill="e.color"
               :filter="'url(#glow-' + (e.glowType || 'blue') + ')'"
             >
-              <animateMotion :dur="pk.dur+'s'" repeatCount="indefinite" :begin="pk.begin+'s'" rotate="auto">
+              <animateMotion :dur="hoveredNode && isEdgeActive(e) ? (pk.dur*0.7)+'s' : pk.dur+'s'"
+                repeatCount="indefinite" :begin="pk.begin+'s'" rotate="auto">
                 <mpath :href="'#ae-'+e.id"/>
               </animateMotion>
             </circle>
+          </g>
+        </g>
+
+        <!-- hover 时在 active 边中点显示流量方向标签 -->
+        <g v-if="hoveredNode" class="edge-labels">
+          <g v-for="e in archEdges.filter(e => isEdgeActive(e))" :key="'el-'+e.id">
+            <rect :x="edgeMid(e).x - 28" :y="edgeMid(e).y - 9"
+              width="56" height="17" rx="4"
+              :fill="e.color+'30'" :stroke="e.color+'80'" stroke-width="1"/>
+            <text :x="edgeMid(e).x" :y="edgeMid(e).y + 4"
+              text-anchor="middle" class="edge-label-txt" :fill="e.color">
+              {{ e.label || '→' }}
+            </text>
           </g>
         </g>
 
@@ -163,6 +179,8 @@
             class="arch-node"
             :class="{ hovered: hoveredNode === nd.id }"
             :transform="`translate(${nd.x},${nd.y})`"
+            :opacity="hoveredNode && hoveredNode !== nd.id && !isNodeConnected(nd.id) ? 0.18 : 1"
+            :style="{ transition: 'opacity .2s' }"
             @mouseenter="hoveredNode=nd.id; showTooltip(nd, $event)"
             @mouseleave="hoveredNode=null; tooltip.show=false"
           >
@@ -771,44 +789,55 @@ function makePackets(count, baseDur, color) {
 }
 
 const archEdges = computed(() => [
-  // 用户 → 前端
-  { id:'u-fe',  fromId:'user',     toId:'frontend',    color:'#3b82f6', marker:'blue',   glowType:'blue',   packets: makePackets(3,2.0) },
-  // 飞书 → Feishu Bot
-  { id:'fs-fb', fromId:'feishu_in',toId:'feishu_bot',  color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,2.5) },
-  // Jenkins → Backend
-  { id:'jk-be', fromId:'jenkins_in',toId:'backend',    color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.8) },
-  // 前端 → Backend
-  { id:'fe-be', fromId:'frontend', toId:'backend',     color:'#3b82f6', marker:'blue',   glowType:'blue',   packets: makePackets(3,1.8) },
-  // Feishu Bot → Backend
-  { id:'fb-be', fromId:'feishu_bot',toId:'backend',    color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,2.2) },
-  // Backend → Loki
-  { id:'be-lk', fromId:'backend',  toId:'loki',        color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(3,1.6) },
-  // Backend → Prometheus
-  { id:'be-pm', fromId:'backend',  toId:'prometheus',  color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(3,1.8) },
-  // Backend → Redis
-  { id:'be-rd', fromId:'backend',  toId:'redis',       color:'#ef4444', marker:'blue',   glowType:'blue',   packets: makePackets(2,1.4) },
-  // Backend → ES
-  { id:'be-es', fromId:'backend',  toId:'es',          color:'#22c55e', marker:'green',  glowType:'green',  packets: makePackets(2,2.0) },
-  // Backend → AlertManager
-  { id:'be-am', fromId:'backend',  toId:'alertmanager',color:'#ef4444', marker:'orange', glowType:'blue',   packets: makePackets(2,3.0) },
-  // AlertManager → Backend (回调)
-  { id:'am-be', fromId:'alertmanager',toId:'backend',  color:'#ef4444', marker:'orange', glowType:'blue',   packets: makePackets(1,2.5) },
-  // Loki → Grafana
-  { id:'lk-gf', fromId:'loki',     toId:'grafana',     color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.2) },
-  // Prometheus → Grafana
-  { id:'pm-gf', fromId:'prometheus',toId:'grafana',    color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.0) },
-  // Backend → Claude
-  { id:'be-cl', fromId:'backend',  toId:'claude',      color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(3,1.5) },
-  // Backend → Qwen
-  { id:'be-qw', fromId:'backend',  toId:'qwen',        color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(2,2.0) },
-  // Backend → 飞书服务
-  { id:'be-fs', fromId:'backend',  toId:'feishu_svc',  color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,3.5) },
-  // Backend → SkyWalking
-  { id:'be-sw', fromId:'backend',  toId:'skywalking',  color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(2,2.4) },
+  { id:'u-fe',  fromId:'user',        toId:'frontend',    label:'HTTP:30090', color:'#3b82f6', marker:'blue',   glowType:'blue',   packets: makePackets(3,2.0) },
+  { id:'fs-fb', fromId:'feishu_in',   toId:'feishu_bot',  label:'Webhook',    color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,2.5) },
+  { id:'jk-be', fromId:'jenkins_in',  toId:'backend',     label:'API',        color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.8) },
+  { id:'fe-be', fromId:'frontend',    toId:'backend',     label:'REST API',   color:'#3b82f6', marker:'blue',   glowType:'blue',   packets: makePackets(3,1.8) },
+  { id:'fb-be', fromId:'feishu_bot',  toId:'backend',     label:'内部API',    color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,2.2) },
+  { id:'be-lk', fromId:'backend',     toId:'loki',        label:'日志查询',   color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(3,1.6) },
+  { id:'be-pm', fromId:'backend',     toId:'prometheus',  label:'指标查询',   color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(3,1.8) },
+  { id:'be-rd', fromId:'backend',     toId:'redis',       label:'缓存R/W',    color:'#ef4444', marker:'blue',   glowType:'blue',   packets: makePackets(2,1.4) },
+  { id:'be-es', fromId:'backend',     toId:'es',          label:'全文搜索',   color:'#22c55e', marker:'green',  glowType:'green',  packets: makePackets(2,2.0) },
+  { id:'be-am', fromId:'backend',     toId:'alertmanager',label:'告警推送',   color:'#ef4444', marker:'orange', glowType:'blue',   packets: makePackets(2,3.0) },
+  { id:'am-be', fromId:'alertmanager',toId:'backend',     label:'Webhook回调',color:'#ef4444', marker:'orange', glowType:'blue',   packets: makePackets(1,2.5) },
+  { id:'lk-gf', fromId:'loki',        toId:'grafana',     label:'数据源',     color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.2) },
+  { id:'pm-gf', fromId:'prometheus',  toId:'grafana',     label:'数据源',     color:'#f59e0b', marker:'orange', glowType:'blue',   packets: makePackets(2,2.0) },
+  { id:'be-cl', fromId:'backend',     toId:'claude',      label:'AI推理SSE',  color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(3,1.5) },
+  { id:'be-qw', fromId:'backend',     toId:'qwen',        label:'AI推理',     color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(2,2.0) },
+  { id:'be-fs', fromId:'backend',     toId:'feishu_svc',  label:'消息推送',   color:'#14b8a6', marker:'blue',   glowType:'blue',   packets: makePackets(2,3.5) },
+  { id:'be-sw', fromId:'backend',     toId:'skywalking',  label:'Trace上报',  color:'#a855f7', marker:'purple', glowType:'blue',   packets: makePackets(2,2.4) },
 ].map(e => ({
   ...e,
   d: edgePath(e.fromId, e.toId),
 })))
+
+// ── Hover 高亮辅助 ────────────────────────────────────────────────────
+// 判断边是否与当前 hover 节点相关
+function isEdgeActive(edge) {
+  if (!hoveredNode.value) return true
+  return edge.fromId === hoveredNode.value || edge.toId === hoveredNode.value
+}
+
+// 判断节点是否与 hover 节点有直接连线（含自身）
+function isNodeConnected(nodeId) {
+  if (!hoveredNode.value) return true
+  if (nodeId === hoveredNode.value) return true
+  return archEdges.value.some(e =>
+    (e.fromId === hoveredNode.value || e.toId === hoveredNode.value) &&
+    (e.fromId === nodeId || e.toId === nodeId)
+  )
+}
+
+// 计算边路径中点（用于显示标签）
+function edgeMid(edge) {
+  // 用 d 路径中的控制点估算中点
+  const m = edge.d.match(/M([\d.]+),([\d.]+).*?([\d.]+),([\d.]+)$/)
+  if (!m) return { x: 0, y: 0 }
+  return {
+    x: (parseFloat(m[1]) + parseFloat(m[3])) / 2,
+    y: (parseFloat(m[2]) + parseFloat(m[4])) / 2,
+  }
+}
 
 // ── 工具提示 ──────────────────────────────────────────────────────────
 function showTooltip(nd, evt) {
@@ -1151,7 +1180,11 @@ onMounted(() => {})
 }
 
 .edge-dash { animation: dashFlow 6s linear infinite; }
+.edge-active { animation: dashFlow 2.5s linear infinite; filter: drop-shadow(0 0 3px currentColor); }
 @keyframes dashFlow { to { stroke-dashoffset: -44; } }
+
+/* hover 边标签 */
+.edge-label-txt { font-size: 10px; font-weight: 700; pointer-events: none; }
 
 .hover-ring { animation: ringPulse .6s ease-in-out infinite alternate; }
 @keyframes ringPulse { from { opacity: .5; } to { opacity: 1; } }
