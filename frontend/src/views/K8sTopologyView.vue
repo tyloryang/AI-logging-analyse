@@ -346,6 +346,11 @@
             <span class="tstat-dot err"></span>Failed {{ k8sPods.filter(p=>p.status==='Failed').length }}
           </span>
         </div>
+        <div class="zoom-btns">
+          <button class="ctrl-btn" @click="k8sZoomIn"  title="放大">＋</button>
+          <button class="ctrl-btn" @click="k8sZoomOut" title="缩小">－</button>
+          <button class="ctrl-btn" @click="k8sFitView" title="适应窗口" style="font-size:11px">Fit</button>
+        </div>
         <button class="ctrl-btn" @click="loadK8s()" :disabled="loading">
           <span v-if="loading" class="spin-sm"></span><span v-else>↺</span>
         </button>
@@ -357,12 +362,18 @@
       <div v-else-if="!k8sNodes.length && !k8sServices.length" class="k8s-empty">
         <p>未获取到集群数据，请检查 K8s 配置</p>
       </div>
-      <svg v-else
+      <svg v-else ref="k8sSvgEl"
         class="k8s-topo-svg"
-        :viewBox="`0 0 ${topoW} ${topoH}`"
+        :viewBox="k8sVbStr"
         :width="topoW"
         :height="topoH"
         preserveAspectRatio="xMinYMin meet"
+        :style="{ cursor: k8sDrag.active ? 'grabbing' : 'grab' }"
+        @wheel.prevent="onK8sWheel"
+        @mousedown="onK8sDragStart"
+        @mousemove="onK8sDragMove"
+        @mouseup="onK8sDragEnd"
+        @mouseleave="onK8sDragEnd"
       >
         <defs>
           <pattern id="tg" width="36" height="36" patternUnits="userSpaceOnUse">
@@ -494,7 +505,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { api } from '../api/index.js'
 
 // ── 常量 ──────────────────────────────────────────────────────────────
@@ -548,7 +559,6 @@ const pageEl   = ref(null)
 const archWrap = ref(null)
 
 // ── 缩放 / 拖拽状态 ────────────────────────────────────────────────────
-import { reactive } from 'vue'
 const vb = reactive({ x: 0, y: 0, w: SVG_W, h: SVG_H })
 const vbStr = computed(() => `${vb.x} ${vb.y} ${vb.w} ${vb.h}`)
 const svgDrag = reactive({ active: false, sx: 0, sy: 0, vbx0: 0, vby0: 0 })
@@ -586,6 +596,58 @@ function onArchDragMove(e) {
   vb.y = svgDrag.vby0 - (e.clientY - svgDrag.sy) * sy
 }
 function onArchDragEnd() { svgDrag.active = false }
+
+// ── K8s 服务图 缩放/拖拽 ────────────────────────────────────────────
+const k8sSvgEl = ref(null)
+const k8sVb   = reactive({ x: 0, y: 0, w: 0, h: 0 })
+const k8sVbStr = computed(() => {
+  const w = k8sVb.w || topoW.value
+  const h = k8sVb.h || topoH.value
+  return `${k8sVb.x} ${k8sVb.y} ${w} ${h}`
+})
+const k8sDrag = reactive({ active: false, sx: 0, sy: 0, vbx0: 0, vby0: 0 })
+
+// 当拓扑数据变化时重置 viewBox
+watch([topoW, topoH], ([w, h]) => { k8sVb.w = w; k8sVb.h = h })
+
+function k8sZoomAt(factor, cx, cy) {
+  const curW = k8sVb.w || topoW.value
+  const curH = k8sVb.h || topoH.value
+  const newW = Math.max(400, Math.min(topoW.value * 3, curW / factor))
+  const newH = newW * curH / curW
+  k8sVb.x = cx - (cx - k8sVb.x) * (newW / curW)
+  k8sVb.y = cy - (cy - k8sVb.y) * (newH / curH)
+  k8sVb.w = newW; k8sVb.h = newH
+}
+function k8sZoomIn()  { k8sZoomAt(1.25, k8sVb.x + (k8sVb.w||topoW.value)/2, k8sVb.y + (k8sVb.h||topoH.value)/2) }
+function k8sZoomOut() { k8sZoomAt(0.80, k8sVb.x + (k8sVb.w||topoW.value)/2, k8sVb.y + (k8sVb.h||topoH.value)/2) }
+function k8sFitView() { k8sVb.x=0; k8sVb.y=0; k8sVb.w=topoW.value; k8sVb.h=topoH.value }
+
+function onK8sWheel(e) {
+  const svg = k8sSvgEl.value; if (!svg) return
+  const rect = svg.getBoundingClientRect()
+  const curW = k8sVb.w || topoW.value, curH = k8sVb.h || topoH.value
+  const mx = (e.clientX - rect.left) / rect.width  * curW + k8sVb.x
+  const my = (e.clientY - rect.top)  / rect.height * curH + k8sVb.y
+  k8sZoomAt(e.deltaY < 0 ? 1.15 : 0.87, mx, my)
+}
+function onK8sDragStart(e) {
+  if (e.button !== 0) return
+  k8sDrag.active = true
+  k8sDrag.sx = e.clientX; k8sDrag.sy = e.clientY
+  k8sDrag.vbx0 = k8sVb.x; k8sDrag.vby0 = k8sVb.y
+}
+function onK8sDragMove(e) {
+  if (!k8sDrag.active) return
+  const svg = k8sSvgEl.value; if (!svg) return
+  const rect = svg.getBoundingClientRect()
+  const curW = k8sVb.w || topoW.value, curH = k8sVb.h || topoH.value
+  const sx = curW / rect.width, sy = curH / rect.height
+  k8sVb.x = k8sDrag.vbx0 - (e.clientX - k8sDrag.sx) * sx
+  k8sVb.y = k8sDrag.vby0 - (e.clientY - k8sDrag.sy) * sy
+}
+function onK8sDragEnd() { k8sDrag.active = false }
+
 const k8sNodes       = ref([])
 const k8sPods        = ref([])
 const k8sServices    = ref([])
