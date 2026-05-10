@@ -85,9 +85,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, RouterLink, useRouter } from 'vue-router'
-import { api } from '../api/index.js'
+import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 import { useTheme, THEMES } from '../composables/useTheme.js'
 import { useAuthStore } from '../stores/auth.js'
 
@@ -104,15 +104,18 @@ async function handleLogout() {
 // ── 健康状态 ────────────────────────────────────────────────────
 const health = reactive({ loki: false, prom: false, sw: false, ai: false, aiProvider: '' })
 const aiShortName = computed(() => {
-  if (!health.aiProvider) return 'AI'
-  if (health.aiProvider.startsWith('Anthropic')) return 'Claude'
-  const m = health.aiProvider.match(/\((.+)\)/)
-  return m ? m[1].slice(0, 8) : health.aiProvider.slice(0, 8)
+  return getAiModelShort(health.aiProvider).slice(0, 8)
+})
+
+let sidebarMounted = true
+onBeforeUnmount(() => {
+  sidebarMounted = false
 })
 
 onMounted(async () => {
   try {
-    const r = await api.healthCheck()
+    const r = await fetchHealthStatus()
+    if (!sidebarMounted) return
     health.loki = r.loki_connected
     health.prom = r.prometheus_connected ?? false
     health.sw   = r.skywalking_connected  ?? false
@@ -209,6 +212,7 @@ const MENU = [
 const openGroups = reactive({
   host:       false,
   ticket:     false,
+  container:  false,   // 容器管理（含 K8s 拓扑流图）
   middleware: false,
   cicd:       false,
   obs:        true,
