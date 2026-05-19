@@ -1423,13 +1423,12 @@ def _jenkins_client():
     from jenkins_client import JenkinsClient
     import json, os
     from pathlib import Path
+    from json_snapshot_store import read_json_file
     cfg_file = Path(__file__).resolve().parent.parent / "data" / "jenkins.json"
     cfg = {}
-    if cfg_file.exists():
-        try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    data = read_json_file(cfg_file, default={})
+    if isinstance(data, dict):
+        cfg = data
     url      = cfg.get("url")      or os.getenv("JENKINS_URL", "")
     username = cfg.get("username") or os.getenv("JENKINS_USERNAME", "")
     token    = cfg.get("token")    or os.getenv("JENKINS_TOKEN", "")

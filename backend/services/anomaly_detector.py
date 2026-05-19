@@ -12,6 +12,8 @@ from pathlib import Path
 
 import httpx
 
+from json_snapshot_store import read_json_file, write_json_file
+
 logger = logging.getLogger(__name__)
 
 _ANOMALY_FILE = Path(__file__).resolve().parent.parent / "data" / "anomalies.json"
@@ -63,20 +65,12 @@ _DYNAMIC_METRICS = [
 
 
 def _load() -> list[dict]:
-    if _ANOMALY_FILE.exists():
-        try:
-            return json.loads(_ANOMALY_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
+    data = read_json_file(_ANOMALY_FILE, default=[])
+    return data if isinstance(data, list) else []
 
 
 def _save(records: list[dict]) -> None:
-    _ANOMALY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _ANOMALY_FILE.write_text(
-        json.dumps(records[-500:], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_file(_ANOMALY_FILE, records[-500:], ensure_parent=True)
 
 
 def list_anomalies(limit: int = 100) -> list[dict]:

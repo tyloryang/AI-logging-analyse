@@ -29,6 +29,8 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from json_snapshot_store import read_json_file, write_json_file
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent-config", tags=["agent-config"])
 
@@ -80,9 +82,9 @@ _DEFAULT_CONFIG = {
         {"key": "show_trace", "name": "显示执行轨迹",  "desc": "飞书回复中展示 ReAct 工具调用步骤（关闭则只返回最终结果）",  "enabled": False},
     ],
     "models": [
-        {"id": "claude-opus",   "name": "claude-opus-4-6",  "provider": "Anthropic", "runtime_provider": "anthropic", "active": True},
-        {"id": "claude-sonnet", "name": "claude-sonnet-4-6","provider": "Anthropic", "runtime_provider": "anthropic", "active": False},
-        {"id": "qwen3-32b",     "name": "Qwen3-32B",         "provider": "Local",     "runtime_provider": "openai",    "active": False},
+        {"id": "claude-opus",   "name": "claude-opus-4-6",  "runtime_model": "claude-opus-4-6",   "provider": "Anthropic", "runtime_provider": "anthropic", "active": True},
+        {"id": "claude-sonnet", "name": "claude-sonnet-4-6","runtime_model": "claude-sonnet-4-6", "provider": "Anthropic", "runtime_provider": "anthropic", "active": False},
+        {"id": "qwen3-32b",     "name": "Qwen3-32B",         "runtime_model": "qwen3-32b",         "provider": "Local",     "runtime_provider": "openai",    "active": False},
     ],
 }
 
@@ -90,9 +92,9 @@ _DEFAULT_CONFIG = {
 # ── 配置读写辅助 ─────────────────────────────────────────────────────────────
 
 def _load() -> dict:
-    if _CONFIG_FILE.exists():
+    data = read_json_file(_CONFIG_FILE, default=None, ensure_parent=True)
+    if isinstance(data, dict):
         try:
-            data = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
             mutated = False
             # 迁移：旧版本无 sa 字段时，填充默认值
             if "sa" not in data:
@@ -127,18 +129,26 @@ def _load() -> dict:
                     mutated = True
 
             default_model_map = {
-                item["id"]: item.get("runtime_provider", "")
+                item["id"]: {
+                    "runtime_provider": item.get("runtime_provider", ""),
+                    "runtime_model": item.get("runtime_model", ""),
+                }
                 for item in _DEFAULT_CONFIG.get("models", [])
             }
             for model in data.get("models", []):
-                if model.get("runtime_provider"):
-                    continue
-                provider = str(model.get("provider", "")).strip().lower()
-                runtime_provider = default_model_map.get(str(model.get("id", "")).strip())
-                if not runtime_provider:
-                    runtime_provider = "openai" if provider in {"openai", "local", "ollama"} else "anthropic"
-                model["runtime_provider"] = runtime_provider
-                mutated = True
+                model_id = str(model.get("id", "")).strip()
+                defaults = default_model_map.get(model_id, {})
+                if not model.get("runtime_provider"):
+                    provider = str(model.get("provider", "")).strip().lower()
+                    runtime_provider = defaults.get("runtime_provider", "")
+                    if not runtime_provider:
+                        runtime_provider = "openai" if provider in {"openai", "local", "ollama"} else "anthropic"
+                    model["runtime_provider"] = runtime_provider
+                    mutated = True
+                if not model.get("runtime_model"):
+                    runtime_model = defaults.get("runtime_model") or str(model.get("name", "")).strip()
+                    model["runtime_model"] = runtime_model
+                    mutated = True
 
             if mutated:
                 _save(data)
@@ -149,8 +159,7 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    _CONFIG_FILE.parent.mkdir(exist_ok=True)
-    _CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(_CONFIG_FILE, data, ensure_parent=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

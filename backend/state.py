@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import shutil
 import uuid
 from copy import deepcopy
 from pathlib import Path
@@ -16,49 +17,73 @@ from loki_client import LokiClient
 from ai_analyzer import AIAnalyzer
 from log_clusterer import LogClusterer
 from prom_client import PrometheusClient
+from json_snapshot_store import (
+    load_text_snapshot,
+    read_json_file,
+    save_text_snapshot,
+    write_json_file,
+)
 
 logger = logging.getLogger(__name__)
 
 # ── 配置常量（settings.json 优先级高于 .env）────────────────────────────────
 
-SETTINGS_FILE = Path("./data/settings.json")
+DATA_DIR = Path("./data")
+DATA_DIR.mkdir(exist_ok=True)
+SETTINGS_FILE = DATA_DIR / "settings.json"
 _JSON_FILE_CACHE: dict[Path, tuple[int, int, object]] = {}
 
 
 def _read_cached_json(path: Path):
     try:
         stat = path.stat()
+        cached = _JSON_FILE_CACHE.get(path)
+        signature = (stat.st_mtime_ns, stat.st_size)
+        if cached and cached[:2] == signature:
+            return deepcopy(cached[2])
     except FileNotFoundError:
+        _JSON_FILE_CACHE.pop(path, None)
+
+    data = read_json_file(path, default=None)
+    if data is None:
         _JSON_FILE_CACHE.pop(path, None)
         return None
 
-    cached = _JSON_FILE_CACHE.get(path)
-    signature = (stat.st_mtime_ns, stat.st_size)
-    if cached and cached[:2] == signature:
-        return deepcopy(cached[2])
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    _JSON_FILE_CACHE[path] = (signature[0], signature[1], data)
+    try:
+        stat = path.stat()
+        _JSON_FILE_CACHE[path] = (stat.st_mtime_ns, stat.st_size, data)
+    except FileNotFoundError:
+        _JSON_FILE_CACHE[path] = (0, 0, data)
     return deepcopy(data)
 
 
 def _write_cached_json(path: Path, data, *, ensure_parent: bool = False) -> None:
-    if ensure_parent:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(path, data, ensure_parent=ensure_parent)
     stat = path.stat()
     _JSON_FILE_CACHE[path] = (stat.st_mtime_ns, stat.st_size, deepcopy(data))
 
 
+def _resolve_persistent_path(env_name: str, default_name: str) -> Path:
+    env_value = os.getenv(env_name, "").strip()
+    if env_value:
+        return Path(env_value)
+
+    target = DATA_DIR / default_name
+    legacy = Path(f"./{default_name}")
+    if legacy.exists() and not target.exists():
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy, target)
+            logger.info("[storage] copied legacy %s to %s", legacy.resolve(), target.resolve())
+        except Exception as exc:
+            logger.warning("[storage] failed to copy legacy %s to %s: %s", legacy, target, exc)
+    return target
+
+
 def _load_settings() -> dict:
     """从 data/settings.json 读取运行时配置覆盖"""
-    if SETTINGS_FILE.exists():
-        try:
-            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+    data = read_json_file(SETTINGS_FILE, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def _cfg(s: dict, key: str, env_key: str, default: str = "") -> str:
@@ -76,8 +101,8 @@ PROMETHEUS_PASSWORD = _cfg(_s, "prometheus_password",   "PROMETHEUS_PASSWORD",  
 
 REPORTS_DIR      = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
-CMDB_FILE        = Path(os.getenv("CMDB_FILE", "./cmdb_hosts.json"))
-CREDENTIALS_FILE = Path(os.getenv("CREDENTIALS_FILE", "./ssh_credentials.json"))
+CMDB_FILE        = _resolve_persistent_path("CMDB_FILE", "cmdb_hosts.json")
+CREDENTIALS_FILE = _resolve_persistent_path("CREDENTIALS_FILE", "ssh_credentials.json")
 
 FEISHU_WEBHOOK   = os.getenv("FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD   = os.getenv("FEISHU_KEYWORD", "")
@@ -94,23 +119,65 @@ SCHEDULE_CHANNELS = [
 # ── SSH 密钥（支持三种来源：env 直传 > 文件 > 自动生成）─────────────────────
 
 _FERNET_KEY_ENV = os.getenv("SSH_FERNET_KEY", "").strip()  # Base64 Fernet key，容器部署推荐
-_SSH_KEY_FILE   = Path(os.getenv("SSH_KEY_FILE", "./.ssh_key"))
+_SSH_KEY_FILE   = _resolve_persistent_path("SSH_KEY_FILE", ".ssh_key")
+
+
+def _load_ssh_key_from_file(path: Path) -> bytes:
+    key = path.read_bytes().strip()
+    Fernet(key)
+    try:
+        save_text_snapshot(path, key.decode("utf-8"))
+    except Exception as exc:
+        logger.warning("[安全] SSH 密钥快照保存失败 %s: %s", path, exc)
+    return key
+
+
+def _restore_ssh_key_from_snapshot(path: Path) -> bytes | None:
+    payload = load_text_snapshot(path)
+    if not payload:
+        return None
+    key = payload.encode("utf-8")
+    try:
+        Fernet(key)
+    except Exception as exc:
+        logger.warning("[安全] SSH 密钥快照无效 %s: %s", path, exc)
+        return None
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(key)
+        logger.warning("[安全] SSH 密钥文件缺失，已从快照恢复到 %s", path.resolve())
+    except Exception as exc:
+        logger.warning("[安全] SSH 密钥文件恢复失败 %s: %s", path, exc)
+    return key
+
 
 if _FERNET_KEY_ENV:
     _FERNET_KEY = _FERNET_KEY_ENV.encode()
+    Fernet(_FERNET_KEY)
     logger.info("[启动] SSH 加密密钥来自 SSH_FERNET_KEY 环境变量")
 elif _SSH_KEY_FILE.exists():
-    _FERNET_KEY = _SSH_KEY_FILE.read_bytes().strip()
+    _FERNET_KEY = _load_ssh_key_from_file(_SSH_KEY_FILE)
     logger.info("[启动] SSH 加密密钥来自文件: %s", _SSH_KEY_FILE)
 else:
-    _FERNET_KEY = Fernet.generate_key()
-    _SSH_KEY_FILE.write_bytes(_FERNET_KEY)
-    logger.warning(
-        "[安全] SSH_FERNET_KEY 未配置，已自动生成密钥并写入 %s。"
-        "容器重启若该文件丢失则已存密码无法解密，"
-        "建议设置 SSH_FERNET_KEY 环境变量（值为 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`）。",
-        _SSH_KEY_FILE.resolve(),
-    )
+    restored_key = _restore_ssh_key_from_snapshot(_SSH_KEY_FILE)
+    if restored_key:
+        _FERNET_KEY = restored_key
+        logger.info("[启动] SSH 加密密钥来自快照恢复: %s", _SSH_KEY_FILE)
+    else:
+        _FERNET_KEY = Fernet.generate_key()
+        _SSH_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SSH_KEY_FILE.write_bytes(_FERNET_KEY)
+        try:
+            save_text_snapshot(_SSH_KEY_FILE, _FERNET_KEY.decode("utf-8"))
+        except Exception as exc:
+            logger.warning("[安全] SSH 密钥快照保存失败 %s: %s", _SSH_KEY_FILE, exc)
+        logger.warning(
+            "[安全] SSH_FERNET_KEY 未配置，已自动生成密钥并写入 %s。"
+            "容器重启若该文件丢失则已存密码无法解密，"
+            "建议设置 SSH_FERNET_KEY 环境变量（值为 `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`）。",
+            _SSH_KEY_FILE.resolve(),
+        )
 
 _fernet = Fernet(_FERNET_KEY)
 
@@ -189,7 +256,7 @@ def load_hosts_list() -> list[dict]:
 
 
 def save_hosts_list(hosts: list[dict]) -> None:
-    _write_cached_json(CMDB_FILE, hosts)
+    _write_cached_json(CMDB_FILE, hosts, ensure_parent=True)
 
 
 def load_cmdb() -> dict:
@@ -223,7 +290,7 @@ def load_credentials() -> list[dict]:
 
 
 def save_credentials(data: list[dict]) -> None:
-    _write_cached_json(CREDENTIALS_FILE, data)
+    _write_cached_json(CREDENTIALS_FILE, data, ensure_parent=True)
 
 
 # ── 慢日志定时报告目标配置 ────────────────────────────────────────────────────

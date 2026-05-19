@@ -13,6 +13,7 @@ from state import (
     load_groups, load_cmdb, load_hosts_list,
 )
 from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
+from json_snapshot_store import write_json_file
 from report_builder import (
     collect_daily_data,
     collect_inspect_data, build_inspect_meta,
@@ -42,7 +43,7 @@ async def _build_and_save_report() -> dict:
     report["ai_analysis"] = "".join(ai_parts)
 
     report_path = REPORTS_DIR / f"{report['id']}.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(report_path, report, ensure_parent=True)
     await save_report_meta(report)
     return report
 
@@ -71,7 +72,7 @@ async def _build_inspect_report(data: dict | None = None) -> dict:
     meta["type"] = "inspect"
 
     report_path = REPORTS_DIR / f"{meta['id']}.json"
-    report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(report_path, meta, ensure_parent=True)
     await save_report_meta(meta)
     return meta
 
@@ -102,9 +103,7 @@ async def _build_slowlog_report() -> dict | None:
             f"分析时段 {data['date_from']}~{data['date_to']} 内未找到满足条件的慢查询。"
         )
 
-    (REPORTS_DIR / f"{report['id']}.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    write_json_file(REPORTS_DIR / f"{report['id']}.json", report, ensure_parent=True)
     await save_report_meta(report)
     return report
 

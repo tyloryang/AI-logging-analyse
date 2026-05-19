@@ -1175,12 +1175,18 @@ function getModelRuntimeProvider(model) {
   return getProviderKey(model) === 'anthropic' ? 'anthropic' : 'openai'
 }
 
+function getModelRuntimeName(model) {
+  const runtimeModel = String(model?.runtime_model || '').trim()
+  if (runtimeModel) return runtimeModel
+  return String(model?.name || '').trim()
+}
+
 function buildAgentPayload(text) {
   return {
     message: text,
     conv_id: convIds.value[mode.value],
     home_dir: assistantConfig.home_dir.trim(),
-    model_name: activeModel.value?.name || '',
+    model_name: getModelRuntimeName(activeModel.value),
     model_provider: getModelRuntimeProvider(activeModel.value),
   }
 }

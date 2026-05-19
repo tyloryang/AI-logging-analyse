@@ -77,6 +77,10 @@
             <div class="stat-label">构建中</div>
           </div>
           <div style="flex:1"></div>
+          <div class="view-mode-switch">
+            <button class="mode-btn" :class="{ active: viewMode === 'list' }" @click="viewMode='list'">列表</button>
+            <button class="mode-btn" :class="{ active: viewMode === 'tree' }" @click="viewMode='tree'">树形</button>
+          </div>
           <input v-model="search" class="search-input" placeholder="搜索 Job..." />
         </div>
 
@@ -92,12 +96,16 @@
           <div v-if="!activeId" class="empty-state"><span class="icon">🔌</span><p>请先<button class="link-btn" @click="openAddInstance">添加 Jenkins 实例</button></p></div>
           <div v-else-if="loading" class="empty-state"><div class="spinner"></div></div>
           <div v-else-if="!filteredJobs.length" class="empty-state"><span class="icon">🔍</span><p>无匹配 Job</p></div>
-          <table v-else class="data-table">
-            <thead><tr><th>状态</th><th>Job 名称</th><th>最近构建</th><th>结果</th><th>时间</th><th>耗时</th><th>操作</th></tr></thead>
+          <table v-else-if="viewMode === 'list'" class="data-table">
+            <thead><tr><th>状态</th><th>Job 名称</th><th>所属目录</th><th>最近构建</th><th>结果</th><th>时间</th><th>耗时</th><th>操作</th></tr></thead>
             <tbody>
               <tr v-for="j in filteredJobs" :key="j.name" @click="selectJob(j)">
                 <td><span class="status-dot" :class="colorClass(j.color)"></span></td>
-                <td class="job-name">{{ j.name }}</td>
+                <td class="job-cell">
+                  <div class="job-primary">{{ j.shortName }}</div>
+                  <div v-if="j.folderKey" class="job-secondary">{{ j.name }}</div>
+                </td>
+                <td class="folder-cell">{{ j.folderLabel }}</td>
                 <td class="mono small">#{{ j.lastBuild?.number ?? '-' }}</td>
                 <td><span class="result-badge" :class="resultClass(j.lastBuild?.result)">{{ resultLabel(j.lastBuild?.result) }}</span></td>
                 <td class="small text-muted">{{ fmtTs(j.lastBuild?.timestamp) }}</td>
@@ -106,6 +114,36 @@
               </tr>
             </tbody>
           </table>
+          <div v-else class="tree-wrap">
+            <div
+              v-for="row in treeRows"
+              :key="row.key"
+              class="tree-row"
+              :class="row.type === 'folder' ? 'folder-row' : 'job-row'"
+              :style="{ paddingLeft: `${12 + row.depth * 20}px` }"
+              @click="row.type === 'folder' ? toggleFolder(row.path) : selectJob(row.job)"
+            >
+              <template v-if="row.type === 'folder'">
+                <span class="tree-caret">{{ isFolderExpanded(row.path) ? '▾' : '▸' }}</span>
+                <span class="tree-folder-icon">📁</span>
+                <span class="tree-folder-name">{{ row.label }}</span>
+                <span class="tree-folder-count">{{ row.jobCount }}</span>
+              </template>
+              <template v-else>
+                <div class="tree-job-main">
+                  <span class="status-dot" :class="colorClass(row.job.color)"></span>
+                  <span class="tree-job-name">{{ row.job.shortName }}</span>
+                  <span class="tree-job-path">{{ row.job.folderKey ? row.job.folderLabel : '根目录' }}</span>
+                </div>
+                <div class="tree-job-meta" @click.stop>
+                  <span class="mono small">#{{ row.job.lastBuild?.number ?? '-' }}</span>
+                  <span class="result-badge" :class="resultClass(row.job.lastBuild?.result)">{{ resultLabel(row.job.lastBuild?.result) }}</span>
+                  <button class="btn btn-xs btn-outline" @click="openBuild(row.job)">▶</button>
+                  <button class="btn btn-xs btn-outline" @click="viewLogs(row.job)">📄</button>
+                </div>
+              </template>
+            </div>
+          </div>
         </div>
 
         <!-- 运行中 -->
@@ -143,7 +181,13 @@
 
       <!-- 右侧详情 -->
       <div v-if="selectedJob" class="detail-panel">
-        <div class="detail-header"><span class="detail-title">{{ selectedJob.name }}</span><button class="close-btn" @click="selectedJob=null">✕</button></div>
+        <div class="detail-header">
+          <div class="detail-heading">
+            <span class="detail-title">{{ selectedJob.shortName || selectedJob.name }}</span>
+            <span class="detail-breadcrumb">{{ jobBreadcrumb(selectedJob) }}</span>
+          </div>
+          <button class="close-btn" @click="selectedJob=null">✕</button>
+        </div>
         <div class="detail-body">
           <div class="build-select-row">
             <label>构建号</label>
@@ -179,7 +223,7 @@
       <div class="modal-card">
         <div class="modal-header"><span>触发构建</span><button class="close-btn" @click="showBuildModal=false">✕</button></div>
         <div class="modal-body">
-          <div class="form-group"><label>Job 名称</label><input v-model="buildForm.job" placeholder="Job 名称" @input="onBuildJobSearch" /><div v-if="buildSuggestions.length" class="suggest-list"><div v-for="s in buildSuggestions" :key="s.name" class="suggest-item" @click="buildForm.job=s.name; buildSuggestions=[]">{{ s.name }}</div></div></div>
+          <div class="form-group"><label>Job 名称</label><input v-model="buildForm.job" placeholder="Job 名称" @input="onBuildJobSearch" /><div v-if="buildSuggestions.length" class="suggest-list"><div v-for="s in buildSuggestions" :key="s.name" class="suggest-item" @click="buildForm.job=s.name; buildSuggestions=[]"><strong class="suggest-name">{{ s.shortName }}</strong><span class="suggest-path">{{ s.name }}</span></div></div></div>
           <div class="form-group"><label>参数 <span class="form-hint">（每行 KEY=VALUE）</span></label><textarea v-model="buildForm.paramsText" rows="4" placeholder="BRANCH=main&#10;ENV=prod"></textarea></div>
           <div v-if="buildMsg" class="build-msg" :class="buildMsgOk ? 'ok' : 'err'">{{ buildMsg }}</div>
           <div class="form-actions"><button class="btn btn-outline" @click="showBuildModal=false">取消</button><button class="btn btn-primary" @click="doTriggerBuild" :disabled="triggering"><span v-if="triggering" class="spinner-sm"></span> ▶ 触发</button></div>
@@ -343,12 +387,107 @@ const loading      = ref(false)
 const loadingViews = ref(false)
 const search       = ref('')
 const tab          = ref('jobs')
+const viewMode     = ref('list')
 const selectedView = ref('')
+const expandedFolders = ref({})
 const totalJobs    = computed(() => jobs.value.length)
 
+function prettyPath(path = '') {
+  return String(path).split('/').filter(Boolean).join(' / ')
+}
+
+function splitJobMeta(name = '') {
+  const pathParts = String(name).split('/').filter(Boolean)
+  const shortName = pathParts[pathParts.length - 1] || name || '-'
+  const folderKey = pathParts.length > 1 ? pathParts.slice(0, -1).join('/') : ''
+  return {
+    pathParts,
+    shortName,
+    folderKey,
+    folderLabel: folderKey ? prettyPath(folderKey) : '根目录',
+  }
+}
+
+const normalizedJobs = computed(() => jobs.value.map(job => ({ ...job, ...splitJobMeta(job.name) })))
+
 const filteredJobs = computed(() => {
-  const q = search.value.toLowerCase()
-  return q ? jobs.value.filter(j => j.name.toLowerCase().includes(q)) : jobs.value
+  const q = search.value.trim().toLowerCase()
+  if (!q) return normalizedJobs.value
+  return normalizedJobs.value.filter((job) => {
+    return (
+      job.name.toLowerCase().includes(q) ||
+      job.shortName.toLowerCase().includes(q) ||
+      job.folderKey.toLowerCase().includes(q)
+    )
+  })
+})
+
+function isFolderExpanded(path) {
+  return expandedFolders.value[path] !== false
+}
+
+function toggleFolder(path) {
+  expandedFolders.value = {
+    ...expandedFolders.value,
+    [path]: !isFolderExpanded(path),
+  }
+}
+
+const treeRows = computed(() => {
+  const root = { folders: new Map(), jobs: [] }
+  for (const job of filteredJobs.value) {
+    if (!job.folderKey) {
+      root.jobs.push(job)
+      continue
+    }
+    let node = root
+    let currentPath = ''
+    job.pathParts.slice(0, -1).forEach((part) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part
+      if (!node.folders.has(part)) {
+        node.folders.set(part, {
+          label: part,
+          path: currentPath,
+          folders: new Map(),
+          jobs: [],
+          jobCount: 0,
+        })
+      }
+      node = node.folders.get(part)
+      node.jobCount += 1
+    })
+    node.jobs.push(job)
+  }
+
+  const rows = []
+  const walk = (node, depth) => {
+    const folders = [...node.folders.values()].sort((a, b) => a.label.localeCompare(b.label))
+    const directJobs = [...node.jobs].sort((a, b) => a.shortName.localeCompare(b.shortName))
+    for (const folder of folders) {
+      rows.push({
+        type: 'folder',
+        key: `folder:${folder.path}`,
+        path: folder.path,
+        label: folder.label,
+        depth,
+        jobCount: folder.jobCount,
+      })
+      if (isFolderExpanded(folder.path)) {
+        walk(folder, depth + 1)
+      }
+    }
+    for (const job of directJobs) {
+      rows.push({
+        type: 'job',
+        key: `job:${job.name}`,
+        job,
+        depth,
+      })
+    }
+  }
+
+  walk(root, 0)
+  return rows
 })
 
 function countByColor(c) { return jobs.value.filter(j => (j.color||'').startsWith(c)).length }
@@ -406,6 +545,7 @@ function fmtDur(ms) { if (!ms) return '-'; const s = Math.round(ms/1000); return
 function colorClass(c) { if (!c) return 'unknown'; if (c.includes('blue')) return 'success'; if (c.includes('red')) return 'error'; if (c.includes('yellow')) return 'warning'; return 'muted' }
 function resultClass(r) { return { SUCCESS:'success', FAILURE:'error', UNSTABLE:'warning', ABORTED:'muted' }[r] || 'muted' }
 function resultLabel(r) { return { SUCCESS:'成功', FAILURE:'失败', UNSTABLE:'不稳定', ABORTED:'中止', null:'进行中', undefined:'-' }[r] ?? r ?? '-' }
+function jobBreadcrumb(job) { return job?.name ? prettyPath(job.name) : '-' }
 
 // ── 详情 ──────────────────────────────────────────────────────────────────────
 const selectedJob  = ref(null)
@@ -454,7 +594,12 @@ const buildMsg         = ref('')
 const buildMsgOk       = ref(false)
 
 function openBuild(j) { buildForm.value = { job: j?.name || '', paramsText: '' }; buildSuggestions.value = []; buildMsg.value = ''; showBuildModal.value = true }
-function onBuildJobSearch() { const q = buildForm.value.job.toLowerCase(); buildSuggestions.value = q ? jobs.value.filter(j => j.name.toLowerCase().includes(q)).slice(0, 8) : [] }
+function onBuildJobSearch() {
+  const q = buildForm.value.job.toLowerCase()
+  buildSuggestions.value = q
+    ? normalizedJobs.value.filter(j => j.name.toLowerCase().includes(q) || j.shortName.toLowerCase().includes(q)).slice(0, 8)
+    : []
+}
 
 async function doTriggerBuild() {
   buildMsg.value = ''
@@ -531,6 +676,9 @@ onMounted(async () => {
 .stat-card.warn .stat-val { color: var(--warning); }
 .stat-val { font-size: 18px; font-weight: 700; }
 .stat-label { font-size: 10px; color: var(--text-muted); }
+.view-mode-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.mode-btn { padding: 5px 10px; border: none; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.mode-btn.active { background: var(--accent); color: #fff; }
 .search-input { padding: 5px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; width: 180px; }
 .tab-bar { display: flex; gap: 2px; flex-shrink: 0; }
 .tab-btn { padding: 5px 14px; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; }
@@ -542,6 +690,23 @@ onMounted(async () => {
 .data-table td { padding: 7px 12px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; }
 .data-table tbody tr:hover { background: var(--bg-hover); cursor: pointer; }
 .job-name { font-weight: 500; }
+.job-cell, .folder-cell { white-space: normal !important; }
+.job-primary { font-weight: 600; color: var(--text-primary); }
+.job-secondary { margin-top: 2px; font-size: 11px; color: var(--text-muted); word-break: break-all; }
+.folder-cell { color: var(--text-secondary); font-size: 12px; }
+.tree-wrap { display: flex; flex-direction: column; min-height: 100%; padding: 8px 0; }
+.tree-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 38px; padding-right: 12px; border-bottom: 1px solid var(--border-faint, var(--border)); cursor: pointer; }
+.tree-row:hover { background: var(--bg-hover); }
+.folder-row { color: var(--text-secondary); font-weight: 600; }
+.job-row { color: var(--text-primary); }
+.tree-caret { width: 14px; color: var(--text-muted); flex-shrink: 0; }
+.tree-folder-icon { font-size: 14px; }
+.tree-folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-folder-count { font-size: 11px; color: var(--text-muted); background: var(--bg-hover); border-radius: 999px; padding: 1px 7px; }
+.tree-job-main { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.tree-job-name { font-weight: 600; }
+.tree-job-path { color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-job-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .mono { font-family: 'Cascadia Code','Consolas',monospace; }
 .small { font-size: 12px; }
 .text-muted { color: var(--text-muted); }
@@ -559,7 +724,9 @@ onMounted(async () => {
 /* 详情面板 */
 .detail-panel { width: 300px; flex-shrink: 0; background: var(--bg-card); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
 .detail-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.detail-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .detail-title { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.detail-breadcrumb { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
 .detail-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
 .build-select-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .build-select { flex: 1; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-input); color: var(--text-primary); font-size: 11px; }
@@ -607,7 +774,9 @@ onMounted(async () => {
 .build-msg.ok  { background: rgba(63,185,80,.12); color: var(--success); }
 .build-msg.err { background: rgba(248,81,73,.12); color: var(--error); }
 .suggest-list { position: absolute; background: var(--bg-card); border: 1px solid var(--border); border-radius: 5px; z-index: 10; max-height: 180px; overflow-y: auto; width: 100%; }
-.suggest-item { padding: 7px 12px; font-size: 13px; cursor: pointer; }
+.suggest-item { display: flex; flex-direction: column; gap: 2px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
 .suggest-item:hover { background: var(--bg-hover); }
+.suggest-name { color: var(--text-primary); }
+.suggest-path { color: var(--text-muted); font-size: 11px; word-break: break-all; }
 .form-group { position: relative; }
 </style>

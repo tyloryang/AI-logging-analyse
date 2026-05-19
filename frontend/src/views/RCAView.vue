@@ -100,8 +100,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '../api/index.js'
+
+const route = useRoute()
 
 const form = ref({ service: '', alert_name: '', hours: 1, extra_context: '' })
 const streaming    = ref(false)
@@ -183,8 +186,32 @@ async function loadHistory() {
   try {
     const r = await api.rcaResults(50)
     history.value = r.results || []
+    await syncSelectedFromRoute()
   } catch {}
 }
+
+async function syncSelectedFromRoute() {
+  const targetId = String(route.query.rca_id || '').trim()
+  if (!targetId) return
+
+  let record = history.value.find(item => item.id === targetId) || null
+  if (!record) {
+    try {
+      record = await api.rcaResult(targetId)
+      if (record && !history.value.some(item => item.id === record.id)) {
+        history.value = [record, ...history.value]
+      }
+    } catch {
+      return
+    }
+  }
+
+  if (record) selected.value = record
+}
+
+watch(() => route.query.rca_id, () => {
+  syncSelectedFromRoute()
+})
 
 onMounted(loadHistory)
 </script>

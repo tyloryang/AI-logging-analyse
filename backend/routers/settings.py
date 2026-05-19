@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from auth.deps import require_admin
+from json_snapshot_store import read_json_file, write_json_file
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_admin)])
@@ -20,20 +21,12 @@ SETTINGS_FILE = Path(__file__).resolve().parent.parent / "data" / "settings.json
 
 
 def _load() -> dict:
-    if SETTINGS_FILE.exists():
-        try:
-            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+    data = read_json_file(SETTINGS_FILE, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def _save(data: dict) -> None:
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_file(SETTINGS_FILE, data, ensure_parent=True)
 
 
 def _env_int(name: str, default: int) -> int:

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from json_snapshot_store import read_json_file
 
 _BOOTSTRAPPED = False
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -49,13 +49,8 @@ _SETTINGS_ENV_MAPPING = {
 
 
 def _load_runtime_settings() -> dict:
-    if not _SETTINGS_FILE.exists():
-        return {}
-
-    try:
-        return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    data = read_json_file(_SETTINGS_FILE, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def _apply_runtime_settings_env() -> None:

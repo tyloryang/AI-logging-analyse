@@ -3,6 +3,7 @@ import os
 import uuid
 import time
 import asyncio
+import logging
 from typing import Optional
 
 SESSION_TTL       = int(os.getenv("SESSION_TTL_SECONDS", "28800"))   # 8 h
@@ -77,6 +78,7 @@ class _MemStore:
 REDIS_URL = os.getenv("REDIS_URL", "")
 
 _backend: Optional[object] = None
+logger = logging.getLogger(__name__)
 
 
 def _get_backend():
@@ -94,67 +96,83 @@ def _get_backend():
     return _backend
 
 
+def _fallback_to_mem_store(reason: str, exc: Exception | None = None):
+    """Downgrade to the in-memory store when Redis fails at runtime."""
+    global _backend
+    if not isinstance(_backend, _MemStore):
+        if exc is not None:
+            logger.warning(
+                "[auth.session] backend failure during %s, falling back to in-memory store: %s",
+                reason,
+                exc,
+            )
+        _backend = _MemStore()
+    return _backend
+
+
+async def _call_backend(method: str, *args, **kwargs):
+    backend = _get_backend()
+    try:
+        return await getattr(backend, method)(*args, **kwargs)
+    except Exception as exc:
+        if isinstance(backend, _MemStore):
+            raise
+        backend = _fallback_to_mem_store(method, exc)
+        return await getattr(backend, method)(*args, **kwargs)
+
+
 # ─────────────────────────────────────────────────────────
 # 公共 API（与原来接口完全相同）
 # ─────────────────────────────────────────────────────────
 
 async def create_session(user_id: str, username: str, ip: str) -> str:
-    r = _get_backend()
     session_id = str(uuid.uuid4())
-    await r.hset(f"session:{session_id}", mapping={
+    await _call_backend("hset", f"session:{session_id}", mapping={
         "user_id": user_id,
         "username": username,
         "ip": ip,
     })
-    await r.expire(f"session:{session_id}", SESSION_TTL)
+    await _call_backend("expire", f"session:{session_id}", SESSION_TTL)
     return session_id
 
 
 async def get_session(session_id: str) -> Optional[dict]:
-    r = _get_backend()
-    data = await r.hgetall(f"session:{session_id}")
+    data = await _call_backend("hgetall", f"session:{session_id}")
     if not data:
         return None
-    await r.expire(f"session:{session_id}", SESSION_TTL)
+    await _call_backend("expire", f"session:{session_id}", SESSION_TTL)
     return data
 
 
 async def delete_session(session_id: str):
-    r = _get_backend()
-    await r.delete(f"session:{session_id}")
+    await _call_backend("delete", f"session:{session_id}")
 
 
 async def incr_fail(username: str) -> int:
-    r = _get_backend()
     key = f"login_fail:{username}"
-    count = await r.incr(key)
-    await r.expire(key, LOGIN_FAIL_WINDOW)
+    count = await _call_backend("incr", key)
+    await _call_backend("expire", key, LOGIN_FAIL_WINDOW)
     return count
 
 
 async def clear_fail(username: str):
-    r = _get_backend()
-    await r.delete(f"login_fail:{username}")
+    await _call_backend("delete", f"login_fail:{username}")
 
 
 async def set_locked(user_id: str):
-    r = _get_backend()
-    await r.set(f"locked:{user_id}", "1")
+    await _call_backend("set", f"locked:{user_id}", "1")
 
 
 async def is_locked(user_id: str) -> bool:
-    r = _get_backend()
-    return bool(await r.exists(f"locked:{user_id}"))
+    return bool(await _call_backend("exists", f"locked:{user_id}"))
 
 
 async def clear_locked(user_id: str):
-    r = _get_backend()
-    await r.delete(f"locked:{user_id}")
+    await _call_backend("delete", f"locked:{user_id}")
 
 
 async def check_redis() -> bool:
     try:
-        r = _get_backend()
-        return await r.ping()
+        return await _call_backend("ping")
     except Exception:
         return False

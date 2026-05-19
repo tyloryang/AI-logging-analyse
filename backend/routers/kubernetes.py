@@ -18,6 +18,7 @@ from auth.deps import current_user, require_admin
 from auth.models import User
 from auth.session import get_session
 from db import AsyncSessionLocal
+from json_snapshot_store import read_json_file, write_json_file
 from state import get_user_allowed_k8s_clusters
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,9 @@ class K8sClusterPayload(BaseModel):
 def _settings() -> dict:
     try:
         p = Path(__file__).parent.parent / "data" / "settings.json"
-        if p.exists():
-            return json.loads(p.read_text(encoding="utf-8"))
+        data = read_json_file(p, default={})
+        if isinstance(data, dict):
+            return data
     except Exception:
         pass
     return {}
@@ -97,11 +99,7 @@ def _apply_default_cluster(clusters: list[dict], target_id: str | None = None) -
 
 
 def _save_clusters(clusters: list[dict]) -> None:
-    _DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _DATA_FILE.write_text(
-        json.dumps(clusters, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_file(_DATA_FILE, clusters, ensure_parent=True)
 
 
 def _resolve_single_runtime_kubeconfig_path(raw_path: str) -> str:
@@ -262,17 +260,16 @@ def _seed_clusters_from_legacy() -> list[dict]:
 
 
 def _load_clusters() -> list[dict]:
-    if _DATA_FILE.exists():
-        try:
-            data = json.loads(_DATA_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                clusters = [_normalize_cluster(item) for item in data]
-                clusters, changed = _apply_default_cluster(clusters)
-                if changed:
-                    _save_clusters(clusters)
-                return clusters
-        except Exception as exc:
-            logger.warning("[k8s] 读取集群配置失败，回退默认配置: %s", exc)
+    try:
+        data = read_json_file(_DATA_FILE, default=[])
+        if isinstance(data, list):
+            clusters = [_normalize_cluster(item) for item in data]
+            clusters, changed = _apply_default_cluster(clusters)
+            if changed:
+                _save_clusters(clusters)
+            return clusters
+    except Exception as exc:
+        logger.warning("[k8s] 读取集群配置失败，回退默认配置: %s", exc)
 
     clusters = _seed_clusters_from_legacy()
     if clusters:

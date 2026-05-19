@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -18,7 +19,9 @@ from typing import Optional
 from cachetools import TTLCache
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
+from json_snapshot_store import read_json_file, write_json_file
 from state import loki, prom, analyzer, load_hosts_list
 from skywalking_client import sw_client, check_connectivity as sw_check
 
@@ -26,6 +29,147 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/observability", tags=["observability"])
 _overview_cache: TTLCache = TTLCache(maxsize=8, ttl=15)
 _overview_locks: dict[int, asyncio.Lock] = {}
+_DEFAULT_OVERVIEW_MINUTES = 10
+_MAX_WINDOW_MINUTES = 24 * 60
+_RCA_SUMMARY_MAX_AGE_HOURS = 24
+
+
+def _normalize_problem_severity(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"critical", "error", "fatal", "high"}:
+        return "error"
+    return "warning"
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _clean_markdown_line(line: str) -> str:
+    value = str(line or "")
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = value.replace("**", "").replace("__", "")
+    value = re.sub(r"^\s*[-*]\s*", "", value)
+    value = re.sub(r"^\s*\d+\.\s*", "", value)
+    return " ".join(value.split()).strip()
+
+
+def _extract_rca_summary(result: str) -> str:
+    text = str(result or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+
+    summary_match = re.search(
+        r"^##\s*根因摘要\s*$\n+([\s\S]*?)(?=^##\s+|\Z)",
+        text,
+        flags=re.MULTILINE,
+    )
+    if summary_match:
+        lines = [
+            _clean_markdown_line(line)
+            for line in summary_match.group(1).splitlines()
+        ]
+        lines = [line for line in lines if line]
+        if lines:
+            return " ".join(lines[:2])[:240].rstrip()
+
+    plain_lines: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("## "):
+            continue
+        cleaned = _clean_markdown_line(stripped)
+        if not cleaned:
+            continue
+        plain_lines.append(cleaned)
+        if len(plain_lines) >= 2:
+            break
+    return " ".join(plain_lines)[:240].rstrip()
+
+
+def _load_recent_rca_records(max_age_hours: int = _RCA_SUMMARY_MAX_AGE_HOURS) -> list[dict]:
+    try:
+        from services.rca_engine import list_rca
+    except Exception as exc:
+        logger.warning("[obs] RCA history load failed: %s", exc)
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    records: list[dict] = []
+    for record in list_rca(200):
+        created_at = _parse_iso_datetime(record.get("created_at"))
+        if not created_at or created_at < cutoff:
+            continue
+
+        result_text = str(record.get("result") or "")
+        if "AI 分析失败" in result_text:
+            continue
+
+        summary = _extract_rca_summary(result_text)
+        if not summary:
+            continue
+
+        item = dict(record)
+        item["_created_at_dt"] = created_at
+        item["_summary"] = summary
+        records.append(item)
+
+    return records
+
+
+def _pick_latest_service_rca(service_item: dict, recent_rca: list[dict]) -> dict | None:
+    service_name = str(service_item.get("service") or "").strip()
+    alert_names = {
+        str(name).strip()
+        for name in service_item.get("_alert_names", [])
+        if str(name).strip()
+    }
+    linked_rca_ids = {
+        str(rca_id).strip()
+        for rca_id in service_item.get("_rca_ids", [])
+        if str(rca_id).strip()
+    }
+
+    best_record: dict | None = None
+    best_key: tuple[int, datetime] | None = None
+    for record in recent_rca:
+        record_id = str(record.get("id") or "").strip()
+        record_service = str(record.get("service") or "").strip()
+        record_alert_name = str(record.get("alert_name") or "").strip()
+        created_at = record["_created_at_dt"]
+
+        priority: int | None = None
+        if record_id and record_id in linked_rca_ids:
+            priority = 3
+        elif service_name and record_service == service_name:
+            priority = 2
+        elif (
+            alert_names
+            and record_alert_name in alert_names
+            and record_service in {service_name, "global"}
+        ):
+            priority = 1
+
+        if priority is None:
+            continue
+
+        candidate_key = (priority, created_at)
+        if best_key is None or candidate_key > best_key:
+            best_key = candidate_key
+            best_record = record
+
+    return best_record
 
 # Grafana 看板定义（uid 与 Grafana 官方 dashboard uid 对齐）
 _GRAFANA_BOARD_DEFS = [
@@ -42,8 +186,8 @@ def _build_grafana_boards():
     try:
         settings_file = Path(__file__).resolve().parent.parent / "data" / "settings.json"
         custom_boards: list[dict] = []
-        if settings_file.exists():
-            d = json.loads(settings_file.read_text(encoding="utf-8"))
+        d = read_json_file(settings_file, default={})
+        if isinstance(d, dict):
             custom_boards = d.get("grafana_boards", [])
     except Exception:
         custom_boards = []
@@ -65,20 +209,50 @@ def _build_grafana_boards():
     return result
 
 
+def _normalize_window(
+    hours: Optional[int] = None,
+    minutes: Optional[int] = None,
+) -> tuple[float, int]:
+    if minutes is not None:
+        window_minutes = minutes
+    elif hours is not None:
+        window_minutes = hours * 60
+    else:
+        window_minutes = _DEFAULT_OVERVIEW_MINUTES
+    window_minutes = max(1, min(window_minutes, _MAX_WINDOW_MINUTES))
+    return window_minutes / 60, window_minutes
+
+
+def _format_window_label(window_minutes: int) -> str:
+    if window_minutes < 60:
+        return f"{window_minutes}m"
+    hours, minutes = divmod(window_minutes, 60)
+    if minutes == 0:
+        return f"{hours}h"
+    return f"{hours}h{minutes}m"
+
+
+def _format_window_text(window_minutes: int) -> str:
+    if window_minutes < 60:
+        return f"{window_minutes} 分钟"
+    hours, minutes = divmod(window_minutes, 60)
+    if minutes == 0:
+        return f"{hours} 小时"
+    return f"{hours} 小时 {minutes} 分钟"
+
+
 # ── 辅助：从 Loki 获取各服务错误数 ─────────────────────────────────────────
 
-async def _get_loki_error_count(hours: int = 1) -> tuple[int, list[dict]]:
+async def _get_loki_error_count(hours: float = 1) -> tuple[int, list[dict]]:
     """返回 (total_error_count, [{service, count}]) """
     try:
-        services_raw = await loki.get_services()
-        total = 0
-        breakdown = []
-        for svc in services_raw:
-            cnt = svc.get("error_count", 0) or 0
-            total += cnt
-            if cnt > 0:
-                breakdown.append({"service": svc.get("name", ""), "count": cnt})
-        breakdown.sort(key=lambda x: x["count"], reverse=True)
+        counts = await loki.count_errors_by_service(hours=hours)
+        breakdown = [
+            {"service": service, "count": count}
+            for service, count in counts.items()
+            if count > 0
+        ]
+        total = sum(item["count"] for item in breakdown)
         return total, breakdown
     except Exception as e:
         logger.warning("[obs] Loki error count failed: %s", e)
@@ -87,10 +261,10 @@ async def _get_loki_error_count(hours: int = 1) -> tuple[int, list[dict]]:
 
 # ── 辅助：从 SkyWalking 获取 Trace 数 ──────────────────────────────────────
 
-async def _get_sw_trace_count(hours: int = 1) -> tuple[int, list[dict]]:
+async def _get_sw_trace_count(hours: float = 1) -> tuple[int, list[dict]]:
     """返回 (trace_count, recent_traces)"""
     try:
-        result = await sw_client.get_traces(hours=hours, page=1, page_size=20)
+        result = await sw_client.get_traces(hours=hours, page=1, page_size=10)
         traces = result.get("traces", [])
         total = result.get("total", len(traces))
         recent = []
@@ -120,6 +294,8 @@ async def _get_alert_count() -> tuple[int, list[dict]]:
         recent = []
         for g in active[:10]:
             recent.append({
+                "group_id":   g.get("id"),
+                "rca_id":     g.get("rca_id"),
                 "service":   g.get("service", "unknown"),
                 "name":      g.get("alertname", "Unknown Alert"),
                 "alertname": g.get("alertname", ""),
@@ -137,7 +313,11 @@ async def _get_alert_count() -> tuple[int, list[dict]]:
 
 # ── 辅助：构造有问题的服务列表（根因中心数据） ─────────────────────────────
 
-async def _get_problem_services(error_breakdown: list[dict], recent_alerts: list[dict]) -> list[dict]:
+async def _get_problem_services_legacy(
+    error_breakdown: list[dict],
+    recent_alerts: list[dict],
+    window_label: str = "1h",
+) -> list[dict]:
     """合并 Loki 错误服务 + 告警服务，生成根因中心卡片数据"""
     service_map: dict[str, dict] = {}
 
@@ -154,7 +334,7 @@ async def _get_problem_services(error_breakdown: list[dict], recent_alerts: list
             }
         service_map[svc]["errors"] += item["count"]
         service_map[svc]["severity"] = "error" if item["count"] > 50 else "warning"
-        service_map[svc]["summary"] = f"最近 1h 产生 {item['count']} 条错误日志"
+        service_map[svc]["summary"] = f"最近 {window_label} 产生 {item['count']} 条错误日志"
 
     for alert in recent_alerts:
         svc = alert["service"]
@@ -173,12 +353,86 @@ async def _get_problem_services(error_breakdown: list[dict], recent_alerts: list
     return result[:6]
 
 
+async def _get_problem_services(
+    error_breakdown: list[dict],
+    recent_alerts: list[dict],
+    window_label: str = "1h",
+) -> list[dict]:
+    service_map: dict[str, dict] = {}
+
+    for item in error_breakdown:
+        svc = item["service"]
+        if svc not in service_map:
+            service_map[svc] = {
+                "service": svc,
+                "errors": 0,
+                "alerts": 0,
+                "traces": 0,
+                "severity": "warning",
+                "summary": "",
+                "_alert_names": [],
+                "_rca_ids": [],
+            }
+        service_map[svc]["errors"] += item["count"]
+        service_map[svc]["severity"] = "error" if item["count"] > 50 else "warning"
+        service_map[svc]["summary"] = f"最近{window_label} 产生 {item['count']} 条错误日志"
+
+    for alert in recent_alerts:
+        svc = alert["service"]
+        if svc not in service_map:
+            service_map[svc] = {
+                "service": svc,
+                "errors": 0,
+                "alerts": 0,
+                "traces": 0,
+                "severity": _normalize_problem_severity(alert.get("severity", "warning")),
+                "summary": alert.get("name", ""),
+                "_alert_names": [],
+                "_rca_ids": [],
+            }
+
+        service_map[svc]["alerts"] += 1
+        service_map[svc]["severity"] = _normalize_problem_severity(
+            "error" if service_map[svc]["severity"] == "error" else alert.get("severity", "warning")
+        )
+
+        alert_name = alert.get("alertname") or alert.get("name")
+        if alert_name:
+            service_map[svc]["_alert_names"].append(alert_name)
+        if alert.get("rca_id"):
+            service_map[svc]["_rca_ids"].append(alert["rca_id"])
+
+    recent_rca = _load_recent_rca_records()
+    for item in service_map.values():
+        matched_rca = _pick_latest_service_rca(item, recent_rca)
+        if matched_rca:
+            item["summary"] = matched_rca["_summary"]
+            item["summary_source"] = "rca"
+            item["rca_id"] = matched_rca.get("id")
+            item["rca_created_at"] = matched_rca.get("created_at")
+            item["rca_alert_name"] = matched_rca.get("alert_name", "")
+        else:
+            item["summary_source"] = "signals"
+            item["rca_id"] = None
+            item["rca_created_at"] = None
+            item["rca_alert_name"] = ""
+
+        item.pop("_alert_names", None)
+        item.pop("_rca_ids", None)
+
+    result = sorted(service_map.values(), key=lambda x: (x["alerts"] + x["errors"]), reverse=True)
+    return result[:6]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 端点：GET /api/observability/overview
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/overview")
-async def get_overview(hours: int = Query(1, ge=1, le=24)):
+async def get_overview(
+    hours: Optional[int] = Query(None, ge=1, le=24),
+    minutes: Optional[int] = Query(None, ge=1, le=_MAX_WINDOW_MINUTES),
+):
     """
     汇总返回：
       - alert_count      告警触发数
@@ -190,12 +444,15 @@ async def get_overview(hours: int = Query(1, ge=1, le=24)):
       - problem_services 有问题的服务（根因中心）
       - grafana_boards   看板列表
     """
-    cache_key = f"overview:{hours}"
+    window_hours, window_minutes = _normalize_window(hours=hours, minutes=minutes)
+    window_label = _format_window_label(window_minutes)
+    window_text = _format_window_text(window_minutes)
+    cache_key = f"overview:{window_minutes}"
     cached = _overview_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    lock = _overview_locks.setdefault(hours, asyncio.Lock())
+    lock = _overview_locks.setdefault(window_minutes, asyncio.Lock())
     async with lock:
         cached = _overview_cache.get(cache_key)
         if cached is not None:
@@ -205,11 +462,15 @@ async def get_overview(hours: int = Query(1, ge=1, le=24)):
         (error_count, error_breakdown), \
         (trace_count, recent_traces) = await asyncio.gather(
             _get_alert_count(),
-            _get_loki_error_count(hours),
-            _get_sw_trace_count(hours),
+            _get_loki_error_count(window_hours),
+            _get_sw_trace_count(window_hours),
         )
 
-        problem_services = await _get_problem_services(error_breakdown, recent_alerts)
+        problem_services = await _get_problem_services(
+            error_breakdown,
+            recent_alerts,
+            window_label=window_label,
+        )
         grafana_boards = _build_grafana_boards()
 
         payload = {
@@ -217,7 +478,10 @@ async def get_overview(hours: int = Query(1, ge=1, le=24)):
             "error_count": error_count,
             "trace_count": trace_count,
             "grafana_count": len(grafana_boards),
-            "hours": hours,
+            "hours": round(window_hours, 4),
+            "minutes": window_minutes,
+            "window_label": window_label,
+            "window_text": window_text,
             "recent_alerts": recent_alerts,
             "recent_traces": recent_traces,
             "problem_services": problem_services,
@@ -271,11 +535,10 @@ async def get_problem_services(hours: int = Query(1)):
 class AnalyzeRequest:
     pass
 
-from pydantic import BaseModel
-
 class AnalyzeReq(BaseModel):
     question: str = "分析当前系统健康状况"
-    hours: int = 1
+    hours: Optional[int] = None
+    minutes: Optional[int] = None
 
 async def _get_host_metrics() -> list[dict]:
     """获取 CMDB 所有主机的 Prometheus 实时指标。"""
@@ -335,14 +598,16 @@ async def _get_k8s_summary() -> dict:
 @router.post("/analyze")
 async def analyze_observability(req: AnalyzeReq):
     """对可观测性数据做全面 AI 流式分析（含服务器状态）"""
+    window_hours, window_minutes = _normalize_window(hours=req.hours, minutes=req.minutes)
+    window_text = _format_window_text(window_minutes)
 
     async def _stream():
         # 1. 并发收集所有上下文数据
         try:
             results = await asyncio.gather(
                 _get_alert_count(),
-                _get_loki_error_count(req.hours),
-                _get_sw_trace_count(req.hours),
+                _get_loki_error_count(window_hours),
+                _get_sw_trace_count(window_hours),
                 _get_host_metrics(),
                 return_exceptions=True,
             )
@@ -360,7 +625,7 @@ async def analyze_observability(req: AnalyzeReq):
         # 2. 构造全面 prompt
         context_lines = [
             f"当前时间：{now_str}",
-            f"统计范围：最近 {req.hours} 小时",
+            f"统计范围：最近 {window_text}",
             "",
         ]
 
@@ -437,7 +702,7 @@ async def analyze_observability(req: AnalyzeReq):
 
         # ── 日志错误 ────────────────────────────────────────────
         context_lines += ["", "## 日志错误（Loki）"]
-        context_lines.append(f"- 错误日志总数：{error_count} 条（最近 {req.hours} 小时）")
+        context_lines.append(f"- 错误日志总数：{error_count} 条（最近 {window_text}）")
         if error_breakdown:
             context_lines.append("- 错误最多的服务：")
             for e in error_breakdown[:8]:
@@ -499,17 +764,12 @@ _SETTINGS_FILE = _Path(__file__).resolve().parent.parent / "data" / "settings.js
 
 
 def _load_settings() -> dict:
-    if _SETTINGS_FILE.exists():
-        try:
-            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+    data = read_json_file(_SETTINGS_FILE, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def _save_settings(data: dict) -> None:
-    _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(_SETTINGS_FILE, data, ensure_parent=True)
 
 
 def _all_boards_raw() -> list[dict]:
@@ -586,7 +846,9 @@ def _read_grafana_settings() -> tuple[str, str]:
     """直接从 settings.json 读取 grafana_url 和 grafana_api_key，比 env 更实时。"""
     settings_file = Path(__file__).resolve().parent.parent / "data" / "settings.json"
     try:
-        d = json.loads(settings_file.read_text(encoding="utf-8"))
+        d = read_json_file(settings_file, default={})
+        if not isinstance(d, dict):
+            raise ValueError("invalid settings snapshot")
         base    = d.get("grafana_url", "").strip().rstrip("/")
         api_key = d.get("grafana_api_key", "").strip()
         return base, api_key

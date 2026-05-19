@@ -15,6 +15,8 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from json_snapshot_store import read_json_file, write_json_file
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tickets", tags=["tickets"])
 
@@ -25,17 +27,12 @@ TicketStatus = Literal["pending", "approved", "rejected", "in_progress", "done",
 
 
 def _load() -> list[dict]:
-    if _DATA_FILE.exists():
-        try:
-            return json.loads(_DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
+    data = read_json_file(_DATA_FILE, default=[])
+    return data if isinstance(data, list) else []
 
 
 def _save(data: list[dict]) -> None:
-    _DATA_FILE.parent.mkdir(exist_ok=True)
-    _DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(_DATA_FILE, data, ensure_parent=True)
 
 
 def _now() -> str:

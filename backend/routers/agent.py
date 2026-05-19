@@ -95,6 +95,40 @@ def _extract_structured(text: str) -> tuple[str, dict]:
     return text, {}
 
 
+def _looks_like_model_unavailable(err: str) -> bool:
+    err_lower = err.lower()
+    return any(token in err for token in ("暂无可用渠道", "当前分组", "无可用渠道")) or any(
+        token in err_lower
+        for token in (
+            "no available channel",
+            "unsupported model",
+            "model not found",
+            "unknown model",
+            "does not support this model",
+        )
+    )
+
+
+def _looks_like_auth_error(err: str) -> bool:
+    err_lower = err.lower()
+    if "401" in err:
+        return True
+    if "403" in err and _looks_like_model_unavailable(err):
+        return False
+    return any(
+        token in err_lower
+        for token in (
+            "invalid api key",
+            "authentication",
+            "unauthorized",
+            "forbidden",
+            "incorrect api key",
+            "permission denied",
+            "insufficient permissions",
+        )
+    ) or "403" in err
+
+
 async def _save_incident(mode: str, user_query: str, full_summary: str,
                          affected_services: str = "", root_cause: str = "",
                          resolution: str = "") -> None:
@@ -216,7 +250,19 @@ async def _stream_graph(
                 "③ 若使用代理（LiteLLM 等），请检查模型是否已注册"
             )
             yield _sse("error", message=hint)
-        elif "401" in err or "403" in err:
+        elif _looks_like_model_unavailable(err):
+            yield _sse(
+                "error",
+                message=(
+                    "当前模型在已配置网关中不可用，或模型名与网关实际注册名不一致。\n"
+                    "建议：\n"
+                    "1. 切换到可用模型\n"
+                    "2. 将该模型的运行时模型名改成网关真实模型名，例如 `qwen3-32b`\n"
+                    "3. 检查上游网关的模型分组是否已开通该模型\n\n"
+                    f"{err}"
+                ),
+            )
+        elif _looks_like_auth_error(err):
             yield _sse("error", message=f"API 认证失败，请检查 ANTHROPIC_API_KEY 或 AI_API_KEY。\n{err}")
         elif "AI_BASE_URL" in err or "ANTHROPIC_API_KEY" in err:
             yield _sse("error", message=f"配置缺失：{err}")

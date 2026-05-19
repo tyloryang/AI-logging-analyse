@@ -24,7 +24,7 @@
 
 ## 已纳入排除规则
 
-- 敏感配置：`.env`、`.env.*`、`.ssh_key`、`*.pem`、`*.key`、`backend/ssh_credentials.json`、`backend/cmdb_hosts.json`、`config/`。
+- 敏感配置：`.env`、`.env.*`、`backend/data/.ssh_key`、`*.pem`、`*.key`、`backend/data/ssh_credentials.json`、`backend/data/cmdb_hosts.json`、`config/`。
 - 运行数据：`backend/data/`、`backend/reports/`、`reports/`、SQLite `*.db*`。
 - 依赖与构建产物：`node_modules/`、`frontend/dist/`、`frontend/.vite/`、`cli/dist/`、Python `__pycache__/`、`*.pyc`。
 - 本地工具状态：`.agent/`、`.claude/`、`github-export/`。
@@ -34,7 +34,7 @@
 
 以下对象不建议长期保留在企业项目目录中，但涉及本地运行状态或历史产物，建议确认后再删除：
 
-- `.ssh_key`：根目录本地加密密钥，已加入忽略；如果后端已经改用 `SSH_FERNET_KEY` 环境变量，可删除。
+- `backend/data/.ssh_key`：本地加密密钥；如果后端已经改用 `SSH_FERNET_KEY` 环境变量，可删除。
 - `frontend/node_modules/`、`cli/node_modules/`：依赖目录，可通过 `npm install` 重建。
 - `frontend/dist/`、`cli/dist/`：构建产物，可通过构建命令重建。
 - `backend/__pycache__/`、`backend/**/__pycache__/`、`tools/__pycache__/`：Python 缓存，可安全重建。

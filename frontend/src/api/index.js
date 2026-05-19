@@ -18,7 +18,9 @@ http.interceptors.response.use(
 export const api = {
   // 服务列表
   getServices:        (config = {}) => http.get('/services', config),
-  getServicesGrouped: (config = {}) => http.get('/services/grouped', config),
+  getServicesGrouped: (params = {}, config = {}) => http.get('/services/grouped', { ...config, params }),
+  getLogLabels:       (config = {}) => http.get('/logs/labels', config),
+  getLogLabelValues:  (label, params = {}, config = {}) => http.get(`/logs/labels/${encodeURIComponent(label)}/values`, { ...config, params }),
   // 日志
   getLogs:        (params, config = {}) => http.get('/logs', { ...config, params }),
   getErrorLogs:   (params) => http.get('/logs/errors', { params }),

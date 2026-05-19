@@ -289,12 +289,12 @@ function onFrameError() {
 }
 
 async function loadBoards() {
-  // discover 先跑，overview 并行补充数据（overview 慢不阻塞看板展示）
-  const overviewPromise = api.observabilityOverview()
+  // 只拉 Grafana 元数据，避免为看板页额外触发重型 overview 聚合查询。
+  const boardsMetaPromise = api.observabilityGrafanaBoards()
     .then(d => { if (d.grafana_url && !grafanaUrl.value) grafanaUrl.value = d.grafana_url })
     .catch(() => {})
   await discoverBoards()
-  overviewPromise.catch(() => {})
+  boardsMetaPromise.catch(() => {})
 }
 
 async function discoverBoards() {

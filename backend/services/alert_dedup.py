@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from json_snapshot_store import read_json_file, write_json_file
+
 logger = logging.getLogger(__name__)
 
 _DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "alert_groups.json"
@@ -18,20 +20,12 @@ _WINDOW_SECS = 300
 
 
 def _load() -> dict[str, Any]:
-    if _DATA_FILE.exists():
-        try:
-            return json.loads(_DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {"groups": {}, "suppressed": {}}
+    data = read_json_file(_DATA_FILE, default={"groups": {}, "suppressed": {}})
+    return data if isinstance(data, dict) else {"groups": {}, "suppressed": {}}
 
 
 def _save(state: dict[str, Any]) -> None:
-    _DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _DATA_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_file(_DATA_FILE, state, ensure_parent=True)
 
 
 def _fingerprint(alert: dict) -> str:

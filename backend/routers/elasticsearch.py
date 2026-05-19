@@ -16,6 +16,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from json_snapshot_store import read_json_file, write_json_file
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/es", tags=["elasticsearch"])
 
@@ -25,17 +27,12 @@ _DATA_FILE = Path(__file__).parent.parent / "data" / "es_clusters.json"
 # ── 持久化 ───────────────────────────────────────────────────────────────────
 
 def _load_clusters() -> list[dict]:
-    if _DATA_FILE.exists():
-        try:
-            return json.loads(_DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
+    data = read_json_file(_DATA_FILE, default=[])
+    return data if isinstance(data, list) else []
 
 
 def _save_clusters(clusters: list[dict]) -> None:
-    _DATA_FILE.parent.mkdir(exist_ok=True)
-    _DATA_FILE.write_text(json.dumps(clusters, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(_DATA_FILE, clusters, ensure_parent=True)
 
 
 def _get_cluster(cluster_id: str) -> dict:

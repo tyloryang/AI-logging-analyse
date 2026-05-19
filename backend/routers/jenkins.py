@@ -12,6 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from json_snapshot_store import read_json_file, write_json_file
 from jenkins_client import JenkinsClient
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,8 @@ _JENKINS_FILE = Path(__file__).resolve().parent.parent / "data" / "jenkins.json"
 
 def _load_instances() -> list[dict]:
     """加载所有 Jenkins 实例配置。兼容旧单对象格式。"""
-    if not _JENKINS_FILE.exists():
-        return []
     try:
-        data = json.loads(_JENKINS_FILE.read_text(encoding="utf-8"))
+        data = read_json_file(_JENKINS_FILE, default=[])
         if isinstance(data, list):
             return data
         # 兼容旧单对象格式
@@ -48,8 +47,7 @@ def _load_instances() -> list[dict]:
 
 
 def _save_instances(instances: list[dict]) -> None:
-    _JENKINS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _JENKINS_FILE.write_text(json.dumps(instances, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(_JENKINS_FILE, instances, ensure_parent=True)
 
 
 def _get_instance(instance_id: str) -> dict:
@@ -197,26 +195,10 @@ async def test_default_jenkins():
 
 @router.get("/api/jenkins/instances/{instance_id}/views")
 async def get_views(instance_id: str):
-    """获取 Jenkins 实例的所有 View（视图分类）。"""
+    """获取 Jenkins 实例的所有 View（含文件夹内多级 Pipeline）。"""
     inst = _get_instance(instance_id)
     try:
-        client = _make_client(inst)
-        data = await client._get("/api/json", {
-            "tree": "views[name,url,jobs[name,color,url,lastBuild[number,result,timestamp,duration]]]"
-        })
-        views = data.get("views", [])
-        # 统计每个 view 的 job 数和失败数
-        result = []
-        for v in views:
-            jobs = v.get("jobs", [])
-            fail_count = sum(1 for j in jobs if (j.get("color") or "").startswith("red"))
-            result.append({
-                "name":       v.get("name"),
-                "url":        v.get("url"),
-                "job_count":  len(jobs),
-                "fail_count": fail_count,
-                "jobs":       jobs,
-            })
+        result = await _make_client(inst).get_views_with_jobs()
         return {"data": result}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -233,11 +215,7 @@ async def get_jobs(
     try:
         client = _make_client(inst)
         if view:
-            # 获取指定 view 下的 jobs
-            data = await client._get(f"/view/{view}/api/json", {
-                "tree": "jobs[name,url,color,lastBuild[number,result,timestamp,duration]]"
-            })
-            jobs = data.get("jobs", [])
+            jobs = await client.get_view_jobs(view)
         else:
             jobs = await client.get_all_jobs()
         return {"data": jobs, "total": len(jobs)}
@@ -255,7 +233,7 @@ async def search_jobs(instance_id: str, q: str = Query(...)):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.get("/api/jenkins/instances/{instance_id}/jobs/{job_name}/builds/{build_num}")
+@router.get("/api/jenkins/instances/{instance_id}/jobs/{job_name:path}/builds/{build_num}")
 async def get_build_info(instance_id: str, job_name: str, build_num: str):
     inst = _get_instance(instance_id)
     try:
@@ -264,7 +242,7 @@ async def get_build_info(instance_id: str, job_name: str, build_num: str):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.get("/api/jenkins/instances/{instance_id}/jobs/{job_name}/builds/{build_num}/logs")
+@router.get("/api/jenkins/instances/{instance_id}/jobs/{job_name:path}/builds/{build_num}/logs")
 async def get_build_logs(instance_id: str, job_name: str, build_num: str, lines: int = Query(200)):
     inst = _get_instance(instance_id)
     try:

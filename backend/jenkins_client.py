@@ -1,29 +1,56 @@
-"""Jenkins REST API 客户端（基于 httpx，无外部依赖）。"""
+"""Jenkins REST API 客户端（基于 httpx，支持多级文件夹 Pipeline）。"""
 import logging
 from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
 
+# tree 查询：展开 3 层文件夹嵌套（覆盖绝大多数场景）
+_JOBS_TREE = (
+    "jobs[name,url,color,_class,"
+    "lastBuild[number,result,timestamp,duration,building,estimatedDuration],"
+    "jobs[name,url,color,_class,"
+    "lastBuild[number,result,timestamp,duration,building,estimatedDuration],"
+    "jobs[name,url,color,_class,"
+    "lastBuild[number,result,timestamp,duration,building,estimatedDuration]]]]"
+)
+
+
+def _job_api_path(job: str) -> str:
+    """将 'folder/sub/job' 转换为 Jenkins API 路径 '/job/folder/job/sub/job/job'。"""
+    parts = [p for p in job.strip("/").split("/") if p]
+    return "/" + "/".join(f"job/{p}" for p in parts)
+
+
+def _flatten_jobs(jobs: list, prefix: str = "") -> list[dict]:
+    """递归展开文件夹，返回所有叶子 Job，name 为完整路径（folder/sub/job）。"""
+    result = []
+    for job in jobs:
+        name = job.get("name", "")
+        full_name = f"{prefix}/{name}" if prefix else name
+        sub = job.get("jobs")
+        if sub is not None:
+            # 文件夹：递归进去
+            result.extend(_flatten_jobs(sub, full_name))
+        else:
+            result.append({**job, "name": full_name})
+    return result
+
 
 class JenkinsClient:
     def __init__(self, url: str, username: str = "", token: str = ""):
         self.url = url.rstrip("/")
         self.auth = (username, token) if username and token else None
-        self._crumb: dict | None = None  # 缓存 CSRF crumb
+        self._crumb: dict | None = None
 
     def _headers(self) -> dict:
         return {"Accept": "application/json"}
 
     async def _get_crumb(self, client: httpx.AsyncClient) -> dict:
-        """获取 Jenkins CSRF crumb，失败时返回空 dict（部分 Jenkins 关闭了 CSRF 保护）。"""
         if self._crumb is not None:
             return self._crumb
         try:
-            r = await client.get(
-                f"{self.url}/crumbIssuer/api/json",
-                headers=self._headers(),
-            )
+            r = await client.get(f"{self.url}/crumbIssuer/api/json", headers=self._headers())
             if r.status_code == 200:
                 data = r.json()
                 self._crumb = {data["crumbRequestField"]: data["crumb"]}
@@ -34,17 +61,25 @@ class JenkinsClient:
         return {}
 
     async def _get(self, path: str, params: dict | None = None) -> dict | list:
-        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=15) as client:
-            r = await client.get(f"{self.url}{path}", params=params, headers=self._headers())
+        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=30) as client:
+            try:
+                r = await client.get(f"{self.url}{path}", params=params, headers=self._headers())
+            except httpx.ConnectError:
+                raise RuntimeError(f"无法连接 Jenkins ({self.url})，请检查 URL 和网络")
+            except httpx.TimeoutException:
+                raise RuntimeError(f"连接 Jenkins 超时 ({self.url})")
+            if r.status_code == 401:
+                raise RuntimeError("Jenkins 认证失败，请检查用户名和 API Token")
+            if r.status_code == 403:
+                raise RuntimeError("Jenkins 拒绝访问（403），请确认账号权限或 CSRF 配置")
             r.raise_for_status()
             return r.json()
 
     async def _post(self, path: str, params: dict | None = None, data: dict | None = None) -> httpx.Response:
-        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=15) as client:
+        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=30) as client:
             crumb = await self._get_crumb(client)
             headers = {**self._headers(), **crumb}
             r = await client.post(f"{self.url}{path}", params=params, data=data, headers=headers)
-            # crumb 过期时重试一次
             if r.status_code == 403:
                 self._crumb = None
                 crumb = await self._get_crumb(client)
@@ -62,62 +97,86 @@ class JenkinsClient:
     # ── 查询 ──────────────────────────────────────────────────────────────────
 
     async def get_all_jobs(self) -> list[dict]:
-        """获取所有 Job 列表（含状态）。"""
-        data = await self._get("/api/json", {"tree": "jobs[name,url,color,lastBuild[number,result,timestamp,duration]]"})
-        return data.get("jobs", [])
+        """递归获取所有 Job（含文件夹内多级 Pipeline），name 为完整路径。"""
+        data = await self._get("/api/json", {"tree": _JOBS_TREE})
+        return _flatten_jobs(data.get("jobs", []))
+
+    async def get_view_jobs(self, view: str) -> list[dict]:
+        """获取指定 View 下所有 Job（含文件夹递归展开），name 为完整路径。"""
+        from urllib.parse import quote
+        data = await self._get(f"/view/{quote(view, safe='')}/api/json", {"tree": _JOBS_TREE})
+        return _flatten_jobs(data.get("jobs", []))
+
+    async def get_views_with_jobs(self) -> list[dict]:
+        """获取所有 View 及其 Job 列表（含文件夹递归展开）。"""
+        views_tree = (
+            "views[name,url,"
+            "jobs[name,color,url,_class,"
+            "lastBuild[number,result,timestamp,duration],"
+            "jobs[name,color,url,_class,"
+            "lastBuild[number,result,timestamp,duration],"
+            "jobs[name,color,url,_class,"
+            "lastBuild[number,result,timestamp,duration]]]]]"
+        )
+        data = await self._get("/api/json", {"tree": views_tree})
+        result = []
+        for v in data.get("views", []):
+            jobs = _flatten_jobs(v.get("jobs", []))
+            fail_count = sum(1 for j in jobs if (j.get("color") or "").startswith("red"))
+            result.append({
+                "name":       v.get("name"),
+                "url":        v.get("url"),
+                "job_count":  len(jobs),
+                "fail_count": fail_count,
+                "jobs":       jobs,
+            })
+        return result
 
     async def search_jobs(self, query: str) -> list[dict]:
-        """按关键字模糊匹配 Job 名称。"""
         jobs = await self.get_all_jobs()
         q = query.lower()
         return [j for j in jobs if q in j.get("name", "").lower()]
 
     async def get_build_info(self, job: str, build: int | str) -> dict:
-        """获取指定构建详情。"""
-        return await self._get(f"/job/{job}/{build}/api/json")
+        """支持文件夹路径，如 'folder/sub/job'。"""
+        return await self._get(f"{_job_api_path(job)}/{build}/api/json")
 
     async def get_last_build_info(self, job: str) -> dict:
-        return await self._get(f"/job/{job}/lastBuild/api/json")
+        return await self._get(f"{_job_api_path(job)}/lastBuild/api/json")
 
     async def get_build_logs(self, job: str, build: int | str, lines: int = 200) -> str:
-        """获取构建控制台日志（末尾 N 行）。"""
-        text = await self._get_text(f"/job/{job}/{build}/consoleText")
+        text = await self._get_text(f"{_job_api_path(job)}/{build}/consoleText")
         if lines and lines > 0:
-            log_lines = text.splitlines()
-            return "\n".join(log_lines[-lines:])
+            return "\n".join(text.splitlines()[-lines:])
         return text
 
     async def get_running_builds(self) -> list[dict]:
-        """获取当前正在运行的所有构建。"""
-        data = await self._get(
-            "/api/json",
-            {"tree": "jobs[name,color,lastBuild[number,result,timestamp,building,estimatedDuration]]"},
-        )
+        """递归扫描所有层级，返回正在运行的构建。"""
+        data = await self._get("/api/json", {"tree": _JOBS_TREE})
+        all_jobs = _flatten_jobs(data.get("jobs", []))
         result = []
-        for job in data.get("jobs", []):
+        for job in all_jobs:
             lb = job.get("lastBuild")
             if lb and lb.get("building"):
                 result.append({"job": job["name"], **lb})
         return result
 
     async def get_test_results(self, job: str, build: int | str) -> dict:
-        """获取构建测试报告。"""
-        return await self._get(f"/job/{job}/{build}/testReport/api/json")
+        return await self._get(f"{_job_api_path(job)}/{build}/testReport/api/json")
 
     async def get_queue_items(self) -> list[dict]:
-        """获取构建队列。"""
         data = await self._get("/queue/api/json")
         return data.get("items", [])
 
     # ── 操作 ──────────────────────────────────────────────────────────────────
 
     async def build_job(self, job: str, params: dict | None = None) -> int:
-        """触发构建，返回队列 ID。params 非空时走 buildWithParameters。"""
+        """支持文件夹路径触发构建。"""
+        path = _job_api_path(job)
         if params:
-            r = await self._post(f"/job/{job}/buildWithParameters", data=params)
+            r = await self._post(f"{path}/buildWithParameters", data=params)
         else:
-            r = await self._post(f"/job/{job}/build")
-        # Location: .../queue/item/123/  →  queue_id=123
+            r = await self._post(f"{path}/build")
         location = r.headers.get("Location", "")
         parts = [p for p in location.rstrip("/").split("/") if p]
         try:
@@ -126,7 +185,6 @@ class JenkinsClient:
             return 0
 
     async def cancel_queue_item(self, queue_id: int) -> bool:
-        """取消队列中的构建。"""
         try:
             await self._post("/queue/cancelItem", params={"id": queue_id})
             return True

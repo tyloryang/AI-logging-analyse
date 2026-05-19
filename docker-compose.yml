@@ -8,10 +8,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      # 持久化后端状态：CMDB、SSH 凭证、SSH 密钥、SQLite 快照等都在这里
       - ./backend/reports:/app/reports
-      - ./backend/cmdb_hosts.json:/app/cmdb_hosts.json
-      - ./backend/ssh_credentials.json:/app/ssh_credentials.json
-      - aiops_data:/app/data
+      - ./backend/data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -90,7 +89,6 @@ services:
 
 volumes:
   redis_data:
-  aiops_data:
   mysql_data:
   pg_data:
   grafana_data:

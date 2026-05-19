@@ -22,6 +22,54 @@
           <span class="dt-sep">→</span>
           <input type="datetime-local" v-model="customEnd"   class="dt-input" @change="onCustomTimeChange" title="结束时间" />
         </div>
+        <div class="panel-subsection">
+          <span class="panel-subtitle">标签分组</span>
+          <select v-model="groupBy" class="time-select" @change="onGroupByChange">
+            <option v-for="option in groupByOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </div>
+      </div>
+
+      <div class="label-explorer">
+        <div class="label-explorer-header" @click="labelExplorerOpen = !labelExplorerOpen">
+          <span class="label-explorer-title">Loki 标签</span>
+          <span class="label-explorer-toggle">{{ labelExplorerOpen ? '收起' : '展开' }}</span>
+        </div>
+        <div v-show="labelExplorerOpen" class="label-explorer-body">
+          <div v-if="loadingLabelCatalog" class="loading-row label-loading">
+            <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
+          </div>
+          <template v-else>
+            <div v-if="labelCatalog.length" class="label-chip-list">
+              <button
+                v-for="item in labelCatalog"
+                :key="item.name"
+                class="label-chip"
+                :class="{ active: activeLabelName === item.name, groupable: item.groupable }"
+                @click="inspectLabel(item.name)"
+                :title="item.name"
+              >
+                {{ item.name }}
+              </button>
+            </div>
+            <div v-else class="label-empty">未发现 Loki 标签</div>
+            <div v-if="activeLabelName" class="label-values-card">
+              <div class="label-values-header">
+                <span class="label-values-name">{{ activeLabelName }}</span>
+                <span class="label-values-meta">值 {{ activeLabelTotal }}</span>
+              </div>
+              <div v-if="loadingLabelValues" class="loading-row label-loading">
+                <div class="spinner" style="width:12px;height:12px;border-width:2px"></div>
+              </div>
+              <div v-else-if="activeLabelValues.length" class="label-values-list">
+                <span v-for="value in activeLabelValues" :key="value" class="label-value-chip">{{ value }}</span>
+              </div>
+              <div v-else class="label-empty">暂无样例值</div>
+            </div>
+          </template>
+        </div>
       </div>
 
       <div class="svc-list-wrap">
@@ -35,18 +83,18 @@
         </div>
         <!-- 按 namespace 分组展示 -->
         <template v-if="serviceGroups.length">
-          <div v-for="grp in serviceGroups" :key="grp.namespace" class="svc-ns-group">
-            <div class="svc-ns-header" @click="toggleNs(grp.namespace)">
-              <span class="svc-ns-arrow" :class="{ open: openNs.has(grp.namespace) }">▶</span>
-              <span class="svc-ns-label">{{ grp.label || grp.namespace }}</span>
+          <div v-for="grp in serviceGroups" :key="grp.key || grp.namespace || grp.label" class="svc-ns-group">
+            <div class="svc-ns-header" @click="toggleNs(grp.key || grp.namespace || grp.label)">
+              <span class="svc-ns-arrow" :class="{ open: openNs.has(grp.key || grp.namespace || grp.label) }">▶</span>
+              <span class="svc-ns-label">{{ grp.label || grp.key || grp.namespace }}</span>
               <span class="svc-ns-count">{{ grp.services.length }}</span>
             </div>
-            <div v-show="openNs.has(grp.namespace)" class="svc-ns-children">
+            <div v-show="openNs.has(grp.key || grp.namespace || grp.label)" class="svc-ns-children">
               <div
                 v-for="svc in grp.services" :key="svc.name"
                 class="svc-item svc-item-child"
-                :class="{ active: selectedService === svc.name }"
-                @click="selectService(svc.name)"
+                :class="{ active: isSelectedService(svc.name, svc) }"
+                @click="selectService(svc.name, svc)"
               >
                 <span class="svc-dot" :class="svc.error_count > 0 ? 'error' : 'ok'"></span>
                 <span class="svc-label">{{ svc.name }}</span>
@@ -60,7 +108,7 @@
           <div
             v-for="svc in services" :key="svc.name"
             class="svc-item"
-            :class="{ active: selectedService === svc.name }"
+            :class="{ active: isSelectedService(svc.name) }"
             @click="selectService(svc.name)"
           >
             <span class="svc-dot" :class="svc.error_count > 0 ? 'error' : 'ok'"></span>
@@ -199,7 +247,7 @@
             </span>
           </div>
           <!-- 表格 -->
-          <div class="log-table-wrap">
+          <div ref="logScrollWrap" class="log-table-wrap" @scroll.passive="onLogScroll">
             <table class="log-table">
               <colgroup>
               <col style="width:168px">
@@ -219,7 +267,7 @@
               </thead>
               <tbody>
                 <tr
-                  v-for="(log, i) in pagedLogs" :key="i"
+                  v-for="(log, i) in filteredLogs" :key="i"
                   class="log-row" :class="logRowClass(log.line)"
                   @click="openDetail(log)"
                 >
@@ -237,33 +285,17 @@
             </table>
           </div>
           <!-- 加载更多 -->
-          <div v-if="hasMore || loadingMore" class="load-more-bar">
-            <button class="btn-load-more" :disabled="loadingMore" @click="loadMore">
-              <span v-if="loadingMore" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
-              <span v-else>↓</span>
-              {{ loadingMore ? '加载中...' : `加载更多（已加载 ${totalLoaded} 条）` }}
-            </button>
-          </div>
-
-          <!-- 分页 -->
-          <div class="log-pagination">
-            <span class="pg-info">第 {{ currentPage }} / {{ totalPages }} 页，每页 {{ pageSize }} 条（共加载 {{ totalLoaded }} 条）</span>
-            <div class="pg-btns">
-              <button class="pg-btn" :disabled="currentPage <= 1" @click="currentPage = 1">«</button>
-              <button class="pg-btn" :disabled="currentPage <= 1" @click="currentPage--">‹</button>
-              <span
-                v-for="p in pageNumbers" :key="p"
-                class="pg-num" :class="{ active: p === currentPage, ellipsis: p === '…' }"
-                @click="p !== '…' && (currentPage = p)"
-              >{{ p }}</span>
-              <button class="pg-btn" :disabled="currentPage >= totalPages" @click="currentPage++">›</button>
-              <button class="pg-btn" :disabled="currentPage >= totalPages" @click="currentPage = totalPages">»</button>
-            </div>
-            <select class="pg-size-sel" v-model.number="pageSize" @change="currentPage = 1">
-              <option :value="20">20 条/页</option>
-              <option :value="50">50 条/页</option>
-              <option :value="100">100 条/页</option>
-            </select>
+          <div class="load-more-bar" :class="{ ready: hasMore && !loadingMore }">
+            <span v-if="loadingMore" class="load-more-status">
+              <span class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+              正在继续加载日志...
+            </span>
+            <span v-else-if="hasMore" class="load-more-status">
+              向下滚动到底部自动加载更多，已加载 {{ totalLoaded }} 条
+            </span>
+            <span v-else class="load-more-status">
+              已加载全部日志，共 {{ totalLoaded }} 条
+            </span>
           </div>
         </template>
       </div>
@@ -562,7 +594,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { api, streamSSE } from '../api/index.js'
 
 // ── 公共状态 ─────────────────────────────
@@ -572,6 +604,17 @@ const openNs         = ref(new Set())  // 已展开的 namespace
 const selectedService = ref('')
 const hours          = ref('1')
 const loadingSvcs    = ref(false)
+const groupBy        = ref('namespace')
+const selectedGroupLabel = ref('')
+const selectedGroupValue = ref('')
+const labelCatalog   = ref([])
+const groupOptions   = ref([{ value: 'namespace', label: 'namespace' }])
+const loadingLabelCatalog = ref(false)
+const labelExplorerOpen = ref(true)
+const activeLabelName = ref('')
+const activeLabelValues = ref([])
+const activeLabelTotal = ref(0)
+const loadingLabelValues = ref(false)
 
 function toggleNs(ns) {
   const s = new Set(openNs.value)
@@ -601,6 +644,16 @@ let   templatesRequestId = 0
 const totalErrors = computed(() =>
   services.value.reduce((s, v) => s + v.error_count, 0)
 )
+
+const groupByOptions = computed(() => {
+  const options = groupOptions.value.length
+    ? [...groupOptions.value]
+    : [{ value: 'namespace', label: 'namespace' }]
+  if (groupBy.value && !options.some(option => option.value === groupBy.value)) {
+    options.unshift({ value: groupBy.value, label: groupBy.value })
+  }
+  return options
+})
 
 function logServiceName(log) {
   return log?.labels?.app || log?.labels?.job || selectedService.value || '—'
@@ -643,6 +696,16 @@ function timeParams() {
   return { hours: hours.value }
 }
 
+function currentGroupParams() {
+  if (!selectedService.value || !selectedGroupLabel.value || !selectedGroupValue.value) {
+    return {}
+  }
+  return {
+    group_label: selectedGroupLabel.value,
+    group_value: selectedGroupValue.value,
+  }
+}
+
 // ── 日志流 ───────────────────────────────
 const logs         = ref([])
 const levelFilter  = ref('')
@@ -651,16 +714,13 @@ const loadingMore  = ref(false)
 const hasMore      = ref(false)
 const nextCursorNs = ref(null)
 const totalLoaded  = ref(0)
+const logScrollWrap = ref(null)
 const analyzingAI  = ref(false)
 const aiContent    = ref('')
 
 // 仅事件过滤
 const incidentOnly = ref(false)
 const INCIDENT_KEYWORDS = ['error', 'exception', 'fail', 'timeout', 'refused', 'panic', 'oom', 'fatal', 'traceback']
-
-// 分页
-const currentPage = ref(1)
-const pageSize    = ref(50)
 
 // 详情抽屉
 const detailLog   = ref(null)
@@ -704,32 +764,8 @@ const levelStats = computed(() => {
   return stats
 })
 
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredLogs.value.length / pageSize.value)))
-
-const pagedLogs = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return filteredLogs.value.slice(start, start + pageSize.value)
-})
-
-const pageNumbers = computed(() => {
-  const total = totalPages.value
-  const cur   = currentPage.value
-  const pages = []
-  if (total <= 7) {
-    for (let i = 1; i <= total; i++) pages.push(i)
-  } else {
-    pages.push(1)
-    if (cur > 3)          pages.push('…')
-    for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) pages.push(i)
-    if (cur < total - 2)  pages.push('…')
-    pages.push(total)
-  }
-  return pages
-})
-
 function toggleIncident() {
   incidentOnly.value = !incidentOnly.value
-  currentPage.value = 1
 }
 
 function openDetail(log) {
@@ -737,8 +773,26 @@ function openDetail(log) {
 }
 
 function onLevelChange() {
-  currentPage.value = 1
   loadLogs()
+}
+
+function onLogScroll(event) {
+  const target = event?.target
+  if (!target || loadingLogs.value || loadingMore.value || !hasMore.value) return
+  const remaining = target.scrollHeight - target.scrollTop - target.clientHeight
+  if (remaining <= 160) {
+    loadMore()
+  }
+}
+
+async function ensureLogViewportFilled() {
+  await nextTick()
+  const el = logScrollWrap.value
+  if (!el || loadingLogs.value || loadingMore.value || !hasMore.value) return
+  const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (remaining <= 40) {
+    loadMore()
+  }
 }
 
 // ── 模板聚合 AI ───────────────────────────
@@ -806,6 +860,65 @@ function highlightWildcard(tpl) {
   return tpl.replace(/<\*>/g, '<span class="wildcard">&lt;*&gt;</span>')
 }
 
+async function loadLabelCatalog() {
+  loadingLabelCatalog.value = true
+  try {
+    const result = await api.getLogLabels()
+    labelCatalog.value = result.data || []
+    groupOptions.value = result.group_options?.length
+      ? result.group_options
+      : [{ value: 'namespace', label: 'namespace' }]
+    if (result.default_group_by) {
+      groupBy.value = result.default_group_by
+    }
+  } catch (error) {
+    labelCatalog.value = []
+    groupOptions.value = [{ value: 'namespace', label: 'namespace' }]
+  } finally {
+    loadingLabelCatalog.value = false
+  }
+}
+
+async function inspectLabel(labelName) {
+  if (!labelName) return
+  if (activeLabelName.value === labelName) {
+    activeLabelName.value = ''
+    activeLabelValues.value = []
+    activeLabelTotal.value = 0
+    loadingLabelValues.value = false
+    return
+  }
+
+  activeLabelName.value = labelName
+  activeLabelValues.value = []
+  activeLabelTotal.value = 0
+  loadingLabelValues.value = true
+  try {
+    const result = await api.getLogLabelValues(labelName, { limit: 20 })
+    if (activeLabelName.value !== labelName) return
+    activeLabelValues.value = result.data || []
+    activeLabelTotal.value = result.total || 0
+  } catch (error) {
+    if (activeLabelName.value !== labelName) return
+    activeLabelValues.value = []
+    activeLabelTotal.value = 0
+  } finally {
+    loadingLabelValues.value = false
+  }
+}
+
+function onGroupByChange() {
+  selectedService.value = ''
+  selectedGroupLabel.value = ''
+  selectedGroupValue.value = ''
+  loadServices()
+  if (activeTab.value === 'logs') {
+    loadLogs()
+  } else if (activeTab.value === 'templates') {
+    loadTemplates()
+  }
+}
+
 // ── 数据加载 ─────────────────────────────
 async function loadServices() {
   const requestId = ++servicesRequestId
@@ -817,7 +930,10 @@ async function loadServices() {
     // 优先尝试分组接口
     let rg = null
     try {
-      rg = await api.getServicesGrouped({ signal: controller.signal })
+      rg = await api.getServicesGrouped(
+        { group_by: groupBy.value || undefined },
+        { signal: controller.signal },
+      )
     } catch (error) {
       if (isCanceled(error)) return
     }
@@ -825,7 +941,7 @@ async function loadServices() {
     if (rg?.data?.length) {
       serviceGroups.value = rg.data
       // 自动展开第一个 namespace
-      openNs.value = new Set([rg.data[0]?.namespace ?? ''])
+      openNs.value = new Set([rg.data[0]?.key ?? rg.data[0]?.namespace ?? rg.data[0]?.label ?? ''])
       // 平铺 services 保持兼容（totalErrors 等计算用）
       services.value = rg.data.flatMap(g => g.services)
     } else {
@@ -859,7 +975,6 @@ async function loadLogs() {
   logsAbort = controller
   loadingLogs.value = true
   logs.value = []
-  currentPage.value = 1
   hasMore.value = false
   nextCursorNs.value = null
   totalLoaded.value = 0
@@ -869,6 +984,7 @@ async function loadLogs() {
       level:    levelFilter.value || undefined,
       limit:    200,
       keyword:  keyword.value || undefined,
+      ...currentGroupParams(),
       ...timeParams(),
     }, { signal: controller.signal })
     if (requestId !== logsRequestId) return
@@ -876,6 +992,7 @@ async function loadLogs() {
     hasMore.value      = r.has_more ?? false
     nextCursorNs.value = r.next_cursor_ns ?? null
     totalLoaded.value  = r.data?.length ?? 0
+    await ensureLogViewportFilled()
   } catch (error) {
     if (!isCanceled(error)) {
       logs.value = []
@@ -908,6 +1025,7 @@ async function loadMore() {
       limit:      200,
       keyword:    keyword.value || undefined,
       cursor_ns:  nextCursorNs.value,
+      ...currentGroupParams(),
       ...timeParams(),
     }, { signal: controller.signal })
     if (requestId !== loadMoreRequestId || baseLogsRequestId !== logsRequestId) return
@@ -915,6 +1033,7 @@ async function loadMore() {
     hasMore.value      = r.has_more ?? false
     nextCursorNs.value = r.next_cursor_ns ?? null
     totalLoaded.value  = logs.value.length
+    await ensureLogViewportFilled()
   } catch (error) {
     if (!isCanceled(error)) {
       hasMore.value = false
@@ -944,6 +1063,7 @@ async function loadTemplates() {
       top_n:    100,
       level:    tplLevelFilter.value || undefined,
       keyword:  keyword.value || undefined,
+      ...currentGroupParams(),
       ...timeParams(),
     }, { signal: controller.signal })
     if (requestId !== templatesRequestId) return
@@ -962,11 +1082,20 @@ async function loadTemplates() {
   }
 }
 
-function selectService(name) {
+function selectService(name, serviceMeta = null) {
   selectedService.value = name
+  selectedGroupLabel.value = serviceMeta?.group_label || ''
+  selectedGroupValue.value = serviceMeta?.group_value || ''
   if (activeTab.value === 'logs')           loadLogs()
   else if (activeTab.value === 'templates') loadTemplates()
   // trace tab: 不自动触发，由用户手动点击"开始分析"
+}
+
+function isSelectedService(name, serviceMeta = null) {
+  if (selectedService.value !== name) return false
+  const metaGroupLabel = serviceMeta?.group_label || ''
+  const metaGroupValue = serviceMeta?.group_value || ''
+  return selectedGroupLabel.value === metaGroupLabel && selectedGroupValue.value === metaGroupValue
 }
 
 function onParamChange() {
@@ -1037,6 +1166,7 @@ async function runTrace() {
     traceData = await api.traceKeyword({
       keyword: traceValue.value,
       service: selectedService.value || undefined,
+      ...currentGroupParams(),
       ...tp,
     })
     traceResult.value = traceData
@@ -1058,6 +1188,7 @@ async function runTrace() {
         keyword: traceValue.value,
         service: selectedService.value || undefined,
         limit: 2000,
+        ...currentGroupParams(),
         ...tp,
       }, { signal: controller.signal })
       traceLogs.value = [...(logsR.data || [])].reverse()  // 升序展示
@@ -1113,6 +1244,9 @@ function startTplAIAnalysis() {
     ...(selectedService.value ? { service: selectedService.value } : {}),
     ...(tplLevelFilter.value ? { level: tplLevelFilter.value } : {}),
     ...(keyword.value ? { keyword: keyword.value } : {}),
+    ...(selectedService.value && selectedGroupLabel.value && selectedGroupValue.value
+      ? { group_label: selectedGroupLabel.value, group_value: selectedGroupValue.value }
+      : {}),
   })
   if (timeMode.value === 'custom' && customStart.value && customEnd.value) {
     params.set('start_time', toUtcStr(customStart.value))
@@ -1142,6 +1276,9 @@ function startAIAnalysis() {
     ...(selectedService.value ? { service: selectedService.value } : {}),
     ...(levelFilter.value     ? { level:   levelFilter.value     } : {}),
     ...(keyword.value         ? { keyword: keyword.value         } : {}),
+    ...(selectedService.value && selectedGroupLabel.value && selectedGroupValue.value
+      ? { group_label: selectedGroupLabel.value, group_value: selectedGroupValue.value }
+      : {}),
   })
   streamSSE(
     `/api/analyze/stream?${params}`,
@@ -1151,7 +1288,8 @@ function startAIAnalysis() {
   )
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await loadLabelCatalog()
   loadServices()
   loadLogs()
 })
@@ -1171,7 +1309,7 @@ onBeforeUnmount(() => {
 
 /* 左侧服务面板 */
 .service-panel {
-  width: 220px; min-width: 220px;
+  width: 280px; min-width: 280px;
   background: var(--bg-card);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; overflow: hidden;
@@ -1210,6 +1348,112 @@ onBeforeUnmount(() => {
 }
 .dt-sep {
   text-align: center; font-size: 10px; color: var(--text-muted); line-height: 1;
+}
+.panel-subsection { margin-top: 10px; }
+.panel-subtitle {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.label-explorer {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+.label-explorer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  cursor: pointer;
+}
+.label-explorer-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.label-explorer-toggle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.label-explorer-body {
+  padding: 0 12px 12px;
+}
+.label-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.label-chip {
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  border-radius: 9999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.label-chip:hover {
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+}
+.label-chip.active {
+  background: var(--accent-dim);
+  border-color: var(--border-accent);
+  color: var(--accent);
+}
+.label-chip.groupable::after {
+  content: ' *';
+  opacity: .7;
+}
+.label-values-card {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+}
+.label-values-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.label-values-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.label-values-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.label-values-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.label-value-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  word-break: break-all;
+}
+.label-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+.label-loading {
+  padding: 8px 0;
 }
 
 /* 关键字搜索框 */
@@ -1397,48 +1641,14 @@ onBeforeUnmount(() => {
 .load-more-bar {
   display: flex; justify-content: center;
   padding: 10px 14px; border-top: 1px solid var(--border);
+  background: var(--bg-card);
 }
-.btn-load-more {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 20px; border-radius: 8px; font-size: 13px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--bg-base); color: var(--text-primary);
-  transition: background .12s;
+.load-more-bar.ready {
+  background: linear-gradient(180deg, rgba(99,102,241,.04), transparent);
 }
-.btn-load-more:hover:not(:disabled) { background: var(--bg-hover); }
-.btn-load-more:disabled { opacity: .55; cursor: not-allowed; }
-
-/* 分页 */
-.log-pagination {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 14px; border-top: 1px solid var(--border);
-  background: var(--bg-card); flex-shrink: 0;
-  font-size: 12px; color: var(--text-muted); flex-wrap: wrap;
-}
-.pg-info { flex: 1; min-width: 120px; }
-.pg-btns { display: flex; align-items: center; gap: 2px; }
-.pg-btn {
-  width: 28px; height: 28px; border: 1px solid var(--border);
-  background: var(--bg-base); color: var(--text-muted);
-  border-radius: 5px; cursor: pointer; font-size: 13px;
-  display: flex; align-items: center; justify-content: center;
-  transition: all .12s;
-}
-.pg-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
-.pg-btn:disabled { opacity: .35; cursor: not-allowed; }
-.pg-num {
-  min-width: 28px; height: 28px; padding: 0 5px;
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid transparent; border-radius: 5px;
-  font-size: 12px; cursor: pointer; color: var(--text-muted);
-  transition: all .12s;
-}
-.pg-num:not(.ellipsis):hover { background: var(--bg-hover); color: var(--text-primary); }
-.pg-num.active { background: var(--accent-dim); color: var(--accent); border-color: rgba(99,102,241,.3); font-weight: 600; }
-.pg-num.ellipsis { cursor: default; }
-.pg-size-sel {
-  background: var(--bg-base); border: 1px solid var(--border);
-  color: var(--text-muted); padding: 3px 6px; border-radius: 5px;
-  font-size: 11px; cursor: pointer;
+.load-more-status {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-muted);
 }
 
 /* 日志详情抽屉 */

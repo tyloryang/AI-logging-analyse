@@ -587,7 +587,7 @@
       <div class="host-modal" style="max-width:440px">
         <div class="modal-header"><span>批量导入主机</span><button class="close-btn" @click="showImportModal = false">✕</button></div>
         <div class="modal-body">
-          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">支持 <b>.xlsx</b> / <b>.csv</b> 文件，列名以导出模板为准</p>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">支持 <b>.xlsx</b> / <b>.csv</b> 文件，列名以导出模板为准；建议使用导出文件回填，可保留分组 ID、标签、凭证等完整备份字段</p>
           <div class="form-group">
             <label>选择文件</label>
             <input type="file" accept=".xlsx,.xls,.csv" @change="onImportFile" class="file-input" />

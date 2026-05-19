@@ -55,6 +55,8 @@ async def _get_clustered_templates(
     keyword: Optional[str],
     start_ns: Optional[int],
     end_ns: Optional[int],
+    group_label: Optional[str] = None,
+    group_value: Optional[str] = None,
     use_scan_timeout: bool = False,
 ) -> dict:
     cache_key = _build_cache_key(
@@ -67,6 +69,8 @@ async def _get_clustered_templates(
         keyword or "",
         start_ns or "",
         end_ns or "",
+        group_label or "",
+        group_value or "",
         use_scan_timeout,
     )
     cached = _TEMPLATE_CACHE.get(cache_key)
@@ -87,6 +91,8 @@ async def _get_clustered_templates(
             keyword=keyword,
             start_ns=start_ns,
             end_ns=end_ns,
+            group_label=group_label,
+            group_value=group_value,
             use_scan_timeout=use_scan_timeout,
         )
         templates = clusterer.cluster(logs, top_n=top_n)
@@ -106,6 +112,8 @@ async def _trace_keyword_result(
     hours: int,
     start_ns: Optional[int],
     end_ns: Optional[int],
+    group_label: Optional[str] = None,
+    group_value: Optional[str] = None,
 ) -> dict:
     cache_key = _build_cache_key(
         "trace",
@@ -114,6 +122,8 @@ async def _trace_keyword_result(
         hours,
         start_ns or "",
         end_ns or "",
+        group_label or "",
+        group_value or "",
     )
     cached = _TRACE_CACHE.get(cache_key)
     if cached is not None:
@@ -132,6 +142,8 @@ async def _trace_keyword_result(
             keyword=keyword,
             start_ns=start_ns,
             end_ns=end_ns,
+            group_label=group_label,
+            group_value=group_value,
             use_scan_timeout=True,
         )
         if not logs:
@@ -190,13 +202,38 @@ async def get_services():
 
 
 @router.get("/api/services/grouped")
-async def get_services_grouped():
-    """获取按 K8s namespace 分组的服务列表（日志中心环境分组用）。"""
+async def get_services_grouped(
+    group_by: Optional[str] = Query(None, description="按 Loki 标签分组，如 namespace/env/team"),
+):
+    """获取按指定 Loki 标签分组的服务列表。"""
     try:
-        groups = await loki.get_grouped_services()
-        return {"data": groups}
+        groups = await loki.get_grouped_services(group_label=group_by)
+        return {"data": groups, "group_by": group_by or ""}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Loki 连接失败: {e}")
+
+
+@router.get("/api/logs/labels")
+async def get_log_labels():
+    """返回 Loki 当前可见的标签清单，以及推荐的分组选项。"""
+    try:
+        return await loki.get_label_inventory()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Loki 标签读取失败: {e}")
+
+
+@router.get("/api/logs/labels/{label}/values")
+async def get_log_label_values(
+    label: str,
+    limit: int = Query(20, ge=1, le=200, description="返回多少个样例值"),
+):
+    """返回指定 Loki 标签的样例值。"""
+    try:
+        values = await loki.get_label_values(label)
+        values = sorted(values)
+        return {"label": label, "data": values[:limit], "total": len(values)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Loki 标签值读取失败: {e}")
 
 
 # ── 日志查询 ──────────────────────────────────────────────────────────────────
@@ -208,6 +245,8 @@ async def get_logs(
     limit: int = Query(200, le=1000, description="每页条数（游标分页）"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn/info"),
     keyword: Optional[str] = Query(None, description="关键字过滤（不区分大小写）"),
+    group_label: Optional[str] = Query(None, description="额外的 Loki 分组标签名"),
+    group_value: Optional[str] = Query(None, description="额外的 Loki 分组标签值"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式，如 2024-01-01T00:00"),
     end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式，如 2024-01-01T23:59"),
     cursor_ns: Optional[int] = Query(None, description="游标：上一页最旧条目的纳秒时间戳，续页时传入"),
@@ -221,6 +260,8 @@ async def get_logs(
             cursor_ns=cursor_ns,
             level=level or None,
             keyword=keyword or None,
+            group_label=group_label,
+            group_value=group_value,
             start_ns=_parse_time_ns(start_time),
             end_ns=_parse_time_ns(end_time),
         )
@@ -240,10 +281,17 @@ async def get_logs(
 async def get_error_logs(
     hours: int = Query(24),
     limit: int = Query(5000, le=20000),
+    group_label: Optional[str] = Query(None),
+    group_value: Optional[str] = Query(None),
 ):
     """查询全量错误日志"""
     try:
-        logs = await loki.query_error_logs(hours=hours, limit=limit)
+        logs = await loki.query_error_logs(
+            hours=hours,
+            limit=limit,
+            group_label=group_label,
+            group_value=group_value,
+        )
         return {"data": logs, "total": len(logs)}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -272,6 +320,8 @@ async def get_log_templates(
     top_n: int = Query(100, le=500, description="返回模板数上限"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn，不传则聚类全量日志"),
     keyword: Optional[str] = Query(None, description="关键字过滤"),
+    group_label: Optional[str] = Query(None, description="额外的 Loki 分组标签名"),
+    group_value: Optional[str] = Query(None, description="额外的 Loki 分组标签值"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
     end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式"),
 ):
@@ -286,6 +336,8 @@ async def get_log_templates(
             top_n=top_n,
             level=level,
             keyword=keyword or None,
+            group_label=group_label,
+            group_value=group_value,
             start_ns=start_ns,
             end_ns=end_ns,
         )
@@ -307,6 +359,8 @@ async def trace_keyword(
     keyword: str = Query(..., description="追踪关键字，如 traceId 值"),
     service: Optional[str] = Query(None, description="服务名称"),
     hours: int = Query(24, description="查询时长（小时）"),
+    group_label: Optional[str] = Query(None, description="额外的 Loki 分组标签名"),
+    group_value: Optional[str] = Query(None, description="额外的 Loki 分组标签值"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
     end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式"),
 ):
@@ -323,6 +377,8 @@ async def trace_keyword(
             hours=hours,
             start_ns=start_ns,
             end_ns=end_ns,
+            group_label=group_label,
+            group_value=group_value,
         )
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -336,6 +392,8 @@ async def analyze_templates_stream(
     hours: int = Query(24),
     level: Optional[str] = Query(None),
     keyword: Optional[str] = Query(None),
+    group_label: Optional[str] = Query(None),
+    group_value: Optional[str] = Query(None),
     start_time: Optional[str] = Query(None),
     end_time: Optional[str] = Query(None),
 ):
@@ -350,6 +408,8 @@ async def analyze_templates_stream(
             top_n=30,
             level=level or None,
             keyword=keyword or None,
+            group_label=group_label,
+            group_value=group_value,
             start_ns=start_ns,
             end_ns=end_ns,
             use_scan_timeout=True,
@@ -389,6 +449,8 @@ async def analyze_logs_stream(
     hours:      int           = Query(24),
     level:      Optional[str] = Query(None),
     keyword:    Optional[str] = Query(None),
+    group_label: Optional[str] = Query(None),
+    group_value: Optional[str] = Query(None),
     start_time: Optional[str] = Query(None),
     end_time:   Optional[str] = Query(None),
 ):
@@ -409,6 +471,8 @@ async def analyze_logs_stream(
             limit=3000,
             level=level or None,          # 不强制 error，与日志流保持一致
             keyword=keyword or None,
+            group_label=group_label,
+            group_value=group_value,
             start_ns=_parse_time_ns(start_time),
             end_ns=_parse_time_ns(end_time),
             use_scan_timeout=True,

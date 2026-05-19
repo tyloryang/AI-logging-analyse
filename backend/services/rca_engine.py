@@ -20,6 +20,8 @@ from typing import AsyncIterator
 
 import httpx
 
+from json_snapshot_store import read_json_file, write_json_file
+
 logger = logging.getLogger(__name__)
 
 _RCA_FILE = Path(__file__).resolve().parent.parent / "data" / "rca_results.json"
@@ -30,21 +32,12 @@ _CTX_TIMEOUT = 10  # 上下文采集超时（秒）
 # ── 持久化 ────────────────────────────────────────────────────────────────────
 
 def _load_results() -> list[dict]:
-    if _RCA_FILE.exists():
-        try:
-            return json.loads(_RCA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
+    data = read_json_file(_RCA_FILE, default=[])
+    return data if isinstance(data, list) else []
 
 
 def _save_results(results: list[dict]) -> None:
-    _RCA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # 保留最近 200 条
-    _RCA_FILE.write_text(
-        json.dumps(results[-200:], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_file(_RCA_FILE, results[-200:], ensure_parent=True)
 
 
 def save_rca(record: dict) -> str:

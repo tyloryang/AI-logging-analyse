@@ -15,11 +15,12 @@
         </div>
       </div>
       <div class="obs-header-right">
-        <select class="time-select" v-model="hours" @change="loadAll">
-          <option :value="1">最近 1 小时</option>
-          <option :value="3">最近 3 小时</option>
-          <option :value="6">最近 6 小时</option>
-          <option :value="24">最近 24 小时</option>
+        <select class="time-select" v-model="windowMinutes" @change="loadAll">
+          <option :value="10">最近 10 分钟</option>
+          <option :value="30">最近 30 分钟</option>
+          <option :value="60">最近 1 小时</option>
+          <option :value="360">最近 6 小时</option>
+          <option :value="1440">最近 24 小时</option>
         </select>
         <button class="btn-refresh" @click="loadAll" :disabled="loading" title="刷新">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }">
@@ -133,7 +134,16 @@
                 <span class="rca-badge alert-badge" v-if="svc.alerts > 0">{{ svc.alerts }} 告警</span>
               </div>
               <div class="rca-summary">{{ svc.summary || '存在异常，建议排查' }}</div>
+              <div v-if="svc.summary_source === 'rca' || svc.rca_created_at" class="rca-summary-meta">
+                <span v-if="svc.summary_source === 'rca'" class="rca-ai-badge">AI RCA</span>
+                <span v-if="svc.rca_created_at" class="rca-summary-time">{{ fmtRcaTime(svc.rca_created_at) }}</span>
+              </div>
               <div class="rca-actions">
+                <RouterLink
+                  v-if="svc.rca_id"
+                  :to="{ path: '/aiops/rca', query: { rca_id: svc.rca_id } }"
+                  class="rca-link"
+                >RCA 璇︽儏</RouterLink>
                 <RouterLink :to="`/logs?service=${svc.service}`" class="rca-link">日志分析</RouterLink>
                 <RouterLink to="/skywalking" class="rca-link">链路追踪</RouterLink>
                 <button class="rca-link" @click="askAI(svc.service)">AI 分析</button>
@@ -310,7 +320,7 @@ const router = useRouter()
 
 // ── 状态 ─────────────────────────────────────────────────────────────
 const loading  = ref(false)
-const hours    = ref(1)
+const windowMinutes = ref(10)
 const overview = reactive({
   alert_count:      0,
   error_count:      0,
@@ -354,7 +364,7 @@ async function loadAll() {
   loading.value = true
   try {
     const data = await api.observabilityOverview(
-      { hours: hours.value },
+      { minutes: windowMinutes.value },
       { signal: controller.signal },
     )
     if (!dashboardMounted || requestId !== overviewRequestId) return
@@ -372,6 +382,11 @@ async function loadAll() {
   }
 }
 
+function fmtRcaTime(iso) {
+  if (!iso) return ''
+  return String(iso).slice(0, 16).replace('T', ' ')
+}
+
 // ── AI 分析 ───────────────────────────────────────────────────────────
 async function startAnalyze() {
   const q = analyzeQuestion.value.trim()
@@ -385,7 +400,7 @@ async function startAnalyze() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ question: q, hours: hours.value }),
+      body: JSON.stringify({ question: q, minutes: windowMinutes.value }),
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 
@@ -702,7 +717,17 @@ onBeforeUnmount(() => {
 .rca-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(248,81,73,.1); color: var(--error); }
 .alert-badge { background: rgba(210,153,34,.1); color: var(--warning); }
 .rca-summary { font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.4; }
-.rca-actions { display: flex; gap: 8px; }
+.rca-summary-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.rca-ai-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(56,139,253,.12);
+  color: var(--accent);
+  font-weight: 600;
+}
+.rca-summary-time { font-size: 10px; color: var(--text-muted); }
+.rca-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .rca-link {
   font-size: 11px; color: var(--accent); text-decoration: none;
   background: none; border: none; cursor: pointer; font-family: inherit;

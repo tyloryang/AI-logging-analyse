@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from typing import Optional
 
+from json_snapshot_store import read_json_file, write_json_file
 from state import (
     loki, prom, analyzer,
     REPORTS_DIR,
@@ -28,6 +29,15 @@ from report_store import save_report_meta, list_report_meta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _read_report_json(path):
+    data = read_json_file(path, default=None)
+    return data if isinstance(data, dict) else None
+
+
+def _write_report_json(path, data: dict) -> None:
+    write_json_file(path, data, ensure_parent=True)
 
 
 # ── 运维日报 ──────────────────────────────────────────────────────────────────
@@ -106,7 +116,7 @@ async def generate_report():
                 ai_content_parts.append(f"\n[AI生成出错] {exc}")
                 yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
             meta["ai_analysis"] = "".join(ai_content_parts)
-            report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_report_json(report_path, meta)
             asyncio.create_task(save_report_meta(meta))
             # 后台写入 Milvus（不阻塞 SSE 流）
             try:
@@ -133,7 +143,9 @@ async def list_reports():
     if not rows:
         for p in sorted(REPORTS_DIR.glob("*.json"), reverse=True)[:50]:
             try:
-                data = json.loads(p.read_text(encoding="utf-8"))
+                data = _read_report_json(p)
+                if not data:
+                    continue
                 rows.append({k: data[k] for k in [
                     "id", "type", "title", "created_at", "health_score",
                     "total_logs", "total_errors", "service_count", "active_alerts",
@@ -419,7 +431,7 @@ async def generate_inspect_report(group_id: Optional[str] = Query(None)):
                     meta["ai_analysis"] = combined_text
                     for chunk in [combined_text[i:i + 800] for i in range(0, len(combined_text), 800)]:
                         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            report_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_report_json(report_path, meta)
             asyncio.create_task(save_report_meta(meta))
             # 后台写入 Milvus
             try:
@@ -443,7 +455,9 @@ def _find_latest_group_inspect_report(group_id: str) -> Optional[dict]:
     best = None
     for p in sorted(REPORTS_DIR.glob("inspect_*.json"), reverse=True):
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = _read_report_json(p)
+            if not data:
+                continue
             if data.get("type") == "inspect" and data.get("group_id") == group_id and data.get("ai_analysis"):
                 best = data
                 break   # 按文件名倒序，第一个即最新
@@ -510,9 +524,7 @@ async def generate_inspect_report_all_groups():
                     "ai_analysis": ai_text,
                 }]
                 try:
-                    (REPORTS_DIR / f"{meta_g['id']}.json").write_text(
-                        json.dumps(meta_g, ensure_ascii=False, indent=2), encoding="utf-8"
-                    )
+                    _write_report_json(REPORTS_DIR / f"{meta_g['id']}.json", meta_g)
                     asyncio.create_task(save_report_meta(meta_g))
                 except Exception as save_exc:
                     logger.warning("分组 %s 报告保存失败: %s", group_name, save_exc)
@@ -544,7 +556,9 @@ async def download_inspect_report_excel(report_id: str):
     p = REPORTS_DIR / f"{report_id}.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
-    data = json.loads(p.read_text(encoding="utf-8"))
+    data = _read_report_json(p)
+    if not data:
+        raise HTTPException(status_code=404, detail="报告内容不存在")
     if data.get("type") != "inspect":
         raise HTTPException(status_code=400, detail="该报告不是巡检类型")
 
@@ -732,7 +746,10 @@ async def get_report(report_id: str):
     p = REPORTS_DIR / f"{report_id}.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
-    return json.loads(p.read_text(encoding="utf-8"))
+    data = _read_report_json(p)
+    if not data:
+        raise HTTPException(status_code=404, detail="报告内容不存在")
+    return data
 
 
 @router.get("/api/report/{report_id}/export.html")
@@ -741,7 +758,9 @@ async def export_report_html(report_id: str):
     p = REPORTS_DIR / f"{report_id}.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
-    data = json.loads(p.read_text(encoding="utf-8"))
+    data = _read_report_json(p)
+    if not data:
+        raise HTTPException(status_code=404, detail="报告内容不存在")
     html = _render_report_html(data)
     encoded = quote(f"{data.get('title', report_id)}.html")
     return Response(
@@ -886,7 +905,9 @@ async def notify_report(report_id: str, body: NotifyRequest):
     p = REPORTS_DIR / f"{report_id}.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
-    report     = json.loads(p.read_text(encoding="utf-8"))
+    report = _read_report_json(p)
+    if not report:
+        raise HTTPException(status_code=404, detail="报告内容不存在")
     report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
 
     results = {}
@@ -918,7 +939,9 @@ async def notify_report_groups(report_id: str, group_id: Optional[str] = Query(N
     p = REPORTS_DIR / f"{report_id}.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
-    report     = json.loads(p.read_text(encoding="utf-8"))
+    report = _read_report_json(p)
+    if not report:
+        raise HTTPException(status_code=404, detail="报告内容不存在")
     report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
 
     all_groups = load_groups()
@@ -999,9 +1022,7 @@ async def generate_slowlog_report():
 
         if not data.get("_all_entries"):
             meta["ai_analysis"] = "未找到满足条件的慢查询记录，请检查目标主机、日志路径及时间范围配置。"
-            (REPORTS_DIR / f"{meta['id']}.json").write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            _write_report_json(REPORTS_DIR / f"{meta['id']}.json", meta)
             asyncio.create_task(save_report_meta(meta))
             yield "data: [DONE]\n\n"
             return
@@ -1018,9 +1039,7 @@ async def generate_slowlog_report():
             yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
 
         meta["ai_analysis"] = "".join(ai_parts)
-        (REPORTS_DIR / f"{meta['id']}.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _write_report_json(REPORTS_DIR / f"{meta['id']}.json", meta)
         asyncio.create_task(save_report_meta(meta))
         try:
             from agent.report_memory import get_report_memory

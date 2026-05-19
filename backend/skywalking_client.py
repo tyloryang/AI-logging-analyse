@@ -31,7 +31,7 @@ def _current_graphql_url() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_duration(
-    hours: int = 1,
+    hours: float = 1,
     start_str: Optional[str] = None,
     end_str: Optional[str] = None,
 ) -> dict:
@@ -282,7 +282,7 @@ class SkyWalkingClient:
         service_id: Optional[str] = None,
         endpoint_id: Optional[str] = None,
         trace_id: Optional[str] = None,
-        hours: int = 1,
+        hours: float = 1,
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         error_only: bool = False,

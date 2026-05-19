@@ -30,6 +30,8 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from json_snapshot_store import read_json_file, write_json_file
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ansible", tags=["ansible"])
 
@@ -44,28 +46,18 @@ _NOW = lambda: datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 # ── 持久化 ─────────────────────────────────────────────────────────────────────
 
 def _load_tasks() -> list[dict]:
-    if _TASKS_FILE.exists():
-        try:
-            return json.loads(_TASKS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
+    data = read_json_file(_TASKS_FILE, default=[])
+    return data if isinstance(data, list) else []
 
 def _save_tasks(tasks: list[dict]) -> None:
-    _DATA_DIR.mkdir(exist_ok=True)
-    _TASKS_FILE.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(_TASKS_FILE, tasks, ensure_parent=True)
 
 def _load_crons() -> list[dict]:
-    if _CRONS_FILE.exists():
-        try:
-            return json.loads(_CRONS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
+    data = read_json_file(_CRONS_FILE, default=[])
+    return data if isinstance(data, list) else []
 
 def _save_crons(crons: list[dict]) -> None:
-    _DATA_DIR.mkdir(exist_ok=True)
-    _CRONS_FILE.write_text(json.dumps(crons, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_file(_CRONS_FILE, crons, ensure_parent=True)
 
 # ── SSH 执行核心 ───────────────────────────────────────────────────────────────
 

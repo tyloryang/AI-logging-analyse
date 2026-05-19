@@ -268,24 +268,172 @@ async def delete_host(host_id: str):
 # ── 导出 / 导入 ──────────────────────────────────────────────────────────────
 
 _EXPORT_COLS = [
-    ("hostname",    "主机名"),
-    ("ip",          "IP 地址"),
-    ("platform",    "平台"),
-    ("os_version",  "操作系统版本"),
-    ("cpu_cores",   "CPU 核心数"),
-    ("memory_gb",   "内存(GB)"),
-    ("disk_gb",     "磁盘(GB)"),
-    ("status",      "状态"),
-    ("env",         "环境"),
-    ("role",        "用途/角色"),
-    ("owner",       "负责人"),
-    ("datacenter",  "机房/区域"),
-    ("ssh_port",    "SSH 端口"),
-    ("ssh_user",    "SSH 用户名"),
-    ("notes",       "备注"),
+    ("id",            "主机ID"),
+    ("hostname",      "主机名"),
+    ("ip",            "IP 地址"),
+    ("platform",      "平台"),
+    ("os_version",    "操作系统版本"),
+    ("cpu_cores",     "CPU 核心数"),
+    ("memory_gb",     "内存(GB)"),
+    ("disk_gb",       "磁盘(GB)"),
+    ("status",        "状态"),
+    ("env",           "环境"),
+    ("role",          "用途/角色"),
+    ("owner",         "负责人"),
+    ("datacenter",    "机房/区域"),
+    ("group",         "分组ID"),
+    ("group_name",    "分组名称"),
+    ("ssh_port",      "SSH 端口"),
+    ("ssh_user",      "SSH 用户名"),
+    ("credential_id", "SSH 凭证ID"),
+    ("ssh_password",  "SSH 密码密文"),
+    ("notes",         "备注"),
+    ("labels",        "标签(JSON)"),
+    ("created_at",    "创建时间"),
+    ("updated_at",    "更新时间"),
 ]
+_EXPORT_COL_WIDTHS = {
+    "id": 38,
+    "hostname": 18,
+    "ip": 16,
+    "platform": 12,
+    "os_version": 22,
+    "cpu_cores": 12,
+    "memory_gb": 12,
+    "disk_gb": 12,
+    "status": 10,
+    "env": 10,
+    "role": 18,
+    "owner": 14,
+    "datacenter": 18,
+    "group": 38,
+    "group_name": 18,
+    "ssh_port": 10,
+    "ssh_user": 14,
+    "credential_id": 38,
+    "ssh_password": 40,
+    "notes": 28,
+    "labels": 28,
+    "created_at": 22,
+    "updated_at": 22,
+}
 _ENV_LABEL = {"production":"生产","staging":"预发","development":"开发","testing":"测试","dr":"容灾"}
 _STATUS_LABEL = {"active":"在线","offline":"离线","maintenance":"维护中"}
+_HEADER_CLEANUP_TABLE = str.maketrans("", "", " _-()（）[]{}:/：\t\r\n")
+
+
+def _normalize_import_header(value: str) -> str:
+    return str(value or "").strip().translate(_HEADER_CLEANUP_TABLE).lower()
+
+
+_IMPORT_COL_MAP = {}
+for _field, _label in _EXPORT_COLS:
+    _IMPORT_COL_MAP[_normalize_import_header(_label)] = _field
+    _IMPORT_COL_MAP[_normalize_import_header(_field)] = _field
+_IMPORT_COL_MAP.update({
+    _normalize_import_header("分组"): "group_name",
+    _normalize_import_header("group_id"): "group",
+    _normalize_import_header("分组名"): "group_name",
+    _normalize_import_header("标签"): "labels",
+})
+
+
+def _normalize_text(value) -> str:
+    return str(value or "").strip()
+
+
+def _parse_optional_int(value) -> Optional[int]:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_optional_float(value) -> Optional[float]:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        return round(float(text), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_labels_cell(value) -> dict:
+    text = _normalize_text(value)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return {
+                str(k).strip(): "" if v is None else str(v)
+                for k, v in parsed.items()
+                if str(k).strip()
+            }
+    except Exception:
+        pass
+
+    labels: dict[str, str] = {}
+    for line in text.splitlines():
+        item = line.strip().rstrip(",;")
+        if not item:
+            continue
+        if "=" in item:
+            key, raw_val = item.split("=", 1)
+        elif ":" in item:
+            key, raw_val = item.split(":", 1)
+        else:
+            key, raw_val = item, ""
+        key = key.strip()
+        if key:
+            labels[key] = raw_val.strip()
+    if labels:
+        return labels
+    raise ValueError("标签需为 JSON 对象，或按每行 key=value 填写")
+
+
+def _normalize_imported_ssh_password(value) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    if text.startswith("gAAAA"):
+        return text
+    try:
+        decrypt_password(text)
+        return text
+    except Exception:
+        return encrypt_password(text)
+
+
+def _resolve_import_group(entry: dict, group_ids: set[str], group_name_map: dict[str, str]) -> tuple[Optional[str], Optional[str]]:
+    has_group_id = "group" in entry
+    has_group_name = "group_name" in entry
+    if not has_group_id and not has_group_name:
+        return None, None
+
+    raw_group_id = _normalize_text(entry.get("group", "")) if has_group_id else ""
+    raw_group_name = _normalize_text(entry.get("group_name", "")) if has_group_name else ""
+
+    if raw_group_id:
+        if raw_group_id in group_ids:
+            return raw_group_id, None
+        resolved = group_name_map.get(raw_group_id.casefold())
+        if resolved:
+            return resolved, None
+        # 允许显式 group_id 原样导入，便于纯备份恢复。
+        return raw_group_id, None
+
+    if raw_group_name:
+        resolved = group_name_map.get(raw_group_name.casefold())
+        if resolved:
+            return resolved, None
+        return None, f"分组「{raw_group_name}」不存在"
+
+    return "", None
 
 
 @router.get("/api/hosts/export")
@@ -305,8 +453,8 @@ async def export_hosts(user: User = Depends(current_user)):
     cell_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
     center = Alignment(horizontal="center", vertical="center")
 
-    # 表头（含"分组"列）
-    headers = [label for _, label in _EXPORT_COLS] + ["分组"]
+    # 表头
+    headers = [label for _, label in _EXPORT_COLS]
     for col, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=col, value=h)
         c.fill = header_fill
@@ -315,48 +463,52 @@ async def export_hosts(user: User = Depends(current_user)):
         c.border = cell_border
 
     # 列宽
-    widths = [16, 16, 10, 22, 10, 10, 10, 10, 10, 18, 12, 16, 8, 12, 24, 16]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    for i, (field, _) in enumerate(_EXPORT_COLS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = _EXPORT_COL_WIDTHS.get(field, 16)
     ws.row_dimensions[1].height = 22
     ws.freeze_panes = "A2"
 
     for row_idx, h in enumerate(hosts, 2):
         for col_idx, (field, _) in enumerate(_EXPORT_COLS, 1):
-            val = h.get(field, "")
+            if field == "group_name":
+                val = group_map.get(h.get("group", ""), "")
+            elif field == "labels":
+                val = json.dumps(h.get("labels") or {}, ensure_ascii=False, sort_keys=True)
+            else:
+                val = h.get(field, "")
             if field == "status":
                 val = _STATUS_LABEL.get(val, val)
             elif field == "env":
                 val = _ENV_LABEL.get(val, val)
             c = ws.cell(row=row_idx, column=col_idx, value=val if val is not None else "")
-            c.alignment = Alignment(vertical="center", wrap_text=False)
+            c.alignment = Alignment(vertical="center", wrap_text=field in {"notes", "labels", "ssh_password"})
             c.border = cell_border
             c.font = Font(size=9)
-        # 分组列
-        grp_col = len(_EXPORT_COLS) + 1
-        c = ws.cell(row=row_idx, column=grp_col, value=group_map.get(h.get("group", ""), ""))
-        c.alignment = Alignment(vertical="center")
-        c.border = cell_border
-        c.font = Font(size=9)
         ws.row_dimensions[row_idx].height = 16
 
     # 说明 sheet
     ws2 = wb.create_sheet("填写说明")
     tips = [
         ("字段", "可选值 / 说明"),
+        ("主机ID", "备份回滚时建议保留；留空会自动生成"),
         ("主机名", "可选，留空自动用 IP"),
         ("IP 地址", "必填，不能重复"),
         ("平台", "Linux / Windows / Network / Other"),
         ("状态", "在线 / 离线 / 维护中"),
         ("环境", "生产 / 预发 / 开发 / 测试 / 容灾"),
+        ("分组ID", "优先使用，适合完整备份恢复；即使当前系统暂无该分组也会保留"),
+        ("分组名称", "便于人工编辑；导入时会自动匹配到现有分组 ID"),
         ("SSH 端口", "默认 22"),
-        ("分组", "填写分组名称（导入时自动匹配）"),
+        ("SSH 凭证ID", "填写凭证库中的凭证 ID；有值时会覆盖主机密码"),
+        ("SSH 密码密文", "导出的是已加密密文，适合备份；导入明文时也会自动加密"),
+        ("标签(JSON)", "支持 JSON 对象，或每行 key=value"),
+        ("创建时间/更新时间", "可保留导出值用于完整恢复；留空则自动补当前时间"),
     ]
     for r, (k, v) in enumerate(tips, 1):
         ws2.cell(row=r, column=1, value=k).font = Font(bold=True, size=10)
         ws2.cell(row=r, column=2, value=v).font = Font(size=10)
-    ws2.column_dimensions["A"].width = 14
-    ws2.column_dimensions["B"].width = 40
+    ws2.column_dimensions["A"].width = 18
+    ws2.column_dimensions["B"].width = 72
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -381,7 +533,7 @@ async def import_hosts(
     import csv
 
     content = await file.read()
-    filename = file.filename or ""
+    filename = (file.filename or "").lower()
     now = _NOW()
 
     # 解析文件
@@ -401,85 +553,172 @@ async def import_hosts(
     else:
         raise HTTPException(status_code=400, detail="仅支持 .xlsx 或 .csv 文件")
 
-    # 列名映射（中文表头 → 字段名）
-    _col_map = {v: k for k, v in _EXPORT_COLS}
-    _col_map.update({k: k for k, _ in _EXPORT_COLS})  # 英文字段名也接受
-
     groups = load_groups()
-    group_name_map = {g["name"]: g["id"] for g in groups}
+    group_ids = {str(g.get("id", "")).strip() for g in groups if str(g.get("id", "")).strip()}
+    group_name_map = {
+        str(g.get("name", "")).strip().casefold(): str(g.get("id", "")).strip()
+        for g in groups
+        if str(g.get("name", "")).strip() and str(g.get("id", "")).strip()
+    }
 
     hosts = load_hosts_list()
     existing_ips = {h.get("ip", ""): i for i, h in enumerate(hosts)}
+    existing_ids = {h.get("id", ""): i for i, h in enumerate(hosts) if h.get("id")}
 
     added = skipped = updated = errors = 0
     error_details: list[str] = []
+    rev_status = {v: k for k, v in _STATUS_LABEL.items()}
+    rev_env = {v: k for k, v in _ENV_LABEL.items()}
 
     for row_num, raw in enumerate(rows, 2):
         # 映射列名
         entry: dict = {}
         for raw_key, val in raw.items():
-            field = _col_map.get(raw_key.strip())
+            field = _IMPORT_COL_MAP.get(_normalize_import_header(raw_key))
             if field:
-                entry[field] = val
+                entry[field] = _normalize_text(val)
 
-        ip = entry.get("ip", "").strip()
+        ip = _normalize_text(entry.get("ip", ""))
         if not ip:
             error_details.append(f"第 {row_num} 行：IP 地址为空，跳过")
             errors += 1
             continue
 
-        # 数值转换
-        for num_field in ("cpu_cores",):
-            v = entry.get(num_field, "")
+        if "id" in entry:
+            entry["id"] = _normalize_text(entry.get("id", ""))
+            if not entry["id"]:
+                entry.pop("id", None)
+
+        if "hostname" in entry:
+            entry["hostname"] = _normalize_text(entry.get("hostname", "")) or ip
+        if "platform" in entry:
+            entry["platform"] = _normalize_text(entry.get("platform", "")) or "Linux"
+        if "status" in entry:
+            raw_status = _normalize_text(entry.get("status", ""))
+            entry["status"] = rev_status.get(raw_status, raw_status or "active")
+        if "env" in entry:
+            raw_env = _normalize_text(entry.get("env", ""))
+            entry["env"] = rev_env.get(raw_env, raw_env or "production")
+        if "cpu_cores" in entry:
+            entry["cpu_cores"] = _parse_optional_int(entry.get("cpu_cores"))
+        if "memory_gb" in entry:
+            entry["memory_gb"] = _parse_optional_float(entry.get("memory_gb"))
+        if "disk_gb" in entry:
+            entry["disk_gb"] = _parse_optional_float(entry.get("disk_gb"))
+        if "ssh_port" in entry:
+            parsed_port = _parse_optional_int(entry.get("ssh_port"))
+            entry["ssh_port"] = parsed_port if parsed_port and parsed_port > 0 else 22
+        if "ssh_user" in entry:
+            entry["ssh_user"] = _normalize_text(entry.get("ssh_user", ""))
+        if "credential_id" in entry:
+            entry["credential_id"] = _normalize_text(entry.get("credential_id", ""))
+        if "ssh_password" in entry:
+            entry["ssh_password"] = _normalize_imported_ssh_password(entry.get("ssh_password"))
+            if entry["ssh_password"] and "credential_id" not in entry:
+                entry["credential_id"] = ""
+        if "labels" in entry:
             try:
-                entry[num_field] = int(float(v)) if v else None
-            except (ValueError, TypeError):
-                entry[num_field] = None
-        for float_field in ("memory_gb", "disk_gb"):
-            v = entry.get(float_field, "")
-            try:
-                entry[float_field] = round(float(v), 1) if v else None
-            except (ValueError, TypeError):
-                entry[float_field] = None
-        # ssh_port
-        try:
-            entry["ssh_port"] = int(entry.get("ssh_port", 22) or 22)
-        except (ValueError, TypeError):
-            entry["ssh_port"] = 22
+                entry["labels"] = _parse_labels_cell(entry.get("labels"))
+            except ValueError as exc:
+                error_details.append(f"第 {row_num} 行：{exc}")
+                errors += 1
+                continue
 
-        # 中文状态/环境反转
-        _rev_status = {v: k for k, v in _STATUS_LABEL.items()}
-        _rev_env    = {v: k for k, v in _ENV_LABEL.items()}
-        entry["status"] = _rev_status.get(entry.get("status", ""), entry.get("status", "active")) or "active"
-        entry["env"]    = _rev_env.get(entry.get("env", ""), entry.get("env", "production")) or "production"
-
-        # 分组名称 → ID
-        grp_name = entry.pop("分组", "") or ""
-        entry["group"] = group_name_map.get(grp_name, entry.get("group", ""))
-
-        entry.setdefault("hostname", ip)
-        entry.setdefault("platform", "Linux")
+        group_value, group_error = _resolve_import_group(entry, group_ids, group_name_map)
+        entry.pop("group_name", None)
+        if group_error:
+            error_details.append(f"第 {row_num} 行：{group_error}")
+            errors += 1
+            continue
+        if group_value is not None:
+            entry["group"] = group_value
 
         if ip in existing_ips:
             if conflict == "update":
                 idx = existing_ips[ip]
-                # 保留原有 id / 密码 / 创建时间
-                preserved = {k: hosts[idx].get(k) for k in ("id", "ssh_password", "credential_id", "created_at", "labels")}
-                hosts[idx].update(entry)
-                hosts[idx].update(preserved)
-                hosts[idx]["updated_at"] = now
+                old_id = hosts[idx].get("id", "")
+                incoming_id = entry.get("id", "")
+                if incoming_id:
+                    duplicated_idx = existing_ids.get(incoming_id)
+                    if duplicated_idx is not None and duplicated_idx != idx:
+                        error_details.append(f"第 {row_num} 行：主机 ID {incoming_id} 已被其他主机占用")
+                        errors += 1
+                        continue
+
+                merged = dict(hosts[idx])
+                merged.update(entry)
+                merged["ip"] = ip
+                merged["hostname"] = _normalize_text(merged.get("hostname", "")) or ip
+                merged["platform"] = _normalize_text(merged.get("platform", "")) or "Linux"
+                merged["status"] = _normalize_text(merged.get("status", "")) or "active"
+                merged["env"] = _normalize_text(merged.get("env", "")) or "production"
+                merged["ssh_port"] = _parse_optional_int(merged.get("ssh_port")) or 22
+                if merged.get("credential_id"):
+                    merged["ssh_password"] = ""
+                else:
+                    merged["ssh_password"] = _normalize_text(merged.get("ssh_password", ""))
+                if not isinstance(merged.get("labels"), dict):
+                    merged["labels"] = {}
+                merged["created_at"] = _normalize_text(merged.get("created_at", "")) or hosts[idx].get("created_at") or now
+                if "updated_at" not in entry:
+                    merged["updated_at"] = now
+                else:
+                    merged["updated_at"] = _normalize_text(merged.get("updated_at", "")) or now
+                merged["id"] = _normalize_text(merged.get("id", "")) or old_id or str(uuid.uuid4())
+                hosts[idx] = merged
+                if old_id and old_id != merged["id"]:
+                    existing_ids.pop(old_id, None)
+                existing_ids[merged["id"]] = idx
                 updated += 1
             else:
                 skipped += 1
         else:
-            entry["id"] = str(uuid.uuid4())
-            entry.setdefault("labels", {})
-            entry["ssh_password"] = ""
-            entry["credential_id"] = ""
-            entry["created_at"] = now
-            entry["updated_at"] = now
-            hosts.append(entry)
+            entry.setdefault("id", str(uuid.uuid4()))
+            if entry["id"] in existing_ids:
+                error_details.append(f"第 {row_num} 行：主机 ID {entry['id']} 已存在")
+                errors += 1
+                continue
+            new_entry = {
+                "id": entry["id"],
+                "hostname": ip,
+                "ip": ip,
+                "platform": "Linux",
+                "os_version": "",
+                "cpu_cores": None,
+                "memory_gb": None,
+                "disk_gb": None,
+                "status": "active",
+                "env": "production",
+                "role": "",
+                "owner": "",
+                "datacenter": "",
+                "group": "",
+                "ssh_port": 22,
+                "ssh_user": "",
+                "ssh_password": "",
+                "credential_id": "",
+                "notes": "",
+                "labels": {},
+                "created_at": now,
+                "updated_at": now,
+            }
+            new_entry.update(entry)
+            new_entry["hostname"] = _normalize_text(new_entry.get("hostname", "")) or ip
+            new_entry["platform"] = _normalize_text(new_entry.get("platform", "")) or "Linux"
+            new_entry["status"] = _normalize_text(new_entry.get("status", "")) or "active"
+            new_entry["env"] = _normalize_text(new_entry.get("env", "")) or "production"
+            new_entry["ssh_port"] = _parse_optional_int(new_entry.get("ssh_port")) or 22
+            if new_entry.get("credential_id"):
+                new_entry["ssh_password"] = ""
+            else:
+                new_entry["ssh_password"] = _normalize_text(new_entry.get("ssh_password", ""))
+            if not isinstance(new_entry.get("labels"), dict):
+                new_entry["labels"] = {}
+            new_entry["created_at"] = _normalize_text(new_entry.get("created_at", "")) or now
+            new_entry["updated_at"] = _normalize_text(new_entry.get("updated_at", "")) or now
+            hosts.append(new_entry)
             existing_ips[ip] = len(hosts) - 1
+            existing_ids[new_entry["id"]] = len(hosts) - 1
             added += 1
 
     save_hosts_list(hosts)
