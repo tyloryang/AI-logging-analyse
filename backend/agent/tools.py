@@ -152,7 +152,7 @@ async def _call_streamable_http_mcp(mcp_name: str, server_url: str, method: str,
     """通过 MCP SDK 正确调用 streamable HTTP 类型的 MCP 服务器。"""
     try:
         output = await _call_streamable_http_mcp_raw(server_url, method, params)
-        return f"**MCP [{mcp_name}] 杩斿洖缁撴灉**\n{output[:3000]}"
+        return f"**MCP [{mcp_name}] 返回结果**\n{output[:3000]}"
     except Exception as exc:
         return f"Streamable HTTP MCP 调用失败：{exc}"
 

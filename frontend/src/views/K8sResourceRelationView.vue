@@ -1,50 +1,78 @@
 <template>
-  <div class="rr-page">
-    <!-- 顶部工具栏 -->
-    <div class="rr-toolbar">
-      <div class="rr-brand">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="1.8">
-          <circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
-          <line x1="12" y1="7" x2="5" y2="17"/><line x1="12" y1="7" x2="19" y2="17"/>
-          <line x1="7" y1="19" x2="17" y2="19"/>
-        </svg>
-        <span>K8s 资源关系图</span>
-        <span class="rr-sub">Resource Dependency & Interaction Map</span>
+  <div class="kg-page">
+    <div class="kg-toolbar">
+      <div class="kg-brand">
+        <div class="kg-brand-mark">
+          <span class="kg-ring kg-ring-a"></span>
+          <span class="kg-ring kg-ring-b"></span>
+          <span class="kg-core"></span>
+        </div>
+        <div>
+          <div class="kg-title">{{ graphTitle }}</div>
+          <div class="kg-subtitle">{{ graphSubtitle }}</div>
+        </div>
       </div>
-      <div class="rr-controls">
-        <label class="toggle-pill">
-          <input type="checkbox" v-model="animOn"/>
-          <span class="pill-track"><span class="pill-thumb"></span></span>
-          <span>流动动效</span>
-        </label>
-        <label class="toggle-pill">
-          <input type="checkbox" v-model="showLabels"/>
-          <span class="pill-track"><span class="pill-thumb"></span></span>
-          <span>显示说明</span>
-        </label>
-        <div class="zoom-btns">
-          <button class="ctrl-btn" @click="zoomIn">＋</button>
-          <button class="ctrl-btn" @click="zoomOut">－</button>
-          <button class="ctrl-btn" @click="fitView" style="font-size:11px">Fit</button>
+
+      <div class="kg-toolbar-actions">
+        <div class="kg-tabs">
+          <button
+            :class="['kg-tab', { active: mode === 'knowledge' }]"
+            @click="switchMode('knowledge')"
+          >
+            知识关系
+          </button>
+          <button
+            :class="['kg-tab', { active: mode === 'runtime' }]"
+            @click="switchMode('runtime')"
+          >
+            运行关系
+          </button>
+        </div>
+
+        <div class="kg-controls">
+          <label class="kg-toggle">
+            <input v-model="animOn" type="checkbox">
+            <span>流动效果</span>
+          </label>
+          <label class="kg-toggle">
+            <input v-model="showLabels" type="checkbox">
+            <span>说明浮层</span>
+          </label>
+          <button class="kg-btn" @click="loadGraph" :disabled="loading">
+            <span v-if="loading" class="kg-spinner"></span>
+            <span v-else>刷新</span>
+          </button>
+          <button class="kg-btn" @click="fitView">Fit</button>
         </div>
       </div>
     </div>
 
-    <!-- 图例 -->
-    <div class="rr-legend">
-      <span v-for="g in NODE_GROUPS" :key="g.id" class="leg-item">
-        <span class="leg-dot" :style="{background: g.color}"></span>{{ g.label }}
-      </span>
-      <span class="leg-sep">|</span>
-      <span class="leg-item"><span class="leg-line" style="background:#38bdf8"></span>API 调用</span>
-      <span class="leg-item"><span class="leg-line" style="background:#a78bfa"></span>控制/监听</span>
-      <span class="leg-item"><span class="leg-line" style="background:#22c55e"></span>选择/关联</span>
-      <span class="leg-item"><span class="leg-line" style="background:#fbbf24"></span>挂载/注入</span>
+    <div class="kg-meta">
+      <div class="kg-chip-row">
+        <span v-for="chip in statsChips" :key="chip.label" class="kg-chip">
+          <strong>{{ chip.value }}</strong>
+          <span>{{ chip.label }}</span>
+        </span>
+      </div>
+      <div class="kg-source">{{ sourceLabel }}</div>
     </div>
 
-    <!-- SVG 主画布 -->
-    <div class="rr-canvas" ref="canvasEl">
-      <svg class="rr-svg"
+    <div class="kg-legend">
+      <span v-for="group in nodeGroups" :key="group.id" class="kg-legend-item">
+        <span class="kg-dot" :style="{ background: group.color }"></span>
+        {{ group.label }}
+      </span>
+      <span class="kg-legend-divider"></span>
+      <span v-for="rel in relationLegend" :key="rel.id" class="kg-legend-item">
+        <span class="kg-line" :style="{ background: rel.color }"></span>
+        {{ rel.label }}
+      </span>
+    </div>
+
+    <div class="kg-canvas">
+      <svg
+        ref="svgEl"
+        class="kg-svg"
         :viewBox="vbStr"
         preserveAspectRatio="xMidYMid meet"
         :style="{ cursor: drag.active ? 'grabbing' : 'grab' }"
@@ -53,433 +81,1268 @@
         @mousemove="onDragMove"
         @mouseup="onDragEnd"
         @mouseleave="onDragEnd"
-        ref="svgEl"
       >
         <defs>
-          <pattern id="rr-grid" width="44" height="44" patternUnits="userSpaceOnUse">
-            <path d="M44,0 L0,0 L0,44" fill="none" stroke="rgba(56,189,248,0.06)" stroke-width="1"/>
+          <pattern id="kg-grid" width="48" height="48" patternUnits="userSpaceOnUse">
+            <path d="M48,0 L0,0 L0,48" fill="none" stroke="rgba(126, 142, 171, 0.08)" stroke-width="1" />
           </pattern>
-          <filter id="rr-glow">
-            <feGaussianBlur stdDeviation="3" result="b"/>
-            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+
+          <filter id="kg-glow">
+            <feGaussianBlur stdDeviation="4" result="b" />
+            <feMerge>
+              <feMergeNode in="b" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
           </filter>
-          <filter id="rr-glow-sm">
-            <feGaussianBlur stdDeviation="2" result="b"/>
-            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+
+          <filter id="kg-glow-sm">
+            <feGaussianBlur stdDeviation="2" result="b" />
+            <feMerge>
+              <feMergeNode in="b" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
           </filter>
-          <!-- 箭头 -->
-          <marker v-for="g in NODE_GROUPS" :key="'arr-'+g.id"
-            :id="'arr-'+g.id" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L8,3 z" :fill="g.color"/>
+
+          <linearGradient id="kg-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#081220" />
+            <stop offset="58%" stop-color="#0d1117" />
+            <stop offset="100%" stop-color="#10192b" />
+          </linearGradient>
+
+          <marker
+            v-for="marker in edgeMarkers"
+            :key="marker.id"
+            :id="marker.id"
+            markerWidth="8"
+            markerHeight="8"
+            refX="7"
+            refY="3"
+            orient="auto"
+          >
+            <path d="M0,0 L0,6 L8,3 z" :fill="marker.color" />
           </marker>
-          <!-- 渐变背景 -->
-          <radialGradient id="rr-bg" cx="50%" cy="40%" r="60%">
-            <stop offset="0%" stop-color="#111827"/>
-            <stop offset="100%" stop-color="#0d1117"/>
-          </radialGradient>
         </defs>
 
-        <rect width="100%" height="100%" fill="url(#rr-bg)"/>
-        <rect width="100%" height="100%" fill="url(#rr-grid)"/>
+        <rect width="100%" height="100%" fill="url(#kg-bg)" />
+        <rect width="100%" height="100%" fill="url(#kg-grid)" />
 
-        <!-- 分区背景框 -->
-        <g class="rr-zones">
-          <rect v-for="z in ZONES" :key="z.id"
-            :x="z.x" :y="z.y" :width="z.w" :height="z.h" rx="18"
-            fill="none" :stroke="z.color" stroke-width="1"
-            stroke-dasharray="8 5" :fill-opacity="0.02"/>
-          <text v-for="z in ZONES" :key="'zt'+z.id"
-            :x="z.x + 14" :y="z.y + 18" class="zone-label" :fill="z.color">{{ z.label }}</text>
+        <g class="kg-zones">
+          <rect
+            v-for="zone in zones"
+            :key="zone.id"
+            :x="zone.x"
+            :y="zone.y"
+            :width="zone.w"
+            :height="zone.h"
+            rx="24"
+            :fill="withAlpha(zone.color, 0.08)"
+            :stroke="withAlpha(zone.color, 0.5)"
+            stroke-width="1.2"
+            stroke-dasharray="10 6"
+          />
+          <text
+            v-for="zone in zones"
+            :key="`${zone.id}-label`"
+            :x="zone.x + 18"
+            :y="zone.y + 24"
+            class="kg-zone-label"
+            :fill="zone.color"
+          >
+            {{ zone.label }}
+          </text>
         </g>
 
-        <!-- 关系连线 -->
-        <g class="rr-edges">
-          <path v-for="e in EDGES" :key="e.id"
-            :id="'re-'+e.id" :d="e.d"
+        <g class="kg-edges">
+          <path
+            v-for="edge in edges"
+            :id="`kg-edge-${edge.id}`"
+            :key="edge.id"
+            :d="edge.d"
             fill="none"
-            :stroke="hoveredId ? (isRelated(e) ? e.color : e.color+'18') : e.color+'55'"
-            :stroke-width="hoveredId && isRelated(e) ? 2.2 : 1.4"
-            :stroke-dasharray="e.dash || '6 4'"
-            :opacity="hoveredId ? (isRelated(e) ? 1 : 0.1) : 1"
-            :marker-end="'url(#arr-'+e.group+')'"
-            class="rr-edge"
+            :stroke="hoveredId ? (isEdgeRelated(edge) ? edge.color : withAlpha(edge.color, 0.1)) : withAlpha(edge.color, 0.55)"
+            :stroke-width="hoveredId && isEdgeRelated(edge) ? 2.5 : 1.5"
+            :stroke-dasharray="edge.dash || null"
+            :opacity="hoveredId ? (isEdgeRelated(edge) ? 1 : 0.12) : 1"
+            :marker-end="`url(#${edge.markerId})`"
+            class="kg-edge"
           />
-          <!-- hover 时显示关系标签 -->
+
           <g v-if="hoveredId">
-            <g v-for="e in EDGES.filter(e => isRelated(e))" :key="'el-'+e.id">
-              <rect :x="edgeMid(e).x-30" :y="edgeMid(e).y-9" width="60" height="17" rx="4"
-                :fill="e.color+'25'" :stroke="e.color+'70'" stroke-width="1"/>
-              <text :x="edgeMid(e).x" :y="edgeMid(e).y+4" text-anchor="middle"
-                class="edge-lbl" :fill="e.color">{{ e.label }}</text>
+            <g v-for="edge in relatedEdges" :key="`label-${edge.id}`">
+              <rect
+                :x="edge.labelX - 34"
+                :y="edge.labelY - 10"
+                width="68"
+                height="18"
+                rx="5"
+                :fill="withAlpha(edge.color, 0.16)"
+                :stroke="withAlpha(edge.color, 0.55)"
+                stroke-width="1"
+              />
+              <text
+                :x="edge.labelX"
+                :y="edge.labelY + 4"
+                class="kg-edge-label"
+                text-anchor="middle"
+                :fill="edge.color"
+              >
+                {{ edge.label }}
+              </text>
             </g>
           </g>
         </g>
 
-        <!-- 流动粒子 -->
-        <g v-if="animOn" class="rr-particles">
-          <g v-for="e in EDGES" :key="'pk-'+e.id"
-            :opacity="hoveredId ? (isRelated(e) ? 1 : 0) : 1">
-            <circle v-for="pk in e.packets" :key="pk.i"
-              :r="hoveredId && isRelated(e) ? pk.r * 1.5 : pk.r"
-              :fill="e.color" filter="url(#rr-glow-sm)">
-              <animateMotion :dur="(hoveredId && isRelated(e) ? pk.dur*0.65 : pk.dur)+'s'"
-                repeatCount="indefinite" :begin="pk.begin+'s'">
-                <mpath :href="'#re-'+e.id"/>
+        <g v-if="animOn" class="kg-particles">
+          <g
+            v-for="edge in edges"
+            :key="`particle-${edge.id}`"
+            :opacity="hoveredId ? (isEdgeRelated(edge) ? 1 : 0) : 1"
+          >
+            <circle
+              v-for="particle in edge.packets"
+              :key="particle.i"
+              :r="hoveredId && isEdgeRelated(edge) ? particle.r * 1.45 : particle.r"
+              :fill="edge.color"
+              filter="url(#kg-glow-sm)"
+            >
+              <animateMotion
+                :dur="`${hoveredId && isEdgeRelated(edge) ? particle.dur * 0.65 : particle.dur}s`"
+                repeatCount="indefinite"
+                :begin="`${particle.begin}s`"
+              >
+                <mpath :href="`#kg-edge-${edge.id}`" />
               </animateMotion>
             </circle>
           </g>
         </g>
 
-        <!-- 节点 -->
-        <g class="rr-nodes">
-          <g v-for="nd in NODES" :key="nd.id"
-            :transform="`translate(${nd.x},${nd.y})`"
-            :opacity="hoveredId && hoveredId !== nd.id && !isConnected(nd.id) ? 0.15 : 1"
-            style="transition: opacity .2s"
-            class="rr-node"
-            @mouseenter="hoveredId = nd.id"
+        <g class="kg-nodes">
+          <g
+            v-for="node in nodes"
+            :key="node.id"
+            class="kg-node"
+            :transform="`translate(${node.x},${node.y})`"
+            :opacity="hoveredId && hoveredId !== node.id && !isNodeConnected(node.id) ? 0.16 : 1"
+            @mouseenter="hoveredId = node.id"
             @mouseleave="hoveredId = null"
           >
-            <!-- 光晕 -->
-            <circle v-if="nd.pulse || hoveredId === nd.id" cx="0" cy="0"
-              :r="nd.r + (hoveredId === nd.id ? 14 : 10)"
-              :fill="nd.color+'20'"
-              :class="hoveredId === nd.id ? '' : 'rr-pulse'"/>
-            <!-- 主圆 -->
-            <circle cx="0" cy="0" :r="nd.r"
-              :fill="nd.fill"
-              :stroke="hoveredId === nd.id ? nd.color : nd.color+'88'"
-              :stroke-width="hoveredId === nd.id ? 2.5 : 1.8"
-              filter="url(#rr-glow)"/>
-            <!-- 图标 -->
-            <text x="0" :y="-4" text-anchor="middle" :font-size="nd.iconSize || 16"
-              dominant-baseline="middle">{{ nd.icon }}</text>
-            <!-- 名称 -->
-            <text x="0" :y="nd.r + 14" text-anchor="middle" class="nd-name">{{ nd.name }}</text>
-            <!-- 副标题 -->
-            <text v-if="nd.sub" x="0" :y="nd.r + 26" text-anchor="middle" class="nd-sub">{{ nd.sub }}</text>
+            <circle
+              v-if="node.pulse || hoveredId === node.id"
+              cx="0"
+              cy="0"
+              :r="node.r + (hoveredId === node.id ? 14 : 10)"
+              :fill="withAlpha(node.color, hoveredId === node.id ? 0.2 : 0.12)"
+              :class="{ 'kg-pulse': hoveredId !== node.id }"
+            />
+
+            <circle
+              cx="0"
+              cy="0"
+              :r="node.r"
+              :fill="node.fill"
+              :stroke="hoveredId === node.id ? node.color : withAlpha(node.color, 0.65)"
+              :stroke-width="hoveredId === node.id ? 2.8 : 1.8"
+              filter="url(#kg-glow)"
+            />
+
+            <text x="0" y="-2" text-anchor="middle" class="kg-node-abbr">{{ node.abbr }}</text>
+            <text x="0" :y="node.r + 16" text-anchor="middle" class="kg-node-name">{{ node.name }}</text>
+            <text v-if="node.subtitle" x="0" :y="node.r + 30" text-anchor="middle" class="kg-node-subtitle">
+              {{ node.subtitle }}
+            </text>
           </g>
         </g>
 
-        <!-- 说明文字浮层 -->
-        <g v-if="showLabels && hoveredId" class="rr-tooltip">
+        <g v-if="showLabels && hoveredNode" class="kg-tooltip">
           <g :transform="`translate(${tooltipPos.x}, ${tooltipPos.y})`">
-            <rect x="0" y="0" :width="tooltipW" :height="tooltipLines.length*18+28"
-              rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.2"
-              filter="url(#rr-glow)"/>
-            <text x="12" y="20" class="tip-title" :fill="hoveredNode?.color">{{ hoveredNode?.name }}</text>
-            <text v-for="(ln, i) in tooltipLines" :key="i"
-              x="12" :y="38+i*18" class="tip-line">{{ ln }}</text>
+            <rect
+              x="0"
+              y="0"
+              :width="tooltipW"
+              :height="tooltipHeight"
+              rx="14"
+              fill="rgba(9, 18, 36, 0.96)"
+              stroke="rgba(126, 142, 171, 0.25)"
+              stroke-width="1.2"
+            />
+            <text x="14" y="24" class="kg-tooltip-title" :fill="hoveredNode.color">
+              {{ hoveredNode.name }}
+            </text>
+            <text x="14" y="42" class="kg-tooltip-sub">
+              {{ hoveredNode.subtitle || hoveredNode.metadata?.kind || 'topology node' }}
+            </text>
+            <text
+              v-for="(line, index) in tooltipLines"
+              :key="`${hoveredNode.id}-tip-${index}`"
+              x="14"
+              :y="66 + index * 18"
+              class="kg-tooltip-line"
+            >
+              {{ line }}
+            </text>
           </g>
         </g>
       </svg>
+
+      <div v-if="loadError" class="kg-overlay kg-overlay-error">
+        <div class="kg-overlay-card">
+          <div class="kg-overlay-title">拓扑加载失败</div>
+          <div class="kg-overlay-text">{{ loadError }}</div>
+        </div>
+      </div>
+
+      <div v-else-if="!loading && !nodes.length" class="kg-overlay">
+        <div class="kg-overlay-card">
+          <div class="kg-overlay-title">暂无拓扑数据</div>
+          <div class="kg-overlay-text">当前模式没有可展示的节点或关系。</div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, reactive, onMounted } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { api } from '../api/index.js'
 
-// ── 动效开关 ──────────────────────────────────────────────────────────
-const animOn     = ref(true)
+const W = 1480
+const H = 940
+
+const RUNTIME_GROUPS = [
+  { id: 'entry', label: '入口流量', color: '#38bdf8' },
+  { id: 'service', label: '微服务', color: '#22c55e' },
+  { id: 'dependency', label: '外部依赖', color: '#fbbf24' },
+]
+
+const RUNTIME_RELATIONS = [
+  { id: 'call', label: '实时调用', color: '#38bdf8' },
+  { id: 'dependency', label: '外部依赖', color: '#fbbf24' },
+]
+
+const mode = ref('knowledge')
+const loading = ref(false)
+const loadError = ref('')
+const animOn = ref(true)
 const showLabels = ref(true)
-const hoveredId  = ref(null)
-const svgEl      = ref(null)
-const canvasEl   = ref(null)
+const hoveredId = ref(null)
+const graph = ref(emptyGraph())
+const svgEl = ref(null)
 
-// ── 画布尺寸 ──────────────────────────────────────────────────────────
-const W = 1400, H = 900
-
-// ── ViewBox 缩放/拖拽 ─────────────────────────────────────────────────
-const vb   = reactive({ x: 0, y: 0, w: W, h: H })
+const vb = reactive({ x: 0, y: 0, w: W, h: H })
 const drag = reactive({ active: false, sx: 0, sy: 0, vbx0: 0, vby0: 0 })
 const vbStr = computed(() => `${vb.x} ${vb.y} ${vb.w} ${vb.h}`)
 
-function zoomAt(f, cx, cy) {
-  const nw = Math.max(400, Math.min(W*3, vb.w / f))
-  const nh = nw * H / W
-  vb.x = cx - (cx - vb.x) * (nw / vb.w); vb.y = cy - (cy - vb.y) * (nh / vb.h)
-  vb.w = nw; vb.h = nh
+function emptyGraph() {
+  return {
+    graph_id: '',
+    title: '知识拓扑图',
+    subtitle: '',
+    source: '',
+    groups: [],
+    relation_legend: [],
+    zones: [],
+    nodes: [],
+    edges: [],
+    stats: {},
+  }
 }
-function zoomIn()  { zoomAt(1.2,  vb.x + vb.w/2, vb.y + vb.h/2) }
-function zoomOut() { zoomAt(0.83, vb.x + vb.w/2, vb.y + vb.h/2) }
-function fitView() { vb.x=0; vb.y=0; vb.w=W; vb.h=H }
-function onWheel(e) {
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
+function buildKnowledgeFallbackGraph(reason = '') {
+  const groups = [
+    { id: 'control', label: 'Control', color: '#38bdf8' },
+    { id: 'workload', label: 'Workload', color: '#a78bfa' },
+    { id: 'traffic', label: 'Traffic', color: '#22c55e' },
+    { id: 'observe', label: 'Observe', color: '#14b8a6' },
+    { id: 'aiops', label: 'AIOps', color: '#f87171' },
+  ]
+  const relationLegend = [
+    { id: 'operate', label: 'operate', color: '#38bdf8' },
+    { id: 'route', label: 'route', color: '#22c55e' },
+    { id: 'observe', label: 'observe', color: '#14b8a6' },
+    { id: 'analyze', label: 'analyze', color: '#f87171' },
+  ]
+  const zones = [
+    { id: 'control', label: 'Control Plane', x: 40, y: 70, w: 350, h: 220, color: '#38bdf8' },
+    { id: 'workload', label: 'Workloads', x: 40, y: 350, w: 350, h: 250, color: '#a78bfa' },
+    { id: 'traffic', label: 'Traffic', x: 450, y: 70, w: 340, h: 220, color: '#22c55e' },
+    { id: 'observe', label: 'Observability', x: 850, y: 70, w: 360, h: 220, color: '#14b8a6' },
+    { id: 'aiops', label: 'AIOps', x: 850, y: 350, w: 360, h: 250, color: '#f87171' },
+  ]
+  const nodes = [
+    {
+      id: 'kubectl',
+      name: 'kubectl',
+      subtitle: 'CLI / GitOps',
+      abbr: 'CLI',
+      group: 'control',
+      zone: 'control',
+      x: 120,
+      y: 170,
+      size: 28,
+      summary: ['Cluster operation entrypoint', 'Submits resource changes to API Server'],
+      metadata: { kind: 'client', scope: 'k8s' },
+    },
+    {
+      id: 'apiserver',
+      name: 'API Server',
+      subtitle: 'REST / Watch',
+      abbr: 'API',
+      group: 'control',
+      zone: 'control',
+      x: 245,
+      y: 170,
+      size: 34,
+      summary: ['Unified Kubernetes control-plane entrypoint', 'Serves CRUD and watch traffic'],
+      metadata: { kind: 'control-plane', scope: 'k8s' },
+    },
+    {
+      id: 'controller',
+      name: 'Controller',
+      subtitle: 'Reconcile Loop',
+      abbr: 'CTL',
+      group: 'control',
+      zone: 'control',
+      x: 340,
+      y: 170,
+      size: 28,
+      summary: ['Continuously reconciles desired state', 'Drives workload rollout and healing'],
+      metadata: { kind: 'controller-manager', scope: 'k8s' },
+    },
+    {
+      id: 'deployment',
+      name: 'Deployment',
+      subtitle: 'Stateless App',
+      abbr: 'DEP',
+      group: 'workload',
+      zone: 'workload',
+      x: 130,
+      y: 445,
+      size: 30,
+      summary: ['Manages stateless replicas', 'Owns rollout strategy for app pods'],
+      metadata: { kind: 'workload', scope: 'k8s' },
+    },
+    {
+      id: 'pod',
+      name: 'Pod',
+      subtitle: 'Runtime Unit',
+      abbr: 'POD',
+      group: 'workload',
+      zone: 'workload',
+      x: 255,
+      y: 520,
+      size: 36,
+      summary: ['Smallest runtime scheduling unit', 'Emits logs, metrics, and traces'],
+      metadata: { kind: 'workload', scope: 'k8s' },
+    },
+    {
+      id: 'service',
+      name: 'Service',
+      subtitle: 'Stable Endpoint',
+      abbr: 'SVC',
+      group: 'traffic',
+      zone: 'traffic',
+      x: 560,
+      y: 160,
+      size: 32,
+      summary: ['Provides stable endpoint for pods', 'Selects backends by labels'],
+      metadata: { kind: 'network', scope: 'k8s' },
+    },
+    {
+      id: 'ingress',
+      name: 'Ingress',
+      subtitle: 'North-South',
+      abbr: 'ING',
+      group: 'traffic',
+      zone: 'traffic',
+      x: 690,
+      y: 160,
+      size: 30,
+      summary: ['Routes external requests into services', 'Carries host/path/TLS rules'],
+      metadata: { kind: 'network', scope: 'k8s' },
+    },
+    {
+      id: 'loki',
+      name: 'Loki',
+      subtitle: 'Logs',
+      abbr: 'LOG',
+      group: 'observe',
+      zone: 'observe',
+      x: 965,
+      y: 145,
+      size: 30,
+      summary: ['Collects and queries pod logs', 'Feeds troubleshooting and RCA context'],
+      metadata: { kind: 'observability', scope: 'platform' },
+    },
+    {
+      id: 'skywalking',
+      name: 'SkyWalking',
+      subtitle: 'Tracing',
+      abbr: 'APM',
+      group: 'observe',
+      zone: 'observe',
+      x: 1100,
+      y: 145,
+      size: 30,
+      summary: ['Builds service topology and traces', 'Correlates requests across services'],
+      metadata: { kind: 'observability', scope: 'platform' },
+    },
+    {
+      id: 'aiops',
+      name: 'AI RCA',
+      subtitle: 'Diagnosis',
+      abbr: 'RCA',
+      group: 'aiops',
+      zone: 'aiops',
+      x: 1035,
+      y: 470,
+      size: 34,
+      pulse: true,
+      summary: reason
+        ? [`Fallback graph enabled: ${reason}`, 'Backend graph returned empty or failed temporarily']
+        : ['Correlates logs, traces, and K8s context', 'Outputs root-cause hints and next actions'],
+      metadata: { kind: 'aiops', scope: 'analysis' },
+    },
+  ]
+  const edges = [
+    { id: 'kubectl-api', source: 'kubectl', target: 'apiserver', category: 'operate', relation: 'operate', label: 'apply' },
+    { id: 'api-controller', source: 'apiserver', target: 'controller', category: 'operate', relation: 'operate', label: 'watch' },
+    { id: 'controller-deployment', source: 'controller', target: 'deployment', category: 'operate', relation: 'operate', label: 'reconcile' },
+    { id: 'deployment-pod', source: 'deployment', target: 'pod', category: 'operate', relation: 'operate', label: 'owns' },
+    { id: 'service-pod', source: 'service', target: 'pod', category: 'route', relation: 'route', label: 'selects' },
+    { id: 'ingress-service', source: 'ingress', target: 'service', category: 'route', relation: 'route', label: 'routes' },
+    { id: 'pod-loki', source: 'pod', target: 'loki', category: 'observe', relation: 'observe', label: 'logs' },
+    { id: 'pod-sw', source: 'pod', target: 'skywalking', category: 'observe', relation: 'observe', label: 'traces' },
+    { id: 'loki-aiops', source: 'loki', target: 'aiops', category: 'analyze', relation: 'analyze', label: 'analyzes' },
+    { id: 'sw-aiops', source: 'skywalking', target: 'aiops', category: 'analyze', relation: 'analyze', label: 'correlates' },
+  ]
+
+  return {
+    graph_id: 'knowledge-fallback',
+    title: 'K8s Knowledge Topology',
+    subtitle: reason ? `Frontend fallback graph · ${reason}` : 'Frontend fallback graph',
+    source: 'knowledge-fallback',
+    groups,
+    relation_legend: relationLegend,
+    zones,
+    nodes,
+    edges,
+    stats: {
+      groups: groups.length,
+      zones: zones.length,
+      nodes: nodes.length,
+      edges: edges.length,
+      details: [
+        { label: 'Mode', value: 'Fallback' },
+        { label: 'Nodes', value: nodes.length },
+        { label: 'Edges', value: edges.length },
+      ],
+    },
+  }
+}
+
+function withAlpha(hex, alpha) {
+  const raw = String(hex || '').trim()
+  if (/^#([0-9a-f]{6})$/i.test(raw)) {
+    const value = raw.slice(1)
+    const r = parseInt(value.slice(0, 2), 16)
+    const g = parseInt(value.slice(2, 4), 16)
+    const b = parseInt(value.slice(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+  if (/^rgb/i.test(raw)) return raw
+  return `rgba(56, 189, 248, ${alpha})`
+}
+
+function deriveNodeAbbr(name) {
+  const words = String(name || '')
+    .replace(/[^A-Za-z0-9\s/-]/g, ' ')
+    .split(/[\s/-]+/)
+    .filter(Boolean)
+  if (!words.length) return 'N'
+  return words.slice(0, 3).map((part) => part[0]).join('').toUpperCase()
+}
+
+function sanitizeId(value) {
+  return String(value || 'id').replace(/[^a-zA-Z0-9_-]+/g, '-')
+}
+
+function makePackets(count = 2, baseDur = 1.8) {
+  return Array.from({ length: Math.max(1, count) }, (_, index) => ({
+    i: index,
+    r: 3 + (count - index) * 0.35,
+    dur: baseDur + index * 0.24,
+    begin: index * (baseDur / Math.max(count, 1)),
+  }))
+}
+
+function zoomAt(factor, cx, cy) {
+  const nextW = Math.max(460, Math.min(W * 3, vb.w / factor))
+  const nextH = nextW * H / W
+  vb.x = cx - (cx - vb.x) * (nextW / vb.w)
+  vb.y = cy - (cy - vb.y) * (nextH / vb.h)
+  vb.w = nextW
+  vb.h = nextH
+}
+
+function fitView() {
+  vb.x = 0
+  vb.y = 0
+  vb.w = W
+  vb.h = H
+}
+
+function onWheel(event) {
+  if (!svgEl.value) return
   const rect = svgEl.value.getBoundingClientRect()
-  const mx = (e.clientX - rect.left) / rect.width  * vb.w + vb.x
-  const my = (e.clientY - rect.top)  / rect.height * vb.h + vb.y
-  zoomAt(e.deltaY < 0 ? 1.15 : 0.87, mx, my)
+  const mx = ((event.clientX - rect.left) / rect.width) * vb.w + vb.x
+  const my = ((event.clientY - rect.top) / rect.height) * vb.h + vb.y
+  zoomAt(event.deltaY < 0 ? 1.12 : 0.88, mx, my)
 }
-function onDragStart(e) {
-  if (e.button !== 0) return
-  drag.active = true; drag.sx = e.clientX; drag.sy = e.clientY
-  drag.vbx0 = vb.x; drag.vby0 = vb.y
+
+function onDragStart(event) {
+  if (event.button !== 0) return
+  drag.active = true
+  drag.sx = event.clientX
+  drag.sy = event.clientY
+  drag.vbx0 = vb.x
+  drag.vby0 = vb.y
 }
-function onDragMove(e) {
-  if (!drag.active) return
+
+function onDragMove(event) {
+  if (!drag.active || !svgEl.value) return
   const rect = svgEl.value.getBoundingClientRect()
-  const sx = vb.w / rect.width, sy = vb.h / rect.height
-  vb.x = drag.vbx0 - (e.clientX - drag.sx) * sx
-  vb.y = drag.vby0 - (e.clientY - drag.sy) * sy
-}
-function onDragEnd() { drag.active = false }
-
-// ── 节点分组 / 颜色 ───────────────────────────────────────────────────
-const NODE_GROUPS = [
-  { id:'ctrl',   color:'#38bdf8', label:'控制平面' },
-  { id:'wrkld',  color:'#a78bfa', label:'工作负载' },
-  { id:'net',    color:'#22c55e', label:'网络/服务' },
-  { id:'stor',   color:'#fbbf24', label:'存储/配置' },
-  { id:'sec',    color:'#f87171', label:'安全/权限' },
-  { id:'client', color:'#fb923c', label:'客户端' },
-]
-
-// ── 分区框 ────────────────────────────────────────────────────────────
-const ZONES = [
-  { id:'plane', x:30,  y:30,  w:480, h:280, color:'#38bdf8', label:'Control Plane' },
-  { id:'wrkld', x:30,  y:350, w:480, h:510, color:'#a78bfa', label:'Workload Objects' },
-  { id:'net',   x:550, y:30,  w:440, h:510, color:'#22c55e', label:'Networking' },
-  { id:'cfg',   x:550, y:570, w:440, h:290, color:'#fbbf24', label:'Config & Storage' },
-  { id:'sec',   x:1020,y:30,  w:350, h:510, color:'#f87171', label:'Security & RBAC' },
-]
-
-// ── 节点定义 ──────────────────────────────────────────────────────────
-const NODES = [
-  // 控制平面
-  { id:'apisvr',  name:'API Server', sub:':6443', icon:'⚙️', iconSize:20, r:38, x:200, y:140,
-    color:'#38bdf8', fill:'#0c2038', pulse:true, group:'ctrl',
-    desc:['集群唯一入口，所有资源操作经过它','提供 REST API + Watch 机制','负责认证/授权/准入控制','所有组件只与 API Server 通信'] },
-  { id:'etcd',    name:'etcd', sub:':2379', icon:'🗄️', iconSize:18, r:30, x:100, y:260,
-    color:'#38bdf8', fill:'#0c1a30', group:'ctrl',
-    desc:['分布式 K-V 存储，保存所有集群状态','只有 API Server 直接访问','支持 Watch 实现事件驱动','多副本 Raft 共识保证一致性'] },
-  { id:'sched',   name:'Scheduler', sub:'Pod 调度', icon:'📅', iconSize:16, r:30, x:300, y:260,
-    color:'#38bdf8', fill:'#0c1a30', group:'ctrl',
-    desc:['监听未调度 Pod','根据资源/亲和性选择 Node','写回 Pod.spec.nodeName','可替换为自定义调度器'] },
-  { id:'ctrlmgr', name:'Controller\nManager', sub:'控制循环', icon:'🔄', iconSize:16, r:30, x:420, y:260,
-    color:'#38bdf8', fill:'#0c1a30', group:'ctrl',
-    desc:['内置多个控制器的集合','Deployment/ReplicaSet/Node 控制器','持续比对 spec vs status','驱动资源向期望状态收敛'] },
-
-  // 工作负载
-  { id:'deploy',  name:'Deployment', sub:'无状态应用', icon:'🚀', iconSize:18, r:34, x:120, y:480,
-    color:'#a78bfa', fill:'#160d29', pulse:true, group:'wrkld',
-    desc:['声明无状态应用期望状态','管理 ReplicaSet 生命周期','支持滚动更新/回滚','HPA 通过它扩缩容'] },
-  { id:'sts',     name:'StatefulSet', sub:'有状态应用', icon:'🗃️', iconSize:16, r:28, x:250, y:560,
-    color:'#a78bfa', fill:'#160d29', group:'wrkld',
-    desc:['管理有状态应用（DB/MQ）','Pod 有固定名称和存储','有序部署/删除','需要 Headless Service'] },
-  { id:'ds',      name:'DaemonSet', sub:'节点守护', icon:'👁️', iconSize:16, r:28, x:380, y:480,
-    color:'#a78bfa', fill:'#160d29', group:'wrkld',
-    desc:['每个节点运行一个 Pod','常用于日志/监控/网络插件','节点加入时自动部署'] },
-  { id:'rs',      name:'ReplicaSet', sub:'副本控制', icon:'📋', iconSize:16, r:28, x:120, y:640,
-    color:'#a78bfa', fill:'#160d29', group:'wrkld',
-    desc:['维护指定数量的 Pod 副本','通常不直接使用，由 Deployment 管理','通过 labelSelector 选择 Pod'] },
-  { id:'pod',     name:'Pod', sub:'最小调度单元', icon:'🟢', iconSize:18, r:36, x:250, y:750,
-    color:'#a78bfa', fill:'#1a1030', pulse:true, group:'wrkld',
-    desc:['包含一个或多个 Container','共享 Network Namespace','最小调度/运行单元','通过 Service 暴露访问'] },
-  { id:'job',     name:'Job/CronJob', sub:'批处理任务', icon:'⏰', iconSize:16, r:26, x:430, y:640,
-    color:'#a78bfa', fill:'#160d29', group:'wrkld',
-    desc:['Job：运行完成即结束','CronJob：定时触发 Job','常用于数据迁移/定时清理'] },
-
-  // 网络服务
-  { id:'ingress', name:'Ingress', sub:'HTTP 入口', icon:'🌐', iconSize:18, r:32, x:660, y:120,
-    color:'#22c55e', fill:'#0a1f15', pulse:true, group:'net',
-    desc:['HTTP/HTTPS 路由规则','域名/路径 → Service 映射','需要 Ingress Controller','支持 TLS 终止'] },
-  { id:'svc',     name:'Service', sub:'稳定访问入口', icon:'🔌', iconSize:18, r:34, x:680, y:280,
-    color:'#22c55e', fill:'#0a1f15', group:'net',
-    desc:['为 Pod 提供稳定的 DNS 名和 IP','ClusterIP/NodePort/LoadBalancer','通过 labelSelector 关联 Pod','kube-proxy 实现负载均衡'] },
-  { id:'ep',      name:'Endpoints', sub:'后端 IP 列表', icon:'📍', iconSize:14, r:24, x:820, y:200,
-    color:'#22c55e', fill:'#071a10', group:'net',
-    desc:['记录 Service 对应的 Pod IP:Port','Service 自动维护','ExternalEndpoints 可指向外部'] },
-  { id:'netsvc',  name:'NetworkPolicy', sub:'流量控制', icon:'🛡️', iconSize:16, r:26, x:840, y:340,
-    color:'#22c55e', fill:'#071a10', group:'net',
-    desc:['控制 Pod 间网络访问','基于 labelSelector 定义规则','需要 CNI 插件支持','默认全通，加策略后按需放行'] },
-  { id:'hpa',     name:'HPA', sub:'水平自动扩缩', icon:'📈', iconSize:16, r:26, x:660, y:440,
-    color:'#22c55e', fill:'#071a10', group:'net',
-    desc:['根据 CPU/内存/自定义指标','自动调整 Deployment 副本数','依赖 Metrics Server'] },
-
-  // 配置存储
-  { id:'cm',      name:'ConfigMap', sub:'配置数据', icon:'📝', iconSize:16, r:28, x:620, y:660,
-    color:'#fbbf24', fill:'#1a1300', group:'stor',
-    desc:['存储非敏感配置数据','可作为环境变量/Volume 挂载','更新后 Pod 可动态感知（Volume）'] },
-  { id:'secret',  name:'Secret', sub:'敏感数据', icon:'🔐', iconSize:16, r:28, x:750, y:660,
-    color:'#fbbf24', fill:'#1a1300', group:'stor',
-    desc:['存储敏感信息（密码/Token/证书）','Base64 编码（非加密）','可配合 Vault 增强安全性'] },
-  { id:'pvc',     name:'PVC/PV', sub:'持久化存储', icon:'💾', iconSize:16, r:28, x:880, y:660,
-    color:'#fbbf24', fill:'#1a1300', group:'stor',
-    desc:['PVC：用户声明存储需求','PV：管理员提供存储资源','StorageClass 动态供给','支持 ReadWriteOnce/Many'] },
-  { id:'ns',      name:'Namespace', sub:'资源隔离', icon:'📦', iconSize:16, r:26, x:660, y:800,
-    color:'#fbbf24', fill:'#1a1300', group:'stor',
-    desc:['逻辑隔离多租户/环境','ResourceQuota 限制用量','NetworkPolicy 在 NS 内生效','默认 NS: default/kube-system'] },
-
-  // 安全 RBAC
-  { id:'sa',      name:'ServiceAccount', sub:'Pod 身份', icon:'👤', iconSize:16, r:28, x:1090, y:130,
-    color:'#f87171', fill:'#200c0c', group:'sec',
-    desc:['Pod 访问 API Server 的身份','每个 NS 默认有 default SA','Token 自动挂载到 Pod'] },
-  { id:'role',    name:'Role/ClusterRole', sub:'权限定义', icon:'📜', iconSize:14, r:26, x:1230, y:200,
-    color:'#f87171', fill:'#200c0c', group:'sec',
-    desc:['Role：NS 级别权限','ClusterRole：集群级别权限','定义对资源的 verbs（get/list/watch）'] },
-  { id:'rb',      name:'RoleBinding', sub:'权限绑定', icon:'🔗', iconSize:14, r:26, x:1150, y:340,
-    color:'#f87171', fill:'#200c0c', group:'sec',
-    desc:['将 Role 绑定到 Subject','Subject：User/Group/ServiceAccount','ClusterRoleBinding 全局绑定'] },
-  { id:'admit',   name:'Admission\nWebhook', sub:'准入控制', icon:'🚦', iconSize:14, r:26, x:1270, y:380,
-    color:'#f87171', fill:'#200c0c', group:'sec',
-    desc:['ValidatingWebhook：验证请求','MutatingWebhook：修改请求','OPA/Kyverno 基于此实现策略'] },
-
-  // 客户端
-  { id:'kubectl', name:'kubectl', sub:'CLI 工具', icon:'💻', iconSize:16, r:28, x:700, y:860,
-    color:'#fb923c', fill:'#1a0f00', pulse:true, group:'client',
-    desc:['K8s 命令行客户端','通过 kubeconfig 访问 API Server','常用命令: apply/get/describe/logs'] },
-]
-
-// ── 关系边定义 ────────────────────────────────────────────────────────
-function nd(id) { return NODES.find(n => n.id === id) }
-
-function arc(a, b, bend = 0) {
-  if (!a || !b) return ''
-  const dx = b.x - a.x, dy = b.y - a.y
-  const mx = (a.x + b.x) / 2 + (bend ? -dy * bend : 0)
-  const my = (a.y + b.y) / 2 + (bend ? dx * bend : 0)
-  const ra = a.r + 4, rb = b.r + 4
-  const len = Math.sqrt(dx*dx + dy*dy)
-  const ux = dx/len, uy = dy/len
-  return `M${a.x + ux*ra},${a.y + uy*ra} Q${mx},${my} ${b.x - ux*rb},${b.y - uy*rb}`
+  const sx = vb.w / rect.width
+  const sy = vb.h / rect.height
+  vb.x = drag.vbx0 - (event.clientX - drag.sx) * sx
+  vb.y = drag.vby0 - (event.clientY - drag.sy) * sy
 }
 
-function pkts(n, dur) {
-  return Array.from({length: n}, (_, i) => ({ i, r: 3 + (n-i)*0.4, dur, begin: i * dur/n }))
+function onDragEnd() {
+  drag.active = false
 }
 
-const EDGES = [
-  // API Server ↔ etcd
-  { id:'api-etc', from:'apisvr', to:'etcd',    group:'ctrl', color:'#38bdf8', label:'读写状态',   packets: pkts(2,1.8) },
-  { id:'etc-api', from:'etcd',   to:'apisvr',  group:'ctrl', color:'#38bdf8', label:'Watch事件',  packets: pkts(1,2.5), dash:'4 3' },
-  // 控制器监听 API Server
-  { id:'sch-api', from:'sched',   to:'apisvr', group:'ctrl', color:'#38bdf8', label:'Watch Pod',  packets: pkts(2,2.2) },
-  { id:'cm-api',  from:'ctrlmgr', to:'apisvr', group:'ctrl', color:'#38bdf8', label:'Watch资源',  packets: pkts(2,2.0) },
-  // 工作负载层级
-  { id:'dep-rs',  from:'deploy', to:'rs',      group:'wrkld', color:'#a78bfa', label:'owns',       packets: pkts(2,1.6) },
-  { id:'rs-pod',  from:'rs',     to:'pod',     group:'wrkld', color:'#a78bfa', label:'creates',    packets: pkts(3,1.4) },
-  { id:'sts-pod', from:'sts',    to:'pod',     group:'wrkld', color:'#a78bfa', label:'manages',    packets: pkts(2,1.8) },
-  { id:'ds-pod',  from:'ds',     to:'pod',     group:'wrkld', color:'#a78bfa', label:'per-node',   packets: pkts(2,2.0) },
-  { id:'job-pod', from:'job',    to:'pod',     group:'wrkld', color:'#a78bfa', label:'run once',   packets: pkts(1,2.4) },
-  // 调度器绑定 Pod → Node
-  { id:'sch-pod', from:'sched',  to:'pod',     group:'ctrl',  color:'#38bdf8', label:'bind Node',  packets: pkts(2,2.5) },
-  // 网络服务
-  { id:'ing-svc', from:'ingress', to:'svc',    group:'net',   color:'#22c55e', label:'→ Service',  packets: pkts(3,1.5) },
-  { id:'svc-pod', from:'svc',     to:'pod',    group:'net',   color:'#22c55e', label:'selector',   packets: pkts(3,1.4) },
-  { id:'svc-ep',  from:'svc',     to:'ep',     group:'net',   color:'#22c55e', label:'维护 EP',    packets: pkts(1,2.0) },
-  { id:'hpa-dep', from:'hpa',     to:'deploy', group:'net',   color:'#22c55e', label:'扩缩容',      packets: pkts(2,2.2) },
-  // 配置注入到 Pod
-  { id:'cm-pod',  from:'cm',   to:'pod',       group:'stor',  color:'#fbbf24', label:'env/vol',    packets: pkts(2,1.8) },
-  { id:'sec-pod', from:'secret', to:'pod',     group:'stor',  color:'#fbbf24', label:'env/vol',    packets: pkts(2,2.0) },
-  { id:'pvc-pod', from:'pvc',   to:'pod',      group:'stor',  color:'#fbbf24', label:'挂载',        packets: pkts(2,1.9) },
-  // 安全
-  { id:'sa-pod',  from:'sa',   to:'pod',       group:'sec',   color:'#f87171', label:'identity',   packets: pkts(2,2.4) },
-  { id:'rb-sa',   from:'rb',   to:'sa',        group:'sec',   color:'#f87171', label:'binds',      packets: pkts(1,2.8) },
-  { id:'role-rb', from:'role', to:'rb',        group:'sec',   color:'#f87171', label:'ref',        packets: pkts(1,3.0) },
-  { id:'adm-api', from:'admit', to:'apisvr',   group:'sec',   color:'#f87171', label:'intercept',  packets: pkts(2,1.6) },
-  // 客户端
-  { id:'kube-api', from:'kubectl', to:'apisvr', group:'client', color:'#fb923c', label:'REST',      packets: pkts(3,1.4) },
-  { id:'kube-dep', from:'kubectl', to:'deploy', group:'client', color:'#fb923c', label:'apply',     packets: pkts(2,2.0), dash:'4 3' },
-].map(e => ({
-  ...e,
-  d: arc(nd(e.from), nd(e.to), e.bend || 0),
-}))
-
-// ── hover 辅助函数 ────────────────────────────────────────────────────
-function isRelated(edge) {
-  if (!hoveredId.value) return true
-  return edge.from === hoveredId.value || edge.to === hoveredId.value
+function switchMode(nextMode) {
+  if (mode.value === nextMode) return
+  mode.value = nextMode
+  loadGraph()
 }
 
-function isConnected(nodeId) {
-  if (!hoveredId.value) return true
-  if (nodeId === hoveredId.value) return true
-  return EDGES.some(e =>
-    (e.from === hoveredId.value || e.to === hoveredId.value) &&
-    (e.from === nodeId || e.to === nodeId)
-  )
+function classifyRuntimeNode(node) {
+  const name = String(node?.name || '').toLowerCase()
+  const type = String(node?.type || '').toLowerCase()
+  if (node?.isReal === false) return 'dependency'
+  if (type.includes('database') || type.includes('cache') || type.includes('mq')) return 'dependency'
+  if (name.includes('gateway') || name.includes('ingress') || name.includes('nginx') || name.includes('edge')) return 'entry'
+  return 'service'
 }
 
-function edgeMid(edge) {
-  const m = edge.d.match(/M([\d.]+),([\d.]+)\s+Q([\d.]+),([\d.]+)/)
-  if (!m) return { x: 0, y: 0 }
-  return { x: parseFloat(m[3]), y: parseFloat(m[4]) }
+function runtimeNodeSummary(node, group) {
+  const type = String(node?.type || '').trim() || 'Unknown'
+  const lines = []
+  if (group === 'entry') {
+    lines.push('作为入口或网关类服务被 SkyWalking 发现。')
+  } else if (group === 'dependency') {
+    lines.push('作为外部依赖或虚拟节点存在于运行时调用链中。')
+  } else {
+    lines.push('作为业务微服务存在于运行时真实调用拓扑中。')
+  }
+  lines.push(`SkyWalking 类型: ${type}`)
+  lines.push(node?.isReal === false ? '节点来源: 虚拟依赖 / 外部组件' : '节点来源: 真实服务实例')
+  return lines
 }
 
-// ── tooltip 位置计算 ──────────────────────────────────────────────────
-const tooltipW = 220
-const hoveredNode = computed(() => NODES.find(n => n.id === hoveredId.value))
-const tooltipLines = computed(() => hoveredNode.value?.desc || [])
-const tooltipPos = computed(() => {
-  const nd = hoveredNode.value
-  if (!nd) return { x: 0, y: 0 }
-  let tx = nd.x + nd.r + 16
-  let ty = nd.y - 30
-  if (tx + tooltipW > W - 20) tx = nd.x - nd.r - tooltipW - 16
-  if (ty < 20) ty = 20
-  return { x: tx, y: ty }
+function normalizeKnowledgeGraph(data) {
+  const normalized = {
+    ...emptyGraph(),
+    ...data,
+    groups: safeArray(data?.groups),
+    relation_legend: safeArray(data?.relation_legend),
+    zones: safeArray(data?.zones),
+    nodes: safeArray(data?.nodes),
+    edges: safeArray(data?.edges),
+  }
+  if (!normalized.nodes.length) {
+    return buildKnowledgeFallbackGraph('no nodes from /api/topology/knowledge')
+  }
+  normalized.stats = {
+    ...(normalized.stats || {}),
+    nodes: normalized.stats?.nodes ?? normalized.nodes.length,
+    edges: normalized.stats?.edges ?? normalized.edges.length,
+    zones: normalized.stats?.zones ?? normalized.zones.length,
+    groups: normalized.stats?.groups ?? normalized.groups.length,
+  }
+  return normalized
+}
+
+function normalizeRuntimeGraph(raw) {
+  const rawNodes = safeArray(raw?.nodes)
+  const rawCalls = safeArray(raw?.calls)
+  const degree = {}
+
+  rawCalls.forEach((call) => {
+    degree[call.source] = (degree[call.source] || 0) + 1
+    degree[call.target] = (degree[call.target] || 0) + 1
+  })
+
+  const grouped = { entry: [], service: [], dependency: [] }
+  rawNodes.forEach((node) => {
+    const group = classifyRuntimeNode(node)
+    grouped[group].push({ ...node, group, degree: degree[node.id] || 0 })
+  })
+
+  Object.values(grouped).forEach((items) => {
+    items.sort((a, b) => b.degree - a.degree || String(a.name).localeCompare(String(b.name)))
+  })
+
+  const columns = [
+    { id: 'entry', x: 220, y: 110, h: 700, w: 300, label: 'Entry / Gateway' },
+    { id: 'service', x: 560, y: 70, h: 780, w: 380, label: 'Service Mesh' },
+    { id: 'dependency', x: 990, y: 110, h: 700, w: 320, label: 'Dependencies' },
+  ]
+
+  const positionedNodes = []
+  columns.forEach((column) => {
+    const items = grouped[column.id]
+    const gap = column.id === 'service' ? 98 : 112
+    const totalHeight = Math.max((items.length - 1) * gap, 0)
+    const startY = column.y + column.h / 2 - totalHeight / 2
+    items.forEach((node, index) => {
+      positionedNodes.push({
+        id: node.id,
+        name: node.name,
+        subtitle: node.type || (node.isReal === false ? 'Virtual Node' : 'Service'),
+        abbr: deriveNodeAbbr(node.name),
+        group: column.id,
+        zone: column.id,
+        x: column.x + column.w / 2,
+        y: startY + index * gap,
+        size: column.id === 'service' ? 34 : 30,
+        pulse: column.id === 'service',
+        summary: runtimeNodeSummary(node, column.id),
+        metadata: {
+          kind: node.type || 'runtime',
+          scope: node.isReal === false ? 'dependency' : 'service',
+        },
+      })
+    })
+  })
+
+  const nodeIndex = Object.fromEntries(positionedNodes.map((node) => [node.id, node]))
+  const zones = columns.map((column, index) => ({
+    id: column.id,
+    label: column.label,
+    x: column.x,
+    y: column.y,
+    w: column.w,
+    h: column.h,
+    color: RUNTIME_GROUPS[index]?.color || '#38bdf8',
+  }))
+
+  const edges = rawCalls.map((call, index) => {
+    const target = nodeIndex[call.target]
+    const isDependency = target?.group === 'dependency'
+    return {
+      id: call.id || `call-${index}`,
+      source: call.source,
+      target: call.target,
+      label: isDependency ? 'external call' : 'service call',
+      relation: 'calls',
+      category: isDependency ? 'dependency' : 'call',
+      style: isDependency ? 'dash' : '',
+      metadata: {
+        detect_points: safeArray(call.detectPoints).join(' / '),
+      },
+    }
+  })
+
+  return {
+    graph_id: 'runtime-skywalking',
+    title: '运行拓扑图',
+    subtitle: 'SkyWalking 实时调用关系',
+    source: 'skywalking',
+    groups: RUNTIME_GROUPS,
+    relation_legend: RUNTIME_RELATIONS,
+    zones,
+    nodes: positionedNodes,
+    edges,
+    stats: {
+      groups: RUNTIME_GROUPS.length,
+      zones: zones.length,
+      nodes: positionedNodes.length,
+      edges: edges.length,
+    },
+  }
+}
+
+async function loadGraph() {
+  loading.value = true
+  loadError.value = ''
+  hoveredId.value = null
+  const isKnowledgeMode = mode.value === 'knowledge'
+
+  try {
+    graph.value = isKnowledgeMode
+      ? normalizeKnowledgeGraph(await api.topologyKnowledge())
+      : normalizeRuntimeGraph(await api.swGetTopology({ hours: 1 }))
+    fitView()
+  } catch (error) {
+    const message = String(error || '未知错误')
+    loadError.value = message
+    graph.value = isKnowledgeMode
+      ? buildKnowledgeFallbackGraph(message)
+      : emptyGraph()
+    if (isKnowledgeMode) fitView()
+  } finally {
+    loading.value = false
+  }
+}
+
+const graphTitle = computed(() => graph.value.title || (mode.value === 'knowledge' ? '知识拓扑图' : '运行拓扑图'))
+const graphSubtitle = computed(() => graph.value.subtitle || '')
+const sourceLabel = computed(() => {
+  if (graph.value.source === 'knowledge-fallback') return 'Source: frontend fallback graph'
+  return mode.value === 'knowledge'
+    ? 'Source: backend /api/topology/knowledge'
+    : 'Source: SkyWalking /api/sw/topology'
 })
 
-onMounted(() => {})
+const nodeGroups = computed(() => safeArray(graph.value.groups))
+const groupMap = computed(() => Object.fromEntries(nodeGroups.value.map((group) => [group.id, group])))
+const relationLegend = computed(() => {
+  const items = safeArray(graph.value.relation_legend)
+  if (items.length) return items
+  return mode.value === 'knowledge' ? [] : RUNTIME_RELATIONS
+})
+const relationMap = computed(() => Object.fromEntries(relationLegend.value.map((item) => [item.id, item])))
+const zones = computed(() => safeArray(graph.value.zones))
+
+const nodes = computed(() => safeArray(graph.value.nodes).map((node) => {
+  const group = groupMap.value[node.group] || {}
+  const color = node.color || group.color || '#38bdf8'
+  return {
+    ...node,
+    r: Number(node.size || node.r || 30),
+    color,
+    fill: node.fill || withAlpha(color, 0.14),
+    abbr: String(node.abbr || deriveNodeAbbr(node.name)).slice(0, 4).toUpperCase(),
+    pulse: Boolean(node.pulse) || node.group === 'aiops',
+    summary: safeArray(node.summary),
+  }
+}))
+
+const nodeMap = computed(() => Object.fromEntries(nodes.value.map((node) => [node.id, node])))
+
+function arc(source, target, bend = 0) {
+  if (!source || !target) return ''
+  const dx = target.x - source.x
+  const dy = target.y - source.y
+  const len = Math.sqrt(dx * dx + dy * dy) || 1
+  const mx = (source.x + target.x) / 2 + (bend ? -dy * bend : 0)
+  const my = (source.y + target.y) / 2 + (bend ? dx * bend : 0)
+  const ux = dx / len
+  const uy = dy / len
+  const ra = source.r + 4
+  const rb = target.r + 4
+  return `M${source.x + ux * ra},${source.y + uy * ra} Q${mx},${my} ${target.x - ux * rb},${target.y - uy * rb}`
+}
+
+function edgeMidpoint(source, target, bend = 0) {
+  const dx = target.x - source.x
+  const dy = target.y - source.y
+  return {
+    x: (source.x + target.x) / 2 + (bend ? -dy * bend : 0),
+    y: (source.y + target.y) / 2 + (bend ? dx * bend : 0),
+  }
+}
+
+const edges = computed(() => safeArray(graph.value.edges)
+  .map((edge, index) => {
+    const source = nodeMap.value[edge.source]
+    const target = nodeMap.value[edge.target]
+    if (!source || !target) return null
+    const relation = relationMap.value[edge.category] || {}
+    const color = edge.color || relation.color || groupMap.value[source.group]?.color || '#38bdf8'
+    const markerId = `kg-marker-${sanitizeId(edge.category || edge.relation || index)}`
+    const bend = Number(edge.bend || 0)
+    const mid = edgeMidpoint(source, target, bend)
+    return {
+      ...edge,
+      color,
+      markerId,
+      dash: edge.style === 'dash' ? '6 5' : edge.style === 'dotted' ? '2 5' : '',
+      packets: makePackets(edge.category === 'analyze' ? 2 : 3, edge.category === 'analyze' ? 2.2 : 1.7),
+      d: arc(source, target, bend),
+      labelX: mid.x,
+      labelY: mid.y,
+    }
+  })
+  .filter(Boolean))
+
+const edgeMarkers = computed(() => {
+  const markers = new Map()
+  edges.value.forEach((edge) => {
+    if (!markers.has(edge.markerId)) markers.set(edge.markerId, edge.color)
+  })
+  return Array.from(markers.entries()).map(([id, color]) => ({ id, color }))
+})
+
+function isEdgeRelated(edge) {
+  if (!hoveredId.value) return true
+  return edge.source === hoveredId.value || edge.target === hoveredId.value
+}
+
+function isNodeConnected(nodeId) {
+  if (!hoveredId.value) return true
+  if (nodeId === hoveredId.value) return true
+  return edges.value.some((edge) => (
+    (edge.source === hoveredId.value || edge.target === hoveredId.value) &&
+    (edge.source === nodeId || edge.target === nodeId)
+  ))
+}
+
+const relatedEdges = computed(() => edges.value.filter((edge) => isEdgeRelated(edge)))
+const hoveredNode = computed(() => nodeMap.value[hoveredId.value] || null)
+
+const tooltipLines = computed(() => {
+  const node = hoveredNode.value
+  if (!node) return []
+  const lines = [...safeArray(node.summary)]
+  if (node.metadata?.kind) lines.push(`类型: ${node.metadata.kind}`)
+  if (node.metadata?.scope) lines.push(`范围: ${node.metadata.scope}`)
+  return lines.slice(0, 6)
+})
+
+const tooltipW = 292
+const tooltipHeight = computed(() => 78 + tooltipLines.value.length * 18)
+const tooltipPos = computed(() => {
+  const node = hoveredNode.value
+  if (!node) return { x: 0, y: 0 }
+  let x = node.x + node.r + 18
+  let y = node.y - 36
+  if (x + tooltipW > W - 20) x = node.x - node.r - tooltipW - 18
+  if (y + tooltipHeight.value > H - 18) y = H - tooltipHeight.value - 18
+  if (y < 18) y = 18
+  return { x, y }
+})
+
+const statsChips = computed(() => {
+  const base = [
+    { label: '节点', value: graph.value.stats?.nodes ?? nodes.value.length },
+    { label: '关系', value: graph.value.stats?.edges ?? edges.value.length },
+    { label: '分区', value: graph.value.stats?.zones ?? zones.value.length },
+    { label: '模式', value: mode.value === 'knowledge' ? 'Knowledge' : 'Runtime' },
+  ]
+  const details = safeArray(graph.value.stats?.details)
+    .filter((item) => item && item.label != null && item.value != null)
+    .slice(0, 4)
+    .map((item) => ({ label: item.label, value: item.value }))
+  return base.concat(details)
+})
+
+onMounted(() => {
+  loadGraph()
+})
 </script>
 
 <style scoped>
-.rr-page {
-  display: flex; flex-direction: column;
-  height: 100%; background: #0d1117; color: #e6edf3; overflow: hidden;
+.kg-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 640px;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.08), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.06), transparent 24%),
+    var(--bg-base);
+  color: var(--text-primary);
 }
 
-/* ── 工具栏 ─────────────────────────────────────── */
-.rr-toolbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 20px; background: #161b22;
-  border-bottom: 1px solid rgba(48,54,61,.9); flex-shrink: 0; flex-wrap: wrap; gap: 8px;
+.kg-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 22px 12px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(9, 18, 36, 0.88), rgba(9, 18, 36, 0.68));
+  backdrop-filter: blur(10px);
+  flex-shrink: 0;
 }
-.rr-brand { display: flex; align-items: center; gap: 10px; }
-.rr-brand > span:first-of-type { font-size: 15px; font-weight: 700; color: #e6edf3; }
-.rr-sub { font-size: 11px; color: #586069; margin-left: 4px; }
-.rr-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-.toggle-pill { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #8d96a0; user-select: none; }
-.toggle-pill input { display: none; }
-.pill-track { width: 30px; height: 17px; background: rgba(48,54,61,.9); border-radius: 9px; position: relative; transition: background .2s; }
-.toggle-pill input:checked ~ .pill-track { background: #38bdf8; }
-.pill-thumb { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; background: #fff; border-radius: 50%; transition: left .2s; }
-.toggle-pill input:checked ~ .pill-track .pill-thumb { left: 15px; }
-.zoom-btns { display: flex; gap: 2px; }
-.ctrl-btn { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
-  border: 1px solid rgba(48,54,61,.9); background: #161b22; color: #8d96a0;
-  border-radius: 7px; cursor: pointer; font-size: 14px; transition: .15s; }
-.ctrl-btn:hover { color: #38bdf8; border-color: rgba(56,189,248,.45); }
-
-/* ── 图例 ───────────────────────────────────────── */
-.rr-legend {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  padding: 6px 20px; background: #0d1117;
-  border-bottom: 1px solid rgba(48,54,61,.6); font-size: 11px; flex-shrink: 0;
+.kg-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
 }
-.leg-item { display: flex; align-items: center; gap: 5px; color: #8d96a0; }
-.leg-dot  { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.leg-line { display: inline-block; width: 20px; height: 2px; border-radius: 1px; }
-.leg-sep  { color: rgba(48,54,61,.9); }
 
-/* ── 画布 ───────────────────────────────────────── */
-.rr-canvas { flex: 1; overflow: hidden; position: relative; }
-.rr-svg    { width: 100%; height: 100%; display: block; }
+.kg-brand-mark {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  box-shadow: 0 10px 30px rgba(56, 189, 248, 0.12);
+}
 
-/* ── SVG 文字 ───────────────────────────────────── */
-.zone-label { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; opacity: .7; }
-.nd-name  { fill: #e6edf3; font-size: 11.5px; font-weight: 700; pointer-events: none; }
-.nd-sub   { fill: #586069; font-size: 9.5px; pointer-events: none; }
-.edge-lbl { font-size: 9.5px; font-weight: 600; pointer-events: none; }
-.tip-title { font-size: 12px; font-weight: 700; }
-.tip-line  { fill: #8d96a0; font-size: 10px; }
+.kg-ring,
+.kg-core {
+  position: absolute;
+  border-radius: 999px;
+}
 
-/* ── 动效 ───────────────────────────────────────── */
-.rr-edge { animation: rrDash 8s linear infinite; }
-@keyframes rrDash { to { stroke-dashoffset: -44; } }
-.rr-pulse { animation: rrPulse 2.5s ease-in-out infinite; }
-@keyframes rrPulse { 0%,100%{ opacity:.15; transform:scale(1); } 50%{ opacity:.35; transform:scale(1.25); } }
-.rr-node  { cursor: pointer; transition: opacity .2s; }
-.rr-node:hover { filter: brightness(1.2); }
+.kg-ring-a {
+  inset: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.6);
+}
+
+.kg-ring-b {
+  inset: 13px;
+  border: 1px solid rgba(34, 197, 94, 0.55);
+}
+
+.kg-core {
+  inset: 17px;
+  background: linear-gradient(135deg, #38bdf8, #22c55e);
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.28);
+}
+
+.kg-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.kg-subtitle {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.kg-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.kg-tabs {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(126, 142, 171, 0.18);
+}
+
+.kg-tab,
+.kg-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: 0.18s ease;
+}
+
+.kg-tab {
+  min-width: 86px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.kg-tab.active {
+  color: #f8fbff;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(18, 96, 255, 0.34));
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18), 0 10px 24px rgba(18, 96, 255, 0.14);
+}
+
+.kg-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kg-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.kg-toggle input {
+  accent-color: var(--accent);
+}
+
+.kg-btn {
+  min-width: 56px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(126, 142, 171, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.kg-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.kg-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.kg-spinner {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #7dd3fc;
+  border-radius: 50%;
+  animation: kgSpin 0.8s linear infinite;
+}
+
+.kg-meta,
+.kg-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 22px;
+  flex-shrink: 0;
+}
+
+.kg-meta {
+  border-bottom: 1px solid rgba(126, 142, 171, 0.1);
+  background: rgba(9, 18, 36, 0.42);
+}
+
+.kg-chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(126, 142, 171, 0.12);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.kg-chip strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.kg-source {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.kg-legend {
+  justify-content: flex-start;
+  gap: 14px;
+  border-bottom: 1px solid rgba(126, 142, 171, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+}
+
+.kg-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.kg-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.12);
+}
+
+.kg-line {
+  width: 22px;
+  height: 2px;
+  border-radius: 999px;
+}
+
+.kg-legend-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(126, 142, 171, 0.22);
+}
+
+.kg-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 520px;
+  overflow: hidden;
+}
+
+.kg-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.kg-zone-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.kg-edge {
+  animation: kgDash 9s linear infinite;
+}
+
+.kg-edge-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.kg-node {
+  cursor: pointer;
+  transition: opacity 0.18s ease;
+}
+
+.kg-node:hover {
+  filter: brightness(1.08);
+}
+
+.kg-node-abbr {
+  fill: #f8fbff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.kg-node-name {
+  fill: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.kg-node-subtitle {
+  fill: var(--text-muted);
+  font-size: 10px;
+}
+
+.kg-pulse {
+  animation: kgPulse 2.5s ease-in-out infinite;
+}
+
+.kg-tooltip-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.kg-tooltip-sub {
+  fill: var(--text-secondary);
+  font-size: 11px;
+}
+
+.kg-tooltip-line {
+  fill: var(--text-primary);
+  font-size: 11px;
+}
+
+.kg-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.kg-overlay-error {
+  background: rgba(15, 23, 42, 0.15);
+}
+
+.kg-overlay-card {
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: rgba(9, 18, 36, 0.92);
+  border: 1px solid rgba(248, 113, 113, 0.18);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
+  max-width: 420px;
+}
+
+.kg-overlay-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.kg-overlay-text {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+@keyframes kgDash {
+  to {
+    stroke-dashoffset: -42;
+  }
+}
+
+@keyframes kgPulse {
+  0%,
+  100% {
+    opacity: 0.18;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.36;
+    transform: scale(1.18);
+  }
+}
+
+@keyframes kgSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1100px) {
+  .kg-toolbar,
+  .kg-meta,
+  .kg-legend {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .kg-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .kg-toolbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
 </style>

@@ -93,6 +93,60 @@
           </div>
         </div>
 
+        <!-- kubeconfig 检测工具 -->
+        <div class="inspect-card">
+          <div class="inspect-title">🔍 kubeconfig 认证检测</div>
+          <div class="inspect-row">
+            <input v-model="inspectPath" class="form-input inspect-input"
+              placeholder="输入 kubeconfig 路径，如 backend/data/kubeconfig 或 test/cert-kubeconfig"
+              @keyup.enter="runInspect" />
+            <button class="btn-ghost inspect-btn" @click="runInspect" :disabled="inspectLoading">
+              {{ inspectLoading ? '检测中...' : '检测' }}
+            </button>
+          </div>
+          <div v-if="inspectResult" class="inspect-result">
+            <div v-if="inspectResult.error" class="inspect-err">{{ inspectResult.error }}</div>
+            <div v-else v-for="f in inspectResult.files" :key="f.path" class="inspect-file">
+              <div class="inspect-file-path">📄 {{ f.path }}</div>
+              <div v-if="f.error" class="inspect-err">{{ f.error }}</div>
+              <template v-else>
+                <div class="inspect-row-info">
+                  <span class="inspect-tag" :class="'tag-' + f.auth?.type">
+                    {{ { certificate:'证书认证', token:'Token认证', exec:'Exec插件', basic:'用户名密码' }[f.auth?.type] || f.auth?.type }}
+                  </span>
+                  <span class="inspect-server">{{ f.server }}</span>
+                  <span v-if="f.insecure" class="inspect-tag tag-warn">跳过TLS验证</span>
+                </div>
+                <!-- 证书认证详情 -->
+                <template v-if="f.auth?.type === 'certificate'">
+                  <div class="inspect-detail">客户端证书: {{ f.auth.client_certificate }}</div>
+                  <div class="inspect-detail">客户端私钥: {{ f.auth.client_key }}</div>
+                  <div v-if="f.auth.cert_detail?.subject" class="inspect-detail">证书主体: {{ f.auth.cert_detail.subject }}</div>
+                  <div v-if="f.auth.cert_detail?.not_after" class="inspect-detail"
+                    :class="{ 'inspect-warn': new Date(f.auth.cert_detail.not_after) < new Date() }">
+                    过期时间: {{ f.auth.cert_detail.not_after }}
+                  </div>
+                </template>
+                <!-- Token 认证详情 -->
+                <template v-if="f.auth?.type === 'token'">
+                  <div class="inspect-detail" v-if="f.auth.token_file">Token 文件: {{ f.auth.token_file }}</div>
+                  <div class="inspect-detail" v-else>Token: {{ f.auth.token_preview }}</div>
+                </template>
+                <!-- Exec 插件详情 -->
+                <template v-if="f.auth?.type === 'exec'">
+                  <div class="inspect-detail">命令: {{ f.auth.command }} {{ (f.auth.args||[]).join(' ') }}</div>
+                </template>
+                <!-- CA 信息 -->
+                <div class="inspect-detail">CA: {{ f.ca }}</div>
+                <div v-if="f.ca_detail?.subject" class="inspect-detail inspect-muted">CA主体: {{ f.ca_detail.subject }}</div>
+                <div v-if="f.all_contexts?.length > 1" class="inspect-detail inspect-muted">
+                  所有 context: {{ f.all_contexts.join(' | ') }}
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
         <div v-if="error" class="error-banner">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10" />
@@ -454,25 +508,113 @@
       <div class="modal-card">
         <div class="modal-title">{{ editingClusterId ? '编辑集群' : '添加集群' }}</div>
         <div class="modal-body">
+
+          <!-- 集群名称 -->
           <label class="field">
             <span>集群名称</span>
             <input v-model="clusterForm.name" class="form-input" placeholder="生产-k8s-01" />
           </label>
-          <label class="field">
+
+          <!-- kubeconfig 路径 + 自动识别 -->
+          <div class="field">
             <span>kubeconfig 路径</span>
-            <input v-model="clusterForm.kubeconfig" class="form-input" placeholder="backend/data/kubeconfig/prod 或 ~/.kube/config" />
-          </label>
+            <div class="detect-row">
+              <input v-model="clusterForm.kubeconfig" class="form-input detect-input"
+                placeholder="backend/data/test/cert-kubeconfig 或 ~/.kube/config"
+                @keyup.enter="autoDetect" />
+              <button class="btn-detect" :class="{ loading: detectLoading }"
+                @click="autoDetect" type="button" :disabled="detectLoading || !clusterForm.kubeconfig.trim()">
+                {{ detectLoading ? '识别中...' : '自动识别' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 识别结果徽章 -->
+          <div v-if="detectResult" class="detect-result" :class="'detect-' + (detectResult.auth?.type || 'unknown')">
+            <span class="detect-icon">{{ { certificate:'🔐', token:'🎫', exec:'⚙️', basic:'👤', unknown:'❓' }[detectResult.auth?.type] || '❓' }}</span>
+            <div class="detect-info">
+              <span class="detect-type">{{ { certificate:'证书认证', token:'Token 认证', exec:'Exec 插件', basic:'用户名密码', unknown:'未知类型' }[detectResult.auth?.type] }}</span>
+              <span class="detect-server">{{ detectResult.server }}</span>
+              <span v-if="detectResult.auth?.cert_detail?.subject" class="detect-sub">{{ detectResult.auth.cert_detail.subject }}</span>
+              <span v-if="detectResult.auth?.cert_detail?.not_after" class="detect-sub"
+                :class="{ 'detect-expired': new Date(detectResult.auth.cert_detail.not_after) < new Date() }">
+                过期：{{ detectResult.auth.cert_detail.not_after }}
+              </span>
+            </div>
+            <button class="detect-clear" @click="detectResult = null; authMode = 'kubeconfig'" type="button">✕</button>
+          </div>
+          <div v-if="detectError" class="detect-error">{{ detectError }}</div>
+
+          <!-- 认证模式（自动识别后高亮，也可手动切换） -->
+          <div class="field">
+            <span>认证方式</span>
+            <div class="auth-mode-tabs">
+              <button :class="['auth-tab', { active: authMode === 'kubeconfig' }]" @click="authMode = 'kubeconfig'" type="button">kubeconfig 路径</button>
+              <button :class="['auth-tab', { active: authMode === 'cert' }]"       @click="authMode = 'cert'"       type="button">证书认证</button>
+              <button :class="['auth-tab', { active: authMode === 'token' }]"      @click="authMode = 'token'"      type="button">Token 认证</button>
+            </div>
+          </div>
+
+          <!-- 证书/Token 模式：路径从自动识别填入，也可手动编辑 -->
+          <template v-if="authMode === 'cert' || authMode === 'token'">
+            <label class="field">
+              <span>API Server 地址</span>
+              <input v-model="certForm.server" class="form-input" placeholder="https://192.168.9.221:6443" />
+            </label>
+            <div class="field">
+              <span>CA 证书路径</span>
+              <div class="cert-path-row">
+                <input v-model="certForm.caPath" class="form-input" placeholder="backend/data/test/ca.crt 或 /opt/kubernetes/ssl/ca.pem" />
+                <label class="cert-upload-btn" title="上传新文件到 data/ca/">
+                  {{ certForm.caUploading ? '...' : '上传' }}
+                  <input type="file" accept=".pem,.crt,.cer,.ca" style="display:none"
+                    @change="e => handleCertUpload(e, 'ca')" />
+                </label>
+              </div>
+            </div>
+          </template>
+
+          <template v-if="authMode === 'cert'">
+            <div class="field">
+              <span>客户端证书路径</span>
+              <div class="cert-path-row">
+                <input v-model="certForm.clientCertPath" class="form-input" placeholder="backend/data/test/user.crt" />
+                <label class="cert-upload-btn" title="上传新文件到 data/ca/">
+                  {{ certForm.clientCertUploading ? '...' : '上传' }}
+                  <input type="file" accept=".pem,.crt,.cer" style="display:none"
+                    @change="e => handleCertUpload(e, 'client-cert')" />
+                </label>
+              </div>
+            </div>
+            <div class="field">
+              <span>客户端私钥路径</span>
+              <div class="cert-path-row">
+                <input v-model="certForm.clientKeyPath" class="form-input" placeholder="backend/data/test/user.key" />
+                <label class="cert-upload-btn" title="上传新文件到 data/ca/">
+                  {{ certForm.clientKeyUploading ? '...' : '上传' }}
+                  <input type="file" accept=".pem,.key" style="display:none"
+                    @change="e => handleCertUpload(e, 'client-key')" />
+                </label>
+              </div>
+            </div>
+          </template>
+
+          <template v-if="authMode === 'token'">
+            <label class="field">
+              <span>Bearer Token</span>
+              <textarea v-model="certForm.token" class="form-textarea" rows="3" placeholder="eyJhbGciOiJSUzI1NiIsInR5..." />
+            </label>
+          </template>
+
+          <!-- 通用字段 -->
           <label class="field">
             <span>context（可选）</span>
-            <input v-model="clusterForm.context" class="form-input" placeholder="prod-context" />
+            <input v-model="clusterForm.context" class="form-input" placeholder="default" />
           </label>
           <label class="field">
             <span>说明（可选）</span>
-            <textarea v-model="clusterForm.description" class="form-textarea" rows="3" placeholder="例如：生产集群 / 华东机房"></textarea>
+            <textarea v-model="clusterForm.description" class="form-textarea" rows="2" placeholder="例如：生产集群 / 华东机房"></textarea>
           </label>
-          <div class="modal-tip">
-            kubeconfig 按文件路径读取，不限制后缀；支持相对路径、Windows 路径和 Linux 路径，相对路径会优先按项目根目录解析。
-          </div>
         </div>
         <div class="modal-actions">
           <button class="btn-ghost" @click="closeClusterModal">取消</button>
@@ -590,7 +732,10 @@
             <button class="exec-btn-sm close" @click="closeExecModal">✕</button>
           </div>
         </div>
-        <div class="exec-term-wrap" ref="execTermEl"></div>
+        <div class="exec-term-wrap" ref="execTermEl"
+          @mousedown="_execTerm?.focus()"
+          @click="_execTerm?.focus()">
+        </div>
       </div>
     </div>
   </div>
@@ -672,6 +817,86 @@ const showClusterModal = ref(false)
 const editingClusterId = ref('')
 const clusterTestResult = ref(null)
 const clusterTestMsg = ref('')
+// 认证模式：kubeconfig | cert | token
+const authMode     = ref('kubeconfig')
+const detectLoading = ref(false)
+const detectResult  = ref(null)   // 识别出的单个 file 对象
+const detectError   = ref('')
+
+const certForm = reactive({
+  server: '',
+  // CA
+  caPath: '', caUploading: false,
+  // 客户端证书
+  clientCertPath: '', clientCertUploading: false,
+  // 客户端私钥
+  clientKeyPath: '', clientKeyUploading: false,
+  // Token
+  token: '',
+})
+
+// 上传证书文件到 data/ca/，上传完把路径回填到对应字段
+async function handleCertUpload(e, certType) {
+  const file = e.target.files[0]
+  if (!file) return
+  const uploadingKey = { ca: 'caUploading', 'client-cert': 'clientCertUploading', 'client-key': 'clientKeyUploading' }[certType]
+  const pathKey      = { ca: 'caPath',      'client-cert': 'clientCertPath',      'client-key': 'clientKeyPath'      }[certType]
+  certForm[uploadingKey] = true
+  try {
+    const r = await api.k8sUploadCert(file, certType)
+    certForm[pathKey] = r.relative   // 回填相对路径
+  } catch (err) {
+    clusterTestMsg.value = '上传失败: ' + err
+  } finally {
+    certForm[uploadingKey] = false
+  }
+}
+
+// 自动识别：调用 inspect-kubeconfig，解析认证类型并回填表单
+async function autoDetect() {
+  const path = clusterForm.kubeconfig.trim()
+  if (!path) return
+  detectLoading.value = true
+  detectResult.value  = null
+  detectError.value   = ''
+  try {
+    const res = await api.k8sInspectKubeconfig(path)
+    if (res.error) { detectError.value = res.error; return }
+
+    const firstFile = (res.files || [])[0]
+    if (!firstFile) { detectError.value = '未解析到 kubeconfig 内容'; return }
+    if (firstFile.error) { detectError.value = firstFile.error; return }
+
+    detectResult.value = firstFile
+    const auth = firstFile.auth || {}
+
+    // 自动填充 server
+    if (firstFile.server) certForm.server = firstFile.server
+
+    // 自动填充 context
+    if (firstFile.current_context) clusterForm.context = firstFile.current_context
+
+    // 自动切换模式并填充字段
+    if (auth.type === 'certificate') {
+      authMode.value = 'cert'
+      certForm.caPath         = firstFile.ca && firstFile.ca !== '(none)' && firstFile.ca !== '(embedded)' ? firstFile.ca : ''
+      certForm.clientCertPath = auth.client_certificate && auth.client_certificate !== '(embedded)' ? auth.client_certificate : ''
+      certForm.clientKeyPath  = auth.client_key         && auth.client_key         !== '(embedded)' ? auth.client_key         : ''
+    } else if (auth.type === 'token') {
+      authMode.value = 'token'
+      certForm.caPath = firstFile.ca && firstFile.ca !== '(none)' && firstFile.ca !== '(embedded)' ? firstFile.ca : ''
+      certForm.token  = auth.token_preview || ''
+    } else {
+      // exec / basic / unknown → 保持 kubeconfig 路径模式
+      authMode.value = 'kubeconfig'
+    }
+  } catch (e) {
+    detectError.value = '识别失败: ' + e
+  } finally {
+    detectLoading.value = false
+  }
+}
+
 const clusterForm = reactive({
   name: '',
   kubeconfig: '',
@@ -872,6 +1097,16 @@ function openEditCluster() {
 
 function closeClusterModal() {
   showClusterModal.value = false
+  // 重置检测状态和 certForm
+  authMode.value      = 'kubeconfig'
+  detectResult.value  = null
+  detectError.value   = ''
+  Object.assign(certForm, {
+    server: '', caPath: '', caUploading: false,
+    clientCertPath: '', clientCertUploading: false,
+    clientKeyPath: '',  clientKeyUploading: false,
+    token: '',
+  })
 }
 
 async function openResourceDetail(kind, row) {
@@ -970,16 +1205,79 @@ async function openResourceLogs(kind, row) {
 }
 
 async function saveCluster() {
-  const payload = {
-    name: clusterForm.name.trim(),
-    kubeconfig: clusterForm.kubeconfig.trim(),
-    context: clusterForm.context.trim(),
-    description: clusterForm.description.trim(),
-  }
-  if (!payload.name || !payload.kubeconfig) {
+  const name = clusterForm.name.trim()
+  if (!name) {
     clusterTestResult.value = false
-    clusterTestMsg.value = '集群名称和 kubeconfig 路径不能为空'
+    clusterTestMsg.value = '集群名称不能为空'
     return
+  }
+
+  // 多行输入 → 用系统路径分隔符拼接（Linux: ":" / Windows: ";"）
+  const pathSep = navigator.platform.startsWith('Win') ? ';' : ':'
+  let kubeconfigPath = clusterForm.kubeconfig
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+    .join(pathSep)
+
+  // 证书 / token 模式：先上传证书再生成 kubeconfig
+  if (authMode.value !== 'kubeconfig') {
+    if (!certForm.server.trim()) {
+      clusterTestResult.value = false
+      clusterTestMsg.value = 'API Server 地址不能为空'
+      return
+    }
+    if (!certForm.caPath.trim()) {
+      clusterTestResult.value = false
+      clusterTestMsg.value = '请填写 CA 证书路径（或上传文件）'
+      return
+    }
+
+    const caRelative = certForm.caPath.trim()
+
+    let clientCertRel = '', clientKeyRel = ''
+    if (authMode.value === 'cert') {
+      if (!certForm.clientCertPath.trim()) {
+        clusterTestResult.value = false; clusterTestMsg.value = '请填写客户端证书路径'; return
+      }
+      if (!certForm.clientKeyPath.trim()) {
+        clusterTestResult.value = false; clusterTestMsg.value = '请填写客户端私钥路径'; return
+      }
+      clientCertRel = certForm.clientCertPath.trim()
+      clientKeyRel  = certForm.clientKeyPath.trim()
+    }
+
+    clusterTestMsg.value = '生成 kubeconfig...'
+    try {
+      const r = await api.k8sGenerateKubeconfig({
+        name,
+        server:      certForm.server.trim(),
+        ca_cert:     caRelative,
+        client_cert: clientCertRel,
+        client_key:  clientKeyRel,
+        token:       authMode.value === 'token' ? certForm.token.trim() : '',
+        context:     clusterForm.context.trim() || 'default',
+        description: clusterForm.description.trim(),
+      })
+      kubeconfigPath = r.relative
+    } catch (e) {
+      clusterTestResult.value = false
+      clusterTestMsg.value = '生成 kubeconfig 失败: ' + e
+      return
+    }
+  }
+
+  if (!kubeconfigPath) {
+    clusterTestResult.value = false
+    clusterTestMsg.value = 'kubeconfig 路径不能为空'
+    return
+  }
+
+  const payload = {
+    name,
+    kubeconfig:  kubeconfigPath,
+    context:     clusterForm.context.trim(),
+    description: clusterForm.description.trim(),
   }
   const successMsg = editingClusterId.value ? '集群配置已更新' : `已添加集群：${payload.name}`
   let saved
@@ -1053,17 +1351,56 @@ async function removeCluster() {
   }
 }
 
+function _formatAuthInfo(authInfo) {
+  if (!authInfo?.files?.length) return ''
+  return authInfo.files.map(f => {
+    if (f.error) return `  ⚠ ${f.path}: ${f.error}`
+    const auth = f.auth || {}
+    const typeLabel = { certificate: '证书认证', token: 'Token认证', exec: 'Exec插件', basic: '用户名密码', unknown: '未知' }[auth.type] || auth.type
+    let detail = `  认证: ${typeLabel}`
+    if (auth.type === 'certificate') {
+      const cd = auth.cert_detail || {}
+      if (cd.subject) detail += ` | 用户: ${cd.subject}`
+      if (cd.not_after) detail += ` | 过期: ${cd.not_after}`
+    } else if (auth.type === 'token') {
+      detail += ` | ${auth.token_file ? '文件: ' + auth.token_file : 'Token: ' + auth.token_preview}`
+    } else if (auth.type === 'exec') {
+      detail += ` | 命令: ${auth.command} ${(auth.args || []).join(' ')}`
+    }
+    return `  Server: ${f.server}\n${detail}\n  CA: ${f.ca}`
+  }).join('\n')
+}
+
 async function testActiveCluster() {
   if (!activeCluster.value) return
   try {
     const result = await api.k8sTestCluster(activeCluster.value.id)
+    const authStr = _formatAuthInfo(result.auth_info)
     clusterTestResult.value = result.ok
     clusterTestMsg.value = result.ok
-      ? `连接成功，共 ${result.node_count} 个节点：${(result.nodes || []).join(', ')}\n使用 kubeconfig：${result.resolved_kubeconfig || result.kubeconfig}${result.kubectl_command ? `\nkubectl 命令：${result.kubectl_command}` : ''}`
-      : `连接失败：${result.error}${result.resolved_kubeconfig ? `\n解析后路径：${result.resolved_kubeconfig}` : ''}${result.kubectl_command ? `\nkubectl 命令：${result.kubectl_command}` : ''}`
+      ? `连接成功，共 ${result.node_count} 个节点：${(result.nodes || []).join(', ')}\nkubeconfig：${result.resolved_kubeconfig || result.kubeconfig}${authStr ? '\n' + authStr : ''}${result.kubectl_command ? '\nkubectl：' + result.kubectl_command : ''}`
+      : `连接失败：${result.error}${result.resolved_kubeconfig ? '\n路径：' + result.resolved_kubeconfig : ''}${authStr ? '\n' + authStr : ''}`
   } catch (e) {
     clusterTestResult.value = false
     clusterTestMsg.value = `测试失败：${e}`
+  }
+}
+
+// ── 独立 kubeconfig 检测 ──────────────────────────────────────────────────────
+const inspectPath    = ref('')
+const inspectResult  = ref(null)
+const inspectLoading = ref(false)
+
+async function runInspect() {
+  if (!inspectPath.value.trim()) return
+  inspectLoading.value = true
+  inspectResult.value  = null
+  try {
+    inspectResult.value = await api.k8sInspectKubeconfig(inspectPath.value.trim())
+  } catch (e) {
+    inspectResult.value = { error: String(e) }
+  } finally {
+    inspectLoading.value = false
   }
 }
 
@@ -1134,6 +1471,7 @@ async function _startExec() {
   _execTerm.open(execTermEl.value)
   await nextTick()
   _execFitAddon.fit()
+  _execTerm.focus()   // ← 必须：让终端获取键盘焦点，否则无法输入
 
   _execResizeOb = new ResizeObserver(() => {
     requestAnimationFrame(() => {
@@ -1161,6 +1499,7 @@ async function _startExec() {
     execConnecting.value = false
     const d = _execFitAddon?.proposeDimensions?.()
     if (d) _execWs.send(`\x1b[RESIZE:${d.cols},${d.rows}]`)
+    _execTerm?.focus()   // ← WS 建立后再次 focus，确保可以立即输入
   }
   _execWs.onmessage = (e) => _execTerm?.write(e.data)
   _execWs.onclose   = () => {
@@ -1250,6 +1589,29 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 
 .cluster-banner,
+/* kubeconfig 检测 */
+.inspect-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.inspect-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
+.inspect-row { display: flex; gap: 8px; align-items: center; }
+.inspect-input { flex: 1; font-family: monospace; font-size: 12px; }
+.inspect-btn { flex-shrink: 0; white-space: nowrap; }
+.inspect-result { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.inspect-file { background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.inspect-file-path { font-size: 11px; font-family: monospace; color: var(--text-muted); margin-bottom: 5px; }
+.inspect-row-info { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.inspect-server { font-size: 12px; color: var(--text-primary); font-family: monospace; }
+.inspect-tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 3px; flex-shrink: 0; }
+.tag-certificate { background: rgba(56,139,253,.15); color: var(--accent); }
+.tag-token       { background: rgba(63,185,80,.15);  color: #3fb950; }
+.tag-exec        { background: rgba(163,113,247,.15);color: #a371f7; }
+.tag-basic       { background: rgba(210,153,34,.15); color: var(--warning); }
+.tag-unknown     { background: var(--bg-card); color: var(--text-muted); }
+.tag-warn        { background: rgba(210,153,34,.15); color: var(--warning); }
+.inspect-detail  { font-size: 11px; color: var(--text-secondary); font-family: monospace; padding: 1px 0; word-break: break-all; }
+.inspect-muted   { color: var(--text-muted); }
+.inspect-warn    { color: var(--error) !important; font-weight: 600; }
+.inspect-err     { font-size: 11px; color: var(--error); }
+
 .error-banner {
   margin: 12px 20px 0;
   border-radius: 8px;
@@ -1467,6 +1829,63 @@ onBeforeUnmount(() => { _destroyExec() })
 .form-textarea { padding: 9px 10px; resize: vertical; min-height: 84px; }
 .modal-tip { font-size: 12px; color: var(--text-muted); line-height: 1.7; background: var(--bg-surface); border: 1px dashed var(--border); border-radius: 8px; padding: 10px 12px; }
 .modal-tip-error { color: var(--error); border-style: solid; border-color: rgba(207,34,46,0.18); background: rgba(207,34,46,0.05); }
+
+/* 自动识别行 */
+.detect-row { display: flex; gap: 8px; align-items: center; }
+.detect-input { flex: 1; font-family: monospace; font-size: 12px; }
+.btn-detect {
+  padding: 5px 14px; font-size: 12px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--accent); color: var(--accent); background: rgba(56,139,253,.08);
+  transition: all .1s; flex-shrink: 0;
+}
+.btn-detect:hover:not(:disabled) { background: rgba(56,139,253,.18); }
+.btn-detect:disabled { opacity: .5; cursor: not-allowed; }
+.btn-detect.loading { opacity: .7; }
+
+/* 识别结果卡片 */
+.detect-result {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 12px; border-radius: 7px; border: 1px solid;
+  font-size: 12px; position: relative;
+}
+.detect-certificate { background: rgba(56,139,253,.08);  border-color: rgba(56,139,253,.3); }
+.detect-token       { background: rgba(63,185,80,.08);   border-color: rgba(63,185,80,.3); }
+.detect-exec        { background: rgba(163,113,247,.08); border-color: rgba(163,113,247,.3); }
+.detect-unknown     { background: var(--bg-input);       border-color: var(--border); }
+.detect-icon  { font-size: 18px; flex-shrink: 0; }
+.detect-info  { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.detect-type  { font-weight: 700; color: var(--text-primary); }
+.detect-server{ font-family: monospace; font-size: 11px; color: var(--text-muted); }
+.detect-sub   { font-size: 11px; color: var(--text-muted); }
+.detect-expired { color: var(--error) !important; font-weight: 600; }
+.detect-clear { position: absolute; top: 6px; right: 8px; background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 13px; }
+.detect-error { font-size: 12px; color: var(--error); padding: 4px 0; }
+
+/* 证书路径输入行 */
+.cert-path-row { display: flex; gap: 6px; align-items: center; }
+.cert-path-row .form-input { flex: 1; font-family: monospace; font-size: 12px; }
+
+/* 认证模式 */
+.auth-mode-tabs { display: flex; gap: 4px; }
+.auth-tab {
+  padding: 4px 12px; font-size: 12px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-secondary);
+  transition: all .1s;
+}
+.auth-tab:hover { background: var(--sidebar-hover); }
+.auth-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+/* 证书上传行 */
+.cert-upload-field { display: flex; flex-direction: column; gap: 4px; }
+.cert-upload-row { display: flex; align-items: center; gap: 8px; }
+.cert-name { flex: 1; font-size: 12px; color: var(--text-muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cert-upload-btn {
+  padding: 4px 12px; font-size: 12px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text-secondary);
+  white-space: nowrap; flex-shrink: 0;
+}
+.cert-upload-btn:hover { border-color: var(--accent); color: var(--accent); }
+.required { color: var(--error); font-style: normal; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 0 20px 20px; }
 .resource-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .resource-kind {
@@ -1618,9 +2037,20 @@ onBeforeUnmount(() => { _destroyExec() })
   flex: 1;
   min-height: 0;
   padding: 4px 0 0 4px;
+  cursor: text;
 }
 .exec-term-wrap :deep(.xterm) { height: 100%; }
 .exec-term-wrap :deep(.xterm-viewport) { overflow-y: auto !important; }
+/* 确保 xterm 的 textarea（实际输入元素）不被遮挡，可以接收键盘事件 */
+.exec-term-wrap :deep(.xterm-helper-textarea) {
+  position: absolute !important;
+  opacity: 0 !important;
+  left: 0 !important;
+  top: 0 !important;
+  z-index: 10 !important;
+  pointer-events: auto !important;
+}
+.exec-term-wrap :deep(.xterm-screen) { cursor: text; }
 .action-btn.exec-btn { color: #58a6ff; }
 .action-btn.exec-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 </style>

@@ -73,6 +73,18 @@ export const api = {
   testAlertmanager: (data) => http.post('/settings/test/alertmanager', data),
   testK8s:        ()     => http.get('/settings/test/k8s'),
   testAI:         (data) => http.post('/settings/test/ai', data),
+  // Agent 工作台
+  getAgentConfig:          () => http.get('/agent-config'),
+  saveAgentConfig:         (data) => http.put('/agent-config', data),
+  listAgentModels:         () => http.get('/agent-config/models'),
+  createAgentModel:        (data) => http.post('/agent-config/models', data),
+  updateAgentModel:        (id, data) => http.put(`/agent-config/models/${id}`, data),
+  deleteAgentModel:        (id) => http.delete(`/agent-config/models/${id}`),
+  setAgentActiveModel:     (modelId) => http.put('/agent-config/models/active', { model_id: modelId }),
+  discoverAgentWorkspace:  () => http.get('/agent-config/workspace/discover'),
+  updateAgentMcp:          (id, data) => http.put(`/agent-config/mcps/${id}`, data),
+  pingAgentMcp:            (id) => http.post(`/agent-config/mcps/${id}/ping`),
+  updateAgentSkill:        (id, data) => http.put(`/agent-config/skills/${id}`, data),
   // 认证
   getMe:        () => http.get('/auth/me'),
   login:        (data) => http.post('/auth/login', data),
@@ -107,6 +119,8 @@ export const api = {
   swTest:           ()                   => http.get('/sw/test'),
   // 可观测性总览
   observabilityOverview: (params, config = {}) => http.get('/observability/overview', { ...config, params }),
+  // 知识拓扑
+  topologyKnowledge: () => http.get('/topology/knowledge'),
   // Grafana 看板管理
   observabilityGrafanaBoards: () => http.get('/observability/grafana/boards'),
   discoverGrafanaBoards: () => http.get('/observability/grafana/discover'),
@@ -126,6 +140,15 @@ export const api = {
   generateInspectGroups:     ()        => http.post('/report/inspect/generate-groups'),
   downloadInspectExcel:      (id)      => `/api/report/inspect/${id}/excel`,
   // Kubernetes
+  // K8s 证书管理
+  k8sInspectKubeconfig: (path)         => http.post('/k8s/inspect-kubeconfig', { path }),
+  k8sListCerts:     ()                 => http.get('/k8s/certs'),
+  k8sUploadCert:    (file, certType)   => {
+    const fd = new FormData(); fd.append('file', file)
+    return http.post(`/k8s/certs/upload?cert_type=${certType}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
+  k8sGenerateKubeconfig: (data)        => http.post('/k8s/generate-kubeconfig', data),
+  // K8s 集群管理
   k8sClusters:      ()                 => http.get('/k8s/clusters'),
   k8sAddCluster:    (data)             => http.post('/k8s/clusters', data),
   k8sUpdateCluster: (id, data)         => http.put(`/k8s/clusters/${id}`, data),
@@ -163,6 +186,13 @@ export const api = {
   middlewareSummary:   ()        => http.get('/middleware/summary'),
   middlewareInstances: ()        => http.get('/middleware/instances'),
   middlewareMetrics:   (type)    => http.get(`/middleware/metrics/${type}`),
+  redisClusters:       ()        => http.get('/redis/clusters'),
+  redisAddCluster:     (data)    => http.post('/redis/clusters', data),
+  redisUpdateCluster:  (id, data)=> http.put(`/redis/clusters/${id}`, data),
+  redisDeleteCluster:  (id)      => http.delete(`/redis/clusters/${id}`),
+  redisTestCluster:    (id)      => http.get(`/redis/clusters/${id}/test`),
+  redisTestConfig:     (data)    => http.post('/redis/clusters/test-config', data),
+  redisOverview:       (id)      => http.get(`/redis/clusters/${id}/overview`),
   // 工单系统
   listTickets:      (params)     => http.get('/tickets',              { params }),
   createTicket:     (data)       => http.post('/tickets', data),
@@ -178,6 +208,9 @@ export const api = {
   rcaTrigger:      (data)  => http.post('/rca/analyze', data),
   rcaResults:      (limit) => http.get('/rca/results', { params: { limit } }),
   rcaResult:       (id)    => http.get(`/rca/results/${id}`),
+  rcaConfirm:      (id, data) => http.post(`/rca/results/${id}/confirm`, data),
+  rcaExpertCases:  (limit = 50) => http.get('/rca/expert-cases', { params: { limit } }),
+  rcaFeedback:     ()      => http.get('/rca/feedback'),
   rcaAnomalies:    (limit) => http.get('/rca/anomalies', { params: { limit } }),
   rcaDetect:       ()      => http.post('/rca/anomalies/detect'),
   // 告警中心
@@ -185,6 +218,7 @@ export const api = {
   alertGroups:        (params) => http.get('/alerts/groups', { params }),
   alertFilters:       ()       => http.get('/alerts/filters'),
   alertGroup:         (id)    => http.get(`/alerts/groups/${id}`),
+  alertTriggerRca:    (id, data = {}) => http.post(`/alerts/groups/${id}/rca`, data),
   alertUpdateStatus:  (id, data) => http.put(`/alerts/groups/${id}/status`, data),
   alertStats:         ()      => http.get('/alerts/stats'),
   // Jenkins CI/CD — 多实例
@@ -197,6 +231,7 @@ export const api = {
   jenkinsGetViews:        (id)         => http.get(`/jenkins/instances/${id}/views`),
   jenkinsGetJobs:         (id, view)   => http.get(`/jenkins/instances/${id}/jobs`, { params: view ? { view } : {} }),
   jenkinsSearchJobs:      (id, q)      => http.get(`/jenkins/instances/${id}/jobs/search`, { params: { q } }),
+  jenkinsGetJobBuilds:    (id, job, limit = 15) => http.get(`/jenkins/instances/${id}/builds`, { params: { job, limit } }),
   jenkinsGetBuildInfo:    (id, job, build) => http.get(`/jenkins/instances/${id}/jobs/${encodeURIComponent(job)}/builds/${build}`),
   jenkinsGetBuildLogs:    (id, job, build, lines) => http.get(`/jenkins/instances/${id}/jobs/${encodeURIComponent(job)}/builds/${build}/logs`, { params: { lines } }),
   jenkinsGetRunning:      (id)         => http.get(`/jenkins/instances/${id}/running`),

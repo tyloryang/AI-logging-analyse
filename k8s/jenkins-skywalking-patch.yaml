@@ -1,0 +1,38 @@
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: skywalking-agent
+          image: 192.168.9.221:5000/skywalking-java-agent:9.4.0-alpine
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+          command:
+            - /bin/sh
+            - -c
+            - cp -R /skywalking/agent /agent/ && mkdir -p /agent/agent/logs && chmod -R a+rX /agent && chmod -R a+rwX /agent/agent/logs
+          volumeMounts:
+            - name: skywalking-agent
+              mountPath: /agent
+      containers:
+        - name: jenkins
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: -javaagent:/skywalking/agent/skywalking-agent.jar
+            - name: SW_AGENT_NAME
+              value: jenkins
+            - name: SW_AGENT_NAMESPACE
+              value: jenkins
+            - name: SW_AGENT_INSTANCE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: SW_AGENT_COLLECTOR_BACKEND_SERVICES
+              value: skywalking-oap.monitoring.svc.cluster.local:11800
+          volumeMounts:
+            - name: skywalking-agent
+              mountPath: /skywalking
+      volumes:
+        - name: skywalking-agent
+          emptyDir: {}

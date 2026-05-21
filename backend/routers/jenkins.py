@@ -223,6 +223,21 @@ async def get_jobs(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.get("/api/jenkins/instances/{instance_id}/builds")
+async def get_job_builds(
+    instance_id: str,
+    job:   str = Query(..., description="Job 完整路径，如 folder/sub/job"),
+    limit: int = Query(15, ge=1, le=50),
+):
+    """获取指定 Job 最近 N 次构建记录。job 名通过 query 参数传入，支持文件夹路径。"""
+    inst = _get_instance(instance_id)
+    try:
+        builds = await _make_client(inst).get_recent_builds(job, limit)
+        return {"data": builds}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get("/api/jenkins/instances/{instance_id}/jobs/search")
 async def search_jobs(instance_id: str, q: str = Query(...)):
     inst = _get_instance(instance_id)

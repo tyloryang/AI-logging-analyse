@@ -2,19 +2,24 @@
   <div class="page alert-center">
     <div class="page-header">
       <h1>告警中心</h1>
-      <span class="subtitle">聚合告警管理 · 降噪 · 抑制规则</span>
+      <span class="subtitle">聚合告警管理 · 状态联动 · 直接进入根因分析</span>
       <button class="btn btn-outline btn-sm" style="margin-left:auto" @click="load" :disabled="loading">
         {{ loading ? '刷新中...' : '刷新' }}
       </button>
     </div>
 
-    <!-- 状态标签页 -->
     <div class="tab-bar">
-      <button v-for="t in TABS" :key="t.key" class="tab" :class="{ active: tab === t.key }" @click="tab = t.key">
+      <button
+        v-for="t in TABS"
+        :key="t.key"
+        class="tab"
+        :class="{ active: tab === t.key }"
+        @click="tab = t.key"
+      >
         {{ t.label }}
         <span v-if="t.key !== 'all'" class="tab-count">{{ countByStatus(t.key) }}</span>
       </button>
-      <!-- 过滤器 -->
+
       <div class="alert-filters">
         <select v-model="filterNs" @change="load" class="filter-select" title="K8s Namespace">
           <option value="">全部 Namespace</option>
@@ -22,77 +27,78 @@
         </select>
         <select v-model="filterEnv" @change="load" class="filter-select" title="环境">
           <option value="">全部环境</option>
-          <option v-for="e in filterOptions.envs" :key="e" :value="e">{{ e }}</option>
-          <option value="production">生产</option>
-          <option value="staging">预发</option>
-          <option value="development">开发</option>
-          <option value="testing">测试</option>
+          <option v-for="env in filterOptions.envs" :key="env" :value="env">{{ env }}</option>
         </select>
-        <input v-model="filterSvc" @input="load" class="filter-input" placeholder="服务名筛选..." />
+        <input v-model="filterSvc" @input="load" class="filter-input" placeholder="服务名过滤..." />
       </div>
     </div>
 
-    <!-- 模拟接入说明 -->
     <div class="webhook-tip">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>
-      AlertManager Webhook 地址：
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 8v4m0 4h.01" />
+      </svg>
+      AlertManager Webhook：
       <code>{{ webhookUrl }}</code>
       <button class="copy-btn" @click="copyWebhook">{{ copied ? '已复制' : '复制' }}</button>
     </div>
 
     <div v-if="loading" class="empty-state"><div class="spinner"></div></div>
     <div v-else-if="!filtered.length" class="empty-state">
-      <div class="icon">🔕</div>
-      <div>该分类下暂无告警</div>
+      <div class="icon">🔔</div>
+      <div>当前筛选条件下暂无告警</div>
     </div>
 
     <div v-else class="groups-list">
-      <div v-for="g in filtered" :key="g.id" class="group-card" :class="g.severity">
-        <!-- 卡片头 -->
+      <div v-for="group in filtered" :key="group.id" class="group-card" :class="group.severity">
         <div class="group-head">
-          <span class="sev-dot" :class="g.severity"></span>
-          <span class="group-name">{{ g.alertname }}</span>
-          <span class="group-svc mono">{{ g.service }}</span>
-          <span class="group-count">{{ g.count }} 次</span>
-          <span class="status-chip" :class="g.status">{{ STATUS_LABEL[g.status] || g.status }}</span>
+          <span class="sev-dot" :class="group.severity"></span>
+          <span class="group-name">{{ group.alertname || 'Unknown Alert' }}</span>
+          <span class="group-svc mono">{{ group.service || 'unknown' }}</span>
+          <span class="group-count">{{ group.count }} 次</span>
+          <span class="status-chip" :class="group.status">{{ STATUS_LABEL[group.status] || group.status }}</span>
           <div class="group-actions">
-            <button v-if="g.status !== 'resolved'" class="btn btn-sm btn-outline" @click="resolve(g)">解决</button>
-            <button v-if="!['suppressed','resolved'].includes(g.status)" class="btn btn-sm btn-ghost" @click="suppress(g)">抑制</button>
+            <button class="btn btn-sm btn-primary" @click="openRca(group)">
+              {{ group.rca_id ? '查看 RCA' : '进入 RCA' }}
+            </button>
+            <button v-if="group.status !== 'resolved'" class="btn btn-sm btn-outline" @click="resolve(group)">解决</button>
+            <button v-if="!['suppressed', 'resolved'].includes(group.status)" class="btn btn-sm btn-ghost" @click="suppress(group)">抑制</button>
           </div>
         </div>
 
-        <!-- 摘要 -->
-        <div v-if="g.summary" class="group-summary">{{ g.summary }}</div>
+        <div v-if="group.summary" class="group-summary">{{ group.summary }}</div>
 
-        <!-- 时间线 -->
         <div class="group-meta">
-          <span>首次：<span class="mono">{{ fmt(g.first_at) }}</span></span>
-          <span>最近：<span class="mono">{{ fmt(g.last_at) }}</span></span>
-          <span v-if="g.resolved_at">解决：<span class="mono">{{ fmt(g.resolved_at) }}</span></span>
+          <span>首次：<span class="mono">{{ fmt(group.first_at) }}</span></span>
+          <span>最近：<span class="mono">{{ fmt(group.last_at) }}</span></span>
+          <span v-if="group.resolved_at">解决：<span class="mono">{{ fmt(group.resolved_at) }}</span></span>
         </div>
-        <div v-if="g.notify_targets?.length" class="group-routes">
-          <span v-for="target in g.notify_targets" :key="target.group_id || target.group_name" class="route-chip">
+
+        <div v-if="group.notify_targets?.length" class="group-routes">
+          <span
+            v-for="target in group.notify_targets"
+            :key="target.group_id || target.group_name"
+            class="route-chip"
+          >
             推送到 {{ target.group_name }}
-            <span v-if="target.matches?.length" class="route-match">
-              · {{ formatMatches(target.matches) }}
-            </span>
+            <span v-if="target.matches?.length" class="route-match">· {{ formatMatches(target.matches) }}</span>
           </span>
         </div>
-        <div v-else-if="g.notify_via_global_feishu" class="group-routes">
-          <span class="route-chip fallback">未命中分组规则，走默认飞书群</span>
+        <div v-else-if="group.notify_via_global_feishu" class="group-routes">
+          <span class="route-chip fallback">未命中分组路由，走全局飞书告警</span>
         </div>
 
-        <!-- 展开原始告警 -->
-        <button class="expand-btn" @click="toggleExpand(g.id)">
-          {{ expanded.has(g.id) ? '▲ 收起' : `▼ 展开 ${g.raw_alerts?.length || 0} 条原始告警` }}
+        <button class="expand-btn" @click="toggleExpand(group.id)">
+          {{ expanded.has(group.id) ? '▲ 收起' : `▼ 展开 ${group.raw_alerts?.length || 0} 条原始告警` }}
         </button>
-        <div v-if="expanded.has(g.id)" class="raw-list">
-          <div v-for="(a, i) in g.raw_alerts" :key="i" class="raw-item">
+
+        <div v-if="expanded.has(group.id)" class="raw-list">
+          <div v-for="(alert, idx) in group.raw_alerts" :key="idx" class="raw-item">
             <div class="raw-labels">
-              <span v-for="(v, k) in a.labels" :key="k" class="label-chip">{{ k }}=<b>{{ v }}</b></span>
+              <span v-for="(value, key) in alert.labels" :key="key" class="label-chip">{{ key }}=<b>{{ value }}</b></span>
             </div>
-            <div v-if="a.annotations?.description" class="raw-desc">{{ a.annotations.description }}</div>
-            <div class="raw-time mono">{{ fmt(a.startsAt) }}</div>
+            <div v-if="alert.annotations?.description" class="raw-desc">{{ alert.annotations.description }}</div>
+            <div class="raw-time mono">{{ fmt(alert.startsAt) }}</div>
           </div>
         </div>
       </div>
@@ -101,92 +107,105 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api/index.js'
 
+const router = useRouter()
+
 const TABS = [
-  { key: 'all',        label: '全部' },
-  { key: 'new',        label: '新建' },
-  { key: 'grouped',    label: '已聚合' },
-  { key: 'analyzing',  label: '分析中' },
+  { key: 'all', label: '全部' },
+  { key: 'new', label: '新建' },
+  { key: 'grouped', label: '已聚合' },
+  { key: 'analyzing', label: '分析中' },
   { key: 'suppressed', label: '已抑制' },
-  { key: 'resolved',   label: '已解决' },
+  { key: 'resolved', label: '已解决' },
 ]
 
 const STATUS_LABEL = {
-  new:        '新建',
-  grouped:    '已聚合',
-  analyzing:  '分析中',
+  new: '新建',
+  grouped: '已聚合',
+  analyzing: '分析中',
   suppressed: '已抑制',
-  resolved:   '已解决',
+  resolved: '已解决',
 }
 
-const loading       = ref(false)
-const groups        = ref([])
-const tab           = ref('all')
-const expanded      = ref(new Set())
-const copied        = ref(false)
-const filterNs      = ref('')
-const filterEnv     = ref('')
-const filterSvc     = ref('')
+const loading = ref(false)
+const groups = ref([])
+const tab = ref('all')
+const expanded = ref(new Set())
+const copied = ref(false)
+const filterNs = ref('')
+const filterEnv = ref('')
+const filterSvc = ref('')
 const filterOptions = ref({ namespaces: [], envs: [] })
 
 const webhookUrl = computed(() => `${window.location.protocol}//${window.location.host}/api/alerts/webhook`)
 
 const filtered = computed(() => {
   if (tab.value === 'all') return groups.value
-  return groups.value.filter(g => g.status === tab.value)
+  return groups.value.filter(group => group.status === tab.value)
 })
 
 function countByStatus(status) {
-  return groups.value.filter(g => g.status === status).length
+  return groups.value.filter(group => group.status === status).length
+}
+
+function fmt(iso) {
+  if (!iso) return '--'
+  return iso.slice(0, 19).replace('T', ' ')
+}
+
+function formatMatches(matches = []) {
+  return matches.map(item => `${item.label}=${item.actual || item.value || '*'}`).join('，')
+}
+
+function toggleExpand(id) {
+  const next = new Set(expanded.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expanded.value = next
 }
 
 async function load() {
   loading.value = true
   try {
     const params = {}
-    if (filterNs.value)  params.namespace = filterNs.value
-    if (filterEnv.value) params.env       = filterEnv.value
-    if (filterSvc.value) params.service   = filterSvc.value
-    const [r, fo] = await Promise.all([
+    if (filterNs.value) params.namespace = filterNs.value
+    if (filterEnv.value) params.env = filterEnv.value
+    if (filterSvc.value) params.service = filterSvc.value
+    const [result, options] = await Promise.all([
       api.alertGroups(params),
       api.alertFilters().catch(() => ({ namespaces: [], envs: [] })),
     ])
-    groups.value        = r.groups || []
-    filterOptions.value = fo
-  } catch (e) {
-    console.error(e)
+    groups.value = result.groups || []
+    filterOptions.value = options
+  } catch (error) {
+    console.error(error)
   } finally {
     loading.value = false
   }
 }
 
-function fmt(iso) {
-  if (!iso) return '—'
-  return iso.slice(0, 19).replace('T', ' ')
-}
-
-function formatMatches(matches = []) {
-  return matches
-    .map(item => `${item.label}=${item.actual || item.value || '*'}`)
-    .join('，')
-}
-
-function toggleExpand(id) {
-  const s = new Set(expanded.value)
-  s.has(id) ? s.delete(id) : s.add(id)
-  expanded.value = s
-}
-
-async function resolve(g) {
-  await api.alertUpdateStatus(g.id, { status: 'resolved' })
+async function resolve(group) {
+  await api.alertUpdateStatus(group.id, { status: 'resolved' })
   await load()
 }
 
-async function suppress(g) {
-  await api.alertUpdateStatus(g.id, { status: 'suppressed' })
+async function suppress(group) {
+  await api.alertUpdateStatus(group.id, { status: 'suppressed' })
   await load()
+}
+
+async function openRca(group) {
+  if (group.rca_id) {
+    router.push({ path: '/aiops/rca', query: { rca_id: group.rca_id } })
+    return
+  }
+  const result = await api.alertTriggerRca(group.id)
+  if (result?.rca_id) {
+    router.push({ path: '/aiops/rca', query: { rca_id: result.rca_id } })
+  }
 }
 
 async function copyWebhook() {
@@ -250,14 +269,14 @@ onMounted(load)
 }
 .group-card:hover { box-shadow: var(--shadow-sm); }
 .group-card.critical { border-left-color: var(--error); }
-.group-card.warning  { border-left-color: var(--warning); }
-.group-card.info     { border-left-color: var(--accent); }
+.group-card.warning { border-left-color: var(--warning); }
+.group-card.info { border-left-color: var(--accent); }
 
 .group-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .sev-dot.critical, .sev-dot.error { background: var(--error); }
 .sev-dot.warning { background: var(--warning); }
-.sev-dot.info    { background: var(--accent); }
+.sev-dot.info { background: var(--accent); }
 .group-name { font-weight: 600; font-size: 13px; }
 .group-svc { font-size: 12px; color: var(--text-secondary); }
 .group-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
@@ -266,11 +285,11 @@ onMounted(load)
 .status-chip {
   font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 3px;
 }
-.status-chip.new        { background: var(--accent-dim); color: var(--accent); }
-.status-chip.grouped    { background: rgba(154,103,0,.1); color: var(--warning); }
-.status-chip.analyzing  { background: rgba(115,63,255,.1); color: #7c3aed; }
+.status-chip.new { background: var(--accent-dim); color: var(--accent); }
+.status-chip.grouped { background: rgba(154,103,0,.1); color: var(--warning); }
+.status-chip.analyzing { background: rgba(56,139,253,.12); color: var(--accent); }
 .status-chip.suppressed { background: var(--bg-surface); color: var(--text-muted); }
-.status-chip.resolved   { background: rgba(26,127,55,.1); color: var(--success); }
+.status-chip.resolved { background: rgba(26,127,55,.1); color: var(--success); }
 
 .group-summary { font-size: 13px; color: var(--text-secondary); }
 .group-meta { display: flex; gap: 16px; font-size: 11px; color: var(--text-muted); }

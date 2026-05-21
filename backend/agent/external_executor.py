@@ -84,11 +84,26 @@ def _build_runtime_env(runtime_overrides: dict | None = None) -> dict[str, str]:
     model_provider = str(overrides.get("model_provider", "")).strip().lower()
     model_name = str(overrides.get("model_name", "")).strip()
     home_dir = str(overrides.get("home_dir", "")).strip()
+    model_base_url = str(overrides.get("model_base_url", "")).strip()
+    model_api_key = str(overrides.get("model_api_key", "")).strip()
+    model_wire_api = str(overrides.get("model_wire_api", "")).strip().lower()
+    model_enable_thinking = overrides.get("model_enable_thinking")
 
     if model_provider:
         env["AI_PROVIDER"] = model_provider
     if model_name:
         env["AI_MODEL"] = model_name
+    if model_base_url:
+        env["AI_BASE_URL"] = model_base_url
+    if model_wire_api:
+        env["AI_WIRE_API"] = model_wire_api
+    if model_enable_thinking is not None:
+        env["AI_ENABLE_THINKING"] = "1" if str(model_enable_thinking).strip().lower() in {"1", "true", "yes", "on"} else "0"
+    if model_api_key:
+        if model_provider == "anthropic":
+            env["ANTHROPIC_API_KEY"] = model_api_key
+        else:
+            env["AI_API_KEY"] = model_api_key
     if home_dir:
         env["AIOPS_EXTERNAL_AGENT_WORKDIR"] = home_dir
     return env

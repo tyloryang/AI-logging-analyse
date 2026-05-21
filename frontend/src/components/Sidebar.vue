@@ -151,13 +151,14 @@ const MENU = [
     children: [
       { label: '容器列表',      to: '/containers' },
       { label: 'K8s 拓扑流图',  to: '/k8s/topology' },
-      { label: 'K8s 资源关系图', to: '/k8s/relations' },
+      { label: '知识拓扑图',    to: '/k8s/relations' },
     ],
   },
   {
     id: 'middleware', icon: 'middleware', label: '中间件',
     children: [
       { label: '中间件概览', to: '/middleware' },
+      { label: 'Redis Cluster', to: '/middleware/redis' },
       { label: 'Elasticsearch', to: '/middleware/es' },
     ],
   },
@@ -170,12 +171,13 @@ const MENU = [
   {
     id: 'obs', icon: 'obs', label: '可观测性',
     children: [
-      { label: '平台总览', to: '/observability/overview' },
-      { label: '监控看板', to: '/observability/grafana', module: 'metrics' },
-      { label: '日志中心', to: '/observability/logs',    module: 'log' },
-      { label: '链路追踪', to: '/observability/trace',   module: 'skywalking' },
-      { label: '告警中心', to: '/observability/alerts',  module: 'alert' },
-      { label: '分析报告', to: '/tools/report',          module: 'report' },
+      { label: '平台总览',   to: '/observability/overview' },
+      { label: '统一观测台', to: '/observability/unified' },
+      { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
+      { label: '日志中心',   to: '/observability/logs',    module: 'log' },
+      { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
+      { label: '告警中心',   to: '/observability/alerts',  module: 'alert' },
+      { label: '分析报告',   to: '/tools/report',          module: 'report' },
     ],
   },
   { id: 'events', icon: 'event',  label: '事件墙',   to: '/events' },
@@ -196,6 +198,7 @@ const MENU = [
       { label: '🔔 告警中心', to: '/aiops/alerts' },
       { label: '🧠 根因分析', to: '/aiops/rca' },
       { label: '📊 异常检测', to: '/aiops/anomaly' },
+      { label: '🧰 AI 工作台', to: '/aiops/workbench', module: 'agent' },
       { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
       { label: '⚙ 智能配置',  to: '/aiops/config' },
     ],

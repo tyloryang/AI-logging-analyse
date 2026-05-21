@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -24,6 +24,12 @@ _namespace_service_map_cache: TTLCache = TTLCache(maxsize=2, ttl=120)
 _grouped_svc_cache: TTLCache = TTLCache(maxsize=1, ttl=60)
 _group_service_map_cache: TTLCache = TTLCache(maxsize=8, ttl=120)
 _group_error_cache: TTLCache = TTLCache(maxsize=16, ttl=60)
+_DISPLAY_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def _format_display_timestamp(ts_ns: str | int) -> str:
+    dt = datetime.fromtimestamp(int(ts_ns) / 1e9, tz=timezone.utc).astimezone(_DISPLAY_TZ)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 class LokiClient:
@@ -183,11 +189,9 @@ class LokiClient:
             for stream in data.get("data", {}).get("result", []):
                 labels = stream.get("stream", {})
                 for ts_ns, line in stream.get("values", []):
-                    ts_sec = int(ts_ns) / 1e9
-                    dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
                     rows.append(
                         {
-                            "timestamp": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            "timestamp": _format_display_timestamp(ts_ns),
                             "timestamp_ns": ts_ns,
                             "line": line,
                             "labels": labels,
@@ -732,7 +736,7 @@ class LokiClient:
 
         if not resolved_group_label or not group_values:
             services = await self.get_services()
-            result = [{"namespace": "", "label": "鍏ㄩ儴鏈嶅姟", "services": services}]
+            result = [{"namespace": "", "label": "全部服务", "services": services}]
             _grouped_svc_cache[cache_key] = result
             return result
 

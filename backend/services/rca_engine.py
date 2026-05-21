@@ -1,53 +1,290 @@
-"""根因分析引擎（RCA Engine）。
-
-流程：
-1. 并行采集 Loki 错误日志、Prometheus 指标、SkyWalking Trace、CMDB 主机信息
-2. 压缩上下文（去重日志、只取指标峰值摘要），避免超出 Token 限制
-3. 调用 AI 流式分析，输出结构化结论
-4. 落库 + 推送飞书
-"""
+"""Structured RCA engine for alert, inspection, anomaly, and manual triggers."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
+import re
+import subprocess
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator
-
-import httpx
+from typing import Any, AsyncIterator
 
 from json_snapshot_store import read_json_file, write_json_file
 
 logger = logging.getLogger(__name__)
 
-_RCA_FILE = Path(__file__).resolve().parent.parent / "data" / "rca_results.json"
-_MAX_LOGS  = 500   # 最多采集日志行数
-_CTX_TIMEOUT = 10  # 上下文采集超时（秒）
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_REPO_DIR = _BACKEND_DIR.parent
+
+_RCA_FILE = _BACKEND_DIR / "data" / "rca_results.json"
+_EXPERT_CASE_FILE = _BACKEND_DIR / "data" / "rca_expert_cases.json"
+_FEEDBACK_FILE = _BACKEND_DIR / "data" / "rca_feedback.json"
+
+_MAX_LOGS = 300
+_CTX_TIMEOUT = 10.0
+_MAX_RESULTS = 300
+_MAX_CASES = 500
+
+_STATUS_RUNNING = {"pending", "running"}
+_STATUS_FINAL = {"awaiting_confirmation", "confirmed", "needs_review", "error"}
+
+_CATEGORY_META: dict[str, dict[str, str]] = {
+    "application_bug": {
+        "title": "应用自身异常或代码缺陷",
+        "summary": "异常更像是服务内部逻辑、异常处理或代码级问题触发。",
+    },
+    "dependency_failure": {
+        "title": "下游依赖或网络链路异常",
+        "summary": "错误特征更接近数据库、缓存、消息队列、DNS 或网络超时。",
+    },
+    "resource_bottleneck": {
+        "title": "资源瓶颈或容量不足",
+        "summary": "CPU、内存、磁盘、P99 或吞吐异常表明实例已接近容量边界。",
+    },
+    "platform_host_issue": {
+        "title": "主机、节点或平台层异常",
+        "summary": "巡检、节点状态或基础设施指标显示平台层存在异常。",
+    },
+    "change_regression": {
+        "title": "近期变更引入回归",
+        "summary": "近期发布、配置变更或代码提交与本次异常时间上高度相关。",
+    },
+}
+
+_DEFAULT_FEEDBACK = {
+    "weights": {
+        "application_bug": 1.0,
+        "dependency_failure": 1.0,
+        "resource_bottleneck": 1.0,
+        "platform_host_issue": 1.0,
+        "change_regression": 1.0,
+    },
+    "stats": {
+        "application_bug": {"confirmed": 0, "rejected": 0},
+        "dependency_failure": {"confirmed": 0, "rejected": 0},
+        "resource_bottleneck": {"confirmed": 0, "rejected": 0},
+        "platform_host_issue": {"confirmed": 0, "rejected": 0},
+        "change_regression": {"confirmed": 0, "rejected": 0},
+    },
+    "updated_at": "",
+}
+
+_WORD_RE = re.compile(r"[a-zA-Z0-9_.:/-]{2,}|[\u4e00-\u9fff]{2,}")
 
 
-# ── 持久化 ────────────────────────────────────────────────────────────────────
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    for key, value in (patch or {}).items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _tokenize(text: str) -> set[str]:
+    return {match.group(0).lower() for match in _WORD_RE.finditer(text or "")}
+
+
+def _compact_text(text: str, limit: int = 160) -> str:
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(raw) <= limit:
+        return raw
+    return raw[: limit - 3] + "..."
+
+
+def _normalize_list(value: Any) -> list:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]
+
 
 def _load_results() -> list[dict]:
     data = read_json_file(_RCA_FILE, default=[])
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    return [_normalize_record(item) for item in data if isinstance(item, dict)]
 
 
 def _save_results(results: list[dict]) -> None:
-    write_json_file(_RCA_FILE, results[-200:], ensure_parent=True)
+    write_json_file(_RCA_FILE, results[-_MAX_RESULTS:], ensure_parent=True)
 
 
-def save_rca(record: dict) -> str:
-    """持久化一条 RCA 记录，返回其 id。"""
-    results = _load_results()
-    rca_id = record.get("id") or f"rca_{int(time.time())}"
-    record["id"] = rca_id
-    results.append(record)
-    _save_results(results)
-    return rca_id
+def _load_expert_cases() -> list[dict]:
+    data = read_json_file(_EXPERT_CASE_FILE, default=[])
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _save_expert_cases(cases: list[dict]) -> None:
+    write_json_file(_EXPERT_CASE_FILE, cases[-_MAX_CASES:], ensure_parent=True)
+
+
+def _load_feedback() -> dict:
+    data = read_json_file(_FEEDBACK_FILE, default=deepcopy(_DEFAULT_FEEDBACK))
+    if not isinstance(data, dict):
+        data = deepcopy(_DEFAULT_FEEDBACK)
+
+    merged = deepcopy(_DEFAULT_FEEDBACK)
+    _deep_merge(merged, data)
+    if not merged.get("updated_at"):
+        merged["updated_at"] = _now_iso()
+    return merged
+
+
+def _save_feedback(profile: dict) -> None:
+    payload = deepcopy(_DEFAULT_FEEDBACK)
+    _deep_merge(payload, profile or {})
+    payload["updated_at"] = _now_iso()
+    write_json_file(_FEEDBACK_FILE, payload, ensure_parent=True)
+
+
+def _timeline(stage: str, title: str, detail: str = "", status: str = "done") -> dict:
+    return {
+        "stage": stage,
+        "title": title,
+        "detail": detail,
+        "status": status,
+        "at": _now_iso(),
+    }
+
+
+def _normalize_hypothesis(item: dict, index: int) -> dict:
+    category = str(item.get("category") or "application_bug")
+    meta = _CATEGORY_META.get(category, _CATEGORY_META["application_bug"])
+    score = int(round(_safe_float(item.get("score"), 0)))
+    return {
+        "id": str(item.get("id") or f"hyp_{index + 1}"),
+        "rank": int(item.get("rank") or index + 1),
+        "agent_name": str(item.get("agent_name") or f"Validator-{index + 1}"),
+        "category": category,
+        "title": str(item.get("title") or meta["title"]),
+        "description": str(item.get("description") or meta["summary"]),
+        "score": score,
+        "validation_status": str(
+            item.get("validation_status")
+            or ("supported" if score >= 70 else "possible" if score >= 45 else "weak")
+        ),
+        "validation_summary": str(item.get("validation_summary") or ""),
+        "evidence": [str(v) for v in _normalize_list(item.get("evidence")) if str(v).strip()],
+        "commands": [str(v) for v in _normalize_list(item.get("commands")) if str(v).strip()],
+    }
+
+
+def _build_result_markdown(record: dict) -> str:
+    hypotheses = [_normalize_hypothesis(item, idx) for idx, item in enumerate(record.get("hypotheses", []))]
+    top = hypotheses[0] if hypotheses else None
+    human = record.get("human_confirmation", {}) or {}
+    context = record.get("context", {}) or {}
+
+    lines: list[str] = []
+    lines.append("## 根因摘要")
+    lines.append(record.get("final_summary") or (top["title"] if top else "暂无结论"))
+    lines.append("")
+    lines.append("## 触发源")
+    lines.append(f"- 来源类型：{record.get('source_type', 'manual')}")
+    lines.append(f"- 服务：{record.get('service') or 'global'}")
+    if record.get("alert_name"):
+        lines.append(f"- 告警/事件：{record['alert_name']}")
+    if record.get("source_name"):
+        lines.append(f"- 来源对象：{record['source_name']}")
+    lines.append(f"- 分析窗口：{record.get('context_hours', 1)}h")
+
+    lines.append("")
+    lines.append("## 假设验证")
+    if not hypotheses:
+        lines.append("- 暂未产出结构化假设")
+    for item in hypotheses:
+        lines.append(f"### {item['rank']}. {item['title']}（{item['score']}分）")
+        lines.append(f"- 验证结论：{item['validation_summary'] or item['description']}")
+        for evidence in item.get("evidence", [])[:4]:
+            lines.append(f"- 证据：{evidence}")
+        for command in item.get("commands", [])[:3]:
+            lines.append(f"- 建议命令：`{command}`")
+
+    lines.append("")
+    lines.append("## 关键上下文")
+    for key in ("loki", "prometheus", "skywalking", "cmdb", "changes", "codebase", "inspection", "similar_cases"):
+        section = context.get(key) if isinstance(context, dict) else None
+        if not isinstance(section, dict):
+            continue
+        title = section.get("title") or key
+        summary = section.get("summary") or ""
+        if summary:
+            lines.append(f"- {title}：{summary}")
+
+    lines.append("")
+    lines.append("## 人工确认")
+    if human.get("status") == "confirmed":
+        lines.append(f"- 已确认：{human.get('chosen_title') or human.get('chosen_hypothesis_id') or '已确认'}")
+        if human.get("note"):
+            lines.append(f"- 备注：{human['note']}")
+    elif human.get("status") == "needs_review":
+        lines.append("- 当前状态：待人工复核")
+        if human.get("note"):
+            lines.append(f"- 备注：{human['note']}")
+    else:
+        lines.append("- 当前状态：待人工确认")
+
+    return "\n".join(lines).strip()
+
+
+def _normalize_record(record: dict) -> dict:
+    item = dict(record or {})
+    item["id"] = str(item.get("id") or f"rca_{int(time.time())}")
+    item["created_at"] = item.get("created_at") or _now_iso()
+    item["updated_at"] = item.get("updated_at") or item["created_at"]
+    item["service"] = str(item.get("service") or "global")
+    item["alert_name"] = str(item.get("alert_name") or "")
+    item["source_type"] = str(item.get("source_type") or ("alert" if item.get("alert_group_id") else "manual"))
+    item["source_id"] = str(item.get("source_id") or item.get("alert_group_id") or "")
+    item["source_name"] = str(item.get("source_name") or "")
+    item["status"] = str(item.get("status") or ("awaiting_confirmation" if item.get("result") else "pending"))
+    item["context_hours"] = _safe_float(item.get("context_hours"), 1.0)
+    item["extra_context"] = str(item.get("extra_context") or "")
+    item["context"] = item.get("context") if isinstance(item.get("context"), dict) else {}
+    item["source_labels"] = item.get("source_labels") if isinstance(item.get("source_labels"), dict) else {}
+    item["timeline"] = [entry for entry in _normalize_list(item.get("timeline")) if isinstance(entry, dict)]
+    item["hypotheses"] = [_normalize_hypothesis(hyp, idx) for idx, hyp in enumerate(_normalize_list(item.get("hypotheses")))]
+    item["feedback_snapshot"] = item.get("feedback_snapshot") if isinstance(item.get("feedback_snapshot"), dict) else {}
+    item["expert_matches"] = [entry for entry in _normalize_list(item.get("expert_matches")) if isinstance(entry, dict)]
+    human = item.get("human_confirmation") if isinstance(item.get("human_confirmation"), dict) else {}
+    item["human_confirmation"] = {
+        "status": str(human.get("status") or "pending"),
+        "chosen_hypothesis_id": str(human.get("chosen_hypothesis_id") or ""),
+        "chosen_title": str(human.get("chosen_title") or ""),
+        "note": str(human.get("note") or ""),
+        "confirmed_by": str(human.get("confirmed_by") or ""),
+        "confirmed_at": str(human.get("confirmed_at") or ""),
+        "feedback_applied": bool(human.get("feedback_applied")),
+    }
+    if not item.get("final_summary"):
+        top = item["hypotheses"][0] if item["hypotheses"] else None
+        item["final_summary"] = top["validation_summary"] if top else ""
+    if not item.get("result") or item["hypotheses"]:
+        item["result"] = _build_result_markdown(item)
+    return item
 
 
 def list_rca(limit: int = 50) -> list[dict]:
@@ -55,141 +292,841 @@ def list_rca(limit: int = 50) -> list[dict]:
 
 
 def get_rca(rca_id: str) -> dict | None:
-    for r in reversed(_load_results()):
-        if r.get("id") == rca_id:
-            return r
+    for item in reversed(_load_results()):
+        if item.get("id") == rca_id:
+            return item
     return None
 
 
-# ── 上下文采集 ────────────────────────────────────────────────────────────────
+def save_rca(record: dict) -> str:
+    """Persist one RCA record and return its id."""
+    normalized = _normalize_record(record)
+    results = _load_results()
+    for idx, item in enumerate(results):
+        if item.get("id") == normalized["id"]:
+            results[idx] = normalized
+            _save_results(results)
+            return normalized["id"]
+    results.append(normalized)
+    _save_results(results)
+    return normalized["id"]
 
-async def _collect_loki(service: str | None, hours: float = 1.0) -> str:
+
+def update_rca(rca_id: str, patch: dict) -> dict | None:
+    results = _load_results()
+    for idx, item in enumerate(results):
+        if item.get("id") != rca_id:
+            continue
+        updated = deepcopy(item)
+        _deep_merge(updated, patch or {})
+        updated["updated_at"] = _now_iso()
+        updated = _normalize_record(updated)
+        results[idx] = updated
+        _save_results(results)
+        return updated
+    return None
+
+
+def create_pending_rca(
+    *,
+    service: str | None,
+    alert_name: str = "",
+    alert_group_id: str | None = None,
+    hours: float = 1.0,
+    extra_context: str = "",
+    source_type: str = "manual",
+    source_id: str = "",
+    source_name: str = "",
+    source_labels: dict[str, str] | None = None,
+) -> dict:
+    rca_id = f"rca_{int(time.time() * 1000)}"
+    now = _now_iso()
+    record = {
+        "id": rca_id,
+        "created_at": now,
+        "updated_at": now,
+        "service": service or "global",
+        "alert_name": alert_name,
+        "alert_group_id": alert_group_id,
+        "source_type": source_type,
+        "source_id": source_id or alert_group_id or "",
+        "source_name": source_name,
+        "source_labels": source_labels or {},
+        "status": "pending",
+        "context_hours": hours,
+        "extra_context": extra_context,
+        "context": {},
+        "hypotheses": [],
+        "expert_matches": [],
+        "feedback_snapshot": _load_feedback(),
+        "human_confirmation": {"status": "pending"},
+        "timeline": [
+            _timeline(
+                "triggered",
+                "收到 RCA 触发",
+                f"{source_type} -> {service or 'global'} / {alert_name or 'manual'}",
+            )
+        ],
+        "final_summary": "正在采集上下文并验证根因假设。",
+        "result": "## 根因摘要\n正在采集上下文并验证根因假设。",
+    }
+    save_rca(record)
+    return get_rca(rca_id) or _normalize_record(record)
+
+
+def list_expert_cases(limit: int = 100) -> list[dict]:
+    cases = list(reversed(_load_expert_cases()))
+    return cases[:limit]
+
+
+def get_feedback_profile() -> dict:
+    profile = _load_feedback()
+    categories: list[dict] = []
+    for key, meta in _CATEGORY_META.items():
+        weight = _safe_float(profile.get("weights", {}).get(key), 1.0)
+        stats = profile.get("stats", {}).get(key, {}) or {}
+        confirmed = int(stats.get("confirmed", 0) or 0)
+        rejected = int(stats.get("rejected", 0) or 0)
+        total = confirmed + rejected
+        accuracy = round((confirmed / total) * 100, 1) if total else None
+        categories.append(
+            {
+                "key": key,
+                "title": meta["title"],
+                "weight": round(weight, 3),
+                "confirmed": confirmed,
+                "rejected": rejected,
+                "accuracy": accuracy,
+            }
+        )
+    categories.sort(key=lambda item: item["weight"], reverse=True)
+    return {
+        "updated_at": profile.get("updated_at"),
+        "categories": categories,
+        "weights": profile.get("weights", {}),
+        "stats": profile.get("stats", {}),
+    }
+
+
+def _find_hypothesis(record: dict, hypothesis_id: str) -> dict | None:
+    for item in record.get("hypotheses", []) or []:
+        if item.get("id") == hypothesis_id:
+            return item
+    return None
+
+
+def confirm_rca(
+    rca_id: str,
+    *,
+    hypothesis_id: str,
+    note: str = "",
+    confirmed_by: str = "",
+    decision: str = "confirmed",
+    resolve_alert: bool = False,
+) -> dict:
+    record = get_rca(rca_id)
+    if not record:
+        raise ValueError("RCA record not found")
+
+    human = record.get("human_confirmation", {}) or {}
+    if human.get("feedback_applied"):
+        raise ValueError("Feedback already applied for this RCA record")
+
+    chosen = _find_hypothesis(record, hypothesis_id)
+    if not chosen:
+        raise ValueError("Hypothesis not found")
+
+    now = _now_iso()
+    human_update = {
+        "status": decision,
+        "chosen_hypothesis_id": chosen["id"],
+        "chosen_title": chosen["title"],
+        "note": note,
+        "confirmed_by": confirmed_by or "manual",
+        "confirmed_at": now,
+        "feedback_applied": decision == "confirmed",
+    }
+
+    patch = {
+        "status": "confirmed" if decision == "confirmed" else "needs_review",
+        "human_confirmation": human_update,
+        "timeline": record.get("timeline", []) + [
+            _timeline(
+                "human_confirmation",
+                "人工确认完成" if decision == "confirmed" else "人工标记待复核",
+                note or chosen["title"],
+            )
+        ],
+    }
+
+    updated = update_rca(rca_id, patch)
+    if not updated:
+        raise ValueError("RCA record update failed")
+
+    if decision == "confirmed":
+        case = _create_expert_case(updated, chosen)
+        _save_expert_case(case)
+        _apply_feedback(updated, chosen["category"])
+        updated = update_rca(
+            rca_id,
+            {
+                "expert_case_id": case["id"],
+                "human_confirmation": {"feedback_applied": True},
+                "timeline": updated.get("timeline", []) + [
+                    _timeline("expert_case", "案例已入专家库", case["title"])
+                ],
+            },
+        ) or updated
+
+        if resolve_alert and updated.get("alert_group_id"):
+            try:
+                from services.alert_dedup import update_group_status
+
+                update_group_status(updated["alert_group_id"], "resolved", rca_id=updated["id"])
+            except Exception as exc:
+                logger.warning("[rca] failed to resolve alert after confirmation: %s", exc)
+
+    return get_rca(rca_id) or updated
+
+
+def _save_expert_case(case: dict) -> None:
+    cases = _load_expert_cases()
+    cases.append(case)
+    _save_expert_cases(cases)
+
+
+def _create_expert_case(record: dict, chosen: dict) -> dict:
+    context = record.get("context", {}) or {}
+    similar_text = []
+    for section_key in ("loki", "prometheus", "skywalking", "inspection"):
+        section = context.get(section_key) if isinstance(context, dict) else None
+        if not isinstance(section, dict):
+            continue
+        summary = section.get("summary")
+        if summary:
+            similar_text.append(summary)
+
+    return {
+        "id": f"case_{int(time.time() * 1000)}",
+        "created_at": _now_iso(),
+        "source_run_id": record.get("id"),
+        "service": record.get("service"),
+        "source_type": record.get("source_type"),
+        "title": f"{record.get('service')} / {chosen['title']}",
+        "alert_name": record.get("alert_name"),
+        "category": chosen.get("category"),
+        "root_cause": chosen.get("title"),
+        "summary": chosen.get("validation_summary") or record.get("final_summary", ""),
+        "resolution": "；".join(chosen.get("commands", [])[:2]),
+        "note": (record.get("human_confirmation", {}) or {}).get("note", ""),
+        "keywords": sorted(
+            _tokenize(
+                " ".join(
+                    [
+                        str(record.get("service") or ""),
+                        str(record.get("alert_name") or ""),
+                        str(chosen.get("title") or ""),
+                        str(chosen.get("validation_summary") or ""),
+                        " ".join(similar_text),
+                    ]
+                )
+            )
+        )[:60],
+        "commands": chosen.get("commands", [])[:5],
+    }
+
+
+def _apply_feedback(record: dict, chosen_category: str) -> None:
+    profile = _load_feedback()
+    weights = profile.setdefault("weights", {})
+    stats = profile.setdefault("stats", {})
+
+    for key in _CATEGORY_META:
+        weights.setdefault(key, 1.0)
+        stats.setdefault(key, {"confirmed": 0, "rejected": 0})
+
+    for item in record.get("hypotheses", []) or []:
+        category = str(item.get("category") or "")
+        if category not in weights:
+            continue
+        if category == chosen_category:
+            stats[category]["confirmed"] = int(stats[category].get("confirmed", 0) or 0) + 1
+            weights[category] = round(_clamp(_safe_float(weights[category]) + 0.12, 0.6, 2.5), 3)
+        else:
+            stats[category]["rejected"] = int(stats[category].get("rejected", 0) or 0) + 1
+            weights[category] = round(_clamp(_safe_float(weights[category]) - 0.03, 0.6, 2.5), 3)
+
+    _save_feedback(profile)
+
+
+def _build_matchers(labels: dict[str, str], *preferred_keys: str) -> str:
+    matchers = []
+    for key in preferred_keys:
+        value = str(labels.get(key) or "").strip()
+        if value:
+            matchers.append(f'{key}="{value}"')
+    return "{" + ",".join(matchers) + "}" if matchers else ""
+
+
+async def _collect_loki(service: str | None, hours: float, source_labels: dict[str, str]) -> dict:
     try:
         import state
+
         logs = await asyncio.wait_for(
             state.loki.query_error_logs(service=service, hours=hours, limit=_MAX_LOGS),
             timeout=_CTX_TIMEOUT,
         )
         if not logs:
-            return "（无 ERROR 日志）"
-        # 去重：相同消息只保留计数
+            return {"title": "日志", "summary": "最近窗口内未发现 ERROR 日志。", "items": [], "raw_count": 0}
+
         freq: dict[str, int] = {}
+        samples: dict[str, str] = {}
         for entry in logs:
-            msg = entry.get("line", "")[:200]
-            freq[msg] = freq.get(msg, 0) + 1
-        top = sorted(freq.items(), key=lambda x: -x[1])[:30]
-        lines = [f"[×{cnt}] {msg}" for msg, cnt in top]
-        return f"错误日志（去重后 Top {len(lines)} 条，共 {len(logs)} 条原始）：\n" + "\n".join(lines)
+            line = str(entry.get("line") or entry.get("message") or "").strip()
+            if not line:
+                continue
+            key = _compact_text(line, 180)
+            freq[key] = freq.get(key, 0) + 1
+            samples.setdefault(key, key)
+
+        top = sorted(freq.items(), key=lambda pair: (-pair[1], pair[0]))[:8]
+        items = [f"[x{count}] {samples[text]}" for text, count in top]
+        summary = f"最近 {hours}h 共抓取 {len(logs)} 条错误日志，Top 模式已去重展示。"
+        if service:
+            summary = f"{service} 服务，" + summary
+        if source_labels.get("namespace"):
+            summary += f" namespace={source_labels['namespace']}。"
+        return {"title": "日志", "summary": summary, "items": items, "raw_count": len(logs)}
     except asyncio.TimeoutError:
-        return "（Loki 查询超时）"
+        return {"title": "日志", "summary": "Loki 查询超时。", "items": []}
     except Exception as exc:
-        return f"（Loki 查询失败: {exc}）"
+        return {"title": "日志", "summary": f"Loki 查询失败: {exc}", "items": []}
 
 
-async def _collect_prometheus(service: str | None) -> str:
+async def _collect_prometheus(service: str | None, source_labels: dict[str, str]) -> dict:
     try:
         import state
-        svc_filter = f'{{service="{service}"}}' if service else ""
-        queries = {
-            "CPU 使用率 (%)":      f'100 - avg(rate(node_cpu_seconds_total{{mode="idle"}}[5m])) * 100',
-            "内存使用率 (%)":      f'100 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100',
-            "HTTP 错误率 (%)":     f'sum(rate(http_requests_total{{status=~"5.."}}[5m])) / sum(rate(http_requests_total[5m])) * 100',
-            "P99 响应时间 (ms)":   f'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) * 1000',
-        }
-        parts: list[str] = []
-        for label, promql in queries.items():
+
+        labels = dict(source_labels or {})
+        if service and not labels.get("service"):
+            labels["service"] = service
+
+        matcher_parts = []
+        for key in ("service", "job"):
+            value = str(labels.get(key) or "").strip()
+            if value:
+                matcher_parts.append(f'{key}="{value}"')
+        http_all = "{" + ",".join(matcher_parts) + "}" if matcher_parts else ""
+        error_parts = list(matcher_parts)
+        error_parts.append('status=~"5.."')
+        http_5xx = "{" + ",".join(error_parts) + "}"
+
+        queries = [
+            ("cpu_usage_pct", "CPU 使用率", '100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100', "%"),
+            ("memory_usage_pct", "内存使用率", '100 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100', "%"),
+            (
+                "http_5xx_ratio_pct",
+                "HTTP 5xx 比例",
+                f'sum(rate(http_requests_total{http_5xx}[5m])) / clamp_min(sum(rate(http_requests_total{http_all}[5m])), 0.0001) * 100',
+                "%",
+            ),
+            (
+                "p99_latency_ms",
+                "P99 延迟",
+                'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) * 1000',
+                "ms",
+            ),
+        ]
+
+        metrics: list[dict] = []
+        for key, label, promql, unit in queries:
             try:
-                result = await asyncio.wait_for(
-                    state.prom.query(promql),
-                    timeout=_CTX_TIMEOUT,
-                )
-                if result:
-                    val = float(result[0].get("value", [0, 0])[1] or 0)
-                    parts.append(f"{label}: {val:.2f}")
+                result = await asyncio.wait_for(state.prom.query(promql), timeout=_CTX_TIMEOUT)
+                if not result:
+                    continue
+                value = _safe_float(result[0].get("value", [0, 0])[1], 0.0)
+                metrics.append({"key": key, "label": label, "value": round(value, 2), "unit": unit})
             except Exception:
-                pass
-        return "当前指标：\n" + ("\n".join(parts) if parts else "（无法获取指标）")
+                continue
+
+        if not metrics:
+            return {"title": "指标", "summary": "未抓取到 Prometheus 指标。", "items": [], "metrics": []}
+
+        parts = [f"{item['label']}={item['value']}{item['unit']}" for item in metrics]
+        return {
+            "title": "指标",
+            "summary": "；".join(parts),
+            "items": parts,
+            "metrics": metrics,
+        }
     except Exception as exc:
-        return f"（Prometheus 查询失败: {exc}）"
+        return {"title": "指标", "summary": f"Prometheus 查询失败: {exc}", "items": [], "metrics": []}
 
 
-async def _collect_skywalking(service: str | None) -> str:
+async def _collect_skywalking(service: str | None) -> dict:
     try:
-        sw_url = os.getenv("SKYWALKING_OAP_URL", "").rstrip("/")
-        if not sw_url:
-            return "（SkyWalking 未配置）"
-        end_ms   = int(time.time() * 1000)
-        start_ms = end_ms - 3600 * 1000
-        query = """
-        query { getAllServices(duration: {start: "%s", end: "%s", step: MINUTE}) { name } }
-        """ % (
-            datetime.utcfromtimestamp(start_ms / 1000).strftime("%Y-%m-%d %H%M"),
-            datetime.utcfromtimestamp(end_ms / 1000).strftime("%Y-%m-%d %H%M"),
-        )
-        async with httpx.AsyncClient(timeout=_CTX_TIMEOUT) as client:
-            r = await client.post(f"{sw_url}/graphql", json={"query": query})
-            services = r.json().get("data", {}).get("getAllServices", [])
-        names = [s["name"] for s in services[:10]]
-        return f"SkyWalking 服务（最近1小时）：{', '.join(names) or '无'}"
+        from skywalking_client import sw_client
+
+        services = await asyncio.wait_for(sw_client.get_services(hours=1), timeout=_CTX_TIMEOUT)
+        matched = [item for item in services if not service or service.lower() in str(item.get("name", "")).lower()]
+        recent = await asyncio.wait_for(sw_client.get_traces(hours=1, error_only=True, page=1, page_size=8), timeout=_CTX_TIMEOUT)
+        traces = recent.get("traces", []) if isinstance(recent, dict) else []
+
+        items: list[str] = []
+        for trace in traces[:5]:
+            endpoint = ", ".join(trace.get("endpointNames", [])[:2]) or trace.get("serviceCode") or "-"
+            items.append(f"{endpoint} / {trace.get('duration', 0)}ms / error={trace.get('isError', False)}")
+
+        summary = f"最近 1h 发现 {len(traces)} 条异常 Trace，匹配服务 {len(matched)} 个。"
+        if matched:
+            summary += " 服务样本: " + ", ".join(str(item.get("name", "")) for item in matched[:4])
+        return {
+            "title": "Trace",
+            "summary": summary,
+            "items": items,
+            "matched_services": [item.get("name", "") for item in matched[:10]],
+            "error_trace_count": len(traces),
+        }
     except Exception as exc:
-        return f"（SkyWalking 查询失败: {exc}）"
+        return {"title": "Trace", "summary": f"SkyWalking 查询失败: {exc}", "items": [], "error_trace_count": 0}
 
 
-async def _collect_cmdb(service: str | None) -> str:
+async def _collect_cmdb(service: str | None) -> dict:
     try:
         import state
+
         hosts = await asyncio.wait_for(state.prom.discover_hosts(), timeout=_CTX_TIMEOUT)
         if not hosts:
-            return "（CMDB：无主机数据）"
-        relevant = hosts[:10]
-        lines = [f"- {h.get('instance')} ({h.get('state','?')})" for h in relevant]
-        return f"相关主机（共 {len(hosts)} 台，展示前10）：\n" + "\n".join(lines)
+            return {"title": "CMDB", "summary": "未发现主机信息。", "items": []}
+        items = [f"{host.get('instance')} ({host.get('state', '?')})" for host in hosts[:8]]
+        summary = f"共发现 {len(hosts)} 台主机，展示前 {len(items)} 台。"
+        if service:
+            summary = f"{service} 关联主机视角: " + summary
+        return {"title": "CMDB", "summary": summary, "items": items}
     except Exception as exc:
-        return f"（CMDB 查询失败: {exc}）"
+        return {"title": "CMDB", "summary": f"CMDB 查询失败: {exc}", "items": []}
 
 
-async def collect_context(service: str | None, hours: float = 1.0) -> dict[str, str]:
-    """并行采集所有数据源，超时后返回部分结果。"""
-    loki_task, prom_task, sw_task, cmdb_task = await asyncio.gather(
-        _collect_loki(service, hours),
-        _collect_prometheus(service),
-        _collect_skywalking(service),
-        _collect_cmdb(service),
-        return_exceptions=True,
-    )
-    def _safe(r):
-        return r if isinstance(r, str) else f"（采集异常: {r}）"
+def _run_git_command(args: list[str]) -> list[str]:
+    try:
+        completed = subprocess.run(
+            ["git", "-c", f"safe.directory={_REPO_DIR}", *args],
+            cwd=_REPO_DIR,
+            capture_output=True,
+            text=True,
+            timeout=6,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return []
+        return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
+def _collect_change_context(service: str | None) -> dict:
+    grep_value = service or ""
+    lines = _run_git_command(["log", "--oneline", "-n", "8"])
+    if grep_value:
+        service_lines = _run_git_command(["log", "--oneline", "-n", "5", "--grep", grep_value])
+        if service_lines:
+            lines = service_lines + [line for line in lines if line not in service_lines]
+    if not lines:
+        return {"title": "变更记录", "summary": "未获取到最近代码提交记录。", "items": []}
     return {
-        "loki":        _safe(loki_task),
-        "prometheus":  _safe(prom_task),
-        "skywalking":  _safe(sw_task),
-        "cmdb":        _safe(cmdb_task),
+        "title": "变更记录",
+        "summary": f"最近发现 {len(lines[:8])} 条代码变更记录。",
+        "items": lines[:8],
     }
 
 
-# ── AI 分析 ───────────────────────────────────────────────────────────────────
+def _collect_code_context(service: str | None) -> dict:
+    if not service:
+        return {"title": "代码库", "summary": "未指定服务，跳过代码路径聚焦。", "items": []}
 
-_SYSTEM_PROMPT = """你是一名资深 SRE 工程师，负责根因分析。
-请根据以下运维数据，用中文输出结构化的根因分析报告。
+    needle = service.lower()
+    hits: list[str] = []
+    for base in (_REPO_DIR / "backend", _REPO_DIR / "frontend", _REPO_DIR / "docs"):
+        if not base.exists():
+            continue
+        for path in base.rglob("*"):
+            if len(hits) >= 10:
+                break
+            if not path.is_file():
+                continue
+            name = str(path.relative_to(_REPO_DIR)).replace("\\", "/")
+            if needle in name.lower():
+                hits.append(name)
+        if len(hits) >= 10:
+            break
 
-输出格式（严格遵守）：
-## 根因摘要
-一句话描述根本原因。
+    if not hits:
+        return {"title": "代码库", "summary": f"未在仓库中发现与 {service} 直接匹配的路径。", "items": []}
+    return {
+        "title": "代码库",
+        "summary": f"代码库中命中 {len(hits)} 个与服务名相关的路径。",
+        "items": hits,
+    }
 
-## 影响范围
-受影响的服务、主机或用户群体。
 
-## 证据
-- 关键日志/指标证据（每条一行）
+def _summarize_inspection_results(results: list[dict], summary: dict) -> dict:
+    abnormal = [item for item in results if item.get("overall") != "normal"]
+    items: list[str] = []
+    for item in abnormal[:8]:
+        checks = [check for check in item.get("checks", []) if check.get("status") != "normal"]
+        check_text = "；".join(f"{check.get('item')}={check.get('value')}" for check in checks[:3]) or "无详细检查项"
+        items.append(f"{item.get('hostname') or item.get('ip')} [{item.get('overall')}] {check_text}")
+    return {
+        "title": "巡检结果",
+        "summary": f"巡检覆盖 {summary.get('total', len(results))} 台主机，严重 {summary.get('critical', 0)} 台，警告 {summary.get('warning', 0)} 台。",
+        "items": items,
+        "critical_count": int(summary.get("critical", 0) or 0),
+        "warning_count": int(summary.get("warning", 0) or 0),
+    }
 
-## 处置建议
-1. 第一步行动
-2. 第二步行动
-3. 第三步行动
 
-## 置信度
-0-100 的整数，后跟简要说明。
-"""
+def _match_similar_cases(
+    *,
+    service: str | None,
+    alert_name: str,
+    extra_context: str,
+    context_sections: dict[str, dict],
+    limit: int = 3,
+) -> list[dict]:
+    query_text = " ".join(
+        [
+            service or "",
+            alert_name or "",
+            extra_context or "",
+            str(context_sections.get("loki", {}).get("summary", "")),
+            str(context_sections.get("inspection", {}).get("summary", "")),
+        ]
+    )
+    tokens = _tokenize(query_text)
+    if not tokens:
+        return []
+
+    matches: list[dict] = []
+    for case in _load_expert_cases():
+        case_tokens = set(case.get("keywords") or [])
+        overlap = len(tokens & case_tokens)
+        if service and case.get("service") == service:
+            overlap += 2
+        if alert_name and alert_name.lower() in str(case.get("alert_name") or "").lower():
+            overlap += 2
+        if overlap <= 0:
+            continue
+        matches.append(
+            {
+                "id": case.get("id"),
+                "title": case.get("title"),
+                "service": case.get("service"),
+                "category": case.get("category"),
+                "root_cause": case.get("root_cause"),
+                "resolution": case.get("resolution"),
+                "created_at": case.get("created_at"),
+                "score": overlap,
+            }
+        )
+
+    matches.sort(key=lambda item: item["score"], reverse=True)
+    return matches[:limit]
+
+
+async def collect_context(
+    *,
+    service: str | None,
+    alert_name: str,
+    hours: float,
+    extra_context: str,
+    source_labels: dict[str, str] | None = None,
+    inspection_summary: dict | None = None,
+    inspection_results: list[dict] | None = None,
+) -> dict[str, dict]:
+    labels = source_labels or {}
+
+    loki_task = _collect_loki(service, hours, labels)
+    prom_task = _collect_prometheus(service, labels)
+    sw_task = _collect_skywalking(service)
+    cmdb_task = _collect_cmdb(service)
+    changes_task = asyncio.to_thread(_collect_change_context, service)
+    code_task = asyncio.to_thread(_collect_code_context, service)
+
+    loki, prometheus, skywalking, cmdb, changes, codebase = await asyncio.gather(
+        loki_task,
+        prom_task,
+        sw_task,
+        cmdb_task,
+        changes_task,
+        code_task,
+    )
+
+    context: dict[str, dict] = {
+        "loki": loki,
+        "prometheus": prometheus,
+        "skywalking": skywalking,
+        "cmdb": cmdb,
+        "changes": changes,
+        "codebase": codebase,
+    }
+
+    if extra_context.strip():
+        context["extra"] = {
+            "title": "额外上下文",
+            "summary": _compact_text(extra_context, 220),
+            "items": [line.strip() for line in extra_context.splitlines() if line.strip()][:8],
+        }
+
+    if inspection_summary or inspection_results:
+        context["inspection"] = _summarize_inspection_results(inspection_results or [], inspection_summary or {})
+
+    similar_cases = _match_similar_cases(
+        service=service,
+        alert_name=alert_name,
+        extra_context=extra_context,
+        context_sections=context,
+    )
+    context["similar_cases"] = {
+        "title": "专家案例",
+        "summary": f"命中 {len(similar_cases)} 条历史专家案例。",
+        "items": similar_cases,
+    }
+    return context
+
+
+def _collect_signal_text(record: dict) -> str:
+    parts = [
+        record.get("service"),
+        record.get("alert_name"),
+        record.get("extra_context"),
+    ]
+    context = record.get("context", {}) or {}
+    for value in context.values():
+        if not isinstance(value, dict):
+            continue
+        parts.append(str(value.get("summary") or ""))
+        for item in value.get("items", [])[:8]:
+            parts.append(str(item))
+    return " ".join(parts).lower()
+
+
+def _metric_value(context: dict, key: str) -> float:
+    section = context.get("prometheus", {}) if isinstance(context, dict) else {}
+    metrics = section.get("metrics", []) if isinstance(section, dict) else []
+    for item in metrics:
+        if item.get("key") == key:
+            return _safe_float(item.get("value"), 0.0)
+    return 0.0
+
+
+def _build_commands(category: str, service: str, namespace: str) -> list[str]:
+    svc = service if service and service != "global" else "<service>"
+    ns = namespace or "<namespace>"
+    mapping = {
+        "application_bug": [
+            f"kubectl logs deployment/{svc} -n {ns} --tail=200",
+            f"kubectl logs deployment/{svc} -n {ns} --previous --tail=120",
+            f"kubectl describe deployment/{svc} -n {ns}",
+        ],
+        "dependency_failure": [
+            f"kubectl logs deployment/{svc} -n {ns} | grep -Ei 'timeout|refused|reset|dns'",
+            "ss -antp | grep -E '3306|6379|9092|5672'",
+            "curl -sv http://<dependency>/health",
+        ],
+        "resource_bottleneck": [
+            f"kubectl top pod -n {ns} | grep {svc}",
+            f"kubectl describe pod -n {ns} <pod-name>",
+            "free -m && df -h && top -b -n1 | head -40",
+        ],
+        "platform_host_issue": [
+            "kubectl get nodes -o wide",
+            "kubectl describe node <node-name>",
+            "dmesg -T | tail -n 80",
+        ],
+        "change_regression": [
+            f"kubectl rollout history deployment/{svc} -n {ns}",
+            "git log --oneline --since='24 hours ago'",
+            f"kubectl describe deployment/{svc} -n {ns}",
+        ],
+    }
+    return mapping.get(category, mapping["application_bug"])
+
+
+def _namespace_from_record(record: dict) -> str:
+    labels = record.get("source_labels", {}) or {}
+    if labels.get("namespace"):
+        return str(labels.get("namespace"))
+    if labels.get("kubernetes_namespace"):
+        return str(labels.get("kubernetes_namespace"))
+    inspection = (record.get("context") or {}).get("inspection", {})
+    if isinstance(inspection, dict):
+        summary = str(inspection.get("summary") or "")
+        if "namespace=" in summary:
+            return summary.split("namespace=", 1)[1].split()[0].strip("。;,")
+    return "default"
+
+
+def _candidate_base_scores(record: dict) -> dict[str, tuple[int, list[str]]]:
+    context = record.get("context", {}) or {}
+    signal_text = _collect_signal_text(record)
+    loki_items = context.get("loki", {}).get("items", []) if isinstance(context.get("loki"), dict) else []
+    similar = context.get("similar_cases", {}).get("items", []) if isinstance(context.get("similar_cases"), dict) else []
+
+    cpu = _metric_value(context, "cpu_usage_pct")
+    mem = _metric_value(context, "memory_usage_pct")
+    err_ratio = _metric_value(context, "http_5xx_ratio_pct")
+    p99 = _metric_value(context, "p99_latency_ms")
+    raw_logs = int(context.get("loki", {}).get("raw_count", 0) or 0)
+    trace_errors = int(context.get("skywalking", {}).get("error_trace_count", 0) or 0)
+    inspect_critical = int(context.get("inspection", {}).get("critical_count", 0) or 0)
+    inspect_warning = int(context.get("inspection", {}).get("warning_count", 0) or 0)
+    recent_changes = len(context.get("changes", {}).get("items", []) if isinstance(context.get("changes"), dict) else [])
+
+    def has_any(*words: str) -> bool:
+        return any(word in signal_text for word in words)
+
+    evidence_map: dict[str, list[str]] = {key: [] for key in _CATEGORY_META}
+    score_map = {key: 18 for key in _CATEGORY_META}
+
+    if has_any("exception", "traceback", "nullpointer", "panic", "illegal", "stack", "500", "5xx"):
+        score_map["application_bug"] += 24
+        evidence_map["application_bug"].append("日志中出现异常栈、Exception、5xx 或代码级报错特征。")
+    if raw_logs >= 30:
+        score_map["application_bug"] += 8
+        evidence_map["application_bug"].append(f"Loki 最近窗口抓到 {raw_logs} 条错误日志，应用内部故障概率升高。")
+    if err_ratio >= 5:
+        score_map["application_bug"] += 10
+        evidence_map["application_bug"].append(f"HTTP 5xx 比例达到 {err_ratio:.2f}%。")
+
+    if has_any("timeout", "timed out", "connection refused", "reset by peer", "dns", "upstream", "redis", "mysql", "postgres", "kafka", "rabbitmq", "es", "elasticsearch"):
+        score_map["dependency_failure"] += 24
+        evidence_map["dependency_failure"].append("日志中存在 timeout、refused、reset、DNS 或下游组件关键字。")
+    if trace_errors > 0:
+        score_map["dependency_failure"] += 8
+        evidence_map["dependency_failure"].append(f"SkyWalking 最近 1h 发现 {trace_errors} 条异常 Trace。")
+
+    if cpu >= 85 or mem >= 85:
+        score_map["resource_bottleneck"] += 26
+        evidence_map["resource_bottleneck"].append(f"资源指标异常，CPU={cpu:.2f}% / MEM={mem:.2f}%。")
+    if p99 >= 1500:
+        score_map["resource_bottleneck"] += 10
+        evidence_map["resource_bottleneck"].append(f"P99 延迟达到 {p99:.2f}ms。")
+    if has_any("oom", "outofmemory", "killed", "throttl", "disk", "no space", "cpu throttling"):
+        score_map["resource_bottleneck"] += 12
+        evidence_map["resource_bottleneck"].append("日志中出现 OOM、限流、磁盘耗尽等容量信号。")
+
+    if inspect_critical > 0 or has_any("node", "hostdown", "nodedown", "instance down", "offline"):
+        score_map["platform_host_issue"] += 24
+        evidence_map["platform_host_issue"].append(f"巡检严重主机 {inspect_critical} 台，或存在节点/实例下线告警。")
+    if inspect_warning > 0:
+        score_map["platform_host_issue"] += 8
+        evidence_map["platform_host_issue"].append(f"巡检警告主机 {inspect_warning} 台。")
+
+    if recent_changes > 0:
+        score_map["change_regression"] += 18
+        evidence_map["change_regression"].append(f"近窗口命中 {recent_changes} 条代码变更记录。")
+    if has_any("deploy", "release", "rollback", "migration", "version", "configmap", "helm"):
+        score_map["change_regression"] += 12
+        evidence_map["change_regression"].append("上下文中存在发布、回滚、迁移或配置变更信号。")
+
+    for case in similar[:3]:
+        category = str(case.get("category") or "")
+        if category in score_map:
+            score_map[category] += min(10, int(case.get("score") or 0))
+            evidence_map[category].append(
+                f"专家库命中相似案例：{case.get('title')}（相似分 {case.get('score')}）。"
+            )
+
+    for key, items in evidence_map.items():
+        if not items and loki_items:
+            items.append(f"当前未发现强特征，保留该假设作为备选路径。日志样本：{_compact_text(str(loki_items[0]), 90)}")
+
+    return {key: (score_map[key], evidence_map[key]) for key in score_map}
+
+
+async def _validate_candidate(
+    *,
+    category: str,
+    rank: int,
+    record: dict,
+    base_score: int,
+    evidence: list[str],
+    feedback_weight: float,
+) -> dict:
+    await asyncio.sleep(0)
+    meta = _CATEGORY_META[category]
+    namespace = _namespace_from_record(record)
+    commands = _build_commands(category, record.get("service", "global"), namespace)
+
+    adjusted = int(round(base_score * feedback_weight))
+    adjusted = int(_clamp(adjusted, 10, 99))
+    if adjusted >= 75:
+        summary = f"{meta['summary']} 当前证据链较强，建议优先验证。"
+        status = "supported"
+    elif adjusted >= 50:
+        summary = f"{meta['summary']} 当前证据中等，建议并行验证。"
+        status = "possible"
+    else:
+        summary = f"{meta['summary']} 当前证据偏弱，仅作为兜底假设。"
+        status = "weak"
+
+    return {
+        "id": f"hyp_{rank}",
+        "rank": rank,
+        "agent_name": f"Validator-{rank}",
+        "category": category,
+        "title": meta["title"],
+        "description": meta["summary"],
+        "score": adjusted,
+        "validation_status": status,
+        "validation_summary": summary,
+        "evidence": evidence[:6],
+        "commands": commands,
+    }
+
+
+async def _generate_hypotheses(record: dict) -> list[dict]:
+    feedback = _load_feedback()
+    weights = feedback.get("weights", {})
+    scored = _candidate_base_scores(record)
+    ranked = sorted(scored.items(), key=lambda item: item[1][0] * _safe_float(weights.get(item[0]), 1.0), reverse=True)[:3]
+
+    tasks = []
+    for index, (category, (base_score, evidence)) in enumerate(ranked, start=1):
+        tasks.append(
+            _validate_candidate(
+                category=category,
+                rank=index,
+                record=record,
+                base_score=base_score,
+                evidence=evidence,
+                feedback_weight=_safe_float(weights.get(category), 1.0),
+            )
+        )
+
+    hypotheses = await asyncio.gather(*tasks)
+    hypotheses.sort(key=lambda item: (-item["score"], item["rank"]))
+    for index, item in enumerate(hypotheses, start=1):
+        item["rank"] = index
+        item["id"] = f"hyp_{index}"
+        item["agent_name"] = f"Validator-{index}"
+    return hypotheses
+
+
+def _build_final_summary(record: dict) -> str:
+    top = (record.get("hypotheses") or [None])[0]
+    if not top:
+        return "暂无高置信度根因，请继续补充上下文。"
+
+    human = record.get("human_confirmation", {}) or {}
+    tail = ""
+    if human.get("status") == "confirmed":
+        tail = " 已经人工确认并回写专家库。"
+    elif human.get("status") == "pending":
+        tail = " 当前等待人工确认。"
+
+    score = int(top.get("score") or 0)
+    return f"首选根因是“{top.get('title')}”，综合评分 {score} 分。{top.get('validation_summary', '')}{tail}".strip()
 
 
 async def analyze_stream(
@@ -198,95 +1135,112 @@ async def analyze_stream(
     hours: float = 1.0,
     extra_context: str = "",
 ) -> AsyncIterator[str]:
-    """流式输出 RCA 分析结果。"""
-    import state
-
-    ctx = await collect_context(service, hours)
-
-    prompt = f"""告警名称：{alert_name or '手动触发'}
-分析时间窗口：最近 {hours} 小时
-目标服务：{service or '全局'}
-
---- Loki 错误日志 ---
-{ctx['loki']}
-
---- Prometheus 指标 ---
-{ctx['prometheus']}
-
---- SkyWalking APM ---
-{ctx['skywalking']}
-
---- CMDB 主机 ---
-{ctx['cmdb']}
-"""
-    if extra_context:
-        prompt += f"\n--- 额外上下文 ---\n{extra_context}"
-
-    full_prompt = _SYSTEM_PROMPT + "\n\n" + prompt
-
-    try:
-        async for chunk in state.analyzer._provider.stream(full_prompt, max_tokens=1500):
-            yield chunk
-    except Exception as exc:
-        yield f"\n\n（AI 分析失败: {exc}）"
+    """Compatibility stream API. The new UI uses async trigger + polling."""
+    record = await run_rca(
+        service=service,
+        alert_name=alert_name,
+        alert_group_id=None,
+        hours=hours,
+        extra_context=extra_context,
+        source_type="manual",
+    )
+    for line in (get_rca(record) or {}).get("result", "").splitlines(True):
+        yield line
 
 
 async def run_rca(
+    *,
     service: str | None,
     alert_name: str = "",
     alert_group_id: str | None = None,
     hours: float = 1.0,
     extra_context: str = "",
+    source_type: str = "manual",
+    source_id: str = "",
+    source_name: str = "",
+    source_labels: dict[str, str] | None = None,
+    inspection_summary: dict | None = None,
+    inspection_results: list[dict] | None = None,
+    existing_id: str | None = None,
 ) -> str:
-    """执行完整 RCA，落库并返回 rca_id。"""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    parts: list[str] = []
-
-    async for chunk in analyze_stream(service, alert_name, hours, extra_context):
-        parts.append(chunk)
-
-    full_text = "".join(parts)
-
-    record = {
-        "id": f"rca_{int(time.time())}",
-        "created_at": now_iso,
-        "service": service or "global",
-        "alert_name": alert_name,
-        "alert_group_id": alert_group_id,
-        "result": full_text,
-        "context_hours": hours,
-    }
-    rca_id = save_rca(record)
-
-    # 关联告警组
-    if alert_group_id:
-        try:
-            from services.alert_dedup import update_group_status
-            update_group_status(alert_group_id, "resolved", rca_id=rca_id)
-        except Exception:
-            pass
-
-    # 推送飞书
-    asyncio.create_task(_notify_feishu(record))
-
-    return rca_id
-
-
-async def _notify_feishu(record: dict) -> None:
-    webhook = os.getenv("FEISHU_WEBHOOK", "")
-    if not webhook:
-        return
-    try:
-        result = record.get("result", "")
-        # 截取前 500 字符，避免消息过长
-        summary = result[:500] + ("..." if len(result) > 500 else "")
-        text = (
-            f"🧠 RCA 根因分析完成\n"
-            f"服务：{record.get('service', '—')}\n"
-            f"告警：{record.get('alert_name', '—')}\n\n"
-            f"{summary}"
+    """Run full RCA and persist a structured RCA run."""
+    record = get_rca(existing_id) if existing_id else None
+    if not record:
+        record = create_pending_rca(
+            service=service,
+            alert_name=alert_name,
+            alert_group_id=alert_group_id,
+            hours=hours,
+            extra_context=extra_context,
+            source_type=source_type,
+            source_id=source_id,
+            source_name=source_name,
+            source_labels=source_labels,
         )
-        async with httpx.AsyncClient(timeout=8) as client:
-            await client.post(webhook, json={"msg_type": "text", "content": {"text": text}})
+
+    rca_id = record["id"]
+
+    try:
+        update_rca(
+            rca_id,
+            {
+                "status": "running",
+                "timeline": record.get("timeline", []) + [
+                    _timeline("context", "开始采集上下文", "logs / metrics / trace / CMDB / changes / codebase")
+                ],
+            },
+        )
+
+        context = await collect_context(
+            service=service,
+            alert_name=alert_name,
+            hours=hours,
+            extra_context=extra_context,
+            source_labels=source_labels,
+            inspection_summary=inspection_summary,
+            inspection_results=inspection_results,
+        )
+
+        current = update_rca(
+            rca_id,
+            {
+                "context": context,
+                "timeline": (get_rca(rca_id) or {}).get("timeline", [])
+                + [_timeline("context_done", "上下文采集完成", "证据已写入 RCA run")],
+            },
+        ) or (get_rca(rca_id) or record)
+
+        hypotheses = await _generate_hypotheses(current)
+        current["hypotheses"] = hypotheses
+        current["expert_matches"] = context.get("similar_cases", {}).get("items", []) if isinstance(context.get("similar_cases"), dict) else []
+        current["status"] = "awaiting_confirmation"
+        current["final_summary"] = _build_final_summary(current)
+        current["result"] = _build_result_markdown(current)
+        current["timeline"] = current.get("timeline", []) + [
+            _timeline("hypothesis_done", "多假设并行验证完成", "3 个假设已完成评分并等待人工确认")
+        ]
+        save_rca(current)
+
+        if alert_group_id:
+            try:
+                from services.alert_dedup import update_group_status
+
+                update_group_status(alert_group_id, "analyzing", rca_id=rca_id)
+            except Exception as exc:
+                logger.warning("[rca] failed to update alert group status: %s", exc)
+
+        return rca_id
     except Exception as exc:
-        logger.warning("[rca] 飞书推送失败: %s", exc)
+        logger.exception("[rca] structured RCA failed")
+        update_rca(
+            rca_id,
+            {
+                "status": "error",
+                "final_summary": f"RCA 执行失败: {exc}",
+                "result": f"## 根因摘要\nRCA 执行失败：{exc}",
+                "timeline": (get_rca(rca_id) or {}).get("timeline", []) + [
+                    _timeline("error", "RCA 执行失败", str(exc), status="error")
+                ],
+            },
+        )
+        raise

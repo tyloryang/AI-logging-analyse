@@ -77,6 +77,7 @@ class SettingsPayload(BaseModel):
     ai_base_url: str = ""
     ai_model: str = ""
     ai_api_key: str = ""
+    ai_wire_api: str = ""
     ai_enable_thinking: bool | str | None = None
     agent_executor: str = "langgraph"
     agent_external_command: str = ""
@@ -128,9 +129,10 @@ async def get_settings():
         "alertmanager_url": os.getenv("ALERTMANAGER_URL", ""),
         "alertmanager_username": os.getenv("ALERTMANAGER_USERNAME", ""),
         "alertmanager_password_set": bool(os.getenv("ALERTMANAGER_PASSWORD", "")),
-        "ai_provider": os.getenv("AI_PROVIDER", "anthropic"),
+        "ai_provider": os.getenv("AI_PROVIDER", ""),
         "ai_base_url": os.getenv("AI_BASE_URL", ""),
         "ai_model": os.getenv("AI_MODEL", ""),
+        "ai_wire_api": os.getenv("AI_WIRE_API", ""),
         "ai_api_key_set": bool(
             os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_API_KEY")
         ),
@@ -224,6 +226,8 @@ async def update_settings(body: SettingsPayload):
         existing["ai_model"] = body.ai_model
     if body.ai_api_key:
         existing["ai_api_key"] = body.ai_api_key
+    if body.ai_wire_api is not None:
+        existing["ai_wire_api"] = body.ai_wire_api
     if body.ai_enable_thinking is not None:
         existing["ai_enable_thinking"] = _normalize_bool(body.ai_enable_thinking)
 
@@ -363,16 +367,20 @@ async def update_settings(body: SettingsPayload):
     elif new_sw_url:
         os.environ["SKYWALKING_OAP_URL"] = new_sw_url
 
-    new_ai_provider = existing.get("ai_provider", os.getenv("AI_PROVIDER", "anthropic"))
+    new_ai_provider = existing.get("ai_provider", os.getenv("AI_PROVIDER", ""))
     new_ai_base_url = existing.get("ai_base_url", os.getenv("AI_BASE_URL", ""))
     new_ai_model = existing.get("ai_model", os.getenv("AI_MODEL", ""))
+    new_ai_wire_api = str(
+        existing.get("ai_wire_api", os.getenv("AI_WIRE_API", ""))
+    ).strip().lower()
     new_ai_enable_thinking = _normalize_bool(
         existing.get("ai_enable_thinking"), default=False
     )
     ai_changed = (
-        str(new_ai_provider) != os.getenv("AI_PROVIDER", "anthropic")
+        str(new_ai_provider) != os.getenv("AI_PROVIDER", "")
         or str(new_ai_base_url) != os.getenv("AI_BASE_URL", "")
         or str(new_ai_model) != os.getenv("AI_MODEL", "")
+        or new_ai_wire_api != os.getenv("AI_WIRE_API", "").strip().lower()
         or bool(body.ai_api_key)
         or new_ai_enable_thinking != _normalize_bool(os.getenv("AI_ENABLE_THINKING", "0"))
     )
@@ -380,6 +388,10 @@ async def update_settings(body: SettingsPayload):
         os.environ["AI_PROVIDER"] = str(new_ai_provider)
         os.environ["AI_BASE_URL"] = str(new_ai_base_url)
         os.environ["AI_MODEL"] = str(new_ai_model)
+        if new_ai_wire_api:
+            os.environ["AI_WIRE_API"] = new_ai_wire_api
+        else:
+            os.environ.pop("AI_WIRE_API", None)
         os.environ["AI_ENABLE_THINKING"] = "1" if new_ai_enable_thinking else "0"
         if body.ai_api_key:
             if str(new_ai_provider).lower() == "openai":
@@ -524,89 +536,153 @@ class TestAIPayload(BaseModel):
     base_url: str = ""
     model: str = ""
     api_key: str = ""
+    wire_api: str = ""
+    enable_thinking: bool | str | None = None
 
 
 @router.post("/api/settings/test/ai")
 async def test_ai(body: TestAIPayload):
-    """测试 AI 模型连通性：用当前（或传入）配置发送一条短消息，返回是否成功及耗时。"""
+    """测试 AI 模型连通性，完全按当前输入或已保存配置发起请求。"""
     import time
 
-    provider = (body.provider or os.getenv("AI_PROVIDER", "anthropic")).lower()
-    model = body.model or os.getenv("AI_MODEL", "")
-    api_key = body.api_key  # 空 = 用已配置的
+    provider = (body.provider or os.getenv("AI_PROVIDER", "")).strip().lower()
+    model = (body.model or os.getenv("AI_MODEL", "")).strip()
+    api_key = body.api_key
+
+    if not provider:
+        return {"ok": False, "error": "请先选择 Provider"}
+    if not model:
+        return {"ok": False, "error": "请先填写模型名称"}
 
     if provider == "openai":
         base_url = (body.base_url or os.getenv("AI_BASE_URL", "")).rstrip("/")
         if not base_url:
             return {"ok": False, "error": "AI_BASE_URL 未配置"}
+
         key = api_key or os.getenv("AI_API_KEY", "") or "EMPTY"
-        model = model or "gpt-4"
+        model_lower = model.lower()
+        wire_api_cfg = str(body.wire_api or os.getenv("AI_WIRE_API", "")).strip().lower()
+        is_qwen3 = model_lower.startswith(("qwen3-", "qwq-"))
+        is_responses_model = model_lower.startswith(("o1", "o3", "o4", "gpt-5"))
+        if wire_api_cfg in {"chat", "responses"}:
+            wire_api = wire_api_cfg
+        elif is_qwen3:
+            wire_api = "chat"
+        elif is_responses_model:
+            wire_api = "responses"
+        else:
+            wire_api = "chat"
+
+        enable_override = body.enable_thinking
+        enable_cfg = (
+            str(enable_override).strip().lower()
+            if enable_override is not None
+            else os.getenv("AI_ENABLE_THINKING", "").strip().lower()
+        )
+        enable_thinking = False if is_qwen3 else enable_cfg in {"1", "true", "yes", "on"}
+
         t0 = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {key}"},
-                    json={
+                if wire_api == "responses":
+                    resp = await client.post(
+                        f"{base_url}/responses",
+                        headers={"Authorization": f"Bearer {key}"},
+                        json={
+                            "model": model,
+                            "input": "hi",
+                            "max_output_tokens": 8,
+                        },
+                    )
+                else:
+                    payload = {
                         "model": model,
                         "messages": [{"role": "user", "content": "hi"}],
                         "max_tokens": 8,
-                        "enable_thinking": bool(os.getenv("AI_ENABLE_THINKING", "0") in ("1", "true")),
-                    },
-                )
+                    }
+                    if is_qwen3 or enable_override is not None or os.getenv("AI_ENABLE_THINKING", "").strip():
+                        payload["enable_thinking"] = enable_thinking
+                    resp = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {key}"},
+                        json=payload,
+                    )
+
             elapsed = round((time.monotonic() - t0) * 1000)
             if resp.status_code == 200:
                 data = resp.json()
-                reply = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                    or ""
-                )
-                return {"ok": True, "elapsed_ms": elapsed, "reply": reply[:80], "model": model}
+                if wire_api == "responses":
+                    reply = data.get("output_text", "") or ""
+                    if not reply:
+                        chunks: list[str] = []
+                        for item in data.get("output", []) or []:
+                            for content in item.get("content", []) or []:
+                                text = str(
+                                    content.get("text")
+                                    or content.get("output_text")
+                                    or ""
+                                ).strip()
+                                if text:
+                                    chunks.append(text)
+                        reply = "".join(chunks)
+                else:
+                    reply = (
+                        data.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                        or ""
+                    )
+                return {
+                    "ok": True,
+                    "elapsed_ms": elapsed,
+                    "reply": str(reply)[:80],
+                    "model": model,
+                    "wire_api": wire_api,
+                }
+
             return {
                 "ok": False,
                 "status": resp.status_code,
                 "error": resp.text[:200],
                 "elapsed_ms": elapsed,
+                "wire_api": wire_api,
             }
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-    else:
-        # Anthropic
-        key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
-        if not key:
-            return {"ok": False, "error": "ANTHROPIC_API_KEY 未配置"}
-        model = model or "claude-haiku-4-5-20251001"
-        t0 = time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "max_tokens": 8,
-                        "messages": [{"role": "user", "content": "hi"}],
-                    },
-                )
-            elapsed = round((time.monotonic() - t0) * 1000)
-            if resp.status_code == 200:
-                data = resp.json()
-                reply = (data.get("content") or [{}])[0].get("text", "") or ""
-                return {"ok": True, "elapsed_ms": elapsed, "reply": reply[:80], "model": model}
-            return {
-                "ok": False,
-                "status": resp.status_code,
-                "error": resp.text[:200],
-                "elapsed_ms": elapsed,
-            }
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": str(exc), "wire_api": wire_api}
+
+    key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {"ok": False, "error": "ANTHROPIC_API_KEY 未配置"}
+
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "max_tokens": 8,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+        elapsed = round((time.monotonic() - t0) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            reply = (data.get("content") or [{}])[0].get("text", "") or ""
+            return {"ok": True, "elapsed_ms": elapsed, "reply": reply[:80], "model": model}
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "error": resp.text[:200],
+            "elapsed_ms": elapsed,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @router.get("/api/settings/test/k8s")

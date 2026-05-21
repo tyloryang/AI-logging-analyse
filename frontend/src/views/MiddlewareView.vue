@@ -18,6 +18,9 @@
       </div>
 
       <div class="mw-hero-actions">
+        <button class="btn btn-outline" @click="goRedisCluster">
+          Redis Cluster 管理
+        </button>
         <button class="btn btn-outline" :disabled="loading" @click="resetView">
           重置视图
         </button>
@@ -37,6 +40,26 @@
         <div class="mw-kpi-label">{{ item.label }}</div>
         <div class="mw-kpi-value">{{ item.value }}</div>
         <div class="mw-kpi-hint">{{ item.hint }}</div>
+      </article>
+    </section>
+
+    <section class="mw-manage-grid">
+      <article class="card mw-manage-card">
+        <div class="mw-manage-head">
+          <div>
+            <span class="mw-manage-eyebrow">Cluster Management</span>
+            <h3>Redis Cluster 管理</h3>
+          </div>
+          <span class="mw-manage-badge">新增</span>
+        </div>
+        <p class="mw-manage-text">
+          新增 Redis 集群管理入口，可直接查看 Cluster 槽位覆盖、主从节点健康、连接测试和容量概览。
+        </p>
+        <div class="mw-manage-actions">
+          <button class="btn btn-primary" type="button" @click="goRedisCluster">
+            打开 Redis Cluster
+          </button>
+        </div>
       </article>
     </section>
 
@@ -253,9 +276,11 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api/index.js'
 
 const MIDDLEWARE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`
+const router = useRouter()
 
 const summary = ref([])
 const instances = ref([])
@@ -488,6 +513,10 @@ function closeMetrics() {
   activeMetrics.value = null
 }
 
+function goRedisCluster() {
+  router.push('/middleware/redis')
+}
+
 function handleAnomalyClick(item) {
   if (item.instance) {
     inspectInstance(item.instance)
@@ -592,6 +621,66 @@ onMounted(fetchAll)
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
+}
+
+.mw-manage-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.mw-manage-card {
+  padding: 18px 20px;
+  background:
+    radial-gradient(circle at top right, rgba(239, 68, 68, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(255, 247, 237, 0.96), rgba(255, 255, 255, 0.98));
+  box-shadow: inset 0 0 0 1px rgba(253, 186, 116, 0.24);
+}
+
+.mw-manage-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mw-manage-eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #c2410c;
+}
+
+.mw-manage-card h3 {
+  margin-top: 8px;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.mw-manage-text {
+  margin-top: 10px;
+  max-width: 760px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.mw-manage-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.mw-manage-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 10px;
 }
 
 .mw-kpi {

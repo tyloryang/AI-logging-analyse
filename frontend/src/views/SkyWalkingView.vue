@@ -194,16 +194,39 @@
           <!-- 追踪详情（瀑布图） -->
           <div v-if="selectedTrace" class="sw-waterfall-wrap">
             <div class="sw-wf-header">
-              <div class="sw-wf-title">
-                <span class="sw-wf-ep">{{ selectedTrace.endpointNames?.[0] }}</span>
-                <span class="sw-wf-total">{{ traceTotalMs }} ms</span>
-                <span v-if="selectedTrace.isError" class="sw-err-badge">ERROR</span>
+              <div class="sw-wf-title-row">
+                <div class="sw-wf-title">
+                  <span class="sw-wf-brand">SkyWalking</span>
+                  <span class="sw-wf-ep">{{ selectedTrace.endpointNames?.[0] }}</span>
+                  <span v-if="selectedTrace.isError" class="sw-err-badge">ERROR</span>
+                </div>
+                <button class="kw-clear" @click="selectedTrace=null; spanTree=[]">✕</button>
               </div>
               <div class="sw-wf-meta">
-                <span class="sw-wf-id">TraceId: {{ selectedTrace.traceIds?.[0] }}</span>
+                <span class="sw-wf-id">Trace ID: {{ selectedTrace.traceIds?.[0] }}</span>
                 <span class="sw-wf-time">{{ formatTs(selectedTrace.start) }}</span>
               </div>
-              <button class="kw-clear" style="position:absolute;right:14px;top:14px" @click="selectedTrace=null; spanTree=[]">✕</button>
+              <div class="sw-wf-stats">
+                <div class="sw-wf-stat">
+                  <span class="sw-wf-stat-val">{{ traceTotalMs }}</span>
+                  <span class="sw-wf-stat-label">ms</span>
+                </div>
+                <div class="sw-wf-stat-div"></div>
+                <div class="sw-wf-stat">
+                  <span class="sw-wf-stat-val">{{ traceServicesCount }}</span>
+                  <span class="sw-wf-stat-label">Services</span>
+                </div>
+                <div class="sw-wf-stat-div"></div>
+                <div class="sw-wf-stat">
+                  <span class="sw-wf-stat-val">{{ traceSpanCount }}</span>
+                  <span class="sw-wf-stat-label">Spans</span>
+                </div>
+                <div class="sw-wf-stat-div"></div>
+                <div class="sw-wf-stat">
+                  <span class="sw-wf-stat-val" :class="traceErrorCount > 0 ? 'stat-err-val' : ''">{{ traceErrorCount }}</span>
+                  <span class="sw-wf-stat-label">Errors</span>
+                </div>
+              </div>
             </div>
 
             <div v-if="loadingSpans" class="sw-empty" style="flex:1">
@@ -247,6 +270,9 @@
                     class="sw-span-dur-label"
                     :style="{ left: (spanOffset(span) + Math.max(spanWidth(span), 0.5) + 0.5) + '%' }"
                   >{{ spanDur(span) }} ms</span>
+                  <span v-if="span.serviceInstanceName" class="sw-span-inst">
+                    {{ span.serviceInstanceName }}
+                  </span>
                 </div>
               </div>
               <!-- 展开详情 -->
@@ -671,7 +697,12 @@ const traceEndMs = computed(() => {
   if (!spanTree.value.length) return 1
   return Math.max(...spanTree.value.map(s => s.endTime))
 })
-const traceTotalMs = computed(() => Math.max(traceEndMs.value - traceStartMs.value, 1))
+const traceTotalMs     = computed(() => Math.max(traceEndMs.value - traceStartMs.value, 1))
+const traceServicesCount = computed(() =>
+  new Set(spanTree.value.map(s => s.serviceCode).filter(Boolean)).size
+)
+const traceSpanCount   = computed(() => spanTree.value.length)
+const traceErrorCount  = computed(() => spanTree.value.filter(s => s.isError).length)
 
 function spanOffset(span) {
   return Math.max(0, ((span.startTime - traceStartMs.value) / traceTotalMs.value) * 100)
@@ -1207,15 +1238,43 @@ onMounted(() => {
   flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative;
 }
 .sw-wf-header {
-  padding: 12px 14px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  padding: 10px 14px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;
   background: var(--bg-card);
 }
-.sw-wf-title { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.sw-wf-ep { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.sw-wf-total { font-size: 13px; color: var(--accent); font-weight: 700; }
-.sw-wf-meta { display: flex; gap: 12px; }
-.sw-wf-id { font-size: 11px; color: var(--text-muted); font-family: monospace; }
-.sw-wf-time { font-size: 11px; color: var(--text-muted); }
+.sw-wf-title-row {
+  display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 3px;
+}
+.sw-wf-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.sw-wf-brand {
+  font-size: 11px; font-weight: 600; color: var(--accent);
+  background: rgba(56,139,253,.12); border: 1px solid rgba(56,139,253,.25);
+  border-radius: 3px; padding: 1px 6px; flex-shrink: 0;
+}
+.sw-wf-ep { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-wf-meta { display: flex; gap: 12px; margin-bottom: 8px; }
+.sw-wf-id { font-size: 11px; color: var(--text-muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; }
+.sw-wf-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+/* 统计行 */
+.sw-wf-stats {
+  display: flex; align-items: center; gap: 0;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0; overflow: hidden; width: fit-content;
+}
+.sw-wf-stat {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 5px 16px; gap: 1px;
+}
+.sw-wf-stat-val {
+  font-size: 16px; font-weight: 700; color: var(--text-primary); line-height: 1;
+}
+.sw-wf-stat-val.stat-err-val { color: var(--error); }
+.sw-wf-stat-label {
+  font-size: 10px; color: var(--text-muted); white-space: nowrap;
+}
+.sw-wf-stat-div {
+  width: 1px; height: 32px; background: var(--border); flex-shrink: 0;
+}
 
 .sw-waterfall { flex: 1; overflow-y: auto; }
 .sw-wf-col-header {
@@ -1268,6 +1327,13 @@ onMounted(() => {
 .sw-span-dur-label {
   position: absolute; top: 50%; transform: translateY(-50%);
   font-size: 10px; color: var(--text-muted); white-space: nowrap;
+}
+.sw-span-inst {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  font-size: 10px; color: var(--text-muted);
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; white-space: nowrap;
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis;
 }
 
 /* Span 详情 */

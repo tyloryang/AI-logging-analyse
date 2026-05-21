@@ -87,7 +87,7 @@
           </div>
 
           <div class="header-actions">
-            <button class="hdr-btn" @click="openWorkbench('workspace')" :disabled="streaming">
+            <button class="hdr-btn" type="button" @click="openWorkbench('workspace')">
               <span v-html="TOOLS_ICON"></span>
               工作台
             </button>
@@ -392,156 +392,220 @@
       </div>
     </Transition>
 
-    <Transition name="fade">
-      <div v-if="showWorkbench" class="workbench-backdrop" @click="closeWorkbench"></div>
-    </Transition>
-
-    <Transition name="drawer">
-      <aside v-if="showWorkbench" class="workbench-panel">
-        <div class="workbench-head">
-          <div>
-            <div class="workbench-kicker">AIOps Workspace</div>
-            <h2>对话工作台</h2>
-            <p>在对话框里直接切换 HOME、模型类型、MCP 和 Skills。</p>
-          </div>
-          <button class="close-btn" @click="closeWorkbench" title="关闭">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="workbench-body">
-          <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'workspace' }">
-            <div class="bench-headline">
-              <span class="bench-index">01</span>
+    <teleport to="body">
+      <Transition name="fade">
+        <div v-if="showWorkbench" class="workbench-overlay" @click.self="closeWorkbench">
+          <aside class="workbench-panel" @click.stop>
+            <div class="workbench-head">
               <div>
-                <h3>HOME 工作目录</h3>
-                <p>外部执行器会优先使用这个目录作为当前工作区。</p>
+                <div class="workbench-kicker">AIOps Workspace</div>
+                <h2>对话工作台</h2>
+                <p>在对话框里直接切换 HOME、模型类型、MCP 和 Skills。</p>
               </div>
-            </div>
-
-            <label class="field-label">Directory</label>
-            <input
-              v-model="workspaceDraft"
-              class="field-input mono"
-              placeholder="例如 D:\\LabNotes\\raw\\K8S可视化学习平台"
-              @focus="activeWorkbenchSection = 'workspace'"
-              @keydown.enter.prevent="saveWorkspace"
-            />
-
-            <div class="field-actions">
-              <span class="field-note">{{ workspaceHintText }}</span>
-              <div class="button-group">
-                <button class="mini-btn" @click="resetWorkspace">恢复默认</button>
-                <button class="mini-btn primary" @click="saveWorkspace">保存目录</button>
-              </div>
-            </div>
-          </section>
-
-          <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'model' }">
-            <div class="bench-headline">
-              <span class="bench-index">02</span>
-              <div>
-                <h3>大模型类型</h3>
-                <p>先选模型类型，再切换具体模型。当前对话请求会携带选中的模型。</p>
-              </div>
-            </div>
-
-            <div class="provider-pills">
-              <button
-                v-for="provider in providerOptions"
-                :key="provider.key"
-                class="provider-pill"
-                :class="{ active: assistantConfig.model_type === provider.key }"
-                @click="setModelType(provider.key)"
-              >
-                {{ provider.label }}
+              <button class="close-btn" type="button" @click="closeWorkbench" title="关闭">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
               </button>
             </div>
 
-            <div class="model-stack">
-              <button
-                v-for="model in filteredModels"
-                :key="model.id"
-                class="model-option"
-                :class="{ active: model.active }"
-                @click="selectModel(model)"
-              >
-                <div class="model-option-top">
-                  <span class="model-option-name">{{ model.name }}</span>
-                  <span class="model-active-tag" v-if="model.active">ACTIVE</span>
-                </div>
-                <div class="model-option-meta">
-                  <span>{{ model.provider }}</span>
-                  <code>{{ model.runtime_provider || 'default' }}</code>
-                </div>
-              </button>
-            </div>
-          </section>
-
-          <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'mcp' }">
-            <div class="bench-headline">
-              <span class="bench-index">03</span>
-              <div>
-                <h3>MCP 工具</h3>
-                <p>启停对话可用的 MCP，并随手探测在线状态。</p>
-              </div>
-            </div>
-
-            <div class="tool-stack">
-              <div v-for="mcp in mcpList" :key="mcp.id" class="tool-row">
-                <div class="tool-row-main">
-                  <div class="tool-row-title">
-                    <span class="status-dot" :class="mcp.ok ? 'ok' : 'err'"></span>
-                    <strong>{{ mcp.name }}</strong>
-                    <span class="tool-kind">{{ mcp.type }}</span>
+            <div class="workbench-body">
+              <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'workspace' }">
+                <div class="bench-headline">
+                  <span class="bench-index">01</span>
+                  <div>
+                    <h3>HOME 工作目录</h3>
+                    <p>外部执行器会优先使用这个目录作为当前工作区。</p>
                   </div>
-                  <div class="tool-row-meta mono">{{ mcp.url }}</div>
                 </div>
 
-                <div class="tool-row-actions">
-                  <button class="mini-btn" @click="pingMcp(mcp)">探测</button>
-                  <button class="toggle-switch sm" type="button" :class="{ on: mcp.enabled }" @click="toggleMcp(mcp)">
-                    <span class="toggle-thumb"></span>
+                <label class="field-label">Directory</label>
+                <input
+                  v-model="workspaceDraft"
+                  class="field-input mono"
+                  placeholder="例如 D:\\LabNotes\\raw\\K8S可视化学习平台"
+                  @focus="activeWorkbenchSection = 'workspace'"
+                  @keydown.enter.prevent="saveWorkspace"
+                />
+
+                <div class="field-actions">
+                  <span class="field-note">{{ workspaceHintText }}</span>
+                  <div class="button-group">
+                    <button class="mini-btn" type="button" @click="resetWorkspace">恢复默认</button>
+                    <button class="mini-btn primary" type="button" @click="saveWorkspace">保存目录</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'model' }">
+                <div class="bench-headline">
+                  <span class="bench-index">02</span>
+                  <div>
+                    <h3>大模型类型</h3>
+                    <p>先选模型类型，再切换具体模型。当前对话请求会携带选中的模型。</p>
+                  </div>
+                </div>
+
+                <div class="provider-pills">
+                  <button
+                    v-for="provider in providerOptions"
+                    :key="provider.key"
+                    class="provider-pill"
+                    :class="{ active: assistantConfig.model_type === provider.key }"
+                    type="button"
+                    @click="setModelType(provider.key)"
+                  >
+                    {{ provider.label }}
                   </button>
                 </div>
-              </div>
-            </div>
-          </section>
 
-          <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'skill' }">
-            <div class="bench-headline">
-              <span class="bench-index">04</span>
-              <div>
-                <h3>Skills 工具架</h3>
-                <p>按场景控制对话框可用技能，保持工具面板简洁。</p>
-              </div>
-            </div>
+                <div class="model-stack">
+                  <div
+                    v-for="model in filteredModels"
+                    :key="model.id"
+                    class="model-option-wrap"
+                  >
+                    <div
+                      class="model-option"
+                      :class="{ active: model.active }"
+                      @click="selectModel(model)"
+                    >
+                      <div class="model-option-top">
+                        <span class="model-option-name">{{ model.name }}</span>
+                        <span class="model-active-tag" v-if="model.active">ACTIVE</span>
+                      </div>
+                      <div class="model-option-meta">
+                        <span>{{ model.provider }}</span>
+                        <code>{{ model.runtime_provider || 'default' }}</code>
+                        <code v-if="model.base_url" class="model-base-url">{{ model.base_url }}</code>
+                      </div>
+                      <button
+                        class="model-edit-btn"
+                        type="button"
+                        @click.stop="openModelEdit(model)"
+                        title="编辑连接参数"
+                      >✎</button>
+                    </div>
 
-            <div class="skill-stack">
-              <div v-for="skill in skillList" :key="skill.id" class="skill-row" :class="{ on: skill.enabled }">
-                <div class="skill-main">
-                  <div class="skill-title">
-                    <span class="skill-icon">{{ skill.icon || '•' }}</span>
-                    <strong>{{ skill.name }}</strong>
+                    <div v-if="editingModelId === model.id" class="model-edit-panel">
+                      <div class="mep-title">编辑模型参数</div>
+                      <div class="mep-grid">
+                        <label class="mep-field">
+                          <span>显示名称</span>
+                          <input v-model="modelEditForm.name" class="mep-input" placeholder="例如 私有推理模型 / Claude / Gemini" />
+                        </label>
+                        <label class="mep-field">
+                          <span>Provider 标签</span>
+                          <input v-model="modelEditForm.provider" class="mep-input" placeholder="OpenAI / Claude / Qwen / Gemini" />
+                        </label>
+                        <label class="mep-field">
+                          <span>运行协议</span>
+                          <select v-model="modelEditForm.runtime_provider" class="mep-input">
+                            <option value="openai">openai-compatible</option>
+                            <option value="anthropic">anthropic</option>
+                          </select>
+                        </label>
+                        <label class="mep-field">
+                          <span>Model ID <em class="mep-required">*</em></span>
+                          <input v-model="modelEditForm.runtime_model" class="mep-input mono" placeholder="例如 your-model-id" />
+                        </label>
+                        <label v-if="modelEditForm.runtime_provider === 'openai'" class="mep-field mep-full">
+                          <span>Base URL</span>
+                          <input v-model="modelEditForm.base_url" class="mep-input mono" placeholder="http://192.168.9.xxx:11434/v1" />
+                        </label>
+                        <label v-if="modelEditForm.runtime_provider === 'openai'" class="mep-field">
+                          <span>Wire API</span>
+                          <select v-model="modelEditForm.wire_api" class="mep-input">
+                            <option value="">自动识别</option>
+                            <option value="chat">chat</option>
+                            <option value="responses">responses</option>
+                          </select>
+                        </label>
+                        <label v-if="modelEditForm.runtime_provider === 'openai'" class="mep-field mep-checkbox">
+                          <span>开启 Thinking</span>
+                          <input v-model="modelEditForm.enable_thinking" type="checkbox" />
+                        </label>
+                        <label class="mep-field mep-full">
+                          <span>API Key <small>（留空则保留原值）</small></span>
+                          <input v-model="modelEditForm.api_key" class="mep-input mono" type="password" placeholder="sk-... 或留空" />
+                        </label>
+                      </div>
+                      <div class="mep-actions">
+                        <button class="mep-cancel" type="button" @click="editingModelId = null">取消</button>
+                        <button class="mep-save" type="button" @click="saveModelEdit(model)" :disabled="modelEditSaving">
+                          {{ modelEditSaving ? '保存中...' : '保存' }}
+                        </button>
+                      </div>
+                      <div v-if="modelEditMsg" class="mep-msg" :class="modelEditOk ? 'ok' : 'err'">{{ modelEditMsg }}</div>
+                    </div>
                   </div>
-                  <div class="skill-desc">{{ skill.desc }}</div>
-                  <div class="skill-tags">
-                    <span v-for="tag in skill.tags || []" :key="tag" class="skill-tag">{{ tag }}</span>
+                </div>
+              </section>
+
+              <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'mcp' }">
+                <div class="bench-headline">
+                  <span class="bench-index">03</span>
+                  <div>
+                    <h3>MCP 工具</h3>
+                    <p>启停对话可用的 MCP，并随手探测在线状态。</p>
                   </div>
                 </div>
 
-                <button class="toggle-switch sm" type="button" :class="{ on: skill.enabled }" @click="toggleSkill(skill)">
-                  <span class="toggle-thumb"></span>
-                </button>
-              </div>
+                <div class="tool-stack">
+                  <div v-for="mcp in mcpList" :key="mcp.id" class="tool-row">
+                    <div class="tool-row-main">
+                      <div class="tool-row-title">
+                        <span class="status-dot" :class="mcp.ok ? 'ok' : 'err'"></span>
+                        <strong>{{ mcp.name }}</strong>
+                        <span class="tool-kind">{{ mcp.type }}</span>
+                      </div>
+                      <div class="tool-row-meta mono">{{ mcp.url }}</div>
+                    </div>
+
+                    <div class="tool-row-actions">
+                      <button class="mini-btn" type="button" @click="pingMcp(mcp)">探测</button>
+                      <button class="toggle-switch sm" type="button" :class="{ on: mcp.enabled }" @click="toggleMcp(mcp)">
+                        <span class="toggle-thumb"></span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="bench-section" :class="{ focus: activeWorkbenchSection === 'skill' }">
+                <div class="bench-headline">
+                  <span class="bench-index">04</span>
+                  <div>
+                    <h3>Skills 工具架</h3>
+                    <p>按场景控制对话框可用技能，保持工具面板简洁。</p>
+                  </div>
+                </div>
+
+                <div class="skill-stack">
+                  <div v-for="skill in skillList" :key="skill.id" class="skill-row" :class="{ on: skill.enabled }">
+                    <div class="skill-main">
+                      <div class="skill-title">
+                        <span class="skill-icon">{{ skill.icon || '•' }}</span>
+                        <strong>{{ skill.name }}</strong>
+                      </div>
+                      <div class="skill-desc">{{ skill.desc }}</div>
+                      <div class="skill-tags">
+                        <span v-for="tag in skill.tags || []" :key="tag" class="skill-tag">{{ tag }}</span>
+                      </div>
+                    </div>
+
+                    <button class="toggle-switch sm" type="button" :class="{ on: skill.enabled }" @click="toggleSkill(skill)">
+                      <span class="toggle-thumb"></span>
+                    </button>
+                  </div>
+                </div>
+              </section>
             </div>
-          </section>
+          </aside>
         </div>
-      </aside>
-    </Transition>
+      </Transition>
+    </teleport>
   </div>
 </template>
 
@@ -549,6 +613,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
+import { safeRandomUUID } from '../utils/uuid.js'
 
 const AGENT_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M9 11V7a3 3 0 0 1 6 0v4"/><circle cx="9" cy="16" r="1" fill="currentColor"/><circle cx="15" cy="16" r="1" fill="currentColor"/><path d="M12 3v2"/></svg>`
 const SEND_ICON = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`
@@ -695,10 +760,85 @@ const toast = ref('')
 
 const assistantConfig = reactive({
   home_dir: '',
-  model_type: 'anthropic',
+  model_type: '',
 })
 
 const modelList = ref([])
+
+// ── 模型编辑 ─────────────────────────────────────────────────────────────────
+const editingModelId  = ref(null)
+const modelEditSaving = ref(false)
+const modelEditMsg    = ref('')
+const modelEditOk     = ref(false)
+const modelEditForm   = reactive({
+  name: '',
+  provider: '',
+  runtime_provider: 'openai',
+  runtime_model: '',
+  base_url: '',
+  wire_api: '',
+  enable_thinking: false,
+  api_key: '',
+})
+
+function openModelEdit(model) {
+  editingModelId.value     = model.id
+  modelEditMsg.value       = ''
+  modelEditOk.value        = false
+  modelEditForm.name = model.name || ''
+  modelEditForm.provider = model.provider || ''
+  modelEditForm.runtime_provider = String(model.runtime_provider || getModelRuntimeProvider(model) || 'openai').trim().toLowerCase()
+  modelEditForm.runtime_model = model.runtime_model || ''
+  modelEditForm.base_url = model.base_url || ''
+  modelEditForm.wire_api = model.wire_api || ''
+  modelEditForm.enable_thinking = !!model.enable_thinking
+  modelEditForm.api_key = ''   // 不回显 key
+}
+
+async function saveModelEdit(model) {
+  if (!modelEditForm.runtime_model.trim()) {
+    modelEditMsg.value = 'Model ID 不能为空'
+    modelEditOk.value  = false
+    return
+  }
+  modelEditSaving.value = true
+  modelEditMsg.value    = ''
+  try {
+    const r = await apiFetch(`/api/agent-config/models/${model.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name:             modelEditForm.name.trim()          || undefined,
+        provider:         modelEditForm.provider.trim()      || undefined,
+        runtime_model:    modelEditForm.runtime_model.trim() || undefined,
+        runtime_provider: modelEditForm.runtime_provider,
+        base_url:         modelEditForm.runtime_provider === 'openai' ? (modelEditForm.base_url.trim() || undefined) : '',
+        wire_api:         modelEditForm.runtime_provider === 'openai' ? modelEditForm.wire_api : '',
+        enable_thinking:  modelEditForm.runtime_provider === 'openai' ? !!modelEditForm.enable_thinking : false,
+        api_key:          modelEditForm.api_key.trim()       || undefined,
+      }),
+    })
+    if (r?.ok) {
+      const nextModel = { ...modelList.value.find(item => item.id === model.id), ...(r.data || {}) }
+      const idx = modelList.value.findIndex(m => m.id === model.id)
+      if (idx >= 0) {
+        modelList.value[idx] = nextModel
+      }
+      assistantConfig.model_type = normalizeSlug(getProviderKey(nextModel) || assistantConfig.model_type)
+      modelEditMsg.value  = '已保存，下次对话生效'
+      modelEditOk.value   = true
+      setTimeout(() => { editingModelId.value = null }, 1200)
+    } else {
+      modelEditMsg.value = r?.error || '保存失败'
+      modelEditOk.value  = false
+    }
+  } catch (e) {
+    modelEditMsg.value = String(e)
+    modelEditOk.value  = false
+  } finally {
+    modelEditSaving.value = false
+  }
+}
 const mcpList = ref([])
 const skillList = ref([])
 const workspaceDraft = ref('')
@@ -710,17 +850,7 @@ let msgIdCounter = 0
 let currentAssistantMsg = null
 
 function genUUID() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    try {
-      return crypto.randomUUID()
-    } catch {
-      // ignore
-    }
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, ch => {
-    const r = Math.random() * 16 | 0
-    return (ch === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
-  })
+  return safeRandomUUID()
 }
 
 const convIds = ref({
@@ -1182,12 +1312,17 @@ function getModelRuntimeName(model) {
 }
 
 function buildAgentPayload(text) {
+  const model = activeModel.value
   return {
     message: text,
     conv_id: convIds.value[mode.value],
     home_dir: assistantConfig.home_dir.trim(),
-    model_name: getModelRuntimeName(activeModel.value),
-    model_provider: getModelRuntimeProvider(activeModel.value),
+    model_id: model?.id || '',
+    model_name: getModelRuntimeName(model),
+    model_provider: getModelRuntimeProvider(model),
+    model_base_url: String(model?.base_url || '').trim(),
+    model_wire_api: String(model?.wire_api || '').trim(),
+    model_enable_thinking: !!model?.enable_thinking,
   }
 }
 
@@ -2490,21 +2625,23 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.workbench-backdrop {
-  position: absolute;
+.workbench-overlay {
+  position: fixed;
   inset: 0;
+  z-index: 1200;
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 12px;
   background: rgba(2, 6, 23, 0.45);
   backdrop-filter: blur(2px);
-  z-index: 12;
 }
 
 .workbench-panel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(420px, 100%);
-  z-index: 13;
+  position: relative;
+  width: min(420px, calc(100vw - 24px));
+  height: 100%;
+  max-height: calc(100vh - 24px);
   display: flex;
   flex-direction: column;
   border-left: 1px solid rgba(148, 163, 184, 0.14);
@@ -2680,6 +2817,8 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.model-option-wrap { display: flex; flex-direction: column; gap: 0; }
+
 .model-option {
   width: 100%;
   padding: 12px;
@@ -2690,16 +2829,61 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   cursor: pointer;
   transition: all 0.16s ease;
+  position: relative;
 }
 
-.model-option:hover {
-  border-color: rgba(93, 173, 226, 0.24);
-}
+.model-option:hover { border-color: rgba(93, 173, 226, 0.24); }
 
 .model-option.active {
   border-color: rgba(93, 173, 226, 0.3);
   background: linear-gradient(180deg, rgba(17, 47, 87, 0.54), rgba(7, 13, 24, 0.92));
 }
+
+.model-base-url { color: rgba(100,160,220,.6); max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+
+.model-edit-btn {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  padding: 2px 8px; font-size: 12px; border-radius: 4px; cursor: pointer;
+  border: 1px solid rgba(93,173,226,.3); background: rgba(93,173,226,.08);
+  color: rgba(93,173,226,.9); line-height: 1.4;
+}
+.model-edit-btn:hover { background: rgba(93,173,226,.18); }
+
+/* 内联编辑面板 */
+.model-edit-panel {
+  margin-top: 4px; padding: 14px 16px;
+  background: rgba(6,10,18,.9); border: 1px solid rgba(93,173,226,.2);
+  border-radius: 12px;
+}
+.mep-title { font-size: 12px; font-weight: 600; color: rgba(93,173,226,.9); margin-bottom: 10px; }
+.mep-grid  { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-bottom: 10px; }
+.mep-full  { grid-column: 1 / -1; }
+.mep-field { display: flex; flex-direction: column; gap: 3px; }
+.mep-field span { font-size: 11px; color: rgba(180,190,210,.7); }
+.mep-field small { font-size: 10px; color: rgba(180,190,210,.4); }
+.mep-checkbox { justify-content: flex-end; }
+.mep-checkbox input { width: auto; align-self: flex-start; accent-color: rgba(93,173,226,.9); }
+.mep-required { color: #f87171; font-style: normal; }
+.mep-input {
+  padding: 5px 8px; font-size: 12px; border-radius: 6px;
+  border: 1px solid rgba(93,173,226,.2); background: rgba(15,20,35,.8);
+  color: var(--text-primary); outline: none; width: 100%; box-sizing: border-box;
+}
+.mep-input:focus { border-color: rgba(93,173,226,.5); }
+.mep-input.mono { font-family: monospace; }
+.mep-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.mep-cancel {
+  padding: 4px 12px; font-size: 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid rgba(148,163,184,.2); background: transparent; color: rgba(180,190,210,.7);
+}
+.mep-save {
+  padding: 4px 14px; font-size: 12px; border-radius: 6px; cursor: pointer;
+  border: none; background: rgba(93,173,226,.8); color: #fff; font-weight: 600;
+}
+.mep-save:disabled { opacity: .5; cursor: not-allowed; }
+.mep-msg { margin-top: 6px; font-size: 11px; text-align: right; }
+.mep-msg.ok  { color: #3fb950; }
+.mep-msg.err { color: #f87171; }
 
 .model-option-top,
 .tool-row-title,
@@ -3357,15 +3541,12 @@ onBeforeUnmount(() => {
   box-shadow: none;
 }
 
-.workbench-backdrop {
+.workbench-overlay {
   background: rgba(9, 18, 36, 0.26);
   backdrop-filter: none;
 }
 
 .workbench-panel {
-  top: 12px;
-  right: 12px;
-  bottom: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   background: var(--bg-card);
@@ -3424,12 +3605,13 @@ onBeforeUnmount(() => {
     box-shadow: var(--shadow-md);
   }
 
+  .workbench-overlay {
+    padding: 16px;
+  }
+
   .workbench-panel {
-    left: 16px;
-    right: 16px;
-    top: 16px;
-    bottom: 16px;
-    width: auto;
+    width: min(420px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
   }
 }
 
@@ -3437,6 +3619,15 @@ onBeforeUnmount(() => {
   .page.agent-page {
     padding: 14px;
     gap: 12px;
+  }
+
+  .workbench-overlay {
+    padding: 12px;
+  }
+
+  .workbench-panel {
+    width: 100%;
+    max-height: calc(100vh - 24px);
   }
 }
 </style>

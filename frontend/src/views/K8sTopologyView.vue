@@ -42,18 +42,19 @@
     <div v-show="view === 'arch'" class="canvas-wrap" ref="archWrap">
 
       <!-- 应用架构 / K8s 部署流程 切换 -->
-      <svg v-show="archMode === 'app'"
-        class="arch-svg"
-        :viewBox="vbStr"
-        preserveAspectRatio="xMinYMin meet"
-        ref="archSvg"
-        :style="{ cursor: svgDrag.active ? 'grabbing' : 'grab' }"
-        @wheel.prevent="onArchWheel"
-        @mousedown="onArchDragStart"
-        @mousemove="onArchDragMove($event); onMouseMove($event)"
-        @mouseup="onArchDragEnd"
-        @mouseleave="onArchDragEnd(); tooltip.show=false"
-      >
+      <template v-if="archMode === 'app'">
+        <svg
+          class="arch-svg"
+          :viewBox="vbStr"
+          preserveAspectRatio="xMinYMin meet"
+          ref="archSvg"
+          :style="{ cursor: svgDrag.active ? 'grabbing' : 'grab' }"
+          @wheel.prevent="onArchWheel"
+          @mousedown="onArchDragStart"
+          @mousemove="onArchDragMove($event); onMouseMove($event)"
+          @mouseup="onArchDragEnd"
+          @mouseleave="onArchDragEnd(); tooltip.show=false"
+        >
         <defs>
           <!-- 背景网格 -->
           <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -234,44 +235,50 @@
             class="grp-label" :fill="grp.color">{{ grp.label }}</text>
         </g>
 
-      </svg>
+        </svg>
 
-      <!-- 悬浮工具提示 -->
-      <div v-if="tooltip.show" class="node-tooltip"
-        :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
-        <div class="tip-header">
-          <span class="tip-icon">{{ tooltip.icon }}</span>
-          <span class="tip-name">{{ tooltip.name }}</span>
-          <span class="tip-badge" :class="tooltip.status">{{ tooltip.statusText }}</span>
-        </div>
-        <div class="tip-rows">
-          <div v-for="r in tooltip.rows" :key="r.k" class="tip-row">
-            <span class="tip-key">{{ r.k }}</span>
-            <span class="tip-val">{{ r.v }}</span>
+        <!-- 悬浮工具提示 -->
+        <div
+          v-if="tooltip.show"
+          class="node-tooltip"
+          :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
+        >
+          <div class="tip-header">
+            <span class="tip-icon">{{ tooltip.icon }}</span>
+            <span class="tip-name">{{ tooltip.name }}</span>
+            <span class="tip-badge" :class="tooltip.status">{{ tooltip.statusText }}</span>
+          </div>
+          <div class="tip-rows">
+            <div v-for="r in tooltip.rows" :key="r.k" class="tip-row">
+              <span class="tip-key">{{ r.k }}</span>
+              <span class="tip-val">{{ r.v }}</span>
+            </div>
+          </div>
+          <div v-if="tooltip.calls?.length" class="tip-calls">
+            <div class="tip-calls-title">调用关系</div>
+            <div v-for="c in tooltip.calls" :key="c" class="tip-call-item">→ {{ c }}</div>
           </div>
         </div>
-        <div v-if="tooltip.calls?.length" class="tip-calls">
-          <div class="tip-calls-title">调用关系</div>
-          <div v-for="c in tooltip.calls" :key="c" class="tip-call-item">→ {{ c }}</div>
+ 
+        <!-- 图例 -->
+        <div class="arch-legend">
+          <div class="leg-row"><span class="leg-line blue"></span>HTTP 调用</div>
+          <div class="leg-row"><span class="leg-line green"></span>数据读写</div>
+          <div class="leg-row"><span class="leg-line orange"></span>告警推送</div>
+          <div class="leg-row"><span class="leg-line purple"></span>AI 推理</div>
+          <div class="leg-sep"></div>
+          <div class="leg-row"><span class="leg-dot ok"></span>健康</div>
+          <div class="leg-row"><span class="leg-dot warn"></span>告警</div>
+          <div class="leg-row"><span class="leg-dot gray"></span>未知</div>
         </div>
-      </div>
-
-      <!-- 图例 -->
-      <div class="arch-legend">
-        <div class="leg-row"><span class="leg-line blue"></span>HTTP 调用</div>
-        <div class="leg-row"><span class="leg-line green"></span>数据读写</div>
-        <div class="leg-row"><span class="leg-line orange"></span>告警推送</div>
-        <div class="leg-row"><span class="leg-line purple"></span>AI 推理</div>
-        <div class="leg-sep"></div>
-        <div class="leg-row"><span class="leg-dot ok"></span>健康</div>
-        <div class="leg-row"><span class="leg-dot warn"></span>告警</div>
-        <div class="leg-row"><span class="leg-dot gray"></span>未知</div>
-      </div>
+      </template>
 
       <!-- ─────── K8s 部署流程视图 ─────── -->
-      <div v-show="archMode === 'deploy'" class="deploy-flow-wrap">
+      <div v-else class="deploy-flow-wrap">
         <svg class="deploy-svg"
           :viewBox="`0 0 ${DSVG_W} ${DSVG_H}`"
+          :width="DSVG_W"
+          :height="DSVG_H"
           preserveAspectRatio="xMidYMid meet"
         >
           <defs>
@@ -564,6 +571,7 @@ const loading  = ref(false)
 const hoveredNode = ref(null)
 const pageEl   = ref(null)
 const archWrap = ref(null)
+const archSvg  = ref(null)
 
 // ── 缩放 / 拖拽状态 ────────────────────────────────────────────────────
 const vb = reactive({ x: 0, y: 0, w: SVG_W, h: SVG_H })
@@ -724,7 +732,7 @@ const archNodes = ref([
   { id:'backend', name:'Backend API', icon:'🚀', port:'FastAPI :30800',
     x:660, y:378, w:172, h:82, grad:'blue', color:'#3b82f6', status:'ok', pulse:true,
     detail:{ 框架:'Python FastAPI', 端口:'30800(NodePort)', 镜像:'aiops-backend', AI引擎:'LangGraph ReAct' },
-    calls:['Loki','Prometheus','Redis','Elasticsearch','AlertManager','Claude API','SkyWalking','飞书Open API'] },
+    calls:['Loki','Prometheus','Redis','Elasticsearch','AlertManager','Active LLM','SkyWalking','飞书Open API'] },
 
   // ─── 层 3 y=518 · 数据/中间件（6节点等间距）────────
   { id:'loki',         name:'Loki',          icon:'📋', port:':27478',
@@ -750,12 +758,12 @@ const archNodes = ref([
   { id:'skywalking',  name:'SkyWalking',   icon:'🔭', port:'APM',
     x:220, y:668, w:138, h:64, grad:'purple', color:'#a855f7', status:'ok', pulse:false,
     detail:{ 类型:'APM链路追踪', 协议:'gRPC/HTTP', 用途:'Trace & Span' }, calls:[] },
-  { id:'claude',      name:'Claude API',   icon:'🧠', port:'Anthropic',
+  { id:'claude',      name:'Active LLM',   icon:'🧠', port:'Config-driven',
     x:570, y:668, w:134, h:64, grad:'purple', color:'#a855f7', status:'ok', pulse:true,
-    detail:{ 模型:'claude-opus-4-6', 方式:'SSE流式', 功能:'LangGraph Agent' }, calls:[] },
-  { id:'qwen',        name:'Qwen / OpenAI',icon:'🤖', port:'OpenAI兼容',
+    detail:{ 模型:'当前激活模型', 方式:'按配置选择', 功能:'LangGraph Agent' }, calls:[] },
+  { id:'qwen',        name:'LLM Gateway',icon:'🤖', port:'OpenAI / Anthropic',
     x:780, y:668, w:142, h:64, grad:'purple', color:'#a855f7', status:'ok', pulse:false,
-    detail:{ 接口:'OpenAI兼容协议', 配置:'AI_BASE_URL', 用途:'本地/私有LLM' }, calls:[] },
+    detail:{ 接口:'模型协议入口', 配置:'系统设置 / 模型配置', 用途:'本地/私有/云模型接入' }, calls:[] },
   { id:'feishu_svc',  name:'飞书 Open API',icon:'🪶', port:'HTTPS',
     x:1020,y:668, w:148, h:64, grad:'teal',   color:'#14b8a6', status:'ok', pulse:false,
     detail:{ 端点:'open.feishu.cn', 功能:'卡片消息/Webhook', 触发:'告警 & 日报' }, calls:[] },
@@ -1106,7 +1114,89 @@ function truncate(s, n) {
   return s && s.length > n ? s.slice(0, n) + '…' : (s || '')
 }
 
-onMounted(() => {})
+function updateArchNode(id, patch = {}) {
+  const target = archNodes.value.find(node => node.id === id)
+  if (!target) return
+  Object.assign(target, patch)
+  if (patch.detail) {
+    target.detail = { ...(target.detail || {}), ...patch.detail }
+  }
+  if (patch.calls) {
+    target.calls = [...patch.calls]
+  }
+}
+
+function formatProviderLabel(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const lower = raw.toLowerCase()
+  if (lower === 'openai') return 'OpenAI-compatible'
+  if (lower === 'anthropic') return 'Anthropic'
+  return raw
+}
+
+async function loadArchAiConfig() {
+  try {
+    const [agentConfigResult, settingsResult] = await Promise.allSettled([
+      api.getAgentConfig(),
+      api.getSettings(),
+    ])
+    const agentConfig = agentConfigResult.status === 'fulfilled' ? agentConfigResult.value : {}
+    const settings = settingsResult.status === 'fulfilled' ? settingsResult.value : {}
+    const models = Array.isArray(agentConfig?.models) ? agentConfig.models : []
+    const activeModel = models.find(item => item.active) || models[0] || null
+
+    const runtimeProvider = String(
+      activeModel?.runtime_provider || settings?.ai_provider || ''
+    ).trim().toLowerCase()
+    const providerLabel = formatProviderLabel(
+      activeModel?.provider || runtimeProvider || settings?.ai_provider || ''
+    )
+    const runtimeModel = String(
+      activeModel?.runtime_model || activeModel?.name || settings?.ai_model || ''
+    ).trim()
+    const wireApi = String(
+      activeModel?.wire_api || settings?.ai_wire_api || ''
+    ).trim().toLowerCase()
+    const baseUrl = String(
+      activeModel?.base_url || settings?.ai_base_url || ''
+    ).trim()
+    const activeName = String(activeModel?.name || runtimeModel || 'Active LLM').trim()
+    const modelCount = models.length
+
+    updateArchNode('claude', {
+      name: activeName || 'Active LLM',
+      port: providerLabel || 'Config-driven',
+      detail: {
+        模型: runtimeModel || '未配置',
+        方式: runtimeProvider === 'anthropic'
+          ? 'Anthropic Messages'
+          : wireApi || 'auto',
+        来源: activeModel ? '智能体模型配置' : (runtimeModel ? '系统设置' : '未配置'),
+      },
+    })
+
+    updateArchNode('qwen', {
+      name: modelCount > 1 ? `LLM Pool (${modelCount})` : 'LLM Gateway',
+      port: providerLabel || 'OpenAI / Anthropic',
+      detail: {
+        接口: runtimeProvider || '未配置',
+        配置: baseUrl ? truncate(baseUrl, 28) : '系统设置 / 模型配置',
+        用途: modelCount > 1 ? `已配置 ${modelCount} 个模型` : '本地/私有/云模型接入',
+      },
+    })
+
+    updateArchNode('backend', {
+      calls: ['Loki', 'Prometheus', 'Redis', 'Elasticsearch', 'AlertManager', activeName || 'Active LLM', 'SkyWalking', '飞书Open API'],
+    })
+  } catch {
+    // ignore; keep generic topology labels
+  }
+}
+
+onMounted(() => {
+  loadArchAiConfig()
+})
 </script>
 
 <style scoped>
@@ -1147,13 +1237,12 @@ onMounted(() => {})
 /* ── 画布区域 ────────────────────────────────────────────── */
 .canvas-wrap {
   flex: 1; overflow: auto; position: relative;
-  display: flex; align-items: flex-start; justify-content: center;
   padding: 12px;
 }
 .arch-svg {
   width: 100%; max-width: 1300px;
   height: auto; min-height: 400px;
-  display: block;
+  display: block; margin: 0 auto;
 }
 
 /* ── SVG 文本样式 ────────────────────────────────────────── */
@@ -1270,14 +1359,39 @@ onMounted(() => {})
 .zoom-btns { display: flex; gap: 2px; }
 
 /* ── K8s 部署流程视图 ────────────────────────────────── */
-.deploy-flow-wrap { flex: 1; overflow: auto; padding: 8px; }
-.deploy-svg { width: 100%; max-width: 1240px; height: auto; display: block; margin: 0 auto; }
-.d-zone-lbl { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.d-node-icon { font-size: 18px; dominant-baseline: middle; }
-.d-node-name { fill: #e6edf3; font-size: 11.5px; font-weight: 700; }
-.d-node-sub  { fill: #8d96a0; font-size: 10px; }
-.d-step-num  { font-size: 9px; font-weight: 800; }
-.d-edge-lbl  { font-size: 9.5px; font-weight: 600; }
+.deploy-flow-wrap {
+  width: 100%;
+  min-height: 100%;
+  overflow: auto;
+  padding: 8px 12px 20px;
+  display: block;
+}
+.deploy-svg {
+  width: 1240px;
+  min-width: 1240px;
+  height: 960px;
+  display: block;
+  margin: 0 auto;
+  flex: 0 0 auto;
+}
+.d-zone-lbl,
+.d-node-name,
+.d-node-sub,
+.d-step-num,
+.d-edge-lbl {
+  font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+.d-zone-lbl { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.d-node-icon {
+  fill: #cbd5e1;
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 18px;
+  dominant-baseline: middle;
+}
+.d-node-name { fill: #e6edf3; font-size: 12.5px; font-weight: 700; }
+.d-node-sub  { fill: #8d96a0; font-size: 10.5px; }
+.d-step-num  { font-size: 10px; font-weight: 800; }
+.d-edge-lbl  { font-size: 10px; font-weight: 600; }
 .k8s-node-name { fill: #1e293b; font-size: 12px; font-weight: 700; }
 .k8s-node-role { fill: #64748b; font-size: 10px; }
 .pod-name { fill: #1e293b; font-size: 10.5px; font-weight: 600; dominant-baseline: middle; }

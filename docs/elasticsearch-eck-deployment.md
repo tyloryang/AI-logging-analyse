@@ -316,8 +316,8 @@ kubectl edit elasticsearch aiops-es -n aiops
 3. **获取 ECK 自签名 CA 证书**：
    ```bash
    kubectl get secret aiops-es-es-http-certs-public -n aiops \
-     -o go-template='{{index .data "ca.crt" | base64decode}}' > es-ca.crt
-   curl --cacert es-ca.crt -u elastic:Password! https://192.168.9.221:30920/_cluster/health
+     -o go-template='{{index .data "test.crt" | base64decode}}' > es-test.crt
+   curl --cacert es-test.crt -u elastic:Password! https://192.168.9.221:30920/_cluster/health
    ```
 
 4. **fileRealm 角色映射**：ECK 的 `auth.fileRealm` 通过 `basic-auth` Secret 创建用户时不会自动分配角色，需单独提供 `users_roles` Opaque Secret（见 YAML 中 `aiops-es-elastic-roles`）。

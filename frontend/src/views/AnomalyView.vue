@@ -157,8 +157,18 @@ async function detect() {
 }
 
 async function triggerRCA(a) {
-  await api.rcaTrigger({ alert_name: a.name, extra_context: a.detail, hours: 0.5 })
-  router.push('/aiops/rca')
+  const result = await api.rcaTrigger({
+    alert_name: a.name,
+    extra_context: a.detail,
+    hours: 0.5,
+    source_type: 'anomaly',
+    source_name: a.name,
+  })
+  if (result?.rca_id) {
+    router.push({ path: '/aiops/rca', query: { rca_id: result.rca_id } })
+  } else {
+    router.push('/aiops/rca')
+  }
 }
 
 onMounted(load)

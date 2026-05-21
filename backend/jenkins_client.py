@@ -164,6 +164,14 @@ class JenkinsClient:
     async def get_test_results(self, job: str, build: int | str) -> dict:
         return await self._get(f"{_job_api_path(job)}/{build}/testReport/api/json")
 
+    async def get_recent_builds(self, job: str, limit: int = 15) -> list[dict]:
+        """获取最近 N 次构建记录（含状态/耗时/时间戳）。"""
+        path = _job_api_path(job)
+        data = await self._get(f"{path}/api/json", {
+            "tree": f"builds[number,result,duration,timestamp,building,estimatedDuration]{{0,{limit}}}"
+        })
+        return data.get("builds", [])
+
     async def get_queue_items(self) -> list[dict]:
         data = await self._get("/queue/api/json")
         return data.get("items", [])

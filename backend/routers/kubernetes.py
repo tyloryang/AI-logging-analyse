@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException, Query, WebSocket, Depends
+from fastapi import APIRouter, HTTPException, Query, WebSocket, Depends, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -307,18 +307,61 @@ def _get_client(cluster_id: str | None = None):
     return client.CoreV1Api(api_client), client.AppsV1Api(api_client)
 
 
+def _merge_kubeconfigs(paths: list[str]) -> str:
+    """把多个 kubeconfig 文件合并到一个临时文件，返回临时文件路径。"""
+    import tempfile
+    import yaml
+
+    merged: dict = {
+        "apiVersion": "v1", "kind": "Config",
+        "clusters": [], "users": [], "contexts": [],
+        "current-context": "", "preferences": {},
+    }
+    for path in paths:
+        try:
+            data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("[k8s] 跳过无法读取的 kubeconfig %s: %s", path, exc)
+            continue
+        for key in ("clusters", "users", "contexts"):
+            existing = {item.get("name") for item in merged[key]}
+            for item in data.get(key) or []:
+                if item.get("name") not in existing:
+                    merged[key].append(item)
+        if not merged["current-context"] and data.get("current-context"):
+            merged["current-context"] = data["current-context"]
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+    )
+    yaml.dump(merged, tmp, default_flow_style=False, allow_unicode=True)
+    tmp.close()
+    return tmp.name
+
+
 def _get_api_client(cluster_id: str | None = None):
     from kubernetes import config as k8s_config
 
-    cluster = _get_cluster(cluster_id)
-    kubeconfig = _resolve_runtime_kubeconfig_path(cluster.get("kubeconfig") or "")
-    context = str(cluster.get("context") or "").strip() or None
+    cluster     = _get_cluster(cluster_id)
+    paths       = _resolve_runtime_kubeconfig_paths(cluster.get("kubeconfig") or "")
+    context     = str(cluster.get("context") or "").strip() or None
 
-    if not kubeconfig:
+    if not paths:
         raise RuntimeError(f"集群 [{cluster['name']}] 未配置 kubeconfig 路径")
 
     try:
-        return k8s_config.new_client_from_config(config_file=kubeconfig, context=context)
+        if len(paths) == 1:
+            return k8s_config.new_client_from_config(config_file=paths[0], context=context)
+
+        # 多文件合并
+        merged_path = _merge_kubeconfigs(paths)
+        try:
+            return k8s_config.new_client_from_config(config_file=merged_path, context=context)
+        finally:
+            try:
+                Path(merged_path).unlink(missing_ok=True)
+            except Exception:
+                pass
     except Exception as exc:
         raise RuntimeError(f"无法加载集群 [{cluster['name']}] 的 kubeconfig: {exc}") from exc
 
@@ -651,6 +694,134 @@ def _list_resource_pods(cluster_id: str | None, kind: str, namespace: str, name:
 
 # ── 集群 CRUD ────────────────────────────────────────────────────────────────
 
+_CA_DIR             = Path(__file__).resolve().parents[1] / "data" / "ca"
+_KUBECONFIG_GEN_DIR = Path(__file__).resolve().parents[1] / "data" / "kubeconfigs"
+
+
+# ── 证书文件管理 ──────────────────────────────────────────────────────────────
+
+@router.get("/certs")
+async def list_certs(_: User = Depends(current_user)):
+    """列出 data/ca/ 目录下所有证书/密钥文件。"""
+    _CA_DIR.mkdir(parents=True, exist_ok=True)
+    files = []
+    for f in sorted(_CA_DIR.iterdir()):
+        if f.is_file():
+            files.append({
+                "name":     f.name,
+                "relative": f"backend/data/ca/{f.name}",
+                "abs":      str(f),
+                "size":     f.stat().st_size,
+            })
+    return {"data": files}
+
+
+@router.post("/certs/upload")
+async def upload_cert(
+    file: UploadFile = File(...),
+    cert_type: str = "ca",
+    _: User = Depends(require_admin),
+):
+    """上传证书/密钥文件到 data/ca/ 目录。cert_type: ca | client-cert | client-key"""
+    _CA_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(file.filename).name.replace(" ", "_")
+    dest = _CA_DIR / safe_name
+    content = await file.read()
+    dest.write_bytes(content)
+    return {
+        "name":     safe_name,
+        "relative": f"backend/data/ca/{safe_name}",
+        "abs":      str(dest),
+    }
+
+
+class CertKubeconfigPayload(BaseModel):
+    name:        str
+    server:      str
+    ca_cert:     str           # 相对路径，如 backend/data/ca/ca.pem
+    client_cert: str = ""      # 证书认证
+    client_key:  str = ""      # 证书认证
+    token:       str = ""      # token 认证（与 cert 二选一）
+    context:     str = "default"
+    description: str = ""
+
+
+@router.post("/generate-kubeconfig")
+async def generate_kubeconfig(
+    body: CertKubeconfigPayload,
+    _: User = Depends(require_admin),
+):
+    """从证书/token 参数生成 kubeconfig 文件，保存到 data/kubeconfig/ 目录。"""
+    import re
+    try:
+        import yaml as _yaml
+    except ImportError:
+        raise HTTPException(status_code=500, detail="缺少依赖：pip install pyyaml")
+
+    logger.info("[k8s] generate-kubeconfig name=%s server=%s ca=%s token=%s cert=%s",
+                body.name, body.server, body.ca_cert, bool(body.token), body.client_cert)
+
+    try:
+        _KUBECONFIG_GEN_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"无法创建输出目录: {e}")
+
+    def _resolve_cert(raw: str, label: str) -> str:
+        """解析证书路径，支持绝对路径和相对路径，路径不存在时给出明确提示。"""
+        if not raw or not raw.strip():
+            raise HTTPException(status_code=400, detail=f"{label} 路径不能为空")
+        p = Path(raw.strip())
+        # 绝对路径直接使用
+        if p.is_absolute():
+            if not p.exists():
+                raise HTTPException(status_code=400, detail=f"{label} 文件不存在: {raw}")
+            return str(p)
+        # 相对路径走通用解析
+        resolved = _resolve_single_runtime_kubeconfig_path(raw.strip())
+        if not resolved or not Path(resolved).exists():
+            raise HTTPException(status_code=400,
+                detail=f"{label} 文件不存在: {raw}（解析后: {resolved or '空'}）")
+        return resolved
+
+    ca_path = _resolve_cert(body.ca_cert, "CA 证书")
+    cluster_block = {"server": body.server.strip(), "certificate-authority": ca_path}
+
+    if body.token and body.token.strip():
+        user_block = {"token": body.token.strip()}
+    else:
+        cert_path = _resolve_cert(body.client_cert, "客户端证书")
+        key_path  = _resolve_cert(body.client_key,  "客户端私钥")
+        user_block = {"client-certificate": cert_path, "client-key": key_path}
+
+    kubeconfig = {
+        "apiVersion": "v1",
+        "kind": "Config",
+        "clusters":  [{"name": body.name, "cluster": cluster_block}],
+        "users":     [{"name": body.name, "user": user_block}],
+        "contexts":  [{"name": body.context, "context": {
+            "cluster": body.name, "user": body.name,
+        }}],
+        "current-context": body.context,
+    }
+
+    safe_name   = re.sub(r"[^\w\-]", "_", body.name.strip()) or "cluster"
+    output_path = _KUBECONFIG_GEN_DIR / f"{safe_name}.yaml"
+    try:
+        output_path.write_text(
+            _yaml.dump(kubeconfig, default_flow_style=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.error("[k8s] generate-kubeconfig write failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"写入 kubeconfig 失败: {e}")
+
+    logger.info("[k8s] generated kubeconfig → %s", output_path)
+    relative = f"backend/data/kubeconfigs/{safe_name}.yaml"
+    return {"path": str(output_path), "relative": relative}
+
+
+# ── 集群列表 ──────────────────────────────────────────────────────────────────
+
 @router.get("/clusters")
 async def list_clusters(user: User = Depends(current_user)):
     return _visible_clusters_for_user(user)
@@ -728,6 +899,160 @@ async def set_default_cluster(cluster_id: str, _: User = Depends(require_admin))
     return next(item for item in clusters if item["id"] == cluster_id)
 
 
+def _parse_cert_detail(path_or_data: str, is_data: bool = False) -> dict:
+    """解析 PEM 证书，返回 subject/issuer/有效期（失败返回空 dict）。"""
+    import subprocess, base64, tempfile
+    try:
+        if is_data:
+            raw = base64.b64decode(path_or_data)
+            with tempfile.NamedTemporaryFile(suffix=".crt", delete=False) as tmp:
+                tmp.write(raw); tmp_path = tmp.name
+            pem_path = tmp_path
+        else:
+            pem_path = path_or_data
+            if not Path(pem_path).exists():
+                return {"error": f"文件不存在: {pem_path}"}
+
+        r = subprocess.run(
+            ["openssl", "x509", "-noout", "-subject", "-issuer",
+             "-startdate", "-enddate", "-in", pem_path],
+            capture_output=True, text=True, timeout=5,
+        )
+        if is_data:
+            Path(pem_path).unlink(missing_ok=True)
+        if r.returncode != 0:
+            return {"error": r.stderr.strip()}
+        info = {}
+        for line in r.stdout.splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                info[k.strip().lower().replace(" ", "_")] = v.strip()
+        return info
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _detect_kubeconfig_auth(kubeconfig_path: str) -> dict:
+    """
+    解析 kubeconfig 文件，自动识别认证类型，返回结构化 auth 信息。
+    支持：certificate | token | exec | basic | unknown
+    """
+    import yaml
+
+    paths = _resolve_runtime_kubeconfig_paths(kubeconfig_path)
+    if not paths:
+        return {"error": "kubeconfig 路径为空"}
+
+    results = []
+    for path in paths:
+        if not Path(path).exists():
+            results.append({"path": path, "error": "文件不存在"})
+            continue
+        try:
+            data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            results.append({"path": path, "error": f"解析失败: {e}"})
+            continue
+
+        current_ctx_name = str(data.get("current-context") or "")
+        contexts  = {c["name"]: c.get("context", {}) for c in (data.get("contexts") or []) if isinstance(c, dict)}
+        clusters  = {c["name"]: c.get("cluster", {}) for c in (data.get("clusters") or []) if isinstance(c, dict)}
+        users_map = {u["name"]: u.get("user", {})    for u in (data.get("users")    or []) if isinstance(u, dict)}
+
+        ctx_data     = contexts.get(current_ctx_name, {})
+        cluster_name = ctx_data.get("cluster", "")
+        user_name    = ctx_data.get("user", "")
+        cluster_data = clusters.get(cluster_name, {})
+        user_data    = users_map.get(user_name, {})
+
+        def _resolve_ref(raw: str) -> str:
+            """证书路径：先尝试 kubeconfig 同目录，再走通用解析。"""
+            if not raw:
+                return ""
+            resolved = _resolve_kubeconfig_ref_path(raw, path)
+            if resolved and Path(resolved).exists():
+                return resolved
+            # 兜底：通用路径解析
+            return _resolve_single_runtime_kubeconfig_path(raw)
+
+        # ── 识别认证类型 ────────────────────────────────────────
+        if user_data.get("exec"):
+            exec_cfg = user_data["exec"]
+            auth = {
+                "type":        "exec",
+                "command":     exec_cfg.get("command"),
+                "args":        exec_cfg.get("args", []),
+                "api_version": exec_cfg.get("apiVersion"),
+                "env":         exec_cfg.get("env"),
+            }
+        elif user_data.get("token") or user_data.get("tokenFile"):
+            token_val = user_data.get("token", "")
+            auth = {
+                "type":          "token",
+                "token_preview": (token_val[:32] + "...") if len(token_val) > 32 else token_val,
+                "token_file":    user_data.get("tokenFile"),
+            }
+        elif user_data.get("client-certificate") or user_data.get("client-certificate-data"):
+            raw_cert = user_data.get("client-certificate", "")
+            cert_data = user_data.get("client-certificate-data", "")
+            raw_key  = user_data.get("client-key", "")
+            cert_path = _resolve_ref(raw_cert)
+            key_path  = _resolve_ref(raw_key)
+            cert_detail = (_parse_cert_detail(cert_path) if cert_path
+                           else _parse_cert_detail(cert_data, is_data=True) if cert_data
+                           else {})
+            auth = {
+                "type":               "certificate",
+                "client_certificate": cert_path or raw_cert or "(embedded)",
+                "client_key":         key_path  or raw_key  or "(embedded)",
+                "cert_embedded":      bool(cert_data),
+                "cert_detail":        cert_detail,
+            }
+        elif user_data.get("username"):
+            auth = {
+                "type":     "basic",
+                "username": user_data.get("username"),
+            }
+        else:
+            auth = {"type": "unknown", "raw_user": user_data}
+
+        # ── CA 信息 ─────────────────────────────────────────────
+        raw_ca  = cluster_data.get("certificate-authority", "")
+        ca_data = cluster_data.get("certificate-authority-data", "")
+        ca_path = _resolve_ref(raw_ca)
+        ca_detail = (_parse_cert_detail(ca_path) if ca_path
+                     else _parse_cert_detail(ca_data, is_data=True) if ca_data
+                     else {})
+
+        results.append({
+            "path":            path,
+            "current_context": current_ctx_name,
+            "server":          cluster_data.get("server", ""),
+            "cluster_name":    cluster_name,
+            "user_name":       user_name,
+            "insecure":        bool(cluster_data.get("insecure-skip-tls-verify")),
+            "ca":              ca_path or raw_ca or ("(embedded)" if ca_data else "(none)"),
+            "ca_detail":       ca_detail,
+            "auth":            auth,
+            "all_contexts":    list(contexts.keys()),
+        })
+
+    return {"files": results, "total": len(results)}
+
+
+class InspectKubeconfigPayload(BaseModel):
+    path: str
+
+
+@router.post("/inspect-kubeconfig")
+async def inspect_kubeconfig(
+    body: InspectKubeconfigPayload,
+    _: User = Depends(current_user),
+):
+    """解析指定 kubeconfig 文件，自动识别认证类型和证书信息。"""
+    return _detect_kubeconfig_auth(body.path)
+
+
 @router.get("/clusters/{cluster_id}/test")
 async def test_cluster(cluster_id: str, _: User = Depends(require_admin)):
     try:
@@ -735,6 +1060,7 @@ async def test_cluster(cluster_id: str, _: User = Depends(require_admin)):
         v1, _ = _get_client(cluster_id)
         nodes = v1.list_node().items
         node_names = [item.metadata.name for item in nodes]
+        auth_info = _detect_kubeconfig_auth(cluster.get("kubeconfig", ""))
         return {
             "ok": True,
             "cluster_id": cluster["id"],
@@ -745,6 +1071,7 @@ async def test_cluster(cluster_id: str, _: User = Depends(require_admin)):
             "kubectl_command": _build_kubectl_command(cluster_id),
             "node_count": len(node_names),
             "nodes": node_names[:10],
+            "auth_info": auth_info,
         }
     except Exception as exc:
         logger.warning("[k8s] test_cluster failed: %s", exc)

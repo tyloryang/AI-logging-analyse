@@ -11,7 +11,7 @@
           <component :is="Component" />
         </keep-alive>
       </main>
-      <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant' && canUseAgent" />
+      <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant' && route.name !== 'aiops-workbench' && canUseAgent" />
     </div>
   </router-view>
 </template>

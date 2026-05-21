@@ -638,7 +638,7 @@ onUnmounted(() => clearInterval(_timer))
 </script>
 
 <style scoped>
-.es-view { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-primary); font-size: 13px; }
+.es-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bg-base); color: var(--text-primary); font-size: 13px; }
 
 /* Cluster bar */
 .cluster-bar { height: 44px; background: var(--bg-card); border-bottom: 1px solid var(--border); display: flex; align-items: stretch; flex-shrink: 0; overflow-x: auto; }

@@ -72,6 +72,9 @@
             <span v-if="inspectAiStreaming" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>🤖</span> AI分析
           </button>
+          <button v-if="inspectResults.length && !inspecting" class="btn btn-outline" @click="openInspectRca">
+            <span>🧠</span> 进入 RCA
+          </button>
           <button v-if="inspectResults.length && !inspecting && groups.length" class="btn btn-outline"
             :disabled="notifyingGroups || !inspectGroupId" @click="notifyGroups()">
             <span v-if="notifyingGroups" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
@@ -1589,6 +1592,24 @@ async function runInspectAI() {
     }
   }
   inspectAiStreaming.value = false
+}
+
+async function openInspectRca() {
+  const abnormal = inspectResults.value.filter(item => item.overall !== 'normal').slice(0, 20)
+  const result = await api.rcaTrigger({
+    service: inspectGroupId.value || 'host-inspection',
+    alert_name: inspectGroupId.value ? `涓绘満宸℃寮傚父 / ${inspectSummary.group_name || inspectGroupId.value}` : '涓绘満宸℃寮傚父',
+    hours: 1,
+    extra_context: inspectAiSummary.value || `宸℃鍙戠幇涓ラ噸 ${inspectSummary.critical} 鍙帮紝璀﹀憡 ${inspectSummary.warning} 鍙?`,
+    source_type: 'inspection',
+    source_id: inspectSummary.group_id || 'all-hosts',
+    source_name: inspectSummary.group_name || '鍏ㄩ儴涓绘満',
+    inspection_summary: { ...inspectSummary },
+    inspection_results: abnormal,
+  })
+  if (result?.rca_id) {
+    router.push({ path: '/aiops/rca', query: { rca_id: result.rca_id } })
+  }
 }
 
 async function notifyGroups() {

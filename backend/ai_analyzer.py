@@ -31,7 +31,7 @@ class AnthropicProvider(BaseAIProvider):
             api_key=api_key,
             http_client=httpx.AsyncClient(trust_env=False),
         )
-        self.model = model or "claude-opus-4-6"
+        self.model = model
 
     @property
     def name(self) -> str:
@@ -104,34 +104,43 @@ def create_provider() -> BaseAIProvider:
 
     AI_PROVIDER=anthropic  →  使用 Anthropic Claude
       ANTHROPIC_API_KEY=sk-ant-xxx
-      AI_MODEL=claude-opus-4-6         （可选，默认 claude-opus-4-6）
+      AI_MODEL=<your-model-id>
 
     AI_PROVIDER=openai     →  使用 OpenAI 兼容接口（本地模型等）
       AI_BASE_URL=http://192.168.x.x:8000/v1
       AI_API_KEY=                      （本地模型可留空）
-      AI_MODEL=gpt-5
+      AI_MODEL=<your-model-id>
     """
-    provider = os.getenv("AI_PROVIDER", "anthropic").lower()
+    provider = os.getenv("AI_PROVIDER", "").strip().lower()
 
     import logging
     _log = logging.getLogger(__name__)
     _log.info("[AI] AI_PROVIDER=%s", provider)
 
+    if not provider:
+        raise ValueError("AI_PROVIDER 未配置")
+
     if provider == "openai":
         base_url = os.getenv("AI_BASE_URL", "")
         api_key  = os.getenv("AI_API_KEY", "EMPTY")
-        model    = os.getenv("AI_MODEL", "gpt-5")
+        model    = os.getenv("AI_MODEL", "").strip()
         wire_api = os.getenv("AI_WIRE_API", "chat")  # "chat" 或 "responses"
         _log.info("[AI] base_url=%s, model=%s, wire_api=%s", base_url, model, wire_api)
         if not base_url:
             raise ValueError("AI_PROVIDER=openai 时必须设置 AI_BASE_URL")
+        if not model:
+            raise ValueError("AI_MODEL 未配置")
         return OpenAICompatProvider(base_url, api_key, model, wire_api)
 
-    # 默认 Anthropic
+    if provider != "anthropic":
+        raise ValueError(f"暂不支持的 AI_PROVIDER: {provider}")
+
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    model   = os.getenv("AI_MODEL", "claude-opus-4-6")
+    model   = os.getenv("AI_MODEL", "").strip()
     if not api_key:
         raise ValueError("AI_PROVIDER=anthropic 时必须设置 ANTHROPIC_API_KEY")
+    if not model:
+        raise ValueError("AI_MODEL 未配置")
     return AnthropicProvider(api_key, model)
 
 

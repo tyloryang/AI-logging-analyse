@@ -14,7 +14,7 @@
           <span class="separator"> | </span>
           智能体配置
         </h1>
-        <p class="subtitle">在这里设置你的智能体，MCP、Skill，模型市场让 AI 变成超能力</p>
+        <p class="subtitle">在这里统一配置智能体、MCP、Skills 和自定义模型，所有大模型参数都可按你的渠道独立维护</p>
       </div>
       <button class="btn btn-primary save-btn" @click="saveConfig" :disabled="saving">
         <span v-if="saving" class="spinner-sm-dark"></span>
@@ -233,27 +233,113 @@
       </div>
     </div>
 
-    <!-- ── 模型市场 ── -->
+    <!-- ── 模型配置 ── -->
     <div v-if="activeTab === 'models'" class="tab-content">
-      <div class="model-market">
-        <div class="market-card card" v-for="m in marketModels" :key="m.id">
-          <div class="market-header">
-            <span class="market-logo">{{ m.logo }}</span>
-            <div>
-              <div class="market-name">{{ m.name }}</div>
-              <div class="market-provider">{{ m.provider }}</div>
-            </div>
-            <button
-              class="btn btn-sm"
-              :class="m.connected ? 'btn-outline' : 'btn-primary'"
-              @click="toggleModel(m)"
-            >{{ m.connected ? '已接入' : '接入' }}</button>
-          </div>
-          <div class="market-desc">{{ m.desc }}</div>
-          <div class="market-tags">
-            <span class="skill-tag" v-for="t in m.tags" :key="t">{{ t }}</span>
-          </div>
+      <div class="card">
+        <div class="section-toolbar">
+          <span class="section-count">已配置 {{ modelList.length }} 个模型</span>
+          <button class="btn btn-outline btn-sm" @click="showAddModel = !showAddModel">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新增模型
+          </button>
         </div>
+
+        <div v-if="showAddModel" class="add-form add-form-edit">
+          <span class="form-chip">新增模型</span>
+          <input v-model="newModel.name" class="form-input" placeholder="显示名称，如 私有推理模型 / Claude / Gemini" style="flex:1" />
+          <input v-model="newModel.provider" class="form-input" placeholder="Provider 标签，如 OpenAI / Claude / Gemini" style="width:170px" />
+          <select v-model="newModel.runtime_provider" class="form-input" style="width:150px">
+            <option value="openai">openai-compatible</option>
+            <option value="anthropic">anthropic</option>
+          </select>
+          <input v-model="newModel.runtime_model" class="form-input mono" placeholder="运行时模型名，如 your-model-id" style="flex:1.2" />
+          <input v-if="newModel.runtime_provider === 'openai'" v-model="newModel.base_url" class="form-input mono" placeholder="Base URL，可留空走全局" style="flex:1.6" />
+          <select v-if="newModel.runtime_provider === 'openai'" v-model="newModel.wire_api" class="form-input" style="width:130px">
+            <option value="">自动识别</option>
+            <option value="chat">chat</option>
+            <option value="responses">responses</option>
+          </select>
+          <label v-if="newModel.runtime_provider === 'openai'" class="inline-toggle">
+            <span>Thinking</span>
+            <button class="toggle-switch sm" type="button" :class="{ on: newModel.enable_thinking }" @click="newModel.enable_thinking = !newModel.enable_thinking">
+              <span class="toggle-thumb"></span>
+            </button>
+          </label>
+          <input v-model="newModel.api_key" class="form-input mono" type="password" placeholder="API Key，可留空走全局" style="flex:1.3" />
+          <label class="inline-toggle">
+            <span>设为激活</span>
+            <button class="toggle-switch sm" type="button" :class="{ on: newModel.active }" @click="newModel.active = !newModel.active">
+              <span class="toggle-thumb"></span>
+            </button>
+          </label>
+          <button class="btn btn-primary btn-sm" @click="addModel">确认新增</button>
+          <button class="btn btn-outline btn-sm" @click="cancelAddModel">取消</button>
+        </div>
+
+        <div v-if="editingModelId" class="add-form add-form-edit">
+          <span class="form-chip">编辑模型</span>
+          <input v-model="editingModel.name" class="form-input" placeholder="显示名称" style="flex:1" />
+          <input v-model="editingModel.provider" class="form-input" placeholder="Provider 标签" style="width:170px" />
+          <select v-model="editingModel.runtime_provider" class="form-input" style="width:150px">
+            <option value="openai">openai-compatible</option>
+            <option value="anthropic">anthropic</option>
+          </select>
+          <input v-model="editingModel.runtime_model" class="form-input mono" placeholder="运行时模型名" style="flex:1.2" />
+          <input v-if="editingModel.runtime_provider === 'openai'" v-model="editingModel.base_url" class="form-input mono" placeholder="Base URL，可留空走全局" style="flex:1.6" />
+          <select v-if="editingModel.runtime_provider === 'openai'" v-model="editingModel.wire_api" class="form-input" style="width:130px">
+            <option value="">自动识别</option>
+            <option value="chat">chat</option>
+            <option value="responses">responses</option>
+          </select>
+          <label v-if="editingModel.runtime_provider === 'openai'" class="inline-toggle">
+            <span>Thinking</span>
+            <button class="toggle-switch sm" type="button" :class="{ on: editingModel.enable_thinking }" @click="editingModel.enable_thinking = !editingModel.enable_thinking">
+              <span class="toggle-thumb"></span>
+            </button>
+          </label>
+          <input v-model="editingModel.api_key" class="form-input mono" type="password" placeholder="留空则保留原值" style="flex:1.3" />
+          <button class="btn btn-primary btn-sm" @click="saveModel">保存修改</button>
+          <button class="btn btn-outline btn-sm" @click="cancelEditModel">取消</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>显示名</th><th>Provider</th><th>运行时</th><th>连接参数</th><th>状态</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in modelList" :key="m.id">
+              <td>
+                <strong>{{ m.name }}</strong>
+                <div class="mini-desc mono">{{ m.id }}</div>
+              </td>
+              <td>
+                <div>{{ m.provider }}</div>
+                <div class="mini-desc mono">{{ m.runtime_provider || 'default' }}</div>
+              </td>
+              <td>
+                <div class="mono">{{ m.runtime_model || m.name }}</div>
+                <div class="mini-desc">{{ m.wire_api || 'auto' }} · {{ m.enable_thinking ? 'thinking on' : 'thinking off' }}</div>
+              </td>
+              <td>
+                <div class="mono">{{ m.base_url || '使用全局 Base URL / 默认配置' }}</div>
+                <div class="mini-desc">{{ m.api_key_set ? '已配置专属 API Key' : '使用全局 Key 或无 Key' }}</div>
+              </td>
+              <td>
+                <span class="mcp-enabled-tag" :class="{ off: !m.active }">{{ m.active ? '当前激活' : '未激活' }}</span>
+              </td>
+              <td>
+                <button class="action-link" style="color:var(--warning)" @click="activateModel(m)" :disabled="m.active">设为激活</button>
+                <button class="action-link" style="color:var(--accent)" @click="startEditModel(m)">编辑</button>
+                <button class="action-link" @click="removeModel(m.id)">删除</button>
+              </td>
+            </tr>
+            <tr v-if="!modelList.length">
+              <td colspan="6" class="empty-cell">暂无模型配置，点“新增模型”后即可接入任意自定义大模型。</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -337,7 +423,7 @@ const TABS = [
   { key: 'mcp',    label: 'MCP' },
   { key: 'skill',  label: 'Skill' },
   { key: 'sa',     label: 'SA 接入' },
-  { key: 'models', label: '模型市场' },
+  { key: 'models', label: '模型配置' },
   { key: 'other',  label: '其他' },
 ]
 const SKILL_MODES = [
@@ -377,6 +463,35 @@ const config = reactive({
   skill_mode: 'confirm', max_turns: 20, stream: true, confirm_mode: 'ask',
 })
 const configModels = ref([])
+const modelList = ref([])
+const showAddModel = ref(false)
+const newModel = reactive(createEmptyModel())
+const editingModelId = ref('')
+const editingModel = reactive(createEmptyModel())
+
+function createEmptyModel() {
+  return {
+    name: '',
+    provider: '',
+    runtime_provider: 'openai',
+    runtime_model: '',
+    base_url: '',
+    api_key: '',
+    wire_api: '',
+    enable_thinking: false,
+    active: false,
+  }
+}
+
+function resetModelForm(target) {
+  Object.assign(target, createEmptyModel())
+}
+
+function syncModels(models = []) {
+  const next = models.map(item => ({ ...item }))
+  configModels.value = next
+  modelList.value = next
+}
 
 async function loadBasic() {
   try {
@@ -392,7 +507,7 @@ async function loadBasic() {
       stream:       b.stream      ?? true,
       confirm_mode: b.confirm_mode || 'ask',
     })
-    configModels.value = d.models || []
+    syncModels(d.models || [])
   } catch { /* ignore */ }
 }
 
@@ -435,6 +550,13 @@ function selectModel(m) {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model_id: m.id }),
+  }).then(r => {
+    const activeId = r?.data?.id || m.id
+    syncModels(modelList.value.map(item => ({
+      ...item,
+      ...(item.id === activeId ? r?.data || {} : {}),
+      active: item.id === activeId,
+    })))
   }).catch(() => {})
 }
 
@@ -532,34 +654,126 @@ async function toggleSkill(s) {
   } catch { s.enabled = !s.enabled }
 }
 
-// ── 模型市场（静态数据 + 接入状态从 backend 读取） ────────────────────
-const marketModels = ref([
-  { id: 'claude-opus',   logo: '🤖', name: 'Claude Opus 4.6',   provider: 'Anthropic', connected: false, desc: '最强推理能力，支持长上下文与工具调用，适合复杂根因分析场景。', tags: ['推理强', '工具调用', '128k'] },
-  { id: 'claude-sonnet', logo: '🤖', name: 'Claude Sonnet 4.6', provider: 'Anthropic', connected: false, desc: '高性价比，速度与能力均衡，适合日常智能助手场景。',             tags: ['均衡', '快速', '200k'] },
-  { id: 'qwen3-32b',     logo: '🔮', name: 'Qwen3-32B',          provider: 'Local',     connected: false, desc: '开源本地部署，无需外网，数据不出域，适合企业私有化部署。',     tags: ['本地', '开源', '私有化'] },
-  { id: 'gpt4o',         logo: '🌐', name: 'GPT-4o',             provider: 'OpenAI',    connected: false, desc: '多模态能力，支持图像理解，适合需要视觉分析的运维场景。',         tags: ['多模态', '图像', '128k'] },
-])
-
-async function loadMarketStatus() {
+// ── 模型配置 ───────────────────────────────────────────────────────────
+async function loadModels() {
   try {
     const d = await apiFetch('/api/agent-config/models')
-    const activeIds = new Set((d.data || []).filter(m => m.active).map(m => m.id))
-    marketModels.value.forEach(m => { m.connected = activeIds.has(m.id) })
+    syncModels(d.data || [])
   } catch { /* ignore */ }
 }
 
-async function toggleModel(m) {
-  m.connected = !m.connected
+function buildModelPayload(form, { includeEmptyApiKey = false } = {}) {
+  const payload = {
+    name: form.name.trim(),
+    provider: form.provider.trim(),
+    runtime_provider: form.runtime_provider,
+    runtime_model: form.runtime_model.trim(),
+    base_url: form.runtime_provider === 'openai' ? form.base_url.trim() : '',
+    wire_api: form.runtime_provider === 'openai' ? form.wire_api : '',
+    enable_thinking: form.runtime_provider === 'openai' ? !!form.enable_thinking : false,
+    active: !!form.active,
+  }
+  const apiKey = form.api_key.trim()
+  if (apiKey || includeEmptyApiKey) payload.api_key = apiKey
+  return payload
+}
+
+async function activateModel(model) {
   try {
-    if (m.connected) {
-      await apiFetch('/api/agent-config/models/active', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_id: m.id }),
-      })
-    }
+    const r = await apiFetch('/api/agent-config/models/active', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: model.id }),
+    })
+    const activeId = r?.data?.id || model.id
+    syncModels(modelList.value.map(item => ({
+      ...item,
+      ...(item.id === activeId ? r?.data || {} : {}),
+      active: item.id === activeId,
+    })))
     await loadStats()
-  } catch { m.connected = !m.connected }
+    showToast('✓ 模型已切换')
+  } catch (e) {
+    showToast(`❌ 切换失败：${e.message}`)
+  }
+}
+
+function startEditModel(model) {
+  editingModelId.value = model.id
+  Object.assign(editingModel, {
+    name: model.name || '',
+    provider: model.provider || '',
+    runtime_provider: model.runtime_provider || 'openai',
+    runtime_model: model.runtime_model || '',
+    base_url: model.base_url || '',
+    api_key: '',
+    wire_api: model.wire_api || '',
+    enable_thinking: !!model.enable_thinking,
+    active: !!model.active,
+  })
+}
+
+function cancelEditModel() {
+  editingModelId.value = ''
+  resetModelForm(editingModel)
+}
+
+function cancelAddModel() {
+  showAddModel.value = false
+  resetModelForm(newModel)
+}
+
+async function addModel() {
+  if (!newModel.name.trim() || !newModel.runtime_model.trim()) {
+    showToast('❌ 显示名称和运行时模型名不能为空')
+    return
+  }
+  try {
+    await apiFetch('/api/agent-config/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildModelPayload(newModel, { includeEmptyApiKey: true })),
+    })
+    cancelAddModel()
+    await loadBasic()
+    await loadStats()
+    showToast('✓ 模型已新增')
+  } catch (e) {
+    showToast(`❌ 新增失败：${e.message}`)
+  }
+}
+
+async function saveModel() {
+  if (!editingModelId.value) return
+  if (!editingModel.name.trim() || !editingModel.runtime_model.trim()) {
+    showToast('❌ 显示名称和运行时模型名不能为空')
+    return
+  }
+  try {
+    await apiFetch(`/api/agent-config/models/${editingModelId.value}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildModelPayload(editingModel)),
+    })
+    cancelEditModel()
+    await loadBasic()
+    await loadStats()
+    showToast('✓ 模型已更新')
+  } catch (e) {
+    showToast(`❌ 更新失败：${e.message}`)
+  }
+}
+
+async function removeModel(id) {
+  if (!confirm('确认删除该模型配置？')) return
+  try {
+    await apiFetch(`/api/agent-config/models/${id}`, { method: 'DELETE' })
+    await loadBasic()
+    await loadStats()
+    showToast('✓ 模型已删除')
+  } catch (e) {
+    showToast(`❌ 删除失败：${e.message}`)
+  }
 }
 
 // ── SA 接入管理 ───────────────────────────────────────────────────────
@@ -621,7 +835,7 @@ async function removeSa(id) {
 
 // ── 初始化 ────────────────────────────────────────────────────────────
 onMounted(async () => {
-  await Promise.all([loadBasic(), loadBehaviors(), loadMcps(), loadSkills(), loadMarketStatus(), loadSa(), loadStats()])
+  await Promise.all([loadBasic(), loadBehaviors(), loadMcps(), loadSkills(), loadModels(), loadSa(), loadStats()])
 })
 </script>
 
@@ -804,6 +1018,32 @@ onMounted(async () => {
   border: 1px dashed var(--accent);
   border-radius: var(--radius-card);
   flex-wrap: wrap;
+}
+
+.form-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.mini-desc {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 /* ── Toast 提示 ── */

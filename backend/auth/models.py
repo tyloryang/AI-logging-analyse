@@ -74,11 +74,12 @@ class AuditLog(Base):
 class AgentConversation(Base):
     __tablename__ = "agent_conversations"
 
-    id         = Column(String(36), primary_key=True, default=_uuid)
-    user_id    = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    conv_id    = Column(String(64), nullable=False, index=True)
-    mode       = Column(String(16), nullable=False, default="chat")
-    title      = Column(String(200), default="")
-    messages   = Column(Text, nullable=False, default="[]")  # JSON 序列化消息列表
-    updated_at = Column(DateTime, default=_now, onupdate=_now)
-    created_at = Column(DateTime, default=_now)
+    id           = Column(String(36), primary_key=True, default=_uuid)
+    user_id      = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    conv_id      = Column(String(64), nullable=False, index=True)
+    mode         = Column(String(16), nullable=False, default="chat")
+    title        = Column(String(200), default="")
+    project_path = Column(String(500), default="", index=True)  # 关联项目目录
+    messages     = Column(Text, nullable=False, default="[]")  # JSON 序列化消息列表
+    updated_at   = Column(DateTime, default=_now, onupdate=_now)
+    created_at   = Column(DateTime, default=_now)

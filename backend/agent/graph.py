@@ -229,16 +229,21 @@ def _get_llm(runtime_overrides: dict | None = None):
     runtime_overrides = runtime_overrides or {}
     provider = (
         str(runtime_overrides.get("model_provider", "")).strip().lower()
-        or os.getenv("AI_PROVIDER", "anthropic").lower()
+        or os.getenv("AI_PROVIDER", "").strip().lower()
     )
 
+    if not provider:
+        raise ValueError("AI_PROVIDER 未配置")
+
     if provider == "openai":
-        base_url = os.getenv("AI_BASE_URL", "")
-        api_key  = os.getenv("AI_API_KEY", "EMPTY") or "EMPTY"
-        model    = str(runtime_overrides.get("model_name", "")).strip() or os.getenv("AI_MODEL", "gpt-4")
+        base_url = str(runtime_overrides.get("model_base_url", "")).strip() or os.getenv("AI_BASE_URL", "")
+        api_key  = str(runtime_overrides.get("model_api_key", "")).strip() or os.getenv("AI_API_KEY", "EMPTY") or "EMPTY"
+        model    = str(runtime_overrides.get("model_name", "")).strip() or os.getenv("AI_MODEL", "").strip()
 
         if not base_url:
             raise ValueError("AI_PROVIDER=openai 时必须设置 AI_BASE_URL")
+        if not model:
+            raise ValueError("AI_MODEL 未配置")
 
         # ── 自动识别模型类型，防止手动配错 ────────────────────────────────
         model_lower = model.lower()
@@ -251,7 +256,7 @@ def _get_llm(runtime_overrides: dict | None = None):
         is_responses_model = model_lower.startswith(("o1", "o3", "o4", "gpt-5"))
 
         # 配置优先级：settings.json(wire_api) > 自动推断 > ConfigMap
-        wire_api_cfg = os.getenv("AI_WIRE_API", "").strip().lower()
+        wire_api_cfg = str(runtime_overrides.get("model_wire_api", "")).strip().lower() or os.getenv("AI_WIRE_API", "").strip().lower()
         if wire_api_cfg:
             wire_api = wire_api_cfg          # 用户显式配置优先
         elif is_qwen3:
@@ -275,7 +280,12 @@ def _get_llm(runtime_overrides: dict | None = None):
         from langchain_openai import ChatOpenAI
 
         # enable_thinking: Qwen3 强制 false（非流式调用必须），其他模型走配置
-        enable_thinking_cfg = os.getenv("AI_ENABLE_THINKING", "").strip().lower()
+        enable_override = runtime_overrides.get("model_enable_thinking")
+        enable_thinking_cfg = (
+            str(enable_override).strip().lower()
+            if enable_override is not None
+            else os.getenv("AI_ENABLE_THINKING", "").strip().lower()
+        )
         if is_qwen3:
             enable_thinking = False          # Qwen3 非流式强制 false
         elif enable_thinking_cfg in ("1", "true", "yes"):
@@ -301,11 +311,15 @@ def _get_llm(runtime_overrides: dict | None = None):
             extra_body=extra or None,
         )
 
-    # 默认 Anthropic
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    model   = str(runtime_overrides.get("model_name", "")).strip() or os.getenv("AI_MODEL", "claude-opus-4-6")
+    if provider != "anthropic":
+        raise ValueError(f"暂不支持的 AI_PROVIDER: {provider}")
+
+    api_key = str(runtime_overrides.get("model_api_key", "")).strip() or os.getenv("ANTHROPIC_API_KEY", "")
+    model   = str(runtime_overrides.get("model_name", "")).strip() or os.getenv("AI_MODEL", "").strip()
     if not api_key:
         raise ValueError("AI_PROVIDER=anthropic 时必须设置 ANTHROPIC_API_KEY")
+    if not model:
+        raise ValueError("AI_MODEL 未配置")
 
     import httpx
     from langchain_anthropic import ChatAnthropic

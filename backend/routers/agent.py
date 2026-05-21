@@ -8,7 +8,7 @@ import re
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, delete as sa_delete
 
 from agent.graph import build_graph
@@ -17,6 +17,7 @@ from auth.deps import current_user, require_permission
 from auth.models import AgentConversation, User
 from db import AsyncSessionLocal
 from agent.ops_quick_actions import detect_mode, get_quick_reply, quick_actions_enabled
+from routers.agent_config import resolve_agent_model_overrides
 from state import get_user_allowed_groups, get_user_allowed_k8s_clusters
 
 logger = logging.getLogger(__name__)
@@ -63,11 +64,32 @@ async def _get_checkpointer():
 
 
 class AgentRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     message: str = ""
     conv_id: str = ""   # 前端生成的会话 UUID，用于多轮历史隔离
     home_dir: str = ""
+    model_id: str = ""
     model_name: str = ""
     model_provider: str = ""
+    model_base_url: str = ""
+    model_api_key: str = ""
+    model_wire_api: str = ""
+    model_enable_thinking: bool | None = None
+
+
+def _build_runtime_overrides(req: AgentRequest) -> dict:
+    runtime_overrides = resolve_agent_model_overrides(
+        model_id=req.model_id,
+        model_name=req.model_name,
+        model_provider=req.model_provider,
+        model_base_url=req.model_base_url,
+        model_api_key=req.model_api_key,
+        model_wire_api=req.model_wire_api,
+        model_enable_thinking=req.model_enable_thinking,
+    )
+    runtime_overrides["home_dir"] = str(req.home_dir or "").strip()
+    return runtime_overrides
 
 
 def _sse(type_: str, **kwargs) -> str:
@@ -146,9 +168,7 @@ async def _stream_graph(
     message: str,
     conv_id: str = "",
     user: User | None = None,
-    home_dir: str = "",
-    model_name: str = "",
-    model_provider: str = "",
+    runtime_overrides: dict | None = None,
 ):
     """运行 LangGraph 图并将 astream_events 转换为 SSE 事件流"""
     response_parts: list[str] = []   # 累积 AI 文本，用于事后写入 Milvus
@@ -161,11 +181,7 @@ async def _stream_graph(
         if user and not user.is_superuser:
             allowed_groups = get_user_allowed_groups(user.id) or []
             allowed_k8s_clusters = get_user_allowed_k8s_clusters(user.id) or []
-        runtime_overrides = {
-            "home_dir": home_dir.strip(),
-            "model_name": model_name.strip(),
-            "model_provider": model_provider.strip().lower(),
-        }
+        runtime_overrides = runtime_overrides or {}
         config = {
             "configurable": {
                 "thread_id": thread_id,
@@ -173,9 +189,9 @@ async def _stream_graph(
                 "is_superuser": user.is_superuser if user else True,
                 "allowed_groups": allowed_groups,
                 "allowed_k8s_clusters": allowed_k8s_clusters,
-                "home_dir": runtime_overrides["home_dir"],
-                "model_name": runtime_overrides["model_name"],
-                "model_provider": runtime_overrides["model_provider"],
+                "home_dir": str(runtime_overrides.get("home_dir", "")).strip(),
+                "model_name": str(runtime_overrides.get("model_name", "")).strip(),
+                "model_provider": str(runtime_overrides.get("model_provider", "")).strip().lower(),
             },
             "recursion_limit": 40,
         }
@@ -309,57 +325,68 @@ _DEFAULT_MESSAGES = {
 @router.post("/rca")
 async def agent_rca(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["rca"]
-    return StreamingResponse(_stream_graph("rca", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
+    return StreamingResponse(_stream_graph("rca", message, req.conv_id, user, _build_runtime_overrides(req)),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/inspect")
 async def agent_inspect(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["inspect"]
-    return StreamingResponse(_stream_graph("inspect", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
+    return StreamingResponse(_stream_graph("inspect", message, req.conv_id, user, _build_runtime_overrides(req)),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/chat")
 async def agent_chat(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["chat"]
-    return StreamingResponse(_stream_graph("chat", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
+    return StreamingResponse(_stream_graph("chat", message, req.conv_id, user, _build_runtime_overrides(req)),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/guided")
 async def agent_guided(req: AgentRequest, user: User = require_permission("agent", "view")):
     message = req.message or _DEFAULT_MESSAGES["guided"]
-    return StreamingResponse(_stream_graph("guided", message, req.conv_id, user, req.home_dir, req.model_name, req.model_provider),
+    return StreamingResponse(_stream_graph("guided", message, req.conv_id, user, _build_runtime_overrides(req)),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 # ── 历史会话 CRUD ──────────────────────────────────────────────────────
 
 class SaveConversationRequest(BaseModel):
-    mode: str = "chat"
-    title: str = ""
-    messages: list = []
+    mode:         str  = "chat"
+    title:        str  = ""
+    messages:     list = []
+    project_path: str  = ""   # 关联项目目录
 
 
 @router.get("/conversations")
-async def list_conversations(user: User = require_permission("agent", "view")):
-    """返回当前用户所有历史会话（按更新时间倒序，最多 100 条）。"""
+async def list_conversations(
+    user:         User = require_permission("agent", "view"),
+    project_path: str  = "",
+):
+    """返回当前用户所有历史会话（按更新时间倒序，最多 200 条）。
+    传 project_path 时只返回该项目的会话。
+    """
+    from fastapi import Query as Q
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
+        stmt = (
             select(AgentConversation)
             .where(AgentConversation.user_id == user.id)
-            .order_by(AgentConversation.updated_at.desc())
-            .limit(100)
         )
+        if project_path:
+            stmt = stmt.where(AgentConversation.project_path == project_path)
+        stmt = stmt.order_by(AgentConversation.updated_at.desc()).limit(200)
+        result = await db.execute(stmt)
         rows = result.scalars().all()
     return [
         {
-            "id":         r.id,
-            "conv_id":    r.conv_id,
-            "mode":       r.mode,
-            "title":      r.title,
-            "updated_at": r.updated_at.isoformat(),
+            "id":           r.id,
+            "conv_id":      r.conv_id,
+            "mode":         r.mode,
+            "title":        r.title,
+            "project_path": r.project_path or "",
+            "updated_at":   r.updated_at.isoformat(),
+            "created_at":   r.created_at.isoformat(),
         }
         for r in rows
     ]
@@ -397,13 +424,16 @@ async def save_conversation(conv_id: str, req: SaveConversationRequest,
         )
         row = result.scalar_one_or_none()
         if row:
-            row.mode     = req.mode
-            row.title    = req.title[:200]
-            row.messages = json.dumps(req.messages, ensure_ascii=False)
+            row.mode         = req.mode
+            row.title        = req.title[:200]
+            row.messages     = json.dumps(req.messages, ensure_ascii=False)
+            if req.project_path:
+                row.project_path = req.project_path
         else:
             db.add(AgentConversation(
-                user_id  = user.id,
-                conv_id  = conv_id,
+                user_id      = user.id,
+                conv_id      = conv_id,
+                project_path = req.project_path or "",
                 mode     = req.mode,
                 title    = req.title[:200],
                 messages = json.dumps(req.messages, ensure_ascii=False),

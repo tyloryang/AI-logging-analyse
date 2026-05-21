@@ -155,6 +155,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
+import { safeRandomUUID } from '../utils/uuid.js'
 
 const route = useRoute()
 
@@ -187,8 +188,7 @@ const description = computed(() => `你好，我可以基于 ${routeLabel(route.
 const placeholder = computed(() => `围绕 ${routeLabel(route.name)} 提问，或直接输入你的运维问题...`)
 
 function genUUID() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => ((Math.random() * 16 | 0) & (c === 'x' ? 15 : 3) | (c === 'y' ? 8 : 0)).toString(16))
+  return safeRandomUUID()
 }
 
 function routeLabel(name) {

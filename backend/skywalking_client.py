@@ -216,10 +216,7 @@ class SkyWalkingClient:
               }}
             }}
             """)
-            result = data.get("getAllServices") or []
-            if not result:
-                import sw_mock; return sw_mock.SERVICES
-            return result
+            return data.get("getAllServices") or []
         except Exception as e:
             if _is_conn_error(e):
                 logger.info("[SW] OAP 不可达，使用 Demo 服务列表: %s", e)
@@ -242,12 +239,7 @@ class SkyWalkingClient:
               }
             }
             """, {"sid": service_id, "d": dur})
-            result = data.get("getServiceInstances") or []
-            if not result:
-                import sw_mock
-                svc_name = next((s["name"] for s in sw_mock.SERVICES if s["id"] == service_id), service_id)
-                return sw_mock.get_instances(svc_name)
-            return result
+            return data.get("getServiceInstances") or []
         except Exception as e:
             if _is_conn_error(e):
                 import sw_mock
@@ -298,7 +290,7 @@ class SkyWalkingClient:
                 "queryDuration": dur,
                 "traceState": "ERROR" if error_only else "ALL",
                 "queryOrder": "BY_START_TIME",
-                "paging": {"pageNum": page, "pageSize": page_size, "needTotal": True},
+                "paging": {"pageNum": page, "pageSize": page_size},
             }
             if service_id:
                 condition["serviceId"] = service_id
@@ -309,20 +301,51 @@ class SkyWalkingClient:
 
             data = await _gql("""
             query GetTraces($c: TraceQueryCondition!) {
-              queryBasicTraces(condition: $c) {
+              queryTraces(condition: $c) {
                 traces {
-                  segmentId endpointNames duration start isError traceIds
+                  spans {
+                    traceId
+                    segmentId
+                    serviceCode
+                    startTime
+                    endTime
+                    endpointName
+                    isError
+                  }
                 }
-                total
               }
             }
             """, {"c": condition})
-            result = data.get("queryBasicTraces") or {}
-            traces = result.get("traces") or []
-            if not traces:
-                import sw_mock
-                return sw_mock.get_traces(page, page_size, service_id, error_only, trace_id)
-            return {"traces": traces, "total": result.get("total") or 0}
+            result = data.get("queryTraces") or {}
+            traces = []
+            for trace in result.get("traces") or []:
+                spans = trace.get("spans") or []
+                if not spans:
+                    continue
+                start_ms = min((s.get("startTime") or 0) for s in spans)
+                end_ms = max((s.get("endTime") or 0) for s in spans)
+                trace_ids = []
+                for span in spans:
+                    tid = span.get("traceId")
+                    if tid and tid not in trace_ids:
+                        trace_ids.append(tid)
+                endpoint_names = []
+                for span in spans:
+                    name = span.get("endpointName")
+                    if name and name not in endpoint_names:
+                        endpoint_names.append(name)
+                root_span = min(spans, key=lambda s: s.get("startTime") or 0)
+                trace_id = trace_ids[0] if trace_ids else root_span.get("segmentId", "")
+                traces.append({
+                    "segmentId": root_span.get("segmentId") or trace_id,
+                    "traceIds": trace_ids or [trace_id],
+                    "endpointNames": endpoint_names,
+                    "duration": max(0, end_ms - start_ms),
+                    "start": str(start_ms),
+                    "isError": any(bool(s.get("isError")) for s in spans),
+                    "serviceCode": root_span.get("serviceCode", ""),
+                })
+            return {"traces": traces, "total": len(traces), "page": page, "page_size": page_size}
         except Exception as e:
             if _is_conn_error(e):
                 logger.info("[SW] OAP 不可达，使用 Demo Trace 列表: %s", e)
@@ -351,10 +374,7 @@ class SkyWalkingClient:
             }
             """, {"tid": trace_id})
             result = data.get("queryTrace") or {}
-            spans = result.get("spans") or []
-            if not spans:
-                import sw_mock; return sw_mock.get_trace_detail(trace_id)
-            return spans
+            return result.get("spans") or []
         except Exception as e:
             if _is_conn_error(e):
                 import sw_mock; return sw_mock.get_trace_detail(trace_id)
@@ -393,10 +413,7 @@ class SkyWalkingClient:
                 }}
                 """)
                 result = data.get("getGlobalTopology") or {}
-            nodes = result.get("nodes") or []
-            if not nodes:
-                import sw_mock; return sw_mock.get_topology()
-            return {"nodes": nodes, "calls": result.get("calls") or []}
+            return {"nodes": result.get("nodes") or [], "calls": result.get("calls") or []}
         except Exception as e:
             if _is_conn_error(e):
                 logger.info("[SW] OAP 不可达，使用 Demo 拓扑: %s", e)
@@ -448,9 +465,6 @@ class SkyWalkingClient:
                 for v in sla
             ] if sla else []
 
-            if not resp_time and not throughput:
-                import sw_mock; return sw_mock.get_metrics(service_name)
-
             return {"resp_time": resp_time, "throughput": throughput,
                     "error_rate": error_rate, "duration": dur}
         except Exception as e:
@@ -500,8 +514,6 @@ class SkyWalkingClient:
                 raw_sla = item.get("sla", 0)
                 item["sla"] = round(raw_sla / 100, 2) if raw_sla else 0
 
-            if not results:
-                import sw_mock; return sw_mock.get_endpoint_topn(top_n)
             return results
         except Exception as e:
             if _is_conn_error(e):

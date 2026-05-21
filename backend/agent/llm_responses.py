@@ -15,7 +15,7 @@ from langchain_core.messages import (
     HumanMessage, SystemMessage, ToolMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from pydantic import Field
+from pydantic import Field, ConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +26,14 @@ class ResponsesApiChatModel(BaseChatModel):
     支持 bind_tools + LangGraph ToolNode 所需的 tool_calls / tool_call_chunks。
     """
 
+    model_config = ConfigDict(protected_namespaces=(), populate_by_name=True)
+
     base_url: str
     api_key: str
     model_name: str = Field(alias="model")
     max_output_tokens: int = 4096
     # 绑定的工具（bind_tools 后填充）
     _bound_tools: List[dict] = []
-
-    class Config:
-        populate_by_name = True
 
     @property
     def _llm_type(self) -> str:

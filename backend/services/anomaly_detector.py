@@ -281,6 +281,8 @@ async def _trigger_rca(anomaly: dict) -> None:
             alert_name=anomaly["name"],
             hours=0.5,
             extra_context=anomaly["detail"],
+            source_type="anomaly",
+            source_name=anomaly["name"],
         )
     except Exception as exc:
         logger.warning("[anomaly] RCA trigger failed: %s", exc)

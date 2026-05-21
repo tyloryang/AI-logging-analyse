@@ -168,7 +168,15 @@
           <div class="field-row">
             <div class="field">
               <label>SkyWalking OAP 地址</label>
-              <input v-model="form.skywalking_oap_url" placeholder="http://192.168.x.x:12800" />
+              <div class="input-with-btn">
+                <input v-model="form.skywalking_oap_url" placeholder="http://192.168.x.x:12800" />
+                <button class="btn btn-outline btn-sm" @click="testSkyWalking" :disabled="testingSW">
+                  {{ testingSW ? '测试中...' : '测试连接' }}
+                </button>
+              </div>
+              <div v-if="swTestMsg" class="conn-result" :class="swTestResult ? 'ok' : 'err'">
+                {{ swTestMsg }}
+              </div>
             </div>
             <div class="field"></div>
           </div>
@@ -218,60 +226,49 @@
         <div class="section-head">
           <div class="section-title">
             <span class="section-icon ai">AI</span>
-            AI 模型
+            AI 大模型
           </div>
-          <span class="conn-badge" :class="settings.ai_api_key_set ? 'ok' : 'err'">
-            <span class="badge-dot"></span>
-            {{ settings.ai_api_key_set ? 'API Key 已配置' : '未配置' }}
-          </span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="conn-badge" :class="settings.ai_api_key_set ? 'ok' : 'err'">
+              <span class="badge-dot"></span>
+              {{ settings.ai_api_key_set ? 'API Key 已配置' : '未配置' }}
+            </span>
+          </div>
         </div>
 
-        <!-- 模型预设快选 -->
-        <div class="field-group preset-group">
-          <div class="preset-label">快速预设 <span class="preset-hint">选择后自动填入参数</span></div>
-          <div class="preset-list">
-            <button v-for="p in MODEL_PRESETS" :key="p.id"
-              class="preset-btn"
-              :class="{ active: form.ai_model === p.model }"
-              @click="applyPreset(p)"
-              :title="p.desc">
-              <span class="preset-logo">{{ p.logo }}</span>
-              <span class="preset-name">{{ p.name }}</span>
-              <span class="preset-model">{{ p.model }}</span>
-            </button>
-          </div>
-        </div>
+        <p class="section-help">配置全局默认模型参数，或在下方模型列表中添加多个模型并按需激活。</p>
 
         <div class="field-group">
           <div class="field-row">
             <div class="field">
               <label>Provider</label>
               <select v-model="form.ai_provider">
+                <option value="">请选择 Provider</option>
                 <option value="anthropic">Anthropic (Claude)</option>
                 <option value="openai">OpenAI Compatible</option>
               </select>
             </div>
             <div class="field">
               <label>模型名称</label>
-              <input v-model="form.ai_model" :placeholder="form.ai_provider === 'anthropic' ? 'claude-opus-4-6' : 'qwen3-32b'" />
+              <input v-model="form.ai_model" placeholder="例如 claude-3-7-sonnet / gpt-4o-mini / qwen-plus / 自定义模型ID" />
             </div>
           </div>
           <div class="field" v-if="form.ai_provider === 'openai'">
             <label>Base URL</label>
-            <input v-model="form.ai_base_url" placeholder="https://api.vveai.com/v1" />
+            <input v-model="form.ai_base_url" placeholder="例如 https://your-llm-gateway/v1" />
           </div>
           <div class="field" v-if="form.ai_provider === 'openai'">
-            <label>Wire API <span class="field-hint">chat=标准对话；responses=GPT-5等新模型；留空自动识别</span></label>
+            <label>Wire API <span class="field-hint">chat=标准对话接口；responses=Responses 接口；留空自动识别</span></label>
             <select v-model="form.ai_wire_api">
               <option value="">自动识别（推荐）</option>
-              <option value="chat">chat（Qwen/DeepSeek/普通OpenAI兼容）</option>
-              <option value="responses">responses（GPT-5/o3/o4等）</option>
+              <option value="chat">chat</option>
+              <option value="responses">responses</option>
             </select>
           </div>
           <div class="field" v-if="form.ai_provider === 'openai'">
             <label class="checkbox-line">
               <input v-model="form.ai_enable_thinking" type="checkbox" />
-              开启 Thinking 扩展思考（QwQ/DeepSeek-R1 等推理模型；Qwen3 非流式必须关闭）
+              为需要推理扩展参数的模型开启 Thinking；若你的代理不支持该参数请关闭
             </label>
           </div>
           <div class="field">
@@ -327,7 +324,190 @@
           </template>
           <p class="field-hint">AI 模型配置会热更新；外部 CLI 模式依赖本机已安装对应命令。</p>
         </div>
-      </div>
+
+        <!-- 模型列表分区 -->
+        <div class="model-mgr-divider">
+          <span class="model-mgr-label">模型列表</span>
+          <span class="conn-badge idle" style="font-size:11px;margin-left:8px">{{ modelList.length }} 个</span>
+          <button class="btn btn-outline btn-sm" style="margin-left:auto" @click="showAddModelForm = !showAddModelForm">
+            {{ showAddModelForm ? '收起' : '+ 新增模型' }}
+          </button>
+        </div>
+        <div class="field-group" style="padding-top:0">
+
+        <!-- 新增表单 -->
+        <div v-if="showAddModelForm" class="model-add-form">
+          <div class="model-form-grid">
+            <!-- 基础信息 -->
+            <label class="mf-field">
+              <span>显示名称 <em class="req">*</em></span>
+              <input v-model="newModel.name" class="form-input" placeholder="例如 私有推理模型 / Claude / Gemini" />
+            </label>
+            <label class="mf-field">
+              <span>Provider 标签</span>
+              <input v-model="newModel.provider" class="form-input" placeholder="Local / OpenAI / Anthropic" />
+            </label>
+            <label class="mf-field">
+              <span>运行协议 <em class="req">*</em></span>
+              <select v-model="newModel.runtime_provider" class="form-input">
+                <option value="openai">openai-compatible</option>
+                <option value="anthropic">anthropic</option>
+              </select>
+            </label>
+            <label class="mf-field">
+              <span>Model ID <em class="req">*</em></span>
+              <input v-model="newModel.runtime_model" class="form-input mono" placeholder="例如 qwen3-32b / claude-opus-4-6" />
+            </label>
+            <!-- OpenAI-compat 专属 -->
+            <label v-if="newModel.runtime_provider === 'openai'" class="mf-field mf-full">
+              <span>Base URL</span>
+              <input v-model="newModel.base_url" class="form-input mono" placeholder="http://192.168.x.x:11434/v1" />
+            </label>
+            <label v-if="newModel.runtime_provider === 'openai'" class="mf-field">
+              <span>Wire API</span>
+              <select v-model="newModel.wire_api" class="form-input">
+                <option value="">自动识别</option>
+                <option value="chat">chat</option>
+                <option value="responses">responses</option>
+              </select>
+            </label>
+            <!-- API Key + 测试按钮 -->
+            <label class="mf-field mf-full">
+              <span>API Key（可选）</span>
+              <div class="input-row">
+                <input v-model="newModel.api_key" type="password" class="form-input mono" placeholder="留空走全局配置" />
+                <button class="btn btn-outline btn-sm" type="button"
+                  :disabled="newModelTesting || !newModel.runtime_model.trim()"
+                  @click="testNewModel">
+                  {{ newModelTesting ? '测试中...' : '测试连接' }}
+                </button>
+              </div>
+              <div v-if="newModelTestMsg" class="conn-result" :class="newModelTestOk ? 'ok' : 'err'">
+                {{ newModelTestMsg }}
+              </div>
+            </label>
+            <!-- Thinking 开关 -->
+            <label v-if="newModel.runtime_provider === 'openai'" class="mf-field mf-full mf-checkbox-full">
+              <input type="checkbox" v-model="newModel.enable_thinking" />
+              <span>为需要推理扩展参数的模型开启 Thinking；若你的代理不支持该参数请关闭</span>
+            </label>
+            <!-- 执行模式 -->
+            <label class="mf-field">
+              <span>执行模式</span>
+              <select v-model="newModel.agent_executor" class="form-input">
+                <option value="">跟随全局设置</option>
+                <option value="langgraph">内置 LangGraph ReAct</option>
+                <option value="aiops_cli">aiops_cli 子进程</option>
+                <option value="external_cli">外部 Agent CLI</option>
+              </select>
+            </label>
+            <!-- 超时时间 -->
+            <label class="mf-field">
+              <span>超时时间（秒）</span>
+              <input v-model.number="newModel.agent_timeout" type="number" min="30" class="form-input" placeholder="留空跟随全局（默认 240s）" />
+            </label>
+            <!-- 设为激活 -->
+            <label class="mf-field mf-checkbox">
+              <input type="checkbox" v-model="newModel.active" />
+              <span>设为激活模型</span>
+            </label>
+          </div>
+          <div class="model-form-actions">
+            <button class="btn btn-primary btn-sm" @click="addModel" :disabled="modelSaving">
+              {{ modelSaving ? '添加中...' : '确认添加' }}
+            </button>
+            <button class="btn btn-outline btn-sm" @click="cancelAddModel">取消</button>
+            <span v-if="modelFormMsg" class="model-form-msg" :class="modelFormOk ? 'ok' : 'err'">{{ modelFormMsg }}</span>
+          </div>
+        </div>
+
+        <!-- 模型列表 -->
+        <div v-if="loadingModels" class="model-loading">加载中...</div>
+        <div v-else-if="!modelList.length" class="model-empty">暂无模型，点击「新增模型」添加</div>
+        <div v-else class="model-table-wrap">
+          <table class="model-table">
+            <thead>
+              <tr><th>模型名</th><th>协议</th><th>Model ID</th><th>Base URL</th><th>状态</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <template v-for="m in modelList" :key="m.id">
+                <tr v-if="editingModelId !== m.id" :class="{ 'row-active': m.active }">
+                  <td>
+                    <strong>{{ m.name }}</strong>
+                    <div class="model-id-sub">{{ m.provider }}</div>
+                  </td>
+                  <td><span class="tag-chip">{{ m.runtime_provider }}</span></td>
+                  <td class="mono small">{{ m.runtime_model }}</td>
+                  <td class="mono small muted">{{ m.base_url || '—' }}</td>
+                  <td>
+                    <span class="conn-badge" :class="m.active ? 'ok' : 'idle'">
+                      <span class="badge-dot"></span>{{ m.active ? '激活' : '未激活' }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="model-row-actions">
+                      <button class="btn btn-outline btn-xs" @click="activateModel(m)" :disabled="m.active || modelSaving">激活</button>
+                      <button class="btn btn-outline btn-xs" @click="startEditModel(m)">编辑</button>
+                      <button class="btn btn-danger btn-xs" @click="deleteModel(m)" :disabled="modelSaving">删除</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-else class="row-editing">
+                  <td colspan="6">
+                    <div class="model-edit-inline">
+                      <div class="model-form-grid">
+                        <label class="mf-field">
+                          <span>显示名称</span>
+                          <input v-model="editModel.name" class="form-input" />
+                        </label>
+                        <label class="mf-field">
+                          <span>Provider 标签</span>
+                          <input v-model="editModel.provider" class="form-input" />
+                        </label>
+                        <label class="mf-field">
+                          <span>运行协议</span>
+                          <select v-model="editModel.runtime_provider" class="form-input">
+                            <option value="openai">openai-compatible</option>
+                            <option value="anthropic">anthropic</option>
+                          </select>
+                        </label>
+                        <label class="mf-field">
+                          <span>Model ID</span>
+                          <input v-model="editModel.runtime_model" class="form-input mono" />
+                        </label>
+                        <label v-if="editModel.runtime_provider === 'openai'" class="mf-field mf-full">
+                          <span>Base URL</span>
+                          <input v-model="editModel.base_url" class="form-input mono" />
+                        </label>
+                        <label v-if="editModel.runtime_provider === 'openai'" class="mf-field">
+                          <span>Wire API</span>
+                          <select v-model="editModel.wire_api" class="form-input">
+                            <option value="">自动识别</option>
+                            <option value="chat">chat</option>
+                            <option value="responses">responses</option>
+                          </select>
+                        </label>
+                        <label class="mf-field">
+                          <span>API Key（留空保留原值）</span>
+                          <input v-model="editModel.api_key" type="password" class="form-input mono" placeholder="留空不修改" />
+                        </label>
+                      </div>
+                      <div class="model-form-actions">
+                        <button class="btn btn-primary btn-sm" @click="saveEditModel" :disabled="modelSaving">
+                          {{ modelSaving ? '保存中...' : '保存' }}
+                        </button>
+                        <button class="btn btn-outline btn-sm" @click="editingModelId = null">取消</button>
+                        <span v-if="modelFormMsg" class="model-form-msg" :class="modelFormOk ? 'ok' : 'err'">{{ modelFormMsg }}</span>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        </div><!-- /field-group model-mgr -->
+      </div><!-- /card AI大模型 -->
 
       <!-- 飞书机器人 -->
       <div class="card settings-section feishu-section">
@@ -612,51 +792,6 @@ const grafanaBoards = ref([])
 const showAddBoard  = ref(false)
 const newBoard = reactive({ title: '', uid: '', url: '' })
 
-// ── 模型预设（防止手动配错参数）────────────────────────────────────────
-const MODEL_PRESETS = [
-  // Qwen 系列
-  { id:'qwen3-32b',   logo:'🌟', name:'Qwen3-32B',   model:'qwen3-32b',
-    provider:'openai', wire_api:'chat', enable_thinking:false,
-    desc:'阿里通义千问3 32B，chat模式，自动关闭thinking' },
-  { id:'qwen3-8b',    logo:'⚡', name:'Qwen3-8B',    model:'qwen3-8b',
-    provider:'openai', wire_api:'chat', enable_thinking:false,
-    desc:'Qwen3 8B，轻量快速' },
-  { id:'qwen2.5-72b', logo:'🔷', name:'Qwen2.5-72B', model:'qwen2.5-72b-instruct',
-    provider:'openai', wire_api:'chat', enable_thinking:false,
-    desc:'Qwen2.5 72B，稳定兼容' },
-  { id:'qwq-32b',     logo:'🧠', name:'QwQ-32B',     model:'qwq-32b',
-    provider:'openai', wire_api:'chat', enable_thinking:true,
-    desc:'QwQ 推理模型，开启thinking' },
-  // DeepSeek 系列
-  { id:'deepseek-r1', logo:'🔥', name:'DeepSeek-R1', model:'deepseek-r1',
-    provider:'openai', wire_api:'chat', enable_thinking:true,
-    desc:'DeepSeek R1 推理模型' },
-  { id:'deepseek-v3', logo:'🚀', name:'DeepSeek-V3', model:'deepseek-chat',
-    provider:'openai', wire_api:'chat', enable_thinking:false,
-    desc:'DeepSeek-V3 对话模型' },
-  // Anthropic
-  { id:'claude-opus',   logo:'🟣', name:'Claude Opus 4',   model:'claude-opus-4-7',
-    provider:'anthropic', wire_api:'', enable_thinking:false,
-    desc:'Claude Opus 最新版' },
-  { id:'claude-sonnet', logo:'💜', name:'Claude Sonnet 4', model:'claude-sonnet-4-6',
-    provider:'anthropic', wire_api:'', enable_thinking:false,
-    desc:'Claude Sonnet 均衡版' },
-  // GPT/OpenAI
-  { id:'gpt-5',   logo:'🟢', name:'GPT-5',   model:'gpt-5',
-    provider:'openai', wire_api:'responses', enable_thinking:false,
-    desc:'OpenAI GPT-5，需要responses API' },
-]
-
-function applyPreset(p) {
-  form.ai_provider       = p.provider
-  form.ai_model          = p.model
-  form.ai_wire_api       = p.wire_api
-  form.ai_enable_thinking = p.enable_thinking
-  if (p.provider === 'anthropic') {
-    form.ai_base_url = ''
-  }
-}
-
 const form = reactive({
   prometheus_url:           '',
   prometheus_username:      '',
@@ -670,7 +805,7 @@ const form = reactive({
   grafana_url:              '',
   grafana_api_key:          '',
   skywalking_oap_url:       '',
-  ai_provider:              'anthropic',
+  ai_provider:              '',
   ai_base_url:              '',
   ai_model:                 '',
   ai_api_key:               '',
@@ -711,6 +846,10 @@ const testResults = reactive({ prometheus: null, loki: null, alertmanager: null 
 const testingGrafana    = ref(false)
 const grafanaTestResult = ref(null)
 
+const testingSW    = ref(false)
+const swTestResult = ref(null)   // null | true | false
+const swTestMsg    = ref('')
+
 const testingK8s  = ref(false)
 const k8sTestResult = ref(null)   // null | true | false
 const k8sTestMsg  = ref('')
@@ -718,6 +857,160 @@ const k8sTestMsg  = ref('')
 const testingAI   = ref(false)
 const aiTestResult = ref(null)    // null | true | false
 const aiTestMsg   = ref('')
+
+// ── 模型管理 ──────────────────────────────────────────────────────────────────
+const modelList        = ref([])
+const loadingModels    = ref(false)
+const showAddModelForm = ref(false)
+const modelSaving      = ref(false)
+const modelFormMsg     = ref('')
+const modelFormOk      = ref(false)
+const editingModelId   = ref(null)
+
+const newModel = reactive({
+  name: '', provider: '', runtime_provider: 'openai',
+  runtime_model: '', base_url: '', wire_api: '',
+  enable_thinking: false, api_key: '',
+  agent_executor: '', agent_timeout: null,
+  active: false,
+})
+const editModel = reactive({
+  name: '', provider: '', runtime_provider: 'openai',
+  runtime_model: '', base_url: '', wire_api: '',
+  enable_thinking: false, api_key: '',
+  agent_executor: '', agent_timeout: null,
+})
+
+// 新增模型测试连接
+const newModelTesting = ref(false)
+const newModelTestMsg = ref('')
+const newModelTestOk  = ref(false)
+
+async function testNewModel() {
+  if (!newModel.runtime_model.trim()) return
+  newModelTesting.value = true
+  newModelTestMsg.value = ''
+  try {
+    const r = await api.testAI({
+      provider:        newModel.runtime_provider,
+      model:           newModel.runtime_model.trim(),
+      base_url:        newModel.base_url.trim(),
+      api_key:         newModel.api_key.trim(),
+      wire_api:        newModel.wire_api,
+      enable_thinking: newModel.enable_thinking,
+    })
+    newModelTestOk.value  = r.ok
+    newModelTestMsg.value = r.ok
+      ? `连接成功${r.model ? '，模型：' + r.model : ''}${r.latency_ms ? '，延迟 ' + r.latency_ms + 'ms' : ''}`
+      : (r.error || '连接失败')
+  } catch (e) {
+    newModelTestOk.value  = false
+    newModelTestMsg.value = '请求失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  } finally {
+    newModelTesting.value = false
+  }
+}
+
+async function loadModels() {
+  loadingModels.value = true
+  try {
+    const r = await api.listAgentModels()
+    modelList.value = r?.data || []
+  } catch { modelList.value = [] }
+  finally { loadingModels.value = false }
+}
+
+function cancelAddModel() {
+  showAddModelForm.value = false
+  Object.assign(newModel, {
+    name: '', provider: '', runtime_provider: 'openai',
+    runtime_model: '', base_url: '', wire_api: '',
+    enable_thinking: false, api_key: '',
+    agent_executor: '', agent_timeout: null, active: false,
+  })
+  newModelTestMsg.value = ''
+  modelFormMsg.value = ''
+}
+
+async function addModel() {
+  if (!newModel.name.trim() || !newModel.runtime_model.trim()) {
+    modelFormMsg.value = '显示名称和 Model ID 不能为空'; modelFormOk.value = false; return
+  }
+  modelSaving.value = true; modelFormMsg.value = ''
+  try {
+    await api.createAgentModel({
+      name:             newModel.name.trim(),
+      provider:         newModel.provider.trim(),
+      runtime_provider: newModel.runtime_provider,
+      runtime_model:    newModel.runtime_model.trim(),
+      base_url:         newModel.base_url.trim(),
+      wire_api:         newModel.wire_api,
+      enable_thinking:  !!newModel.enable_thinking,
+      api_key:          newModel.api_key.trim(),
+      agent_executor:   newModel.agent_executor || undefined,
+      agent_timeout:    newModel.agent_timeout  || undefined,
+      active:           newModel.active,
+    })
+    modelFormMsg.value = '添加成功'; modelFormOk.value = true
+    await loadModels()
+    setTimeout(cancelAddModel, 1000)
+  } catch (e) {
+    modelFormMsg.value = '添加失败: ' + e; modelFormOk.value = false
+  } finally { modelSaving.value = false }
+}
+
+function startEditModel(m) {
+  editingModelId.value = m.id
+  Object.assign(editModel, {
+    name: m.name || '', provider: m.provider || '',
+    runtime_provider: m.runtime_provider || 'openai',
+    runtime_model: m.runtime_model || '',
+    base_url: m.base_url || '', wire_api: m.wire_api || '', api_key: '',
+  })
+  modelFormMsg.value = ''
+}
+
+async function saveEditModel() {
+  if (!editModel.runtime_model.trim()) {
+    modelFormMsg.value = 'Model ID 不能为空'; modelFormOk.value = false; return
+  }
+  modelSaving.value = true; modelFormMsg.value = ''
+  try {
+    await api.updateAgentModel(editingModelId.value, {
+      name:             editModel.name.trim()          || undefined,
+      provider:         editModel.provider.trim()      || undefined,
+      runtime_provider: editModel.runtime_provider,
+      runtime_model:    editModel.runtime_model.trim() || undefined,
+      base_url:         editModel.base_url.trim()      || undefined,
+      wire_api:         editModel.wire_api              || undefined,
+      api_key:          editModel.api_key.trim()       || undefined,
+    })
+    modelFormMsg.value = '保存成功'; modelFormOk.value = true
+    await loadModels()
+    setTimeout(() => { editingModelId.value = null; modelFormMsg.value = '' }, 1000)
+  } catch (e) {
+    modelFormMsg.value = '保存失败: ' + e; modelFormOk.value = false
+  } finally { modelSaving.value = false }
+}
+
+async function activateModel(m) {
+  modelSaving.value = true
+  try {
+    await api.setAgentActiveModel(m.id)
+    await loadModels()
+  } catch (e) { alert('激活失败: ' + e) }
+  finally { modelSaving.value = false }
+}
+
+async function deleteModel(m) {
+  if (!confirm(`确认删除模型「${m.name}」？`)) return
+  modelSaving.value = true
+  try {
+    await api.deleteAgentModel(m.id)
+    await loadModels()
+  } catch (e) { alert('删除失败: ' + e) }
+  finally { modelSaving.value = false }
+}
 
 const anyCloudConfigured = computed(() =>
   !!(form.aliyun_access_key_id || settings.value?.aliyun_access_key_secret_set ||
@@ -756,7 +1049,7 @@ function applySettings(s) {
   // grafana_api_key 不回显到表单（敏感字段），只保留用户主动输入的值
   // 若服务端已配置（grafana_api_key_set=true），保持表单为空让用户选择是否覆盖
   form.skywalking_oap_url = s.skywalking_oap_url || ''
-  form.ai_provider = s.ai_provider || 'anthropic'
+  form.ai_provider = s.ai_provider || ''
   form.ai_base_url = s.ai_base_url || ''
   form.ai_model = s.ai_model || ''
   form.ai_wire_api = s.ai_wire_api || ''
@@ -820,6 +1113,7 @@ onMounted(async () => {
     loadError.value = '加载配置失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误')
   }
   loadGrafanaBoards()
+  loadModels()
 })
 
 async function testGrafana() {
@@ -876,6 +1170,28 @@ async function testConn(type) {
   }
 }
 
+async function testSkyWalking() {
+  testingSW.value    = true
+  swTestResult.value = null
+  swTestMsg.value    = ''
+  try {
+    // 先保存当前填写的地址，让后端热重载后再测试
+    if (form.skywalking_oap_url) {
+      await api.saveSettings({ skywalking_oap_url: form.skywalking_oap_url })
+    }
+    const r = await api.swTest()
+    swTestResult.value = r.reachable
+    swTestMsg.value = r.reachable
+      ? `连接成功，发现 ${r.services_count} 个服务${r.services?.length ? '：' + r.services.slice(0, 5).join('、') + (r.services_count > 5 ? '...' : '') : ''}`
+      : `连接失败：${r.error || '无法访问 OAP GraphQL 接口'}`
+  } catch (e) {
+    swTestResult.value = false
+    swTestMsg.value = '请求失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  } finally {
+    testingSW.value = false
+  }
+}
+
 async function copyWebhook() {
   try {
     await navigator.clipboard.writeText(webhookUrl.value)
@@ -909,18 +1225,29 @@ async function testAI() {
   aiTestResult.value = null
   aiTestMsg.value = ''
   try {
+    if (!form.ai_provider) {
+      aiTestResult.value = false
+      aiTestMsg.value = '请先选择 Provider'
+      return
+    }
+    if (!form.ai_model.trim()) {
+      aiTestResult.value = false
+      aiTestMsg.value = '请先填写模型名称'
+      return
+    }
     const payload = {
       provider: form.ai_provider,
       base_url: form.ai_base_url,
       model: form.ai_model,
       api_key: form.ai_api_key,
       wire_api: form.ai_wire_api || undefined,
+      enable_thinking: form.ai_provider === 'openai' ? !!form.ai_enable_thinking : undefined,
     }
     const r = await api.testAI(payload)
     aiTestResult.value = r.ok
     aiTestMsg.value = r.ok
-      ? `连接成功（${r.elapsed_ms} ms）模型：${r.model}，回答：${r.reply || '(空)'}`
-      : `连接失败（HTTP ${r.status || ''}）：${r.error || '未知错误'}`
+      ? `连接成功（${r.elapsed_ms} ms）模型：${r.model}${r.wire_api ? `，协议：${r.wire_api}` : ''}，回答：${r.reply || '(空)'}`
+      : `连接失败${r.status ? `（HTTP ${r.status}）` : ''}：${r.error || '未知错误'}`
   } catch (e) {
     aiTestResult.value = false
     aiTestMsg.value = '请求失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
@@ -988,6 +1315,13 @@ async function saveSettings() {
 .conn-badge.ok   { border-color: rgba(63,185,80,.3); color: var(--success); background: rgba(63,185,80,.08); }
 .conn-badge.err  { border-color: rgba(248,81,73,.3); color: var(--error);   background: rgba(248,81,73,.08); }
 .badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+.section-help {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
 
 /* 模型预设 */
 .preset-group { padding-bottom: 4px; }
@@ -1175,6 +1509,13 @@ async function saveSettings() {
 .grafana-test-result.err {
   background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.25); color: var(--error);
 }
+.conn-result {
+  margin-top: 6px; padding: 6px 10px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; word-break: break-all;
+}
+.conn-result.ok  { background: rgba(63,185,80,.08);  border: 1px solid rgba(63,185,80,.25);  color: var(--success, #3fb950); }
+.conn-result.err { background: rgba(248,81,73,.08);  border: 1px solid rgba(248,81,73,.25);  color: var(--error);  }
+
 .conn-test-result {
   margin-top: 6px; padding: 6px 10px; border-radius: 6px;
   font-size: 12px; font-weight: 500; word-break: break-all;
@@ -1208,4 +1549,62 @@ code {
   border-radius: 3px; padding: 1px 5px;
   font-family: var(--font-mono); font-size: 11px; color: var(--accent);
 }
+
+/* ── 模型管理（合并在 AI 大模型卡内） ── */
+.model-mgr-divider {
+  display: flex; align-items: center;
+  border-top: 1px solid var(--border); margin: 18px 0 12px;
+  padding-top: 14px;
+}
+.model-mgr-label {
+  font-size: 13px; font-weight: 600; color: var(--text-primary);
+}
+.model-add-form, .model-edit-inline {
+  background: var(--surface-2); border: 1px dashed var(--border);
+  border-radius: 8px; padding: 14px 16px; margin-bottom: 14px;
+}
+.model-form-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-bottom: 10px;
+}
+.mf-field        { display: flex; flex-direction: column; gap: 3px; }
+.mf-field span   { font-size: 11px; color: var(--text-muted); font-weight: 500; }
+.mf-field.mf-full{ grid-column: 1 / -1; }
+.mf-field.mf-checkbox { flex-direction: row; align-items: center; gap: 6px; padding-top: 18px; }
+.mf-field.mf-checkbox span { font-size: 12px; color: var(--text-primary); }
+.mf-field.mf-checkbox-full { flex-direction: row; align-items: flex-start; gap: 8px; grid-column: 1 / -1; padding-top: 4px; }
+.mf-field.mf-checkbox-full input { margin-top: 3px; flex-shrink: 0; }
+.mf-field.mf-checkbox-full span { font-size: 12px; color: var(--text-primary); line-height: 1.6; }
+.req  { color: var(--error); font-style: normal; }
+.model-form-actions { display: flex; align-items: center; gap: 8px; }
+.model-form-msg { font-size: 12px; }
+.model-form-msg.ok  { color: var(--success, #22c55e); }
+.model-form-msg.err { color: var(--error); }
+.model-loading { font-size: 12px; color: var(--text-muted); padding: 12px 0; }
+.model-empty   { font-size: 12px; color: var(--text-muted); padding: 12px 0; font-style: italic; }
+.model-table-wrap { overflow-x: auto; }
+.model-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.model-table th {
+  text-align: left; padding: 6px 10px;
+  border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 500; font-size: 11px;
+}
+.model-table td   { padding: 8px 10px; border-bottom: 1px solid var(--border-light, var(--border)); vertical-align: middle; }
+.model-table .row-active { background: rgba(59,130,246,.04); }
+.model-table .row-editing { background: var(--surface-2); }
+.model-id-sub  { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+.model-row-actions { display: flex; gap: 6px; }
+.tag-chip {
+  display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 600;
+  background: var(--accent-dim, rgba(59,130,246,.1)); color: var(--accent); border: 1px solid rgba(59,130,246,.2);
+}
+.mono.small  { font-family: monospace; font-size: 11px; }
+.muted       { color: var(--text-muted); }
+.btn-xs {
+  padding: 2px 8px; font-size: 11px; border-radius: 4px; cursor: pointer;
+  transition: all .1s; white-space: nowrap;
+}
+.btn.btn-danger {
+  border-color: rgba(239,68,68,.3); color: #ef4444; background: transparent;
+}
+.btn.btn-danger:hover { background: rgba(239,68,68,.08); }
+.btn.btn-danger:disabled { opacity: .4; cursor: not-allowed; }
 </style>

@@ -35,12 +35,14 @@ const routes = [
 
   // ── 7. 中间件 ─────────────────────────────────────────────────
   { path: '/middleware',    component: () => import('../views/MiddlewareView.vue'),     name: 'middleware' },
+  { path: '/middleware/redis', component: () => import('../views/RedisClusterView.vue'), name: 'middleware-redis' },
   { path: '/middleware/es', component: () => import('../views/ElasticsearchView.vue'),  name: 'middleware-es' },
 
   // ── 7.5. CI/CD ────────────────────────────────────────────────
   { path: '/cicd/jenkins', component: () => import('../views/JenkinsView.vue'), name: 'cicd-jenkins' },
 
   // ── 8. 可观测性 ───────────────────────────────────────────────
+  { path: '/observability/unified',  component: () => import('../views/ObsUnifiedView.vue'), name: 'obs-unified' },
   { path: '/observability/overview', component: () => import('../views/Dashboard.vue'),      name: 'obs-overview' },
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },
   { path: '/observability/logs',     component: () => import('../views/LogAnalysis.vue'),    name: 'obs-logs',     meta: { module: 'log' } },
@@ -63,6 +65,7 @@ const routes = [
   { path: '/aiops/alerts',    component: () => import('../views/AlertCenterView.vue'),    name: 'aiops-alerts' },
   { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
   { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
+  { path: '/aiops/workbench', component: () => import('../views/AIWorkbenchView.vue'),    name: 'aiops-workbench', meta: { module: 'agent' } },
   { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),     name: 'aiops-assistant', meta: { module: 'agent' } },
   { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'), name: 'aiops-config' },
 
@@ -83,6 +86,7 @@ const routes = [
   { path: '/slowlog',      redirect: '/tools/slowlog' },
   { path: '/report',       redirect: '/tools/report' },
   { path: '/agent',        redirect: '/aiops/assistant' },
+  { path: '/workbench',    redirect: '/aiops/workbench' },
   { path: '/agent-config', redirect: '/aiops/config' },
 ]
 
