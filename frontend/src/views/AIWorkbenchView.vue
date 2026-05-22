@@ -940,7 +940,9 @@ async function saveCurrentConvToDB() {
     if (selectedPath.value) {
       await fetchProjectConvs(selectedPath.value)
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[saveCurrentConvToDB] failed:', err)
+  }
   saveWbLocal()
 }
 

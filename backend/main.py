@@ -66,6 +66,39 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def _migrate_add_columns(conn) -> None:
+    """增量 DDL 迁移：为已有表补加新列，幂等（列已存在时跳过）。"""
+    import sqlalchemy as sa
+
+    migrations = [
+        # (table, column, type_sql_sqlite)
+        ("agent_conversations", "project_path", "VARCHAR(500) DEFAULT ''"),
+    ]
+    for table, col, col_type in migrations:
+        try:
+            # SQLite: PRAGMA table_info  |  PostgreSQL: information_schema
+            dialect = conn.engine.dialect.name if hasattr(conn, "engine") else "sqlite"
+            if dialect == "sqlite":
+                result = await conn.execute(sa.text(f"PRAGMA table_info({table})"))
+                existing = {row[1] for row in result.fetchall()}
+            else:
+                result = await conn.execute(sa.text(
+                    f"SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name='{table}' AND column_name='{col}'"
+                ))
+                existing = {row[0] for row in result.fetchall()}
+
+            if col not in existing:
+                await conn.execute(sa.text(
+                    f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
+                ))
+                logger.info("[migration] ALTER TABLE %s ADD COLUMN %s", table, col)
+            else:
+                logger.debug("[migration] %s.%s already exists, skip", table, col)
+        except Exception as exc:
+            logger.warning("[migration] %s.%s failed: %s", table, col, exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── 定时任务 ─────────────────────────────────────
@@ -111,6 +144,8 @@ async def lifespan(app: FastAPI):
     Path("./data").mkdir(exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 增量迁移：为已存在的表补加新列（SQLite / PostgreSQL 兼容）
+        await _migrate_add_columns(conn)
     async with AsyncSessionLocal() as db:
         await auth_service.sync_modules(db)
         created = await auth_service.ensure_admin(db)

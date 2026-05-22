@@ -758,3 +758,285 @@ async def test_cluster(cluster_id: str):
 @router.get("/clusters/{cluster_id}/overview")
 async def cluster_overview(cluster_id: str):
     return await _load_overview(_get_cluster(cluster_id))
+
+
+# ── Key Browser ────────────────────────────────────────────────────────────────
+
+async def _get_single_client(cluster: dict, db: int = 0) -> aioredis.Redis:
+    """返回单机或 Cluster 首节点的 Redis 客户端。"""
+    nodes = _normalize_startup_nodes(cluster.get("startup_nodes"))
+    host, port = _parse_endpoint(nodes[0])
+    return aioredis.Redis(
+        host=host, port=port,
+        username=cluster.get("username") or None,
+        password=cluster.get("password") or None,
+        ssl=bool(cluster.get("tls")),
+        db=db,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+    )
+
+
+@router.get("/clusters/{cluster_id}/keys")
+async def scan_keys(
+    cluster_id: str,
+    pattern: str = "*",
+    cursor: int = 0,
+    count: int = 100,
+    db: int = 0,
+):
+    """SCAN 遍历 Key 列表，返回 cursor + key 基础信息（type/ttl）。"""
+    cluster = _get_cluster(cluster_id)
+    client = await _get_single_client(cluster, db)
+    try:
+        next_cursor, keys = await client.scan(cursor=cursor, match=pattern, count=count)
+        # 并行获取每个 key 的 type 和 ttl
+        async def _key_meta(key: str) -> dict:
+            try:
+                ktype, ttl = await asyncio.gather(client.type(key), client.ttl(key))
+                return {"key": key, "type": str(ktype), "ttl": int(ttl)}
+            except Exception:
+                return {"key": key, "type": "unknown", "ttl": -1}
+        metas = await asyncio.gather(*(_key_meta(k) for k in keys))
+        return {"cursor": int(next_cursor), "keys": list(metas), "db": db}
+    finally:
+        await client.aclose()
+
+
+@router.get("/clusters/{cluster_id}/key")
+async def get_key_value(cluster_id: str, key: str, db: int = 0):
+    """获取 Key 的完整值（根据类型选择正确命令）。"""
+    cluster = _get_cluster(cluster_id)
+    client = await _get_single_client(cluster, db)
+    try:
+        ktype = str(await client.type(key))
+        ttl   = int(await client.ttl(key))
+        enc   = ""
+        try:
+            enc = str(await client.object_encoding(key))
+        except Exception:
+            pass
+
+        value: Any = None
+        length: int | None = None
+
+        if ktype == "string":
+            value = await client.get(key)
+            length = len(value) if isinstance(value, str) else None
+
+        elif ktype == "list":
+            length = await client.llen(key)
+            value = await client.lrange(key, 0, 199)   # 最多 200 条
+
+        elif ktype == "hash":
+            value = await client.hgetall(key)
+            length = len(value)
+
+        elif ktype == "set":
+            members = await client.sscan_iter(key, count=200)
+            value = [m async for m in members]
+            length = await client.scard(key)
+
+        elif ktype == "zset":
+            value = await client.zrange(key, 0, 199, withscores=True)
+            value = [{"member": m, "score": s} for m, s in value]
+            length = await client.zcard(key)
+
+        elif ktype == "stream":
+            entries = await client.xrange(key, count=100)
+            value = [{"id": eid, "fields": dict(fields)} for eid, fields in entries]
+            length = await client.xlen(key)
+
+        return {
+            "key": key, "type": ktype, "ttl": ttl,
+            "encoding": enc, "length": length,
+            "value": value, "db": db,
+        }
+    except ResponseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        await client.aclose()
+
+
+class KeyDeletePayload(BaseModel):
+    db: int = 0
+
+
+@router.delete("/clusters/{cluster_id}/key")
+async def delete_key(cluster_id: str, key: str, db: int = 0):
+    cluster = _get_cluster(cluster_id)
+    client = await _get_single_client(cluster, db)
+    try:
+        deleted = await client.delete(key)
+        return {"ok": deleted > 0, "deleted": deleted}
+    finally:
+        await client.aclose()
+
+
+class KeyTTLPayload(BaseModel):
+    ttl: int   # -1 = persist, >=0 = seconds
+
+
+@router.put("/clusters/{cluster_id}/key/ttl")
+async def set_key_ttl(cluster_id: str, key: str, body: KeyTTLPayload, db: int = 0):
+    cluster = _get_cluster(cluster_id)
+    client = await _get_single_client(cluster, db)
+    try:
+        if body.ttl < 0:
+            result = await client.persist(key)
+        else:
+            result = await client.expire(key, body.ttl)
+        return {"ok": bool(result)}
+    finally:
+        await client.aclose()
+
+
+# ── 监控（INFO 全量 + Slowlog）─────────────────────────────────────────────────
+
+@router.get("/clusters/{cluster_id}/info")
+async def get_redis_info(cluster_id: str, db: int = 0):
+    """获取 Redis INFO all 并分段返回。"""
+    cluster = _get_cluster(cluster_id)
+    client = await _get_single_client(cluster, db)
+    try:
+        info: dict = await client.info("all")
+        keyspace: dict = await client.info("keyspace")
+        # 按段分组
+        groups: dict[str, dict] = {
+            "server":      {}, "clients":     {}, "memory":  {},
+            "stats":       {}, "replication": {}, "cpu":     {},
+            "persistence": {}, "keyspace":    keyspace,
+        }
+        section_keys = {
+            "server":      {"redis_version", "redis_mode", "os", "arch_bits", "uptime_in_seconds",
+                            "uptime_in_days", "hz", "tcp_port", "executable", "config_file"},
+            "clients":     {"connected_clients", "blocked_clients", "tracking_clients",
+                            "clients_in_timeout_table", "maxclients"},
+            "memory":      {"used_memory", "used_memory_human", "used_memory_rss_human",
+                            "used_memory_peak_human", "used_memory_startup", "mem_fragmentation_ratio",
+                            "maxmemory", "maxmemory_human", "maxmemory_policy"},
+            "stats":       {"total_commands_processed", "instantaneous_ops_per_sec",
+                            "total_net_input_bytes", "total_net_output_bytes",
+                            "keyspace_hits", "keyspace_misses", "expired_keys",
+                            "evicted_keys", "total_connections_received"},
+            "replication": {"role", "connected_slaves", "master_replid", "master_repl_offset",
+                            "repl_backlog_active", "repl_backlog_size"},
+            "cpu":         {"used_cpu_sys", "used_cpu_user"},
+            "persistence": {"rdb_changes_since_last_save", "rdb_last_save_time",
+                            "rdb_last_bgsave_status", "aof_enabled"},
+        }
+        for key, val in info.items():
+            for section, keys in section_keys.items():
+                if key in keys:
+                    groups[section][key] = val
+                    break
+        # 计算命中率
+        hits   = _to_int(info.get("keyspace_hits"))
+        misses = _to_int(info.get("keyspace_misses"))
+        total  = hits + misses
+        groups["stats"]["hit_rate"] = round(hits / total * 100, 2) if total else None
+        return groups
+    finally:
+        await client.aclose()
+
+
+@router.get("/clusters/{cluster_id}/slowlog")
+async def get_slowlog(cluster_id: str, count: int = 25, db: int = 0):
+    cluster = _get_cluster(cluster_id)
+    client = await _get_single_client(cluster, db)
+    try:
+        entries = await client.slowlog_get(count)
+        result = []
+        for entry in entries:
+            cmd = entry.get("command", b"") if isinstance(entry, dict) else b""
+            if isinstance(cmd, bytes):
+                cmd = cmd.decode("utf-8", errors="replace")
+            args = entry.get("args", []) if isinstance(entry, dict) else []
+            args_str = " ".join(
+                a.decode("utf-8", errors="replace") if isinstance(a, bytes) else str(a)
+                for a in args
+            )
+            result.append({
+                "id":          entry.get("id", 0) if isinstance(entry, dict) else 0,
+                "timestamp":   entry.get("start_time", 0) if isinstance(entry, dict) else 0,
+                "duration_us": entry.get("duration", 0) if isinstance(entry, dict) else 0,
+                "command":     f"{cmd} {args_str}".strip(),
+                "client_addr": entry.get("client_addr", "") if isinstance(entry, dict) else "",
+                "client_name": entry.get("client_name", "") if isinstance(entry, dict) else "",
+            })
+        return {"entries": result}
+    finally:
+        await client.aclose()
+
+
+# ── 命令控制台 ─────────────────────────────────────────────────────────────────
+
+class RedisCommandPayload(BaseModel):
+    command: str
+    db: int = 0
+
+
+@router.post("/clusters/{cluster_id}/command")
+async def run_command(cluster_id: str, body: RedisCommandPayload):
+    """执行原始 Redis 命令（禁止 FLUSHALL / FLUSHDB / SHUTDOWN 等危险命令）。"""
+    BLOCKED = {"flushall", "flushdb", "shutdown", "slaveof", "replicaof", "debug", "module"}
+
+    raw = body.command.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="命令不能为空")
+
+    # 解析命令和参数（保留引号内的空格）
+    import shlex
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        parts = raw.split()
+
+    if not parts:
+        raise HTTPException(status_code=400, detail="命令不能为空")
+    if parts[0].lower() in BLOCKED:
+        raise HTTPException(status_code=403, detail=f"命令 {parts[0].upper()} 已被禁止执行")
+
+    cluster = _get_cluster(cluster_id)
+
+    # 检测运行模式：cluster 模式不支持 SELECT（db>0）
+    runtime_mode, _ = await _resolve_runtime_mode(cluster)
+    use_db = 0 if runtime_mode == _MODE_CLUSTER else body.db
+
+    client = await _get_single_client(cluster, use_db)
+    try:
+        result = await client.execute_command(*parts)
+
+        def _serialize(v: Any) -> Any:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, bytes):
+                return v.decode("utf-8", errors="replace")
+            if isinstance(v, (int, float)):
+                return v
+            if isinstance(v, str):
+                return v
+            if isinstance(v, (list, tuple)):
+                return [_serialize(x) for x in v]
+            if isinstance(v, dict):
+                return {_serialize(k): _serialize(val) for k, val in v.items()}
+            return str(v)
+
+        return {
+            "ok":       True,
+            "result":   _serialize(result),
+            "db_used":  use_db,
+            "mode":     runtime_mode,
+        }
+    except ResponseError as exc:
+        return {"ok": False, "error": str(exc), "db_used": use_db}
+    except RedisError as exc:
+        return {"ok": False, "error": f"Redis 连接错误: {exc}", "db_used": use_db}
+    except Exception as exc:
+        logger.error("[redis] command exec error: %s", exc, exc_info=True)
+        return {"ok": False, "error": f"执行异常: {exc}", "db_used": use_db}
+    finally:
+        await client.aclose()

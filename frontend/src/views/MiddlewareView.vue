@@ -19,7 +19,10 @@
 
       <div class="mw-hero-actions">
         <button class="btn btn-outline" @click="goRedisCluster">
-          Redis Cluster 管理
+          Redis 管理
+        </button>
+        <button class="btn btn-outline" @click="goEs">
+          ES 管理
         </button>
         <button class="btn btn-outline" :disabled="loading" @click="resetView">
           重置视图
@@ -44,20 +47,60 @@
     </section>
 
     <section class="mw-manage-grid">
-      <article class="card mw-manage-card">
+      <!-- Redis 管理卡 -->
+      <article class="card mw-manage-card mw-manage-redis">
         <div class="mw-manage-head">
+          <div class="mw-manage-icon-wrap redis-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>
+          </div>
           <div>
             <span class="mw-manage-eyebrow">Cluster Management</span>
-            <h3>Redis Cluster 管理</h3>
+            <h3>Redis 集群管理</h3>
           </div>
-          <span class="mw-manage-badge">新增</span>
+          <span class="mw-manage-badge redis-badge">{{ redisClusterCount }} 个集群</span>
         </div>
         <p class="mw-manage-text">
-          新增 Redis 集群管理入口，可直接查看 Cluster 槽位覆盖、主从节点健康、连接测试和容量概览。
+          支持 Redis 单机与 Cluster 模式，可查看槽位覆盖、主从健康、Key 浏览器、监控统计与命令台。
         </p>
+        <div class="mw-manage-stats" v-if="redisClusterCount">
+          <div class="mws-item" v-for="c in redisPreview" :key="c.id">
+            <span class="mws-dot" :class="c.ok ? 'ok' : 'err'"></span>
+            <span class="mws-name">{{ c.name }}</span>
+            <span class="mws-mode">{{ c.mode }}</span>
+          </div>
+        </div>
         <div class="mw-manage-actions">
-          <button class="btn btn-primary" type="button" @click="goRedisCluster">
-            打开 Redis Cluster
+          <button class="btn btn-primary btn-sm" type="button" @click="goRedisCluster">
+            打开 Redis 管理 →
+          </button>
+        </div>
+      </article>
+
+      <!-- ES 管理卡 -->
+      <article class="card mw-manage-card mw-manage-es">
+        <div class="mw-manage-head">
+          <div class="mw-manage-icon-wrap es-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </div>
+          <div>
+            <span class="mw-manage-eyebrow">Search Management</span>
+            <h3>Elasticsearch 管理</h3>
+          </div>
+          <span class="mw-manage-badge es-badge">{{ esClusterCount }} 个集群</span>
+        </div>
+        <p class="mw-manage-text">
+          支持多集群接入，可查看索引列表、节点状态、分片槽位、集群健康、指标概览与命令代理。
+        </p>
+        <div class="mw-manage-stats" v-if="esClusterCount">
+          <div class="mws-item" v-for="c in esPreview" :key="c.id">
+            <span class="mws-dot" :class="c.health === 'green' ? 'ok' : c.health === 'yellow' ? 'warn' : 'err'"></span>
+            <span class="mws-name">{{ c.name }}</span>
+            <span class="mws-mode">{{ c.env || 'default' }}</span>
+          </div>
+        </div>
+        <div class="mw-manage-actions">
+          <button class="btn btn-primary btn-sm" type="button" @click="goEs">
+            打开 ES 管理 →
           </button>
         </div>
       </article>
@@ -513,8 +556,37 @@ function closeMetrics() {
   activeMetrics.value = null
 }
 
+// ── 管理卡片：Redis + ES ──────────────────────────────────────────────────────
+const redisPreview    = ref([])
+const esPreview       = ref([])
+const redisClusterCount = computed(() => redisPreview.value.length)
+const esClusterCount    = computed(() => esPreview.value.length)
+
+async function loadManagePreview() {
+  try {
+    const r = await api.redisClusters()
+    redisPreview.value = (r || []).map(c => ({
+      id: c.id, name: c.name,
+      mode: c.mode === 'cluster' ? 'Cluster' : c.mode === 'standalone' ? '单机' : 'Auto',
+      ok: true,
+    }))
+  } catch { redisPreview.value = [] }
+
+  try {
+    const r = await api.esClusters()
+    esPreview.value = (r || []).map(c => ({
+      id: c.id, name: c.name, env: c.env,
+      health: 'unknown',  // 不额外请求 health，只展示已配置的集群
+    }))
+  } catch { esPreview.value = [] }
+}
+
 function goRedisCluster() {
   router.push('/middleware/redis')
+}
+
+function goEs() {
+  router.push('/middleware/es')
 }
 
 function handleAnomalyClick(item) {
@@ -525,7 +597,10 @@ function handleAnomalyClick(item) {
   selectedType.value = item.targetType || ''
 }
 
-onMounted(fetchAll)
+onMounted(() => {
+  fetchAll()
+  loadManagePreview()
+})
 </script>
 
 <style scoped>
@@ -625,16 +700,57 @@ onMounted(fetchAll)
 
 .mw-manage-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
 }
 
 .mw-manage-card {
   padding: 18px 20px;
+}
+
+/* Redis 卡片 */
+.mw-manage-redis {
   background:
-    radial-gradient(circle at top right, rgba(239, 68, 68, 0.12), transparent 34%),
+    radial-gradient(circle at top right, rgba(220, 38, 38, 0.1), transparent 40%),
     linear-gradient(180deg, rgba(255, 247, 237, 0.96), rgba(255, 255, 255, 0.98));
   box-shadow: inset 0 0 0 1px rgba(253, 186, 116, 0.24);
 }
+
+/* ES 卡片 */
+.mw-manage-es {
+  background:
+    radial-gradient(circle at top right, rgba(79, 70, 229, 0.1), transparent 40%),
+    linear-gradient(180deg, rgba(238, 242, 255, 0.96), rgba(255, 255, 255, 0.98));
+  box-shadow: inset 0 0 0 1px rgba(165, 180, 252, 0.3);
+}
+
+/* 图标 */
+.mw-manage-icon-wrap {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.redis-icon { background: rgba(220,38,38,.12); color: #dc2626; }
+.es-icon    { background: rgba(79,70,229,.12);  color: #4f46e5; }
+
+/* 集群预览列表 */
+.mw-manage-stats {
+  margin: 10px 0 8px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.mws-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-secondary);
+}
+.mws-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.mws-dot.ok   { background: var(--success, #22c55e); }
+.mws-dot.warn { background: var(--warning, #f59e0b); }
+.mws-dot.err  { background: var(--error, #ef4444); }
+.mws-name { font-weight: 500; color: var(--text-primary); }
+.mws-mode { margin-left: auto; font-size: 10px; color: var(--text-muted);
+  background: var(--bg-input); padding: 1px 5px; border-radius: 3px; }
 
 .mw-manage-head {
   display: flex;
@@ -642,6 +758,10 @@ onMounted(fetchAll)
   justify-content: space-between;
   gap: 12px;
 }
+
+/* badge 颜色区分 */
+.redis-badge { background: rgba(220,38,38,.1);   color: #dc2626; }
+.es-badge    { background: rgba(79,70,229,.1);    color: #4f46e5; }
 
 .mw-manage-eyebrow {
   display: inline-block;

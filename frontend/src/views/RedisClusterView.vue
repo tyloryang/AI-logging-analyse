@@ -34,52 +34,67 @@
       </section>
 
       <template v-else>
-        <section class="hero card">
-          <div class="hero-left">
-            <div class="hero-badge">
-              <span class="hero-badge-dot"></span>
-              <span>Middleware / Redis</span>
+        <!-- 左侧导航 -->
+        <nav class="side-nav">
+          <div class="sn-cluster-name">{{ activeCluster?.name }}</div>
+          <div class="sn-section">监控</div>
+          <button v-for="item in NAV_ITEMS" :key="item.id"
+            class="sn-item" :class="{ active: activePage === item.id }"
+            type="button" @click="switchPage(item.id)">
+            <span class="sn-icon">{{ item.icon }}</span>{{ item.label }}
+          </button>
+          <div class="sn-section">工具</div>
+          <button v-for="item in NAV_TOOLS" :key="item.id"
+            class="sn-item" :class="{ active: activePage === item.id }"
+            type="button" @click="switchPage(item.id)">
+            <span class="sn-icon">{{ item.icon }}</span>{{ item.label }}
+          </button>
+        </nav>
+
+        <!-- 主内容 -->
+        <main class="main-pane">
+          <!-- 顶部 Hero -->
+          <header class="page-head">
+            <div>
+              <div class="page-title">{{ currentPageLabel }}</div>
+              <div class="page-sub">
+                {{ activeCluster?.name }} ·
+                <span class="state-pill sm" :class="summaryTone">{{ stateText }}</span>
+              </div>
             </div>
-            <div class="hero-title-row">
-              <h1>{{ activeCluster?.name }}</h1>
-              <span class="state-pill" :class="summaryTone">
-                {{ stateText }}
-              </span>
+            <div class="head-actions">
+              <select v-if="activePage === 'keys'" v-model.number="keyDb" class="db-select" @change="scanKeys(true)">
+                <option v-for="n in 16" :key="n-1" :value="n-1">DB {{ n-1 }}</option>
+              </select>
+              <button class="btn btn-outline btn-sm" @click="openClusterModal(activeId)">编辑</button>
+              <button class="btn btn-outline btn-sm" :disabled="testing" @click="testActiveCluster">
+                {{ testing ? '测试中...' : '测试连接' }}
+              </button>
+              <button class="btn btn-primary btn-sm" :disabled="loading" @click="refreshPage">
+                {{ loading ? '刷新中...' : '↻ 刷新' }}
+              </button>
             </div>
-            <p class="hero-subtitle">
-              {{ activeCluster?.note || '查看 Redis 单机或集群的角色分布、槽位覆盖、节点连通性和实时负载情况。' }}
-            </p>
+          </header>
+
+          <div v-if="testResult" class="alert" :class="testResult.ok ? 'alert-success' : 'alert-error'" style="margin:0 16px 0">
+            {{ testResult.ok ? `${testResult.message}，识别为 ${modeLabel(testResult.detected_mode)}` : `连接失败: ${testResult.error || testResult.message}` }}
           </div>
-          <div class="hero-actions">
-            <button class="btn btn-outline" type="button" @click="openClusterModal(activeId)">编辑连接</button>
-            <button class="btn btn-outline" type="button" :disabled="testing" @click="testActiveCluster">
-              {{ testing ? '测试中...' : '连接测试' }}
-            </button>
-            <button class="btn btn-primary" type="button" :disabled="loading" @click="loadOverview(activeId, { force: true })">
-              {{ loading ? '刷新中...' : '刷新概览' }}
-            </button>
+
+          <!-- KPI 卡片（概览页显示） -->
+          <div v-if="activePage === 'overview'" class="kpi-grid">
+            <article v-for="item in kpis" :key="item.label" class="kpi card" :class="item.tone">
+              <div class="kpi-label">{{ item.label }}</div>
+              <div class="kpi-value">{{ item.value }}</div>
+              <div class="kpi-hint">{{ item.hint }}</div>
+            </article>
           </div>
-        </section>
 
-        <section class="kpi-grid">
-          <article v-for="item in kpis" :key="item.label" class="kpi card" :class="item.tone">
-            <div class="kpi-label">{{ item.label }}</div>
-            <div class="kpi-value">{{ item.value }}</div>
-            <div class="kpi-hint">{{ item.hint }}</div>
-          </article>
-        </section>
+          <div v-if="loading && activePage === 'overview' && !overview" class="loading-card">
+            <div class="spinner"></div><span>加载中...</span>
+          </div>
 
-        <section v-if="testResult" class="alert" :class="testResult.ok ? 'alert-success' : 'alert-error'">
-          {{ testResult.ok ? `${testResult.message}，识别为 ${modeLabel(testResult.detected_mode)}` : `连接失败: ${testResult.error || testResult.message}` }}
-        </section>
-
-        <section v-if="loading && !overview" class="card loading-card">
-          <div class="spinner"></div>
-          <span>正在加载 Redis 概览...</span>
-        </section>
-
-        <template v-else-if="overview">
-          <section class="main-grid">
+        <div v-if="overview && activePage === 'overview'" class="main-grid">
+          <section class="main-grid" style="padding:0;gap:14px">
             <article class="card summary-card">
               <div class="card-head">
                 <div>
@@ -250,9 +265,264 @@
               </table>
             </div>
           </section>
-        </template>
+        </div><!-- /overview -->
+
+        <!-- ══ Key 浏览 ══ -->
+        <div v-if="activePage === 'keys'" class="keys-pane">
+          <div class="keys-toolbar">
+            <input v-model="keyPattern" class="keys-search" placeholder="Pattern: * 或 user:*" @keyup.enter="scanKeys(true)" />
+            <button class="btn btn-primary btn-sm" @click="scanKeys(true)" :disabled="keysLoading">{{ keysLoading ? '扫描中...' : '扫描' }}</button>
+            <span class="keys-hint">{{ keyList.length }} 个 Key{{ keyCursor ? '（还有更多）' : '' }}</span>
+          </div>
+          <div class="keys-body">
+            <!-- Key 列表 -->
+            <div class="key-list-wrap">
+              <div v-if="keysLoading" class="loading-row"><div class="spinner"></div></div>
+              <div v-else-if="!keyList.length" class="empty-state">暂无 Key</div>
+              <div v-else>
+                <div v-for="item in keyList" :key="item.key"
+                  class="key-row" :class="{ active: selectedKey === item.key }"
+                  @click="selectKey(item)">
+                  <span class="key-type-badge" :class="'ktype-' + item.type">{{ item.type }}</span>
+                  <span class="key-name">{{ item.key }}</span>
+                  <span class="key-ttl" :class="item.ttl === -1 ? 'ttl-perm' : item.ttl < 60 ? 'ttl-soon' : ''">
+                    {{ item.ttl === -1 ? '永久' : item.ttl === -2 ? '已过期' : item.ttl + 's' }}
+                  </span>
+                </div>
+                <button v-if="keyCursor" class="btn btn-outline btn-sm" style="width:100%;margin-top:6px" @click="scanKeys(false)">
+                  加载更多
+                </button>
+              </div>
+            </div>
+            <!-- Key 详情 -->
+            <div class="key-detail-wrap">
+              <div v-if="!selectedKey" class="empty-state">← 选择 Key 查看详情</div>
+              <template v-else>
+                <div class="kd-header">
+                  <span class="key-type-badge" :class="'ktype-' + (keyDetail?.type || '')">{{ keyDetail?.type }}</span>
+                  <span class="kd-name">{{ selectedKey }}</span>
+                  <span class="kd-ttl">TTL: {{ keyDetail?.ttl === -1 ? '永久' : (keyDetail?.ttl ?? '-') + 's' }}</span>
+                  <div style="margin-left:auto;display:flex;gap:6px">
+                    <input v-model.number="newTTL" type="number" class="ttl-input" placeholder="设置 TTL(s)" min="-1" />
+                    <button class="btn btn-outline btn-sm" @click="setTTL">设置 TTL</button>
+                    <button class="btn btn-danger btn-sm" @click="deleteSelectedKey">删除</button>
+                  </div>
+                </div>
+                <div v-if="keyDetailLoading" class="loading-row"><div class="spinner"></div></div>
+                <div v-else-if="keyDetail" class="kd-body">
+                  <div class="kd-meta">长度: {{ keyDetail.length ?? '-' }} · 编码: {{ keyDetail.encoding || '-' }}</div>
+                  <!-- String -->
+                  <pre v-if="keyDetail.type === 'string'" class="kd-value">{{ keyDetail.value }}</pre>
+                  <!-- Hash -->
+                  <table v-else-if="keyDetail.type === 'hash'" class="kd-table">
+                    <thead><tr><th>Field</th><th>Value</th></tr></thead>
+                    <tbody>
+                      <tr v-for="(v, k) in keyDetail.value" :key="k">
+                        <td class="mono kd-field">{{ k }}</td>
+                        <td class="kd-val">{{ v }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <!-- List -->
+                  <table v-else-if="keyDetail.type === 'list'" class="kd-table">
+                    <thead><tr><th>#</th><th>Value</th></tr></thead>
+                    <tbody>
+                      <tr v-for="(v, i) in keyDetail.value" :key="i">
+                        <td class="mono">{{ i }}</td><td>{{ v }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <!-- Set -->
+                  <div v-else-if="keyDetail.type === 'set'" class="kd-set">
+                    <span v-for="m in keyDetail.value" :key="m" class="set-member">{{ m }}</span>
+                  </div>
+                  <!-- ZSet -->
+                  <table v-else-if="keyDetail.type === 'zset'" class="kd-table">
+                    <thead><tr><th>Member</th><th>Score</th></tr></thead>
+                    <tbody>
+                      <tr v-for="item in keyDetail.value" :key="item.member">
+                        <td>{{ item.member }}</td><td class="mono">{{ item.score }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <!-- Stream -->
+                  <div v-else-if="keyDetail.type === 'stream'" class="kd-stream">
+                    <div v-for="entry in keyDetail.value" :key="entry.id" class="stream-entry">
+                      <span class="stream-id mono">{{ entry.id }}</span>
+                      <span v-for="(v, k) in entry.fields" :key="k" class="stream-field">
+                        <em>{{ k }}</em>: {{ v }}
+                      </span>
+                    </div>
+                  </div>
+                  <pre v-else class="kd-value">{{ JSON.stringify(keyDetail.value, null, 2) }}</pre>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- ══ 监控 ══ -->
+        <div v-if="activePage === 'monitor'" class="monitor-pane">
+          <div v-if="infoLoading" class="loading-row"><div class="spinner"></div><span>加载 INFO...</span></div>
+          <template v-else-if="redisInfo">
+            <!-- 核心指标 -->
+            <div class="info-kpi-row">
+              <div class="info-kpi">
+                <span>Redis 版本</span><strong>{{ redisInfo.server?.redis_version || '-' }}</strong>
+              </div>
+              <div class="info-kpi">
+                <span>运行天数</span><strong>{{ redisInfo.server?.uptime_in_days ?? '-' }} 天</strong>
+              </div>
+              <div class="info-kpi">
+                <span>连接数</span><strong>{{ redisInfo.clients?.connected_clients ?? '-' }}</strong>
+              </div>
+              <div class="info-kpi">
+                <span>内存使用</span><strong>{{ redisInfo.memory?.used_memory_human || '-' }}</strong>
+              </div>
+              <div class="info-kpi">
+                <span>峰值内存</span><strong>{{ redisInfo.memory?.used_memory_peak_human || '-' }}</strong>
+              </div>
+              <div class="info-kpi">
+                <span>内存策略</span><strong>{{ redisInfo.memory?.maxmemory_policy || '-' }}</strong>
+              </div>
+              <div class="info-kpi">
+                <span>QPS</span><strong>{{ redisInfo.stats?.instantaneous_ops_per_sec ?? '-' }}</strong>
+              </div>
+              <div class="info-kpi" :class="(redisInfo.stats?.hit_rate ?? 0) < 80 ? 'tone-warn' : ''">
+                <span>命中率</span>
+                <strong>{{ redisInfo.stats?.hit_rate != null ? redisInfo.stats.hit_rate + '%' : '-' }}</strong>
+              </div>
+              <div class="info-kpi">
+                <span>过期 Key</span><strong>{{ redisInfo.stats?.expired_keys ?? '-' }}</strong>
+              </div>
+              <div class="info-kpi">
+                <span>淘汰 Key</span><strong>{{ redisInfo.stats?.evicted_keys ?? '-' }}</strong>
+              </div>
+            </div>
+            <!-- Keyspace 分布 -->
+            <div class="info-section">
+              <div class="info-sec-title">Keyspace</div>
+              <div v-if="!Object.keys(redisInfo.keyspace || {}).length" class="empty-state sm">无数据（空实例）</div>
+              <table v-else class="info-table">
+                <thead><tr><th>DB</th><th>Keys</th><th>Expires</th><th>Avg TTL</th></tr></thead>
+                <tbody>
+                  <tr v-for="(v, k) in redisInfo.keyspace" :key="k">
+                    <td>{{ k }}</td>
+                    <td>{{ parseKsField(v, 'keys') }}</td>
+                    <td>{{ parseKsField(v, 'expires') }}</td>
+                    <td>{{ parseKsField(v, 'avg_ttl') }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <!-- 主从复制 -->
+            <div class="info-section">
+              <div class="info-sec-title">主从复制</div>
+              <div class="info-kv-grid">
+                <template v-for="(v, k) in redisInfo.replication" :key="k">
+                  <span class="info-k">{{ k }}</span><span class="info-v">{{ v }}</span>
+                </template>
+              </div>
+            </div>
+            <!-- 慢查询 -->
+            <div class="info-section">
+              <div class="info-sec-title">
+                慢查询日志
+                <button class="btn btn-outline btn-sm" style="margin-left:8px" @click="loadSlowlog">刷新</button>
+              </div>
+              <div v-if="!slowlog.length" class="empty-state sm">暂无慢查询</div>
+              <table v-else class="info-table">
+                <thead><tr><th>耗时(μs)</th><th>命令</th><th>时间</th><th>客户端</th></tr></thead>
+                <tbody>
+                  <tr v-for="s in slowlog" :key="s.id">
+                    <td :class="s.duration_us > 10000 ? 'val-err' : 'val-warn'">{{ s.duration_us }}</td>
+                    <td class="mono">{{ s.command }}</td>
+                    <td>{{ formatSlowTs(s.timestamp) }}</td>
+                    <td class="mono">{{ s.client_addr }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
+
+        <!-- ══ 命令台 ══ -->
+        <div v-if="activePage === 'console'" class="console-pane">
+          <!-- 顶栏 -->
+          <div class="con-topbar">
+            <div class="con-db-row">
+              <span class="con-label">DB</span>
+              <select v-model.number="consoleDb" class="con-db-sel">
+                <option v-for="n in 16" :key="n-1" :value="n-1">{{ n-1 }}</option>
+              </select>
+              <span class="con-cluster-info">{{ activeCluster?.name }}</span>
+            </div>
+            <div class="con-preset-groups">
+              <div v-for="grp in CONSOLE_PRESET_GROUPS" :key="grp.label" class="preset-group">
+                <span class="preset-group-label">{{ grp.label }}</span>
+                <button v-for="p in grp.cmds" :key="p" class="preset-chip"
+                  @click="fillConsoleCmdAndFocus(p)">{{ p }}</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 终端输出区（命令 + 结果按时序展示） -->
+          <div class="con-output" ref="conOutputRef">
+            <div v-if="!consoleSession.length" class="con-welcome">
+              <div class="con-welcome-title">Redis CLI</div>
+              <div class="con-welcome-sub">Connected to {{ activeCluster?.name }} · DB {{ consoleDb }}</div>
+              <div class="con-welcome-hint">输入命令后按 Enter 执行 · ↑↓ 键切换历史</div>
+            </div>
+            <div v-for="(item, i) in consoleSession" :key="i" class="con-entry">
+              <!-- 命令行 -->
+              <div class="con-cmd-line">
+                <span class="con-prompt">{{ item.db !== undefined ? `[db${item.db}]` : '' }} &gt;</span>
+                <span class="con-cmd-text">{{ item.cmd }}</span>
+                <span class="con-copy-btn" title="复制命令" @click="copyText(item.cmd)">⎘</span>
+              </div>
+              <!-- 结果 -->
+              <div class="con-result-block" :class="item.ok === false ? 'res-err' : 'res-ok'">
+                <div class="con-result-meta">
+                  <span class="con-type-badge" :class="'rtype-' + item.rtype">{{ item.rtype }}</span>
+                  <span class="con-dur">{{ item.ms }}ms</span>
+                  <span class="con-copy-btn" title="复制结果" @click="copyText(item.resultText)">⎘</span>
+                </div>
+                <pre class="con-result-pre" v-html="item.resultHtml"></pre>
+              </div>
+            </div>
+            <div v-if="consoleRunning" class="con-running">
+              <div class="spinner" style="width:12px;height:12px;border-width:2px"></div>
+              <span>执行中...</span>
+            </div>
+          </div>
+
+          <!-- 输入区 -->
+          <div class="con-input-wrap">
+            <span class="con-prompt-static">[db{{ consoleDb }}]&gt;</span>
+            <input
+              ref="conInputRef"
+              v-model="consoleCmd"
+              class="con-input"
+              placeholder="输入 Redis 命令，Enter 执行，↑↓ 切换历史..."
+              spellcheck="false"
+              autocomplete="off"
+              :disabled="consoleRunning"
+              @keydown.enter.prevent="runConsoleCmd"
+              @keydown.up.prevent="historyUp"
+              @keydown.down.prevent="historyDown"
+              @keydown.ctrl.l.prevent="clearConsoleSession"
+            />
+            <div class="con-input-actions">
+              <button class="con-btn-run" :disabled="consoleRunning || !consoleCmd.trim()"
+                @click="runConsoleCmd" title="执行 (Enter)">▶</button>
+              <button class="con-btn-clear" @click="clearConsoleSession" title="清空 (Ctrl+L)">✕</button>
+            </div>
+          </div>
+        </div>
+
+        </main><!-- /main-pane -->
       </template>
-    </div>
+    </div><!-- /page-shell -->
 
     <div v-if="showModal" class="modal-overlay" @click.self="closeModal">
       <div class="modal">
@@ -348,8 +618,22 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { api } from '../api/index.js'
+
+// ── 导航 ──────────────────────────────────────────────────────────────────────
+const NAV_ITEMS = [
+  { id: 'overview', icon: '◈', label: '集群概览' },
+  { id: 'monitor',  icon: '📊', label: '监控统计' },
+]
+const NAV_TOOLS = [
+  { id: 'keys',    icon: '🔑', label: 'Key 浏览器' },
+  { id: 'console', icon: '⌨', label: '命令台' },
+]
+const activePage = ref('overview')
+const currentPageLabel = computed(() =>
+  [...NAV_ITEMS, ...NAV_TOOLS].find(i => i.id === activePage.value)?.label || '概览'
+)
 
 const clusters = ref([])
 const overviewCache = ref({})
@@ -624,6 +908,305 @@ async function removeCluster(clusterId) {
   if (activeId.value) await loadOverview(activeId.value, { force: true })
 }
 
+// ── 页面切换 ──────────────────────────────────────────────────────────────────
+async function switchPage(id) {
+  activePage.value = id
+  if (id === 'monitor') { await loadRedisInfo(); await loadSlowlog() }
+  if (id === 'keys')    { await scanKeys(true) }
+}
+
+function refreshPage() {
+  if (activePage.value === 'overview') loadOverview(activeId.value, { force: true })
+  else if (activePage.value === 'monitor') { loadRedisInfo(); loadSlowlog() }
+  else if (activePage.value === 'keys') scanKeys(true)
+}
+
+// ── Key 浏览 ──────────────────────────────────────────────────────────────────
+const keyDb       = ref(0)
+const keyPattern  = ref('*')
+const keyList     = ref([])
+const keyCursor   = ref(0)
+const keysLoading = ref(false)
+const selectedKey = ref('')
+const keyDetail   = ref(null)
+const keyDetailLoading = ref(false)
+const newTTL      = ref(null)
+
+async function scanKeys(reset = false) {
+  if (!activeId.value) return
+  keysLoading.value = true
+  if (reset) { keyList.value = []; keyCursor.value = 0; selectedKey.value = ''; keyDetail.value = null }
+  try {
+    const r = await api.redisScanKeys(activeId.value, {
+      pattern: keyPattern.value || '*',
+      cursor:  reset ? 0 : keyCursor.value,
+      count:   200,
+      db:      keyDb.value,
+    })
+    keyList.value   = reset ? (r.keys || []) : [...keyList.value, ...(r.keys || [])]
+    keyCursor.value = r.cursor || 0
+  } catch (e) { keyList.value = [] }
+  finally { keysLoading.value = false }
+}
+
+async function selectKey(item) {
+  selectedKey.value = item.key
+  keyDetail.value = null
+  keyDetailLoading.value = true
+  try {
+    keyDetail.value = await api.redisGetKey(activeId.value, { key: item.key, db: keyDb.value })
+  } catch {}
+  finally { keyDetailLoading.value = false }
+}
+
+async function deleteSelectedKey() {
+  if (!selectedKey.value || !confirm(`确认删除 Key: ${selectedKey.value}？`)) return
+  await api.redisDeleteKey(activeId.value, selectedKey.value, keyDb.value)
+  keyList.value = keyList.value.filter(k => k.key !== selectedKey.value)
+  selectedKey.value = ''
+  keyDetail.value = null
+}
+
+async function setTTL() {
+  if (!selectedKey.value || newTTL.value == null) return
+  await api.redisSetKeyTTL(activeId.value, selectedKey.value, newTTL.value, keyDb.value)
+  // 刷新详情
+  await selectKey({ key: selectedKey.value })
+}
+
+// ── 监控 ──────────────────────────────────────────────────────────────────────
+const redisInfo  = ref(null)
+const slowlog    = ref([])
+const infoLoading = ref(false)
+
+async function loadRedisInfo() {
+  if (!activeId.value) return
+  infoLoading.value = true
+  try { redisInfo.value = await api.redisInfo(activeId.value, 0) }
+  catch { redisInfo.value = null }
+  finally { infoLoading.value = false }
+}
+
+async function loadSlowlog() {
+  if (!activeId.value) return
+  try {
+    const r = await api.redisSlowlog(activeId.value, 25, 0)
+    slowlog.value = r.entries || []
+  } catch { slowlog.value = [] }
+}
+
+function parseKsField(ksStr, field) {
+  if (!ksStr) return '-'
+  const m = ksStr.match(new RegExp(`${field}=(\\d+)`))
+  return m ? m[1] : '-'
+}
+
+function formatSlowTs(ts) {
+  if (!ts) return '-'
+  return new Date(ts * 1000).toLocaleString()
+}
+
+// ── 命令台 ────────────────────────────────────────────────────────────────────
+// ── 命令台（完整重写）────────────────────────────────────────────────────────
+const consoleDb      = ref(0)
+const consoleCmd     = ref('')
+const consoleRunning = ref(false)
+const consoleSession = ref([])    // 当前会话的命令+结果序列
+const cmdHistoryAll  = ref([])    // 历史命令列表（仅命令，用于↑↓导航）
+const historyIdx     = ref(-1)    // 当前历史游标
+const conOutputRef   = ref(null)
+const conInputRef    = ref(null)
+
+const CONSOLE_PRESET_GROUPS = [
+  {
+    label: '服务器',
+    cmds: ['INFO server', 'INFO clients', 'INFO memory', 'INFO stats', 'INFO replication', 'INFO all'],
+  },
+  {
+    label: '数据',
+    cmds: ['DBSIZE', 'KEYS *', 'RANDOMKEY', 'SCAN 0 COUNT 20', 'TYPE key', 'TTL key', 'PERSIST key'],
+  },
+  {
+    label: '字符串',
+    cmds: ['GET key', 'MGET k1 k2', 'STRLEN key', 'INCR key'],
+  },
+  {
+    label: '哈希',
+    cmds: ['HGETALL key', 'HKEYS key', 'HVALS key', 'HLEN key'],
+  },
+  {
+    label: '列表',
+    cmds: ['LLEN key', 'LRANGE key 0 -1', 'LINDEX key 0'],
+  },
+  {
+    label: '集合',
+    cmds: ['SMEMBERS key', 'SCARD key', 'SRANDMEMBER key'],
+  },
+  {
+    label: '有序集',
+    cmds: ['ZRANGE key 0 -1 WITHSCORES', 'ZCARD key', 'ZSCORE key member'],
+  },
+  {
+    label: '管理',
+    cmds: ['CLIENT LIST', 'CLIENT INFO', 'CONFIG GET maxmemory', 'CONFIG GET save', 'SLOWLOG GET 10', 'LATENCY LATEST'],
+  },
+]
+
+// 判断结果类型，用于着色
+function detectResultType(v) {
+  if (v === null || v === undefined) return 'nil'
+  if (typeof v === 'number' || (typeof v === 'string' && /^-?\d+$/.test(v.trim()))) return 'integer'
+  if (typeof v === 'string') return 'string'
+  if (Array.isArray(v)) return 'array'
+  if (typeof v === 'object') return 'object'
+  return 'string'
+}
+
+// 结果 → 带语法着色的 HTML
+function colorizeResult(v, rtype) {
+  if (v === null || v === undefined) return '<span class="r-nil">(nil)</span>'
+
+  if (rtype === 'integer')
+    return `<span class="r-num">(integer) ${v}</span>`
+
+  if (rtype === 'string') {
+    const escaped = String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    return `<span class="r-str">"${escaped}"</span>`
+  }
+
+  if (rtype === 'array') {
+    const arr = Array.isArray(v) ? v : [v]
+    if (!arr.length) return '<span class="r-nil">(empty array)</span>'
+    const lines = arr.map((item, i) => {
+      const idx = `<span class="r-idx">${i + 1})</span>`
+      if (item === null) return `${idx} <span class="r-nil">(nil)</span>`
+      const safe = String(item).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      return `${idx} <span class="r-str">"${safe}"</span>`
+    })
+    return lines.join('\n')
+  }
+
+  if (rtype === 'object') {
+    try {
+      const json = JSON.stringify(v, null, 2)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"([^"]+)":/g, '<span class="r-key">"$1"</span>:')
+        .replace(/: "([^"]*)"/g, ': <span class="r-str">"$1"</span>')
+        .replace(/: (-?\d+)/g, ': <span class="r-num">$1</span>')
+        .replace(/: (true|false)/g, ': <span class="r-bool">$1</span>')
+        .replace(/: (null)/g, ': <span class="r-nil">$1</span>')
+      return json
+    } catch {
+      return String(v)
+    }
+  }
+
+  return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+}
+
+function resultToText(v) {
+  if (v === null || v === undefined) return '(nil)'
+  if (typeof v === 'object') return JSON.stringify(v, null, 2)
+  return String(v)
+}
+
+async function runConsoleCmd() {
+  const cmd = consoleCmd.value.trim()
+  if (!cmd || consoleRunning.value || !activeId.value) return
+
+  consoleRunning.value = true
+  const t0 = Date.now()
+
+  // 保存到历史（去重，最新在末尾）
+  const existIdx = cmdHistoryAll.value.indexOf(cmd)
+  if (existIdx >= 0) cmdHistoryAll.value.splice(existIdx, 1)
+  cmdHistoryAll.value.push(cmd)
+  if (cmdHistoryAll.value.length > 200) cmdHistoryAll.value.shift()
+  historyIdx.value = -1
+  consoleCmd.value = ''
+
+  let entry = null
+  try {
+    const r = await api.redisCommand(activeId.value, { command: cmd, db: consoleDb.value })
+    const ms = Date.now() - t0
+    const ok = r.ok !== false
+    const rtype = ok ? detectResultType(r.result) : 'error'
+    const resultText = ok ? resultToText(r.result) : (r.error || '未知错误')
+    const dbUsed = r.db_used ?? consoleDb.value
+    entry = {
+      cmd,
+      db: dbUsed,
+      ok, ms, rtype,
+      resultText,
+      resultHtml: ok
+        ? colorizeResult(r.result, rtype)
+        : `<span class="r-err">(error) ${esc(r.error || '未知错误')}</span>`,
+    }
+  } catch (e) {
+    // axios 拦截器会把错误信息作为字符串 reject
+    const errMsg = typeof e === 'string' ? e : (e?.message || String(e))
+    const isNotFound = errMsg.toLowerCase().includes('not found') || errMsg === '404'
+    entry = {
+      cmd, db: consoleDb.value, ok: false,
+      ms: Date.now() - t0, rtype: 'error',
+      resultText: errMsg,
+      resultHtml: isNotFound
+        ? `<span class="r-err">(error) 接口未找到，请重启后端服务后重试</span>`
+        : `<span class="r-err">(error) ${esc(errMsg)}</span>`,
+    }
+  } finally {
+    consoleRunning.value = false
+    if (entry) consoleSession.value.push(entry)
+    await nextTick()
+    scrollConToBottom()
+    conInputRef.value?.focus()
+  }
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+}
+
+function scrollConToBottom() {
+  if (conOutputRef.value) {
+    conOutputRef.value.scrollTop = conOutputRef.value.scrollHeight
+  }
+}
+
+function historyUp() {
+  const len = cmdHistoryAll.value.length
+  if (!len) return
+  if (historyIdx.value < len - 1) historyIdx.value++
+  consoleCmd.value = cmdHistoryAll.value[len - 1 - historyIdx.value] || ''
+}
+
+function historyDown() {
+  if (historyIdx.value <= 0) {
+    historyIdx.value = -1
+    consoleCmd.value = ''
+    return
+  }
+  historyIdx.value--
+  const len = cmdHistoryAll.value.length
+  consoleCmd.value = cmdHistoryAll.value[len - 1 - historyIdx.value] || ''
+}
+
+function clearConsoleSession() {
+  consoleSession.value = []
+  consoleCmd.value = ''
+  historyIdx.value = -1
+  conInputRef.value?.focus()
+}
+
+function fillConsoleCmdAndFocus(cmd) {
+  consoleCmd.value = cmd
+  nextTick(() => conInputRef.value?.focus())
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text || '') } catch {}
+}
+
 onMounted(async () => {
   await loadClusters()
   if (activeId.value) await loadOverview(activeId.value, { force: true })
@@ -770,11 +1353,190 @@ onMounted(async () => {
 }
 
 .page-shell {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  flex: 1; display: flex; overflow: hidden; min-height: 0;
 }
+
+/* 左侧导航 */
+.side-nav {
+  width: 160px; flex-shrink: 0; overflow-y: auto;
+  background: var(--bg-card); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 8px 0;
+}
+.sn-cluster-name {
+  font-size: 12px; font-weight: 600; color: var(--text-primary);
+  padding: 8px 14px 6px; border-bottom: 1px solid var(--border);
+  margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sn-section {
+  font-size: 10px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .05em;
+  padding: 8px 14px 3px;
+}
+.sn-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 14px; cursor: pointer; font-size: 12.5px;
+  color: var(--text-secondary); border: none; background: transparent;
+  text-align: left; border-left: 2px solid transparent; transition: .1s;
+}
+.sn-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sn-item.active { background: var(--accent-dim); color: var(--accent); border-left-color: var(--accent); font-weight: 500; }
+.sn-icon { width: 16px; text-align: center; font-size: 13px; }
+
+/* 主内容区 */
+.main-pane {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+}
+.page-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  background: var(--bg-card);
+}
+.page-title { font-size: 14px; font-weight: 600; }
+.page-sub   { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.head-actions { display: flex; align-items: center; gap: 7px; }
+.db-select { padding: 4px 8px; font-size: 12px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); }
+
+/* Key 浏览 */
+.keys-pane  { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.keys-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.keys-search { flex: 1; padding: 5px 10px; font-size: 12px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); font-family: monospace; }
+.keys-hint   { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.keys-body   { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+.key-list-wrap   { width: 280px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); }
+.key-detail-wrap { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.key-row  { display: flex; align-items: center; gap: 7px; padding: 7px 12px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,.04); font-size: 12px; }
+.key-row:hover  { background: var(--bg-hover); }
+.key-row.active { background: var(--accent-dim); }
+.key-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+.key-ttl  { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.ttl-perm { color: var(--success, #22c55e); }
+.ttl-soon { color: var(--error); font-weight: 600; }
+.key-type-badge { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; }
+.ktype-string { background: rgba(59,130,246,.12); color: var(--accent); }
+.ktype-hash   { background: rgba(168,85,247,.12); color: #a855f7; }
+.ktype-list   { background: rgba(34,197,94,.12);  color: #22c55e; }
+.ktype-set    { background: rgba(249,115,22,.12); color: #f97316; }
+.ktype-zset   { background: rgba(234,179,8,.12);  color: #eab308; }
+.ktype-stream { background: rgba(6,182,212,.12);  color: #06b6d4; }
+.kd-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.kd-name   { font-family: monospace; font-size: 13px; font-weight: 600; flex: 1; overflow-wrap: break-word; }
+.kd-ttl    { font-size: 11px; color: var(--text-muted); }
+.kd-meta   { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+.ttl-input { width: 100px; padding: 4px 7px; font-size: 12px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); }
+.kd-value { background: var(--bg-input); padding: 10px; border-radius: 7px; font-size: 12px; overflow-wrap: break-word; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+.kd-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.kd-table th { padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text-muted); text-align: left; }
+.kd-table td { padding: 5px 8px; border-bottom: 1px solid rgba(0,0,0,.04); }
+.kd-field { color: var(--accent); }
+.kd-set   { display: flex; flex-wrap: wrap; gap: 6px; }
+.set-member { padding: 2px 8px; background: var(--bg-input); border-radius: 4px; font-size: 12px; font-family: monospace; }
+.kd-stream { display: flex; flex-direction: column; gap: 8px; }
+.stream-entry { background: var(--bg-input); border-radius: 6px; padding: 7px 10px; font-size: 12px; }
+.stream-id    { font-family: monospace; color: var(--accent); margin-right: 8px; }
+.stream-field { margin-right: 12px; }
+.stream-field em { color: var(--text-muted); font-style: normal; }
+
+/* 监控 */
+.monitor-pane  { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.info-kpi-row  { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.info-kpi      { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.info-kpi span { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+.info-kpi strong { font-size: 14px; font-weight: 700; }
+.info-kpi.tone-warn strong { color: var(--warning); }
+.info-section  { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.info-sec-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px; display: flex; align-items: center; }
+.info-kv-grid  { display: grid; grid-template-columns: 200px 1fr; gap: 4px 12px; font-size: 12px; }
+.info-k { color: var(--text-muted); }
+.info-v { font-family: monospace; }
+.info-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.info-table th { padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text-muted); text-align: left; font-weight: 500; }
+.info-table td { padding: 5px 8px; border-bottom: 1px solid rgba(0,0,0,.04); }
+.val-err  { color: var(--error); font-weight: 600; }
+.val-warn { color: var(--warning); }
+.empty-state.sm { font-size: 12px; padding: 8px 0; }
+
+/* ══ 命令台 ══ */
+.console-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #0d1117; color: #c9d1d9; }
+
+/* 顶部工具栏 */
+.con-topbar { flex-shrink: 0; background: #161b22; border-bottom: 1px solid #30363d; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+.con-db-row { display: flex; align-items: center; gap: 8px; }
+.con-label  { font-size: 11px; color: #8b949e; }
+.con-db-sel { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; border-radius: 4px; padding: 2px 6px; font-size: 12px; cursor: pointer; }
+.con-cluster-info { font-size: 11px; color: #58a6ff; margin-left: 6px; }
+
+/* 预设命令分组 */
+.con-preset-groups { display: flex; flex-wrap: wrap; gap: 8px; }
+.preset-group { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.preset-group-label { font-size: 10px; color: #8b949e; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; padding: 2px 4px; }
+.preset-chip { padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid #30363d; background: #21262d; color: #8b949e; cursor: pointer; font-family: monospace; transition: .1s; white-space: nowrap; }
+.preset-chip:hover { border-color: #58a6ff; color: #58a6ff; }
+
+/* 终端输出区 */
+.con-output { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+.con-output::-webkit-scrollbar { width: 6px; }
+.con-output::-webkit-scrollbar-track { background: #0d1117; }
+.con-output::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+
+/* 欢迎屏 */
+.con-welcome { text-align: center; padding: 40px 0; }
+.con-welcome-title { font-size: 18px; font-weight: 700; color: #58a6ff; margin-bottom: 6px; }
+.con-welcome-sub   { font-size: 13px; color: #8b949e; margin-bottom: 4px; }
+.con-welcome-hint  { font-size: 11px; color: #484f58; }
+
+/* 每条命令+结果 */
+.con-entry { display: flex; flex-direction: column; gap: 4px; }
+.con-cmd-line { display: flex; align-items: center; gap: 6px; }
+.con-prompt   { color: #3fb950; font-size: 12px; font-family: monospace; flex-shrink: 0; }
+.con-cmd-text { color: #e6edf3; font-family: monospace; font-size: 13px; flex: 1; word-break: break-all; }
+.con-copy-btn { opacity: 0; color: #484f58; font-size: 12px; cursor: pointer; padding: 1px 4px; border-radius: 3px; flex-shrink: 0; transition: .1s; }
+.con-entry:hover .con-copy-btn { opacity: 1; }
+.con-copy-btn:hover { background: #30363d; color: #c9d1d9; }
+
+/* 结果块 */
+.con-result-block { background: #161b22; border-radius: 6px; border-left: 3px solid; padding: 7px 10px; }
+.con-result-block.res-ok  { border-left-color: #3fb950; }
+.con-result-block.res-err { border-left-color: #f85149; }
+.con-result-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.con-type-badge { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+.rtype-nil     { background: rgba(139,148,158,.15); color: #8b949e; }
+.rtype-integer { background: rgba(249,196,74,.12);  color: #e3b341; }
+.rtype-string  { background: rgba(63,185,80,.12);   color: #3fb950; }
+.rtype-array   { background: rgba(88,166,255,.12);  color: #58a6ff; }
+.rtype-object  { background: rgba(188,121,247,.12); color: #bc8cff; }
+.rtype-error   { background: rgba(248,81,73,.12);   color: #f85149; }
+.con-dur { font-size: 10px; color: #484f58; }
+.con-result-pre { font-family: 'Consolas','Monaco','Courier New',monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; line-height: 1.6; margin: 0; color: #c9d1d9; }
+
+/* 结果着色 token */
+.con-result-pre :deep(.r-nil)  { color: #8b949e; }
+.con-result-pre :deep(.r-num)  { color: #e3b341; }
+.con-result-pre :deep(.r-str)  { color: #3fb950; }
+.con-result-pre :deep(.r-err)  { color: #f85149; }
+.con-result-pre :deep(.r-key)  { color: #58a6ff; }
+.con-result-pre :deep(.r-bool) { color: #79c0ff; }
+.con-result-pre :deep(.r-idx)  { color: #484f58; min-width: 28px; display: inline-block; text-align: right; margin-right: 6px; }
+
+/* 执行中指示 */
+.con-running { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8b949e; padding: 6px 0; }
+
+/* 输入区 */
+.con-input-wrap { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid #30363d; background: #161b22; }
+.con-prompt-static { color: #3fb950; font-family: monospace; font-size: 13px; flex-shrink: 0; }
+.con-input { flex: 1; background: transparent; border: none; outline: none; color: #e6edf3; font-family: 'Consolas','Monaco',monospace; font-size: 13px; caret-color: #58a6ff; }
+.con-input::placeholder { color: #484f58; }
+.con-input-actions { display: flex; gap: 5px; flex-shrink: 0; }
+.con-btn-run { padding: 4px 10px; font-size: 12px; border-radius: 5px; border: 1px solid #238636; background: rgba(35,134,54,.15); color: #3fb950; cursor: pointer; transition: .1s; }
+.con-btn-run:hover:not(:disabled) { background: rgba(35,134,54,.3); }
+.con-btn-run:disabled { opacity: .4; cursor: not-allowed; }
+.con-btn-clear { padding: 4px 9px; font-size: 12px; border-radius: 5px; border: 1px solid #30363d; background: transparent; color: #8b949e; cursor: pointer; }
+.con-btn-clear:hover { border-color: #8b949e; color: #c9d1d9; }
+
+.loading-row { display: flex; align-items: center; gap: 8px; padding: 20px; font-size: 12px; color: var(--text-muted); }
+
+/* 概览页的 KPI/grid 改为内嵌 main-pane */
+.kpi-grid  { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; padding: 14px 16px; flex-shrink: 0; }
+.main-grid { padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; flex: 1; }
 
 .card {
   background: rgba(255, 255, 255, 0.96);

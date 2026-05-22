@@ -193,6 +193,16 @@ export const api = {
   redisTestCluster:    (id)      => http.get(`/redis/clusters/${id}/test`),
   redisTestConfig:     (data)    => http.post('/redis/clusters/test-config', data),
   redisOverview:       (id)      => http.get(`/redis/clusters/${id}/overview`),
+  // Redis Key 浏览
+  redisScanKeys:       (id, p)   => http.get(`/redis/clusters/${id}/keys`,    { params: p }),
+  redisGetKey:         (id, p)   => http.get(`/redis/clusters/${id}/key`,     { params: p }),
+  redisDeleteKey:      (id, key, db) => http.delete(`/redis/clusters/${id}/key`, { params: { key, db } }),
+  redisSetKeyTTL:      (id, key, ttl, db) => http.put(`/redis/clusters/${id}/key/ttl`, { ttl }, { params: { key, db } }),
+  // Redis 监控
+  redisInfo:           (id, db)  => http.get(`/redis/clusters/${id}/info`,    { params: { db } }),
+  redisSlowlog:        (id, n, db) => http.get(`/redis/clusters/${id}/slowlog`, { params: { count: n, db } }),
+  // Redis 命令台
+  redisCommand:        (id, data) => http.post(`/redis/clusters/${id}/command`, data),
   // 工单系统
   listTickets:      (params)     => http.get('/tickets',              { params }),
   createTicket:     (data)       => http.post('/tickets', data),

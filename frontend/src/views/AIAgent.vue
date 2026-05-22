@@ -1187,14 +1187,15 @@ async function saveConversation() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        mode: mode.value,
+        mode:         mode.value,
         title,
-        messages: plainMessages,
+        messages:     plainMessages,
+        project_path: '',   // 智能助手不关联项目
       }),
     })
     await loadHistoryList()
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn('[saveConversation] failed:', err)
   }
 }
 
