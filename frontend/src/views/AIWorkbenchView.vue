@@ -147,6 +147,30 @@
           </div>
 
           <div class="main-head-actions">
+            <!-- 执行器切换 -->
+            <div class="executor-switch" :class="wbExecutor === 'external_cli' ? 'exec-claude' : ''">
+              <span class="exec-label">执行器</span>
+              <button
+                class="exec-btn"
+                :class="{ active: wbExecutor === '' || wbExecutor === 'langgraph' }"
+                type="button"
+                @click="wbExecutor = 'langgraph'"
+                title="使用项目内置 LangGraph ReAct Agent"
+              >⚙ LangGraph</button>
+              <button
+                class="exec-btn exec-claude-btn"
+                :class="{ active: wbExecutor === 'external_cli', disabled: !claudeAvailable && !detectingExecutors }"
+                type="button"
+                @click="wbExecutor = 'external_cli'"
+                :title="claudeAvailable ? 'Claude Code 已安装，点击切换' : '未检测到 claude 命令，请先安装 Claude Code CLI'"
+              >
+                <span>◈ Claude Code</span>
+                <span v-if="detectingExecutors" class="exec-detecting">检测中...</span>
+                <span v-else-if="claudeAvailable" class="exec-ok">●</span>
+                <span v-else class="exec-unavail">○</span>
+              </button>
+            </div>
+
             <button class="ghost-btn" type="button" :disabled="!selectedProject || streaming" @click="sendQuickPrompt('scan')">
               扫描项目
             </button>
@@ -812,6 +836,34 @@ async function saveWbEditModel(model) {
     wbEditMsg.value = '保存失败: ' + e; wbEditOk.value = false
   } finally { wbEditSaving.value = false }
 }
+
+// ── 执行器切换（LangGraph / Claude Code 等） ──────────────────────────────────
+// '' = 跟随系统设置，'langgraph' = 内置，'external_cli' = Claude Code
+const wbExecutor        = ref('')
+const availableExecutors = ref([])
+const detectingExecutors = ref(false)
+
+async function detectExecutors() {
+  detectingExecutors.value = true
+  try {
+    const r = await apiFetch('/api/agent/executors/detect')
+    availableExecutors.value = r?.executors || []
+  } catch {}
+  finally { detectingExecutors.value = false }
+}
+
+const claudeAvailable = computed(() =>
+  availableExecutors.value.find(e => e.cmd === 'claude')?.available === true
+)
+const currentExecutorLabel = computed(() => {
+  if (!wbExecutor.value) return '系统默认'
+  if (wbExecutor.value === 'langgraph') return 'LangGraph'
+  if (wbExecutor.value === 'external_cli') {
+    const found = availableExecutors.value.find(e => e.available && e.cmd)
+    return found ? found.name : 'External CLI'
+  }
+  return wbExecutor.value
+})
 
 // ── 通用配置 & 执行器（工作台本地状态） ──────────────────────────────────────
 const generalForm = reactive({
@@ -1508,6 +1560,7 @@ async function sendMessage(text) {
         message: text,
         conv_id: currentConvId,
         home_dir: selectedPath.value,
+        executor: wbExecutor.value,   // 执行器覆盖：'' | 'langgraph' | 'external_cli'
         model_id: activeModel.value?.id || '',
         model_name: getRuntimeModel(activeModel.value),
         model_provider: getRuntimeProvider(activeModel.value),
@@ -1610,6 +1663,7 @@ function handleEvent(data, assistantMessage) {
 
 onMounted(async () => {
   await loadWorkbench({ preserveSelection: false })
+  detectExecutors()   // 后台检测可用执行器
 
   // 恢复上次状态
   const saved = loadWbLocal()
@@ -1985,6 +2039,35 @@ onMounted(async () => {
 .project-foot,
 .manual-actions,
 .main-head,
+/* 执行器切换 */
+.executor-switch {
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(255,255,255,.7); border: 1px solid var(--wb-border);
+  border-radius: 10px; padding: 3px 8px 3px 6px;
+  transition: border-color .15s;
+}
+.executor-switch.exec-claude {
+  border-color: rgba(56,139,253,.4);
+  background: rgba(56,139,253,.06);
+}
+.exec-label { font-size: 10px; color: var(--wb-text-soft); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
+.exec-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 7px; font-size: 12px; font-weight: 500;
+  border: 1px solid transparent; background: transparent;
+  color: var(--wb-text-soft); cursor: pointer; transition: all .12s;
+}
+.exec-btn:hover { background: rgba(0,0,0,.05); color: var(--wb-text); }
+.exec-btn.active { background: #fff; border-color: var(--wb-border); color: var(--wb-text);
+  box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.exec-claude-btn.active { background: rgba(56,139,253,.12); border-color: rgba(56,139,253,.3);
+  color: #388bfd; }
+.exec-claude-btn.disabled { opacity: .5; cursor: not-allowed; }
+.exec-ok       { color: #22c55e; font-size: 9px; }
+.exec-unavail  { color: #94a3b8; font-size: 9px; }
+.exec-detecting { font-size: 10px; color: var(--wb-text-soft); }
+
 .main-head-actions,
 .main-subline,
 .canvas-bar,

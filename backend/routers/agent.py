@@ -76,6 +76,9 @@ class AgentRequest(BaseModel):
     model_api_key: str = ""
     model_wire_api: str = ""
     model_enable_thinking: bool | None = None
+    # 执行器覆盖：langgraph | external_cli | aiops_cli
+    # 留空则读取系统配置 AIOPS_AGENT_EXECUTOR
+    executor: str = ""
 
 
 def _build_runtime_overrides(req: AgentRequest) -> dict:
@@ -195,13 +198,10 @@ async def _stream_graph(
             },
             "recursion_limit": 40,
         }
-        executor_mode = get_agent_executor("API")
-        if executor_mode != "langgraph" and user and not user.is_superuser:
-            logger.warning(
-                "[agent] 普通用户 %s 请求已强制使用 langgraph，避免外部执行器绕过数据权限",
-                user.username,
-            )
-            executor_mode = "langgraph"
+        # 优先用请求里的 executor 参数，其次读系统配置
+        from agent.external_executor import _normalize_executor
+        req_executor = _normalize_executor(req.executor) if req.executor.strip() else ""
+        executor_mode = req_executor or get_agent_executor("API")
         if executor_mode != "langgraph":
             logger.info("[agent] 使用外部执行器: %s", executor_mode)
             thread_id = conv_id or f"anon-{resolved_mode}"
@@ -453,3 +453,24 @@ async def delete_conversation(conv_id: str, user: User = require_permission("age
         )
         await db.commit()
     return {"ok": True}
+
+@router.get("/executors/detect")
+async def detect_executors(_: User = require_permission("agent", "view")):
+    """检测本机可用的外部 Agent CLI（claude / codex 等）。"""
+    import shutil
+    candidates = [
+        {"name": "Claude Code", "key": "external_cli", "cmd": "claude",
+         "desc": "Anthropic Claude Code CLI (claude -p)"},
+        {"name": "OpenAI Codex", "key": "external_cli", "cmd": "codex",
+         "desc": "OpenAI Codex CLI"},
+        {"name": "Gemini CLI",   "key": "external_cli", "cmd": "gemini",
+         "desc": "Google Gemini CLI"},
+        {"name": "LangGraph 内置", "key": "langgraph",  "cmd": None,
+         "desc": "项目内置 ReAct Agent，无需额外安装"},
+    ]
+    result = []
+    for c in candidates:
+        available = True if c["cmd"] is None else bool(shutil.which(c["cmd"]))
+        result.append({**c, "available": available,
+                       "path": shutil.which(c["cmd"]) if c["cmd"] else None})
+    return {"executors": result}
