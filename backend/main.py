@@ -67,32 +67,24 @@ logger = logging.getLogger(__name__)
 
 
 async def _migrate_add_columns(conn) -> None:
-    """增量 DDL 迁移：为已有表补加新列，幂等（列已存在时跳过）。"""
+    """增量 DDL 迁移：为已有表补加新列，幂等（列已存在时跳过）。
+    仅支持 SQLite（项目默认数据库）。
+    """
     import sqlalchemy as sa
 
     migrations = [
-        # (table, column, type_sql_sqlite)
+        # (table, column, sqlite_type_ddl)
         ("agent_conversations", "project_path", "VARCHAR(500) DEFAULT ''"),
     ]
-    for table, col, col_type in migrations:
+    for table, col, col_ddl in migrations:
         try:
-            # SQLite: PRAGMA table_info  |  PostgreSQL: information_schema
-            dialect = conn.engine.dialect.name if hasattr(conn, "engine") else "sqlite"
-            if dialect == "sqlite":
-                result = await conn.execute(sa.text(f"PRAGMA table_info({table})"))
-                existing = {row[1] for row in result.fetchall()}
-            else:
-                result = await conn.execute(sa.text(
-                    f"SELECT column_name FROM information_schema.columns "
-                    f"WHERE table_name='{table}' AND column_name='{col}'"
-                ))
-                existing = {row[0] for row in result.fetchall()}
-
-            if col not in existing:
-                await conn.execute(sa.text(
-                    f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
-                ))
-                logger.info("[migration] ALTER TABLE %s ADD COLUMN %s", table, col)
+            result = await conn.execute(sa.text(f"PRAGMA table_info('{table}')"))
+            existing_cols = {row[1] for row in result.fetchall()}
+            if col not in existing_cols:
+                await conn.execute(
+                    sa.text(f"ALTER TABLE {table} ADD COLUMN {col} {col_ddl}")
+                )
+                logger.info("[migration] ALTER TABLE %s ADD COLUMN %s  ✓", table, col)
             else:
                 logger.debug("[migration] %s.%s already exists, skip", table, col)
         except Exception as exc:
