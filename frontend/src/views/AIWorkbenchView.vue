@@ -973,10 +973,10 @@ async function saveWbEditModel(model) {
 // ── CLAUDE.md 编辑器（参考 Claude Code 的 loadClaudeMd）────────────────────
 const showClaudeMdEditor  = ref(false)
 const claudeMdContent     = ref('')
-const claudeMdFiles       = ref<{path:string;name:string}[]>([])
+const claudeMdFiles       = ref([])
 const claudeMdSaving      = ref(false)
 const claudeMdMsg         = ref('')
-const contextPreview      = ref<{claude_md:string;git:{branch:string;log:string;status:string}} | null>(null)
+const contextPreview      = ref(null)
 const showContextPreview  = ref(false)
 
 async function openClaudeMdEditor() {
@@ -1025,7 +1025,7 @@ function sendPlanMode() {
 }
 
 // ── 停止生成 ──────────────────────────────────────────────────────────────────
-let _stopController: AbortController | null = null
+let _stopController = null
 
 function stopStreaming() {
   _stopController?.abort()
@@ -1033,11 +1033,11 @@ function stopStreaming() {
 }
 
 // ── Token 用量统计 ─────────────────────────────────────────────────────────────
-const lastTokenUsage = ref<{ input_tokens: number; output_tokens: number } | null>(null)
+const lastTokenUsage = ref(null)
 
 // ── 文件改动面板 ──────────────────────────────────────────────────────────────
 const showChangesPanel = ref(false)
-const changedFiles     = ref<{ file: string; status: string; xy: string }[]>([])
+const changedFiles     = ref([])
 const gitBranch        = ref('')
 const gitLoading       = ref(false)
 const diffFile         = ref('')
@@ -1062,7 +1062,7 @@ async function refreshGitStatus() {
   finally { gitLoading.value = false }
 }
 
-async function loadDiff(file: string) {
+async function loadDiff(file) {
   diffFile.value = file; diffContent.value = ''
   try {
     const r = await api.agentGitDiff(selectedPath.value, file)
@@ -1070,7 +1070,7 @@ async function loadDiff(file: string) {
   } catch {}
 }
 
-function highlightDiff(text: string): string {
+function highlightDiff(text) {
   return text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/^(\+[^+].*)$/mg, '<span class="diff-add">$1</span>')

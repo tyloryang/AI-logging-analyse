@@ -143,6 +143,11 @@ export const api = {
   // K8s 证书管理
   k8sInspectKubeconfig: (path)         => http.post('/k8s/inspect-kubeconfig', { path }),
   // Agent git 工具
+  // cc-haha 集成
+  ccHahaStatus:  ()                      => http.get('/cc-haha/status'),
+  ccHahaStart:   ()                      => http.post('/cc-haha/start'),
+  ccHahaStop:    ()                      => http.post('/cc-haha/stop'),
+  ccHahaProxy:   (method, path, data)    => http.request({ method, url: '/cc-haha/proxy/' + path, data }),
   agentClaudeMd:       (path)          => http.get('/agent/claude-md',    { params: { path } }),
   agentSaveClaudeMd:   (path, content) => http.put('/agent/claude-md',    { path, content }),
   agentContextPreview: (path)          => http.get('/agent/context-preview', { params: { path } }),

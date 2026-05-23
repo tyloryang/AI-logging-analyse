@@ -61,6 +61,7 @@ from routers.alerts import router as alerts_router
 from routers.rca import router as rca_router
 from routers.jenkins import router as jenkins_router
 from routers.topology import router as topology_router
+from routers.cc_haha import router as cc_haha_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -218,6 +219,7 @@ app.include_router(redis_router)
 app.include_router(alerts_router)
 app.include_router(rca_router)
 app.include_router(jenkins_router)
+app.include_router(cc_haha_router)
 app.include_router(topology_router)
 
 

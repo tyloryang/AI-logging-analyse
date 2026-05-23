@@ -66,6 +66,7 @@ const routes = [
   { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
   { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
   { path: '/aiops/workbench', component: () => import('../views/AIWorkbenchView.vue'),    name: 'aiops-workbench', meta: { module: 'agent' } },
+  { path: '/aiops/cc-haha',  component: () => import('../views/CcHahaView.vue'),         name: 'aiops-cc-haha',   meta: { module: 'agent' } },
   { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),     name: 'aiops-assistant', meta: { module: 'agent' } },
   { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'), name: 'aiops-config' },
 
