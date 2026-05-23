@@ -141,8 +141,38 @@
             <h1>{{ selectedProject?.name || '选择一个本地项目' }}</h1>
             <div class="main-subline">
               <span class="mono">{{ selectedPath || '尚未设置工作目录' }}</span>
-              <span v-if="selectedProject?.git_branch" class="sub-pill mono">{{ selectedProject.git_branch }}</span>
+              <span v-if="selectedProject?.git_branch" class="sub-pill mono">⎇ {{ selectedProject.git_branch }}</span>
               <span class="sub-pill">{{ selectedProject ? formatTime(selectedProject.last_active_at) : '等待项目选择' }}</span>
+              <!-- CLAUDE.md 存在指示 -->
+              <button v-if="selectedPath" class="claude-md-pill"
+                @click="openClaudeMdEditor" title="编辑 CLAUDE.md 项目指令">
+                📄 CLAUDE.md
+              </button>
+              <button v-if="selectedPath" class="ctx-preview-pill"
+                :class="{ active: showContextPreview }"
+                @click="loadContextPreview" title="预览发送给 AI 的上下文">
+                🔍 上下文
+              </button>
+            </div>
+          </div>
+
+          <!-- 上下文预览浮层 -->
+          <div v-if="showContextPreview && contextPreview" class="ctx-preview-panel">
+            <div class="ctx-pv-header">
+              <span>上下文预览（每次发消息时自动注入）</span>
+              <button @click="showContextPreview = false">✕</button>
+            </div>
+            <div class="ctx-pv-section" v-if="contextPreview.git?.branch">
+              <div class="ctx-pv-label">Git</div>
+              <pre class="ctx-pv-code">Branch: {{ contextPreview.git.branch }}
+{{ contextPreview.git.status }}</pre>
+            </div>
+            <div class="ctx-pv-section" v-if="contextPreview.claude_md">
+              <div class="ctx-pv-label">CLAUDE.md</div>
+              <pre class="ctx-pv-code">{{ contextPreview.claude_md.slice(0, 400) }}{{ contextPreview.claude_md.length > 400 ? '...' : '' }}</pre>
+            </div>
+            <div v-if="!contextPreview.claude_md && !contextPreview.git?.branch" class="ctx-pv-empty">
+              未发现 CLAUDE.md，git 不可用或不在仓库内
             </div>
           </div>
 
@@ -176,6 +206,10 @@
             </button>
             <button class="ghost-btn" type="button" :disabled="!selectedProject || streaming" @click="sendQuickPrompt('entry')">
               分析入口
+            </button>
+            <button class="ghost-btn plan-btn" type="button" :disabled="!selectedProject || streaming"
+              @click="sendPlanMode" title="先规划后执行（Plan 模式，参考 Claude Code）">
+              📋 Plan 模式
             </button>
             <button class="primary-btn" type="button" @click="openSettings('models')">
               工作台设置
@@ -367,6 +401,55 @@
     </div>
 
     <teleport to="body">
+      <!-- CLAUDE.md 编辑器弹窗 -->
+      <Transition name="fade">
+        <div v-if="showClaudeMdEditor" class="claude-md-overlay" @click.self="showClaudeMdEditor = false">
+          <div class="claude-md-dialog" @click.stop>
+            <div class="cmd-header">
+              <div>
+                <div class="cmd-title">📄 CLAUDE.md — 项目指令</div>
+                <div class="cmd-sub">
+                  Claude Code 每次启动时读取此文件注入系统提示词；我们的工作台也会在每次发消息时自动注入。
+                </div>
+                <div v-if="claudeMdFiles.length" class="cmd-files">
+                  <span v-for="f in claudeMdFiles" :key="f.path" class="cmd-file-chip mono">{{ f.path }}</span>
+                </div>
+              </div>
+              <button class="close-btn" @click="showClaudeMdEditor = false">×</button>
+            </div>
+            <textarea v-model="claudeMdContent" class="cmd-editor"
+              placeholder="# 项目指令
+
+## 技术栈
+- 后端：Python FastAPI
+- 前端：Vue 3 + Vite
+
+## 代码规范
+- 所有注释用中文
+- 修改文件前必须先阅读
+
+## 测试
+- 运行测试：pytest backend/
+- 不要修改测试文件
+
+## 注意事项
+- 不要删除任何已有 API 端点
+- 数据库迁移使用 Alembic"
+            ></textarea>
+            <div class="cmd-footer">
+              <span class="cmd-hint">💡 参考 Claude Code 的 CLAUDE.md 格式，支持 Markdown。向上遍历目录树合并多层指令。</span>
+              <div class="cmd-actions">
+                <span v-if="claudeMdMsg" class="cmd-msg">{{ claudeMdMsg }}</span>
+                <button class="ghost-btn" @click="showClaudeMdEditor = false">取消</button>
+                <button class="primary-btn" @click="saveClaudeMd" :disabled="claudeMdSaving">
+                  {{ claudeMdSaving ? '保存中...' : '保存到项目' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+
       <Transition name="fade">
         <div v-if="settingsOpen" class="settings-overlay" @click.self="settingsOpen = false">
           <div class="settings-dialog" @click.stop>
@@ -885,6 +968,60 @@ async function saveWbEditModel(model) {
   } catch (e) {
     wbEditMsg.value = '保存失败: ' + e; wbEditOk.value = false
   } finally { wbEditSaving.value = false }
+}
+
+// ── CLAUDE.md 编辑器（参考 Claude Code 的 loadClaudeMd）────────────────────
+const showClaudeMdEditor  = ref(false)
+const claudeMdContent     = ref('')
+const claudeMdFiles       = ref<{path:string;name:string}[]>([])
+const claudeMdSaving      = ref(false)
+const claudeMdMsg         = ref('')
+const contextPreview      = ref<{claude_md:string;git:{branch:string;log:string;status:string}} | null>(null)
+const showContextPreview  = ref(false)
+
+async function openClaudeMdEditor() {
+  if (!selectedPath.value) return
+  showClaudeMdEditor.value = true
+  try {
+    const r = await api.agentClaudeMd(selectedPath.value)
+    claudeMdContent.value = r.content || ''
+    claudeMdFiles.value   = r.files || []
+  } catch {}
+}
+
+async function saveClaudeMd() {
+  if (!selectedPath.value) return
+  claudeMdSaving.value = true; claudeMdMsg.value = ''
+  try {
+    await api.agentSaveClaudeMd(selectedPath.value, claudeMdContent.value)
+    claudeMdMsg.value = '✓ 已保存'
+    setTimeout(() => { claudeMdMsg.value = '' }, 2000)
+  } catch (e) { claudeMdMsg.value = '保存失败: ' + e }
+  finally { claudeMdSaving.value = false }
+}
+
+async function loadContextPreview() {
+  if (!selectedPath.value) return
+  showContextPreview.value = !showContextPreview.value
+  if (!showContextPreview.value) return
+  try {
+    contextPreview.value = await api.agentContextPreview(selectedPath.value)
+  } catch {}
+}
+
+// Plan 模式：先规划再执行
+function sendPlanMode() {
+  const planPrefix = `请先用中文制定详细执行计划，列出步骤（编号列表），说明：
+1. 你将读取/分析哪些文件
+2. 你将做哪些修改（每个文件的改动）
+3. 潜在风险点
+
+计划确认后再开始执行。
+
+---
+
+用户任务：`
+  fillComposer(planPrefix)
 }
 
 // ── 停止生成 ──────────────────────────────────────────────────────────────────
@@ -2230,6 +2367,63 @@ onMounted(async () => {
 }
 
 .branch-badge,
+/* CLAUDE.md pill & ctx preview */
+.claude-md-pill, .ctx-preview-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--wb-border); background: transparent;
+  color: var(--wb-text-soft); cursor: pointer; transition: .12s;
+}
+.claude-md-pill:hover { background: var(--wb-accent-soft); border-color: var(--wb-accent-line); color: var(--wb-accent); }
+.ctx-preview-pill:hover, .ctx-preview-pill.active { background: rgba(34,197,94,.1); border-color: rgba(34,197,94,.3); color: #16a34a; }
+
+/* Plan 模式按钮 */
+.plan-btn { background: rgba(249,196,74,.08) !important; border-color: rgba(249,196,74,.3) !important; color: #b45309 !important; }
+.plan-btn:hover { background: rgba(249,196,74,.15) !important; }
+
+/* 上下文预览浮层 */
+.ctx-preview-panel {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: rgba(9,18,36,.96); border: 1px solid rgba(56,139,253,.2);
+  border-radius: 10px; padding: 12px 14px; margin: 4px 20px 0;
+  box-shadow: 0 8px 32px rgba(0,0,0,.4);
+}
+.ctx-pv-header { display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 600; color: #58a6ff; margin-bottom: 8px; }
+.ctx-pv-header button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; }
+.ctx-pv-section { margin-bottom: 8px; }
+.ctx-pv-label { font-size: 10px; font-weight: 700; color: #8b949e; text-transform: uppercase; margin-bottom: 3px; }
+.ctx-pv-code { font-size: 11px; font-family: monospace; color: #c9d1d9; background: rgba(255,255,255,.05);
+  border-radius: 4px; padding: 6px; margin: 0; white-space: pre-wrap; word-break: break-all; }
+.ctx-pv-empty { font-size: 12px; color: #8b949e; }
+
+/* CLAUDE.md 编辑器弹窗 */
+.claude-md-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.5); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center; z-index: 1300; padding: 32px;
+}
+.claude-md-dialog {
+  width: min(760px, 100%); max-height: 80vh;
+  background: #fff; border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.2);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.cmd-header { padding: 18px 20px 14px; border-bottom: 1px solid #e8eaed; flex-shrink: 0; }
+.cmd-title   { font-size: 16px; font-weight: 700; color: #1a1a1a; margin-bottom: 4px; }
+.cmd-sub     { font-size: 12px; color: #6b7280; line-height: 1.5; }
+.cmd-files   { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.cmd-file-chip { font-size: 10px; padding: 2px 7px; background: #f3f4f6; border-radius: 4px; color: #374151; }
+.cmd-editor  {
+  flex: 1; min-height: 300px; padding: 14px 16px;
+  font-family: 'Consolas','Monaco',monospace; font-size: 13px; line-height: 1.7;
+  border: none; outline: none; resize: none; color: #1a1a1a;
+  background: #fafafa; border-top: 1px solid #f1f3f4;
+}
+.cmd-footer  { padding: 12px 16px; border-top: 1px solid #e8eaed; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.cmd-hint    { flex: 1; font-size: 11px; color: #9ca3af; line-height: 1.5; }
+.cmd-actions { display: flex; align-items: center; gap: 8px; }
+.cmd-msg     { font-size: 12px; color: #16a34a; }
+
 .sub-pill,
 .meta-chip,
 .tag-chip,

@@ -143,6 +143,9 @@ export const api = {
   // K8s 证书管理
   k8sInspectKubeconfig: (path)         => http.post('/k8s/inspect-kubeconfig', { path }),
   // Agent git 工具
+  agentClaudeMd:       (path)          => http.get('/agent/claude-md',    { params: { path } }),
+  agentSaveClaudeMd:   (path, content) => http.put('/agent/claude-md',    { path, content }),
+  agentContextPreview: (path)          => http.get('/agent/context-preview', { params: { path } }),
   agentGitStatus:      (path)          => http.get('/agent/git/status',   { params: { path } }),
   agentGitDiff:        (path, file)    => http.get('/agent/git/diff',     { params: { path, file } }),
   agentDetectExecutors:()              => http.get('/agent/executors/detect'),

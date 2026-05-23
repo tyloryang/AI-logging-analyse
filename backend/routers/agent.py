@@ -92,7 +92,65 @@ def _build_runtime_overrides(req: AgentRequest) -> dict:
         model_enable_thinking=req.model_enable_thinking,
     )
     runtime_overrides["home_dir"] = str(req.home_dir or "").strip()
+    # 注入 CLAUDE.md + git 上下文（参考 Claude Code 的 buildSystemPrompt）
+    home_dir = runtime_overrides["home_dir"]
+    if home_dir:
+        runtime_overrides["project_context"] = _build_project_context(home_dir)
     return runtime_overrides
+
+
+def _build_project_context(home_dir: str) -> str:
+    """构建项目上下文：CLAUDE.md + git 状态（同步版，供 _build_runtime_overrides 调用）。"""
+    import os, subprocess, shutil
+    parts: list[str] = []
+
+    # 1. CLAUDE.md 向上遍历
+    claude_parts: list[str] = []
+    cur = os.path.abspath(home_dir)
+    visited: set[str] = set()
+    while True:
+        if cur in visited:
+            break
+        visited.add(cur)
+        for fname in ("CLAUDE.md", "CLAUDE.local.md"):
+            fp = os.path.join(cur, fname)
+            if os.path.isfile(fp):
+                try:
+                    text = open(fp, encoding="utf-8").read().strip()
+                    if text:
+                        claude_parts.insert(0, f"# {fname} ({fp})\n\n{text}")
+                except Exception:
+                    pass
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    if claude_parts:
+        parts.append("## Project Instructions (CLAUDE.md)\n\n" + "\n\n---\n\n".join(claude_parts))
+
+    # 2. git 上下文（3秒超时，失败静默）
+    if shutil.which("git") and os.path.isdir(home_dir):
+        def _git(*args: str) -> str:
+            try:
+                r = subprocess.run(
+                    ["git", "-C", home_dir, *args],
+                    capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace"
+                )
+                return r.stdout.strip() if r.returncode == 0 else ""
+            except Exception:
+                return ""
+
+        branch = _git("branch", "--show-current")
+        status = _git("status", "--short")
+        log    = _git("log", "--oneline", "-5")
+        if branch or status:
+            git_lines = [f"## Git Context ({home_dir})"]
+            if branch:  git_lines.append(f"Branch: {branch}")
+            if status:  git_lines.append(f"Status:\n```\n{status}\n```")
+            if log:     git_lines.append(f"Recent commits:\n```\n{log}\n```")
+            parts.append("\n".join(git_lines))
+
+    return "\n\n".join(parts)
 
 
 def _sse(type_: str, **kwargs) -> str:
@@ -228,7 +286,12 @@ async def _stream_graph(
 
         checkpointer = await _get_checkpointer()
         graph = build_graph(resolved_mode, checkpointer=checkpointer, runtime_overrides=runtime_overrides)
-        input_state = {"messages": [HumanMessage(content=message)]}
+        # 把 CLAUDE.md + git 上下文附加到用户消息（参考 Claude Code buildSystemPrompt）
+        project_ctx = str(runtime_overrides.get("project_context", "")).strip()
+        final_message = (
+            f"{project_ctx}\n\n---\n\n{message}" if project_ctx else message
+        )
+        input_state = {"messages": [HumanMessage(content=final_message)]}
         async for event in graph.astream_events(input_state, config=config, version="v2"):
             kind = event.get("event", "")
 
@@ -549,3 +612,95 @@ async def git_diff(path: str = "", file: str = "",
         return {"ok": False, "error": "git diff 超时"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+# ── CLAUDE.md 项目指令（参考 Claude Code 的 loadClaudeMd）────────────────────
+
+@router.get("/claude-md")
+async def read_claude_md(path: str = "", _: User = require_permission("agent", "view")):
+    """读取项目目录（及父目录）中的 CLAUDE.md，向上遍历合并（同 Claude Code 行为）。"""
+    import os
+    workdir = path.strip() or "."
+    if not os.path.isdir(workdir):
+        return {"ok": False, "error": f"目录不存在: {workdir}", "content": "", "files": []}
+
+    parts = []
+    files_found = []
+    cur = os.path.abspath(workdir)
+    visited = set()
+    while True:
+        if cur in visited:
+            break
+        visited.add(cur)
+        for name in ("CLAUDE.md", "CLAUDE.local.md"):
+            fp = os.path.join(cur, name)
+            if os.path.isfile(fp):
+                try:
+                    text = open(fp, encoding="utf-8").read()
+                    parts.insert(0, f"# {fp}\n\n{text}")   # 父目录在前
+                    files_found.insert(0, {"path": fp, "name": name})
+                except Exception:
+                    pass
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    return {
+        "ok": True,
+        "content": "\n\n---\n\n".join(parts),
+        "files": files_found,
+        "project_path": workdir,
+    }
+
+
+class ClaudeMdPayload(BaseModel):
+    path: str
+    content: str
+
+
+@router.put("/claude-md")
+async def write_claude_md(body: ClaudeMdPayload, _: User = require_permission("agent", "view")):
+    """保存 CLAUDE.md 到项目根目录。"""
+    import os
+    workdir = body.path.strip()
+    if not workdir or not os.path.isdir(workdir):
+        raise HTTPException(status_code=400, detail=f"目录不存在: {workdir}")
+    fp = os.path.join(workdir, "CLAUDE.md")
+    open(fp, "w", encoding="utf-8").write(body.content)
+    return {"ok": True, "path": fp}
+
+
+@router.get("/context-preview")
+async def context_preview(path: str = "", _: User = require_permission("agent", "view")):
+    """预览工作台发送消息时注入的上下文（CLAUDE.md + git 状态）。"""
+    import asyncio, os, shutil
+    ctx = {"project_path": path, "claude_md": "", "git": {}, "env": {}}
+
+    # CLAUDE.md
+    try:
+        r = await read_claude_md(path=path)
+        ctx["claude_md"] = r.get("content", "")
+    except Exception:
+        pass
+
+    # git context
+    if shutil.which("git") and path and os.path.isdir(path):
+        async def _git(args):
+            try:
+                p = await asyncio.create_subprocess_exec(
+                    "git", "-C", path, *args,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                o, _ = await asyncio.wait_for(p.communicate(), 5)
+                return o.decode("utf-8", errors="replace").strip()
+            except Exception:
+                return ""
+
+        branch, log, status = await asyncio.gather(
+            _git(["branch", "--show-current"]),
+            _git(["log", "--oneline", "-5"]),
+            _git(["status", "--short"]),
+        )
+        ctx["git"] = {"branch": branch, "log": log, "status": status}
+
+    return ctx
