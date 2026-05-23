@@ -590,6 +590,23 @@ import { api } from '../api/index.js'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 import { safeRandomUUID } from '../utils/uuid.js'
 
+/** 与 AIAgent.vue 同款 fetch 封装，携带 Cookie、抛出带 detail 的错误 */
+async function apiFetch(url, options = {}) {
+  const resp = await fetch(url, { credentials: 'include', ...options })
+  const text = await resp.text()
+  let data = null
+  if (text) {
+    try { data = JSON.parse(text) } catch { data = text }
+  }
+  if (!resp.ok) {
+    const detail = (data && typeof data === 'object' && data.detail)
+      || (typeof data === 'string' && data)
+      || `HTTP ${resp.status}`
+    throw new Error(detail)
+  }
+  return data
+}
+
 const SETTINGS_TABS = [
   { key: 'models',   label: '大模型',   icon: '◈', title: '大模型',   desc: '管理 API 配置以访问模型。' },
   { key: 'general',  label: '通用',     icon: '≡', title: '通用',     desc: '工作台行为与对话参数。' },
