@@ -474,3 +474,78 @@ async def detect_executors(_: User = require_permission("agent", "view")):
         result.append({**c, "available": available,
                        "path": shutil.which(c["cmd"]) if c["cmd"] else None})
     return {"executors": result}
+
+
+# ── Git 工作区接口（文件改动面板）──────────────────────────────────────────────
+
+@router.get("/git/status")
+async def git_status(path: str = "", _: User = require_permission("agent", "view")):
+    """获取项目的 git status（changed/untracked 文件列表）。"""
+    import asyncio, shutil
+    if not shutil.which("git"):
+        return {"ok": False, "error": "git 未安装"}
+    workdir = path.strip() or "."
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", workdir, "status", "--porcelain", "-u",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0:
+            return {"ok": False, "error": stderr.decode("utf-8", errors="replace").strip()}
+        lines = stdout.decode("utf-8", errors="replace").splitlines()
+        files = []
+        for line in lines:
+            if len(line) < 4:
+                continue
+            xy, name = line[:2], line[3:].strip()
+            if " -> " in name:   # rename: old -> new
+                name = name.split(" -> ")[-1]
+            status_map = {"M": "modified", "A": "added", "D": "deleted",
+                          "R": "renamed", "?": "untracked", "!": "ignored"}
+            x, y = xy[0], xy[1]
+            status = status_map.get(x, status_map.get(y, "changed"))
+            files.append({"file": name, "status": status, "xy": xy.strip()})
+        # 当前分支
+        bp = await asyncio.create_subprocess_exec(
+            "git", "-C", workdir, "branch", "--show-current",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        bstdout, _ = await asyncio.wait_for(bp.communicate(), timeout=5)
+        branch = bstdout.decode("utf-8", errors="replace").strip()
+        return {"ok": True, "files": files, "branch": branch, "path": workdir}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "git status 超时"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/git/diff")
+async def git_diff(path: str = "", file: str = "",
+                   _: User = require_permission("agent", "view")):
+    """获取指定文件的 git diff（unified diff 格式）。"""
+    import asyncio, shutil
+    if not shutil.which("git"):
+        return {"ok": False, "error": "git 未安装"}
+    workdir = path.strip() or "."
+    args = ["git", "-C", workdir, "diff", "HEAD", "--", file] if file else \
+           ["git", "-C", workdir, "diff", "HEAD"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        diff_text = stdout.decode("utf-8", errors="replace")
+        if not diff_text and file:
+            # 新文件：用 git diff --cached
+            proc2 = await asyncio.create_subprocess_exec(
+                "git", "-C", workdir, "diff", "--cached", "--", file,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout2, _ = await asyncio.wait_for(proc2.communicate(), timeout=10)
+            diff_text = stdout2.decode("utf-8", errors="replace")
+        return {"ok": True, "diff": diff_text, "file": file, "path": workdir}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "git diff 超时"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}

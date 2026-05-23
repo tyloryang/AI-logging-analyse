@@ -184,14 +184,27 @@
         </header>
 
         <section class="workspace-canvas">
+          <!-- 顶部 Canvas 条 -->
           <div class="canvas-bar">
             <div class="canvas-title">工作区记录</div>
             <div class="canvas-meta">
               <span class="meta-chip">MODEL {{ modelBadgeText }}</span>
               <span class="meta-chip">PROVIDER {{ providerBadgeText }}</span>
               <span class="meta-chip">HOME {{ currentHomeText }}</span>
+              <span class="meta-chip exec-mode-chip" :class="wbExecutor === 'external_cli' ? 'chip-claude' : ''">
+                EXEC {{ wbExecutor === 'external_cli' ? 'Claude Code' : 'LangGraph' }}
+              </span>
             </div>
+            <!-- 文件改动面板开关 -->
+            <button class="canvas-changes-btn" :class="{ active: showChangesPanel }"
+              @click="toggleChangesPanel" type="button"
+              :title="showChangesPanel ? '隐藏文件改动' : '显示文件改动'">
+              <span>⌥</span> 改动 {{ changedFiles.length || '' }}
+            </button>
           </div>
+
+          <!-- 主体：对话区 + 右侧文件改动面板 -->
+          <div class="canvas-body">
 
           <div v-if="selectedProject" class="context-strip">
             <div class="context-card">
@@ -208,6 +221,8 @@
             </div>
           </div>
 
+          <!-- 左侧：对话主区 -->
+          <div class="canvas-body-main">
           <div class="conversation-scroll">
             <div v-if="!messages.length" class="welcome-doc">
               <div class="doc-eyebrow">Ready</div>
@@ -301,17 +316,52 @@
                 @keydown.enter.exact.prevent="onSend"
                 @input="autoResize"
               ></textarea>
-              <button class="send-btn" type="button" :disabled="streaming || !selectedPath || !inputText.trim()" @click="onSend">
-                {{ streaming ? '发送中...' : '发送' }}
+              <button v-if="streaming" class="stop-btn" type="button" @click="stopStreaming">
+                ⬛ 停止
+              </button>
+              <button v-else class="send-btn" type="button" :disabled="!selectedPath || !inputText.trim()" @click="onSend">
+                发送
               </button>
             </div>
             <div class="composer-foot">
               <span>{{ currentHintText }}</span>
+              <span v-if="lastTokenUsage" class="token-chip">
+                ↑{{ lastTokenUsage.input_tokens }} ↓{{ lastTokenUsage.output_tokens }} tokens
+              </span>
               <button class="foot-link" type="button" :disabled="streaming || !selectedPath" @click="resetConversation">
                 新对话
               </button>
             </div>
           </footer>
+          </div><!-- /canvas-body-main -->
+          </div><!-- /canvas-body -->
+
+          <!-- 右侧文件改动面板 -->
+          <aside v-if="showChangesPanel && selectedPath" class="changes-panel">
+            <div class="cp-header">
+              <span class="cp-title">文件改动</span>
+              <span class="cp-branch mono" v-if="gitBranch">⎇ {{ gitBranch }}</span>
+              <button class="cp-refresh" @click="refreshGitStatus" :disabled="gitLoading">↻</button>
+            </div>
+            <div v-if="gitLoading" class="cp-loading"><div class="spinner" style="width:12px;height:12px;border-width:2px"></div></div>
+            <div v-else-if="!changedFiles.length" class="cp-empty">工作区干净，无改动文件</div>
+            <div v-else class="cp-file-list">
+              <div v-for="f in changedFiles" :key="f.file"
+                class="cp-file-row" :class="{ active: diffFile === f.file }"
+                @click="loadDiff(f.file)">
+                <span class="cp-status-badge" :class="'fst-' + f.status">{{ f.xy }}</span>
+                <span class="cp-filename mono">{{ f.file }}</span>
+              </div>
+            </div>
+            <!-- Diff 查看 -->
+            <div v-if="diffFile && diffContent" class="cp-diff-wrap">
+              <div class="cp-diff-header">
+                <span class="mono">{{ diffFile }}</span>
+                <button class="cp-close-diff" @click="diffFile = ''; diffContent = ''">✕</button>
+              </div>
+              <pre class="cp-diff-pre" v-html="highlightDiff(diffContent)"></pre>
+            </div>
+          </aside>
         </section>
       </main>
     </div>
@@ -835,6 +885,68 @@ async function saveWbEditModel(model) {
   } catch (e) {
     wbEditMsg.value = '保存失败: ' + e; wbEditOk.value = false
   } finally { wbEditSaving.value = false }
+}
+
+// ── 停止生成 ──────────────────────────────────────────────────────────────────
+let _stopController: AbortController | null = null
+
+function stopStreaming() {
+  _stopController?.abort()
+  streaming.value = false
+}
+
+// ── Token 用量统计 ─────────────────────────────────────────────────────────────
+const lastTokenUsage = ref<{ input_tokens: number; output_tokens: number } | null>(null)
+
+// ── 文件改动面板 ──────────────────────────────────────────────────────────────
+const showChangesPanel = ref(false)
+const changedFiles     = ref<{ file: string; status: string; xy: string }[]>([])
+const gitBranch        = ref('')
+const gitLoading       = ref(false)
+const diffFile         = ref('')
+const diffContent      = ref('')
+
+function toggleChangesPanel() {
+  showChangesPanel.value = !showChangesPanel.value
+  if (showChangesPanel.value && selectedPath.value) refreshGitStatus()
+}
+
+async function refreshGitStatus() {
+  if (!selectedPath.value || gitLoading.value) return
+  gitLoading.value = true
+  diffFile.value = ''; diffContent.value = ''
+  try {
+    const r = await api.agentGitStatus(selectedPath.value)
+    if (r.ok) {
+      changedFiles.value = r.files || []
+      gitBranch.value    = r.branch || ''
+    }
+  } catch {}
+  finally { gitLoading.value = false }
+}
+
+async function loadDiff(file: string) {
+  diffFile.value = file; diffContent.value = ''
+  try {
+    const r = await api.agentGitDiff(selectedPath.value, file)
+    if (r.ok) diffContent.value = r.diff || '（无差异）'
+  } catch {}
+}
+
+function highlightDiff(text: string): string {
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^(\+[^+].*)$/mg, '<span class="diff-add">$1</span>')
+    .replace(/^(-[^-].*)$/mg, '<span class="diff-del">$1</span>')
+    .replace(/^(@@.+@@)$/mg, '<span class="diff-hunk">$1</span>')
+    .replace(/^(diff --git.*)$/mg, '<span class="diff-header">$1</span>')
+}
+
+// 对话完成后自动刷新文件改动
+function afterStreamDone() {
+  if (showChangesPanel.value && selectedPath.value) {
+    setTimeout(refreshGitStatus, 500)
+  }
 }
 
 // ── 执行器切换（LangGraph / Claude Code 等） ──────────────────────────────────
@@ -1551,10 +1663,12 @@ async function sendMessage(text) {
   streaming.value = true
   scrollToBottom()
 
+  _stopController = new AbortController()
   try {
     const response = await fetch('/api/agent/chat', {
       method: 'POST',
       credentials: 'include',
+      signal: _stopController.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: text,
@@ -1647,8 +1761,10 @@ function handleEvent(data, assistantMessage) {
       assistantMessage.streaming = false
       assistantMessage.done = true
       streaming.value = false
+      if (data.usage) lastTokenUsage.value = data.usage  // token 统计
       scrollToBottom()
-      saveCurrentConvToDB()   // ← 流式结束后存 DB + localStorage
+      saveCurrentConvToDB()
+      afterStreamDone()   // 刷新文件改动面板
       break
     case 'error':
       assistantMessage.content += `${assistantMessage.content ? '\n\n' : ''}错误：${data.message || '未知错误'}`
@@ -1656,7 +1772,8 @@ function handleEvent(data, assistantMessage) {
       assistantMessage.done = true
       streaming.value = false
       scrollToBottom()
-      saveCurrentConvToDB()   // ← 错误也保存，防丢失
+      saveCurrentConvToDB()
+      afterStreamDone()
       break
   }
 }
@@ -2233,12 +2350,76 @@ onMounted(async () => {
 }
 
 .workspace-canvas {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
   padding: 18px 22px 22px;
 }
+
+/* 主体：对话 + 文件改动面板并排 */
+.canvas-body {
+  flex: 1; min-height: 0; display: flex; gap: 14px; overflow: hidden;
+}
+.canvas-body-main {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* 文件改动面板开关 */
+.canvas-changes-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 8px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--wb-border); background: transparent;
+  color: var(--wb-text-soft); cursor: pointer; transition: .12s; margin-left: auto;
+}
+.canvas-changes-btn:hover { background: var(--wb-accent-soft); color: var(--wb-accent); }
+.canvas-changes-btn.active { background: var(--wb-accent-soft); color: var(--wb-accent); border-color: var(--wb-accent-line); }
+.exec-mode-chip.chip-claude { background: rgba(56,139,253,.1); color: #388bfd; }
+
+/* 停止按钮 */
+.stop-btn {
+  padding: 6px 14px; border-radius: 10px; font-size: 12px; font-weight: 600;
+  border: 1px solid rgba(239,68,68,.3); background: rgba(239,68,68,.08);
+  color: #ef4444; cursor: pointer; transition: .12s;
+}
+.stop-btn:hover { background: rgba(239,68,68,.15); }
+
+/* Token 统计 */
+.token-chip { font-size: 10px; color: var(--wb-text-faint); margin: 0 6px; }
+
+/* 右侧文件改动面板 */
+.changes-panel {
+  width: 260px; flex-shrink: 0; display: flex; flex-direction: column;
+  background: var(--wb-paper); border: 1px solid var(--wb-border);
+  border-radius: 16px; overflow: hidden;
+}
+.cp-header {
+  display: flex; align-items: center; gap: 7px;
+  padding: 10px 12px; border-bottom: 1px solid var(--wb-border); flex-shrink: 0;
+}
+.cp-title  { font-size: 12px; font-weight: 700; color: var(--wb-text); }
+.cp-branch { font-size: 10px; color: var(--wb-text-soft); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-refresh { padding: 2px 6px; border-radius: 5px; border: 1px solid var(--wb-border); background: transparent; cursor: pointer; font-size: 12px; color: var(--wb-text-soft); }
+.cp-loading { display: flex; justify-content: center; padding: 16px; }
+.cp-empty   { font-size: 12px; color: var(--wb-text-soft); padding: 16px 12px; text-align: center; }
+.cp-file-list { flex: 1; overflow-y: auto; }
+.cp-file-row  { display: flex; align-items: center; gap: 7px; padding: 6px 12px; cursor: pointer; font-size: 12px; border-bottom: 1px solid rgba(0,0,0,.04); }
+.cp-file-row:hover  { background: rgba(0,0,0,.03); }
+.cp-file-row.active { background: var(--wb-accent-soft); }
+.cp-status-badge { font-size: 10px; font-weight: 700; padding: 1px 4px; border-radius: 3px; flex-shrink: 0; font-family: monospace; }
+.fst-modified  { background: rgba(249,196,74,.15); color: #b45309; }
+.fst-added     { background: rgba(34,197,94,.12);  color: #15803d; }
+.fst-deleted   { background: rgba(239,68,68,.12);  color: #dc2626; }
+.fst-renamed   { background: rgba(139,92,246,.12); color: #7c3aed; }
+.fst-untracked { background: rgba(156,163,175,.12);color: #6b7280; }
+.fst-changed   { background: rgba(249,196,74,.15); color: #b45309; }
+.cp-filename   { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-diff-wrap  { flex-shrink: 0; border-top: 1px solid var(--wb-border); max-height: 50%; display: flex; flex-direction: column; }
+.cp-diff-header { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; border-bottom: 1px solid var(--wb-border); font-size: 11px; color: var(--wb-text-soft); flex-shrink: 0; }
+.cp-close-diff  { background: none; border: none; cursor: pointer; color: var(--wb-text-soft); font-size: 13px; }
+.cp-diff-pre   { flex: 1; overflow-y: auto; padding: 8px; margin: 0; font-family: monospace; font-size: 11px; line-height: 1.6; white-space: pre; background: #0d1117; color: #c9d1d9; }
+.cp-diff-pre :deep(.diff-add)    { display: block; background: rgba(63,185,80,.15); color: #3fb950; }
+.cp-diff-pre :deep(.diff-del)    { display: block; background: rgba(248,81,73,.12); color: #f85149; }
+.cp-diff-pre :deep(.diff-hunk)   { display: block; color: #58a6ff; }
+.cp-diff-pre :deep(.diff-header) { display: block; color: #8b949e; font-weight: 600; }
 
 .canvas-bar {
   padding: 0 4px 14px;

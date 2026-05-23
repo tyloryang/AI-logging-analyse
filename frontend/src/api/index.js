@@ -142,6 +142,10 @@ export const api = {
   // Kubernetes
   // K8s 证书管理
   k8sInspectKubeconfig: (path)         => http.post('/k8s/inspect-kubeconfig', { path }),
+  // Agent git 工具
+  agentGitStatus:      (path)          => http.get('/agent/git/status',   { params: { path } }),
+  agentGitDiff:        (path, file)    => http.get('/agent/git/diff',     { params: { path, file } }),
+  agentDetectExecutors:()              => http.get('/agent/executors/detect'),
   k8sListCerts:     ()                 => http.get('/k8s/certs'),
   k8sUploadCert:    (file, certType)   => {
     const fd = new FormData(); fd.append('file', file)
