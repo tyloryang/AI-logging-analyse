@@ -67,7 +67,7 @@
       <div class="basic-form card">
         <div class="form-section">
           <label class="form-label">助手名称</label>
-          <input v-model="config.name" class="form-input" placeholder="例如：SxDevOps 智能运维助手" />
+          <input v-model="config.name" class="form-input" placeholder="例如：AIOps 智能运维助手" />
         </div>
 
         <div class="form-section">

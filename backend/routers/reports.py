@@ -888,7 +888,7 @@ def _render_report_html(data: dict) -> str:
 
 {top10_block}
 
-<div class="footer">由 SxDevOps AIOps 平台生成 · {esc(created_at)}</div>
+<div class="footer">由 AIOps 智能运维平台生成 · {esc(created_at)}</div>
 </body>
 </html>"""
 

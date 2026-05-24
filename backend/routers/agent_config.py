@@ -47,7 +47,7 @@ _DEFAULT_CONFIG = {
         {"id": "4", "name": "gateway-service SA",   "endpoint": "http://gateway:8080/sa",           "token": "", "active": True,  "conversations": 8},
     ],
     "basic": {
-        "name":       "SxDevOps 智能运维助手",
+        "name":       "AIOps 智能运维助手",
         "definition": "你是一名资深 SRE 工程师，负责保障平台稳定性。你拥有丰富的故障排查经验，能够快速定位问题根因并给出修复建议。",
         "mcp_desc":   "你可以通过下方的 MCP 与 Redis、Nacos 通信，获取业务配置数据，也可以调用 Prometheus API 获取实时指标。",
         "skill_desc": "还可以通过调用 Skill 完成自动化巡检 order-service 等能力，以及执行 Ansible Playbook 对目标主机进行操作。",
