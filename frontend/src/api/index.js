@@ -274,7 +274,15 @@ export const api = {
   esNodes:          (id)         => http.get(`/es/clusters/${id}/nodes`),
   esShards:         (id, idx)    => http.get(`/es/clusters/${id}/shards`, { params: idx ? { index: idx } : {} }),
   esProxy:          (id, method, path, body) => http.request({ method, url: `/es/clusters/${id}/proxy/${path}`, data: body }),
+
+  // Agent 历史会话
+  listConversations:   (params)        => http.get('/agent/conversations', { params }),
+  getConversation:     (convId)        => http.get(`/agent/conversations/${convId}`),
+  saveConversation:    (convId, data)  => http.put(`/agent/conversations/${convId}`, data),
+  deleteConversation:  (convId)        => http.delete(`/agent/conversations/${convId}`),
 }
+
+export { http }
 
 /** 流式 SSE 工具 */
 export function streamSSE(url, onChunk, onDone, onError) {
