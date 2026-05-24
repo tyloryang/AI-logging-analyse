@@ -509,6 +509,10 @@ async function doStream(text) {
             streamingMsg.tools[currentToolIdx].done   = true
           }
 
+        } else if (evt.type === 'replace_content') {
+          // 后端提取结构化数据后，用干净文本替换流式累积内容
+          if (evt.text != null) streamingMsg.content = evt.text
+
         } else if (evt.type === 'done') {
           const finalMsg = {
             role:    'assistant',
