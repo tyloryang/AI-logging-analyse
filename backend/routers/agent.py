@@ -92,6 +92,7 @@ def _build_runtime_overrides(req: AgentRequest) -> dict:
         model_enable_thinking=req.model_enable_thinking,
     )
     runtime_overrides["home_dir"] = str(req.home_dir or "").strip()
+    runtime_overrides["executor"] = str(req.executor or "").strip()
     # 注入 CLAUDE.md + git 上下文（参考 Claude Code 的 buildSystemPrompt）
     home_dir = runtime_overrides["home_dir"]
     if home_dir:
@@ -258,7 +259,8 @@ async def _stream_graph(
         }
         # 优先用请求里的 executor 参数，其次读系统配置
         from agent.external_executor import _normalize_executor
-        req_executor = _normalize_executor(req.executor) if req.executor.strip() else ""
+        _raw_executor = str(runtime_overrides.get("executor", "")).strip()
+        req_executor  = _normalize_executor(_raw_executor) if _raw_executor else ""
         executor_mode = req_executor or get_agent_executor("API")
         if executor_mode != "langgraph":
             logger.info("[agent] 使用外部执行器: %s", executor_mode)
