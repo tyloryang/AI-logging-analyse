@@ -21,9 +21,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse
 
-from auth.deps import current_user, require_permission
+from auth.deps import require_permission
 from auth.models import User
-from fastapi import Depends
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cc-haha", tags=["cc-haha"])
@@ -48,7 +47,7 @@ def _get_cc_haha_dir() -> str:
 # ── 服务管理接口 ──────────────────────────────────────────────────────────────
 
 @router.get("/status")
-async def cc_status(_: Any = Depends(require_permission("agent", "view"))):
+async def cc_status(_: Any = require_permission("agent", "view")):
     """检测 cc-haha 服务是否在线。"""
     global _CC_PROC
     running = False
@@ -81,7 +80,7 @@ async def cc_status(_: Any = Depends(require_permission("agent", "view"))):
 
 
 @router.post("/start")
-async def cc_start(_: Any = Depends(require_permission("agent", "view"))):
+async def cc_start(_: Any = require_permission("agent", "view")):
     """启动 cc-haha Bun 服务。"""
     global _CC_PROC
     if _CC_PROC is not None and _CC_PROC.poll() is None:
@@ -125,7 +124,7 @@ async def cc_start(_: Any = Depends(require_permission("agent", "view"))):
 
 
 @router.post("/stop")
-async def cc_stop(_: Any = Depends(require_permission("agent", "view"))):
+async def cc_stop(_: Any = require_permission("agent", "view")):
     """停止 cc-haha Bun 服务。"""
     global _CC_PROC
     if _CC_PROC is None or _CC_PROC.poll() is not None:
@@ -145,7 +144,7 @@ async def cc_stop(_: Any = Depends(require_permission("agent", "view"))):
 async def cc_proxy(
     request: Request,
     path: str,
-    _: Any = Depends(require_permission("agent", "view")),
+    _: Any = require_permission("agent", "view"),
 ):
     """代理 HTTP 请求到 cc-haha 后端。"""
     target = f"{_get_cc_base()}/api/{path}"
