@@ -200,8 +200,6 @@ const MENU = [
       { label: '📊 异常检测', to: '/aiops/anomaly' },
       { label: '🧰 AI 工作台', to: '/aiops/workbench', module: 'agent' },
       { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
-      { label: '⌨ 开发工作台', to: '/aiops/workbench', module: 'agent' },
-      { label: '◈ Claude Code', to: '/aiops/cc-haha',  module: 'agent' },
       { label: '◈ Claude',     to: '/aiops/claude',   module: 'agent' },
       { label: '⚙ 智能配置',  to: '/aiops/config' },
     ],

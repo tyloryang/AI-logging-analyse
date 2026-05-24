@@ -240,21 +240,6 @@
           <!-- 主体：对话区 + 右侧文件改动面板 -->
           <div class="canvas-body">
 
-          <div v-if="selectedProject" class="context-strip">
-            <div class="context-card">
-              <span class="context-label">项目摘要</span>
-              <strong>{{ selectedProject.summary || '本地工作区项目' }}</strong>
-            </div>
-            <div class="context-card">
-              <span class="context-label">标记文件</span>
-              <strong>{{ selectedProject.marker_files?.slice(0, 3).join(' · ') || '未识别' }}</strong>
-            </div>
-            <div class="context-card">
-              <span class="context-label">命令提示</span>
-              <strong>{{ currentHintText }}</strong>
-            </div>
-          </div>
-
           <!-- 左侧：对话主区 -->
           <div class="canvas-body-main">
           <div class="conversation-scroll">
@@ -344,8 +329,8 @@
                 ref="inputRef"
                 v-model="inputText"
                 class="composer-input"
-                :disabled="streaming || !selectedPath"
-                :placeholder="selectedPath ? '输入开发任务、阅读需求或排障问题…' : '先选择左侧项目或填写手动工作目录'"
+                :disabled="streaming"
+                :placeholder="selectedPath ? '输入开发任务、阅读需求或排障问题…' : '输入问题开始对话（可选：左侧选择项目获得代码上下文）'"
                 rows="1"
                 @keydown.enter.exact.prevent="onSend"
                 @input="autoResize"
@@ -353,7 +338,7 @@
               <button v-if="streaming" class="stop-btn" type="button" @click="stopStreaming">
                 ⬛ 停止
               </button>
-              <button v-else class="send-btn" type="button" :disabled="!selectedPath || !inputText.trim()" @click="onSend">
+              <button v-else class="send-btn" type="button" :disabled="!inputText.trim()" @click="onSend">
                 发送
               </button>
             </div>
@@ -362,7 +347,7 @@
               <span v-if="lastTokenUsage" class="token-chip">
                 ↑{{ lastTokenUsage.input_tokens }} ↓{{ lastTokenUsage.output_tokens }} tokens
               </span>
-              <button class="foot-link" type="button" :disabled="streaming || !selectedPath" @click="resetConversation">
+              <button class="foot-link" type="button" :disabled="streaming" @click="resetConversation">
                 新对话
               </button>
             </div>
@@ -1467,8 +1452,7 @@ function openSettings(tab = 'models') {
 }
 
 function ensureProjectSession(path) {
-  const key = String(path || '').trim()
-  if (!key) return null
+  const key = String(path || '').trim() || '__global__'
   if (!projectSessions.has(key)) {
     projectSessions.set(key, {
       convId: genUUID(),
@@ -1736,12 +1720,13 @@ async function toggleSkill(skill) {
 }
 
 function resetConversation() {
-  if (!selectedPath.value || streaming.value) return
+  if (streaming.value) return
+  const key = selectedPath.value || '__global__'
   const session = {
     convId: genUUID(),
     messages: [],
   }
-  projectSessions.set(selectedPath.value, session)
+  projectSessions.set(key, session)
   currentConvId = session.convId
   messages.value = session.messages
   inputText.value = ''
@@ -1767,17 +1752,16 @@ function sendQuickPrompt(kind) {
 
 function onSend() {
   const text = inputText.value.trim()
-  if (!text || streaming.value || !selectedPath.value) return
+  if (!text || streaming.value) return
   sendMessage(text)
   inputText.value = ''
   if (inputRef.value) inputRef.value.style.height = 'auto'
 }
 
 async function sendMessage(text) {
-  if (streaming.value || !selectedPath.value) return
+  if (streaming.value) return
 
   const session = ensureProjectSession(selectedPath.value)
-  if (!session) return
 
   const userMessage = {
     id: ++msgId,
@@ -1853,10 +1837,15 @@ async function sendMessage(text) {
     }
   } catch (error) {
     assistantMessage.content += `${assistantMessage.content ? '\n\n' : ''}错误：${error.message}`
-    assistantMessage.streaming = false
-    assistantMessage.done = true
+  } finally {
+    if (!assistantMessage.done) {
+      assistantMessage.streaming = false
+      assistantMessage.done = true
+    }
     streaming.value = false
     scrollToBottom()
+    saveCurrentConvToDB()
+    afterStreamDone()
   }
 }
 
@@ -2546,7 +2535,7 @@ onMounted(async () => {
 .workspace-canvas {
   flex: 1; min-height: 0;
   display: flex; flex-direction: column;
-  padding: 18px 22px 22px;
+  padding: 18px 22px 0;
 }
 
 /* 主体：对话 + 文件改动面板并排 */
@@ -2900,7 +2889,8 @@ onMounted(async () => {
 }
 
 .composer-wrap {
-  margin-top: 16px;
+  margin-top: 12px;
+  padding-bottom: 20px;
 }
 
 .composer-shell {

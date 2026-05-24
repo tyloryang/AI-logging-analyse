@@ -329,7 +329,7 @@ onBeforeUnmount(() => {
 async function loadConversations() {
   try {
     const r = await api.listConversations()
-    conversations.value = r.data || []
+    conversations.value = Array.isArray(r) ? r : (r?.data || [])
   } catch { /* ignore */ }
 }
 
@@ -364,7 +364,7 @@ async function loadConversation(conv) {
   streamingMsg.tools = []
   try {
     const r = await api.getConversation(conv.conv_id)
-    const raw = r.data?.messages || []
+    const raw = (r?.messages || r?.data?.messages || [])
     messages.value = raw.map(m => ({
       role:    m.role,
       content: m.content,
@@ -420,7 +420,7 @@ async function _saveConversation() {
       conv.title      = title
       conv.updated_at = new Date().toISOString()
     }
-  } catch { /* ignore */ }
+  } catch (e) { console.warn('[claude] save conv failed:', e) }
 }
 
 // ── 发送消息 ─────────────────────────────────────────────────────────────────
@@ -458,9 +458,10 @@ async function doStream(text) {
 
   try {
     const resp = await fetch('/api/agent/chat', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
+      method:      'POST',
+      headers:     { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body:        JSON.stringify({
         message: text,
         conv_id: activeConvId.value,
       }),

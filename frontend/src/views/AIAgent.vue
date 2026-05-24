@@ -1385,11 +1385,15 @@ async function sendMessage(text) {
     }
   } catch (error) {
     assistantMsg.content += `\n\n错误：${error.message}`
-    assistantMsg.streaming = false
-    assistantMsg.done = true
+  } finally {
+    if (!assistantMsg.done) {
+      assistantMsg.streaming = false
+      assistantMsg.done = true
+      saveConversation()
+    }
     streaming.value = false
     currentAssistantMsg = null
-    saveConversation()
+    scrollToBottom()
   }
 }
 
