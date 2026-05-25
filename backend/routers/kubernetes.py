@@ -27,6 +27,8 @@ router = APIRouter(prefix="/api/k8s", tags=["kubernetes"])
 _DATA_FILE = Path(__file__).parent.parent / "data" / "k8s_clusters.json"
 _DEFAULT_KUBECONFIG = os.path.join(os.path.dirname(__file__), "..", "data", "kubeconfig")
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
+# In Docker the backend is mounted at /app directly (no project root above it),
+# so parents[2] would be "/". Use BACKEND_ROOT as fallback project root.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _KUBECONFIG_PATH_SEPARATOR = os.pathsep
 _SUMMARY_CACHE: TTLCache = TTLCache(maxsize=16, ttl=15)
@@ -122,8 +124,16 @@ def _resolve_single_runtime_kubeconfig_path(raw_path: str) -> str:
 
     candidates: list[Path] = []
     seen: set[str] = set()
-    for base in (Path.cwd(), _PROJECT_ROOT, _BACKEND_ROOT):
-        candidate = (base / expanded).resolve(strict=False)
+
+    # In Docker the backend/ directory is mounted as the app root (e.g. /app).
+    # Allow "backend/data/..." to resolve as "data/..." relative to _BACKEND_ROOT.
+    docker_alias: list[tuple[Path, str]] = []
+    for prefix in ("backend/", "backend\\"):
+        if expanded.startswith(prefix):
+            docker_alias.append((_BACKEND_ROOT, expanded[len(prefix):]))
+
+    for base, rel in [(Path.cwd(), expanded), (_PROJECT_ROOT, expanded), (_BACKEND_ROOT, expanded)] + docker_alias:
+        candidate = (base / rel).resolve(strict=False)
         candidate_key = str(candidate).lower()
         if candidate_key in seen:
             continue
@@ -736,14 +746,15 @@ async def upload_cert(
 
 
 class CertKubeconfigPayload(BaseModel):
-    name:        str
-    server:      str
-    ca_cert:     str           # 相对路径，如 backend/data/ca/ca.pem
-    client_cert: str = ""      # 证书认证
-    client_key:  str = ""      # 证书认证
-    token:       str = ""      # token 认证（与 cert 二选一）
-    context:     str = "default"
-    description: str = ""
+    name:                    str
+    server:                  str
+    ca_cert:                 str = ""   # 相对路径，如 backend/data/ca/ca.pem；insecure 模式可留空
+    client_cert:             str = ""  # 证书认证
+    client_key:              str = ""  # 证书认证
+    token:                   str = ""  # token 认证（与 cert 二选一）
+    context:                 str = "default"
+    description:             str = ""
+    insecure_skip_tls_verify: bool = False
 
 
 @router.post("/generate-kubeconfig")
@@ -783,8 +794,12 @@ async def generate_kubeconfig(
                 detail=f"{label} 文件不存在: {raw}（解析后: {resolved or '空'}）")
         return resolved
 
-    ca_path = _resolve_cert(body.ca_cert, "CA 证书")
-    cluster_block = {"server": body.server.strip(), "certificate-authority": ca_path}
+    cluster_block: dict = {"server": body.server.strip()}
+    if body.insecure_skip_tls_verify:
+        cluster_block["insecure-skip-tls-verify"] = True
+    else:
+        ca_path = _resolve_cert(body.ca_cert, "CA 证书")
+        cluster_block["certificate-authority"] = ca_path
 
     if body.token and body.token.strip():
         user_block = {"token": body.token.strip()}

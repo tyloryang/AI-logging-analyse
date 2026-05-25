@@ -6,6 +6,13 @@
         <span class="subtitle">多集群 Kubernetes 资源总览与 kubeconfig 管理</span>
       </div>
       <div class="header-right">
+        <input
+          v-model="searchKeyword"
+          class="search-input"
+          type="text"
+          placeholder="关键字搜索"
+          :disabled="!activeClusterId || loading"
+        />
         <select v-model="activeNs" class="ns-select" :disabled="!activeClusterId || loading" @change="fetchAll">
           <option value="">全部命名空间</option>
           <option v-for="ns in namespaces" :key="ns.name" :value="ns.name">{{ ns.name }}</option>
@@ -270,8 +277,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!pods.length"><td colspan="8" class="empty">暂无数据</td></tr>
-              <tr v-for="pod in pods" :key="pod.namespace + '/' + pod.name">
+              <tr v-if="!filteredPods.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-for="pod in filteredPods" :key="pod.namespace + '/' + pod.name">
                 <td class="name-cell">{{ pod.name }}</td>
                 <td><span class="ns-tag">{{ pod.namespace }}</span></td>
                 <td><span class="status-dot" :class="pod.statusClass"></span>{{ pod.status }}</td>
@@ -313,8 +320,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!deployments.length"><td colspan="7" class="empty">暂无数据</td></tr>
-              <tr v-for="deployment in deployments" :key="deployment.namespace + '/' + deployment.name">
+              <tr v-if="!filteredDeployments.length"><td colspan="7" class="empty">暂无数据</td></tr>
+              <tr v-for="deployment in filteredDeployments" :key="deployment.namespace + '/' + deployment.name">
                 <td class="name-cell">{{ deployment.name }}</td>
                 <td><span class="ns-tag">{{ deployment.namespace }}</span></td>
                 <td><span class="status-dot" :class="deployment.statusClass"></span>{{ deployment.status }}</td>
@@ -340,8 +347,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!daemonSets.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="daemonSet in daemonSets" :key="daemonSet.namespace + '/' + daemonSet.name">
+              <tr v-if="!filteredDaemonSets.length"><td colspan="9" class="empty">暂无数据</td></tr>
+              <tr v-for="daemonSet in filteredDaemonSets" :key="daemonSet.namespace + '/' + daemonSet.name">
                 <td class="name-cell">{{ daemonSet.name }}</td>
                 <td><span class="ns-tag">{{ daemonSet.namespace }}</span></td>
                 <td><span class="status-dot" :class="daemonSet.statusClass"></span>{{ daemonSet.status }}</td>
@@ -369,8 +376,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!statefulSets.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="statefulSet in statefulSets" :key="statefulSet.namespace + '/' + statefulSet.name">
+              <tr v-if="!filteredStatefulSets.length"><td colspan="9" class="empty">暂无数据</td></tr>
+              <tr v-for="statefulSet in filteredStatefulSets" :key="statefulSet.namespace + '/' + statefulSet.name">
                 <td class="name-cell">{{ statefulSet.name }}</td>
                 <td><span class="ns-tag">{{ statefulSet.namespace }}</span></td>
                 <td><span class="status-dot" :class="statefulSet.statusClass"></span>{{ statefulSet.status }}</td>
@@ -398,8 +405,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!jobs.length"><td colspan="10" class="empty">暂无数据</td></tr>
-              <tr v-for="job in jobs" :key="job.namespace + '/' + job.name">
+              <tr v-if="!filteredJobs.length"><td colspan="10" class="empty">暂无数据</td></tr>
+              <tr v-for="job in filteredJobs" :key="job.namespace + '/' + job.name">
                 <td class="name-cell">{{ job.name }}</td>
                 <td><span class="ns-tag">{{ job.namespace }}</span></td>
                 <td><span class="status-dot" :class="job.statusClass"></span>{{ job.status }}</td>
@@ -428,8 +435,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!cronJobs.length"><td colspan="10" class="empty">暂无数据</td></tr>
-              <tr v-for="cronJob in cronJobs" :key="cronJob.namespace + '/' + cronJob.name">
+              <tr v-if="!filteredCronJobs.length"><td colspan="10" class="empty">暂无数据</td></tr>
+              <tr v-for="cronJob in filteredCronJobs" :key="cronJob.namespace + '/' + cronJob.name">
                 <td class="name-cell">{{ cronJob.name }}</td>
                 <td><span class="ns-tag">{{ cronJob.namespace }}</span></td>
                 <td><span class="status-dot" :class="cronJob.statusClass"></span>{{ cronJob.status }}</td>
@@ -458,8 +465,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!services.length"><td colspan="7" class="empty">暂无数据</td></tr>
-              <tr v-for="service in services" :key="service.namespace + '/' + service.name">
+              <tr v-if="!filteredServices.length"><td colspan="7" class="empty">暂无数据</td></tr>
+              <tr v-for="service in filteredServices" :key="service.namespace + '/' + service.name">
                 <td class="name-cell">{{ service.name }}</td>
                 <td><span class="ns-tag">{{ service.namespace }}</span></td>
                 <td><span class="svc-type" :class="service.type.toLowerCase()">{{ service.type }}</span></td>
@@ -484,8 +491,8 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!nodes.length"><td colspan="7" class="empty">暂无数据</td></tr>
-              <tr v-for="node in nodes" :key="node.name">
+              <tr v-if="!filteredNodes.length"><td colspan="7" class="empty">暂无数据</td></tr>
+              <tr v-for="node in filteredNodes" :key="node.name">
                 <td class="name-cell">{{ node.name }}</td>
                 <td><span class="status-dot" :class="node.statusClass"></span>{{ node.status }}</td>
                 <td><span class="role-tag">{{ node.roles }}</span></td>
@@ -561,7 +568,11 @@
               <span>API Server 地址</span>
               <input v-model="certForm.server" class="form-input" placeholder="https://192.168.9.221:6443" />
             </label>
-            <div class="field">
+            <label class="field field-inline">
+              <input type="checkbox" v-model="certForm.insecureSkipTLS" style="margin-right:6px" />
+              <span>跳过 TLS 验证（insecure-skip-tls-verify）</span>
+            </label>
+            <div class="field" v-if="!certForm.insecureSkipTLS">
               <span>CA 证书路径</span>
               <div class="cert-path-row">
                 <input v-model="certForm.caPath" class="form-input" placeholder="backend/data/test/ca.crt 或 /opt/kubernetes/ssl/ca.pem" />
@@ -790,6 +801,7 @@ const jobs = ref([])
 const cronJobs = ref([])
 const services = ref([])
 const nodes = ref([])
+const searchKeyword = ref('')
 const showDetailModal = ref(false)
 const detailLoading = ref(false)
 const detailError = ref('')
@@ -825,6 +837,7 @@ const detectError   = ref('')
 
 const certForm = reactive({
   server: '',
+  insecureSkipTLS: false,
   // CA
   caPath: '', caUploading: false,
   // 客户端证书
@@ -917,6 +930,60 @@ const logModalTitle = computed(() => `${kindLabel(logMeta.kind)} 日志`)
 const selectedLogPodData = computed(() => logPods.value.find(item => item.name === selectedLogPod.value) || null)
 const selectedLogContainers = computed(() => selectedLogPodData.value?.containers || [])
 const canManageClusters = computed(() => authStore.isAdmin)
+const normalizedSearchKeyword = computed(() => searchKeyword.value.trim().toLowerCase())
+
+function matchesSearch(parts) {
+  const keyword = normalizedSearchKeyword.value
+  if (!keyword) return true
+  return parts.some((part) => String(part ?? '').toLowerCase().includes(keyword))
+}
+
+const filteredPods = computed(() =>
+  pods.value.filter((pod) => matchesSearch([
+    pod.name, pod.namespace, pod.status, pod.node, pod.restarts,
+    ...(pod.containers || []).map((container) => container.name),
+  ]))
+)
+const filteredDeployments = computed(() =>
+  deployments.value.filter((item) => matchesSearch([
+    item.name, item.namespace, item.status, item.ready, item.desired,
+    ...(item.images || []),
+  ]))
+)
+const filteredDaemonSets = computed(() =>
+  daemonSets.value.filter((item) => matchesSearch([
+    item.name, item.namespace, item.status, item.ready, item.desired,
+    item.current, item.updated, item.available, ...(item.images || []),
+  ]))
+)
+const filteredStatefulSets = computed(() =>
+  statefulSets.value.filter((item) => matchesSearch([
+    item.name, item.namespace, item.status, item.ready, item.desired,
+    item.current, item.updated, ...(item.images || []),
+  ]))
+)
+const filteredJobs = computed(() =>
+  jobs.value.filter((item) => matchesSearch([
+    item.name, item.namespace, item.status, item.succeeded, item.completions,
+    item.parallelism, item.active, item.failed, ...(item.images || []),
+  ]))
+)
+const filteredCronJobs = computed(() =>
+  cronJobs.value.filter((item) => matchesSearch([
+    item.name, item.namespace, item.status, item.schedule, item.active,
+    item.lastScheduleTime, item.lastSuccessfulTime, ...(item.activeJobs || []),
+  ]))
+)
+const filteredServices = computed(() =>
+  services.value.filter((item) => matchesSearch([
+    item.name, item.namespace, item.type, item.clusterIP, ...(item.ports || []),
+  ]))
+)
+const filteredNodes = computed(() =>
+  nodes.value.filter((item) => matchesSearch([
+    item.name, item.status, item.roles, item.version, item.os,
+  ]))
+)
 
 function normalizeKind(kind) {
   const value = String(kind || '').trim().toLowerCase().replace(/[-_]/g, '')
@@ -1000,14 +1067,14 @@ function resetNotice() {
 
 function tabCount(id) {
   const mapping = {
-    pods: pods.value.length,
-    deployments: deployments.value.length,
-    daemonSets: daemonSets.value.length,
-    statefulSets: statefulSets.value.length,
-    jobs: jobs.value.length,
-    cronJobs: cronJobs.value.length,
-    services: services.value.length,
-    nodes: nodes.value.length,
+    pods: filteredPods.value.length,
+    deployments: filteredDeployments.value.length,
+    daemonSets: filteredDaemonSets.value.length,
+    statefulSets: filteredStatefulSets.value.length,
+    jobs: filteredJobs.value.length,
+    cronJobs: filteredCronJobs.value.length,
+    services: filteredServices.value.length,
+    nodes: filteredNodes.value.length,
   }
   return mapping[id] ?? 0
 }
@@ -1102,7 +1169,7 @@ function closeClusterModal() {
   detectResult.value  = null
   detectError.value   = ''
   Object.assign(certForm, {
-    server: '', caPath: '', caUploading: false,
+    server: '', insecureSkipTLS: false, caPath: '', caUploading: false,
     clientCertPath: '', clientCertUploading: false,
     clientKeyPath: '',  clientKeyUploading: false,
     token: '',
@@ -1227,9 +1294,9 @@ async function saveCluster() {
       clusterTestMsg.value = 'API Server 地址不能为空'
       return
     }
-    if (!certForm.caPath.trim()) {
+    if (!certForm.insecureSkipTLS && !certForm.caPath.trim()) {
       clusterTestResult.value = false
-      clusterTestMsg.value = '请填写 CA 证书路径（或上传文件）'
+      clusterTestMsg.value = '请填写 CA 证书路径（或勾选跳过 TLS 验证）'
       return
     }
 
@@ -1251,11 +1318,12 @@ async function saveCluster() {
     try {
       const r = await api.k8sGenerateKubeconfig({
         name,
-        server:      certForm.server.trim(),
-        ca_cert:     caRelative,
-        client_cert: clientCertRel,
-        client_key:  clientKeyRel,
-        token:       authMode.value === 'token' ? certForm.token.trim() : '',
+        server:                   certForm.server.trim(),
+        ca_cert:                  caRelative,
+        client_cert:              clientCertRel,
+        client_key:               clientKeyRel,
+        token:                    authMode.value === 'token' ? certForm.token.trim() : '',
+        insecure_skip_tls_verify: certForm.insecureSkipTLS,
         context:     clusterForm.context.trim() || 'default',
         description: clusterForm.description.trim(),
       })
@@ -1542,6 +1610,8 @@ onBeforeUnmount(() => { _destroyExec() })
   font-size: 12px;
 }
 
+.search-input { padding: 6px 10px; min-width: 180px; width: 220px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); outline: none; }
+.search-input:focus { border-color: var(--accent); }
 .ns-select { padding: 6px 10px; cursor: pointer; min-width: 180px; }
 
 .btn-refresh,
