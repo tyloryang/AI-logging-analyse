@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xml:lang="zh-CN" viewBox="0 0 2400 1600" width="2400" height="1600">
+  <style>
+    text { font-family: "Microsoft YaHei UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+  </style>
+
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbfaf7"/>
+      <stop offset="100%" stop-color="#f4f7fb"/>
+    </linearGradient>
+    <radialGradient id="glow-a" cx="18%" cy="12%" r="40%">
+      <stop offset="0%" stop-color="#10a37f" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#10a37f" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-b" cx="82%" cy="18%" r="35%">
+      <stop offset="0%" stop-color="#2563eb" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#2563eb" stop-opacity="0"/>
+    </radialGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0,0 10,4 0,8" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+<rect width="2400" height="1600" fill="url(#bg)"/>
+<rect width="2400" height="1600" fill="url(#glow-a)"/>
+<rect width="2400" height="1600" fill="url(#glow-b)"/>
+<text x="60" y="74" fill="#111827" font-size="34" font-weight="900">AIOps 智能运维平台 PRD</text>
+<text x="60" y="108" fill="#6b7280" font-size="16">面向 DevOps / SRE，把告警治理、根因分析、自动化处置和复盘沉淀做成闭环</text>
+<g><rect x="1915" y="44" width="62" height="32" rx="16" fill="#f3f4f6" stroke="#e5e7eb"/><text x="1946.0" y="65" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">v1.0</text></g>
+<g><rect x="2040" y="44" width="94" height="32" rx="16" fill="#ecfdf5" stroke="#bbf7d0"/><text x="2087.0" y="65" text-anchor="middle" fill="#10a37f" font-size="13" font-weight="600">产品图谱</text></g>
+<g><rect x="60" y="150" width="430" height="1390" rx="18" fill="#ffffff" stroke="#e5e7eb"/><rect x="60" y="150" width="6" height="1390" rx="3" fill="#10a37f"/><text x="82" y="184" fill="#6b7280" font-size="13" font-weight="700" letter-spacing="0.08em">PRODUCT CONTEXT</text><text x="82" y="212" fill="#111827" font-size="23" font-weight="800">为什么要做</text></g>
+<g><rect x="515" y="150" width="1090" height="1390" rx="18" fill="#ffffff" stroke="#e5e7eb"/><rect x="515" y="150" width="6" height="1390" rx="3" fill="#10a37f"/><text x="537" y="184" fill="#6b7280" font-size="13" font-weight="700" letter-spacing="0.08em">CORE SCOPE</text><text x="537" y="212" fill="#111827" font-size="23" font-weight="800">做什么</text></g>
+<g><rect x="1630" y="150" width="710" height="1390" rx="18" fill="#ffffff" stroke="#e5e7eb"/><rect x="1630" y="150" width="6" height="1390" rx="3" fill="#10a37f"/><text x="1652" y="184" fill="#6b7280" font-size="13" font-weight="700" letter-spacing="0.08em">ROADMAP</text><text x="1652" y="212" fill="#111827" font-size="23" font-weight="800">怎么落地</text></g>
+<g>
+<rect x="78" y="250" width="394" height="278" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="78" y="250" width="6" height="278" rx="3" fill="#2563eb"/>
+<rect x="396" y="266" width="60" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="426.0" y="285" text-anchor="middle" fill="#2563eb" font-size="12" font-weight="700">Pain</text>
+<text x="98" y="288" fill="#111827" font-size="20" font-weight="800">背景痛点</text>
+<text x="98" y="320" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 告警噪音高，重复告警多</tspan>
+</text>
+<text x="98" y="354" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 日志 / 指标 / Trace 分散</tspan>
+</text>
+<text x="98" y="388" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 故障定位依赖人工拼接</tspan>
+</text>
+<text x="98" y="422" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 夜间响应慢，排障成本高</tspan>
+</text>
+</g>
+<g>
+<rect x="78" y="548" width="394" height="242" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="78" y="548" width="6" height="242" rx="3" fill="#f97316"/>
+<rect x="386" y="564" width="70" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="421.0" y="583" text-anchor="middle" fill="#f97316" font-size="12" font-weight="700">Users</text>
+<text x="98" y="586" fill="#111827" font-size="20" font-weight="800">目标用户</text>
+<text x="98" y="618" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• SRE / DevOps / 开发</tspan>
+</text>
+<text x="98" y="652" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 管理层关注日报与健康分</tspan>
+</text>
+<text x="98" y="686" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 飞书里直接触发分析和协作</tspan>
+</text>
+</g>
+<g>
+<rect x="78" y="810" width="394" height="258" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="78" y="810" width="6" height="258" rx="3" fill="#10a37f"/>
+<rect x="396" y="826" width="60" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="426.0" y="845" text-anchor="middle" fill="#10a37f" font-size="12" font-weight="700">Rule</text>
+<text x="98" y="848" fill="#111827" font-size="20" font-weight="800">产品原则</text>
+<text x="98" y="880" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• AI 仅给建议，动作需人审</tspan>
+</text>
+<text x="98" y="914" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 不自研监控采集，复用现有体系</tspan>
+</text>
+<text x="98" y="948" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 不替代 IM，只做通知与协作入口</tspan>
+</text>
+<text x="98" y="982" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 优先做高频、可闭环的场景</tspan>
+</text>
+</g>
+<g>
+<rect x="78" y="1088" width="394" height="252" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="78" y="1088" width="6" height="252" rx="3" fill="#7c3aed"/>
+<rect x="406" y="1104" width="50" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="431.0" y="1123" text-anchor="middle" fill="#7c3aed" font-size="12" font-weight="700">KPI</text>
+<text x="98" y="1126" fill="#111827" font-size="20" font-weight="800">验收指标</text>
+<text x="98" y="1158" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 30 秒内输出初步 RCA</tspan>
+</text>
+<text x="98" y="1192" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 同因 20 条告警收敛为 1 张卡</tspan>
+</text>
+<text x="98" y="1226" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 每日 9:00 自动生成运维日报</tspan>
+</text>
+<text x="98" y="1260" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="98" dy="0">• 资源按分组隔离可见</tspan>
+</text>
+</g>
+<g>
+<rect x="535" y="228" width="338" height="166" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="535" y="228" width="6" height="166" rx="3" fill="#10a37f"/>
+<rect x="777" y="244" width="80" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="817.0" y="263" text-anchor="middle" fill="#10a37f" font-size="12" font-weight="700">Notify</text>
+<text x="555" y="266" fill="#111827" font-size="20" font-weight="800">告警治理</text>
+<text x="555" y="298" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="555" dy="0">• 接入 AlertManager / Webhook</tspan>
+</text>
+<text x="555" y="332" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="555" dy="0">• 同因聚合、去重抑制</tspan>
+</text>
+<text x="555" y="366" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="555" dy="0">• 飞书卡片实时推送</tspan>
+</text>
+</g>
+<g>
+<rect x="891" y="228" width="338" height="166" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="891" y="228" width="6" height="166" rx="3" fill="#2563eb"/>
+<rect x="1163" y="244" width="50" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="1188.0" y="263" text-anchor="middle" fill="#2563eb" font-size="12" font-weight="700">RCA</text>
+<text x="911" y="266" fill="#111827" font-size="20" font-weight="800">根因分析</text>
+<text x="911" y="298" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="911" dy="0">• 联合日志 / 指标 / Trace / CMDB</tspan>
+</text>
+<text x="911" y="332" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="911" dy="0">• 30 秒内输出摘要</tspan>
+</text>
+<text x="911" y="366" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="911" dy="0">• 支持人工确认沉淀</tspan>
+</text>
+</g>
+<g>
+<rect x="1247" y="228" width="338" height="166" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="1247" y="228" width="6" height="166" rx="3" fill="#f97316"/>
+<rect x="1519" y="244" width="50" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="1544.0" y="263" text-anchor="middle" fill="#f97316" font-size="12" font-weight="700">Obs</text>
+<text x="1267" y="266" fill="#111827" font-size="20" font-weight="800">可观测中心</text>
+<text x="1267" y="298" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1267" dy="0">• 日志中心 / 指标监控 / APM</tspan>
+</text>
+<text x="1267" y="332" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1267" dy="0">• 事件墙 / 慢日志 / 异常检测</tspan>
+</text>
+<text x="1267" y="366" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1267" dy="0">• 统一进入观测界面</tspan>
+</text>
+</g>
+<g>
+<rect x="535" y="412" width="338" height="166" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="535" y="412" width="6" height="166" rx="3" fill="#7c3aed"/>
+<rect x="787" y="428" width="70" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="822.0" y="447" text-anchor="middle" fill="#7c3aed" font-size="12" font-weight="700">Asset</text>
+<text x="555" y="450" fill="#111827" font-size="20" font-weight="800">资源与平台</text>
+<text x="555" y="482" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="555" dy="0">• CMDB / 主机 / K8s / 中间件</tspan>
+</text>
+<text x="555" y="516" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="555" dy="0">• Redis / ES / Jenkins 接入</tspan>
+</text>
+<text x="555" y="550" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="555" dy="0">• 资源拓扑和健康度</tspan>
+</text>
+</g>
+<g>
+<rect x="891" y="412" width="338" height="166" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="891" y="412" width="6" height="166" rx="3" fill="#ef4444"/>
+<rect x="1153" y="428" width="60" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="1183.0" y="447" text-anchor="middle" fill="#ef4444" font-size="12" font-weight="700">Auto</text>
+<text x="911" y="450" fill="#111827" font-size="20" font-weight="800">自动化处置</text>
+<text x="911" y="482" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="911" dy="0">• SSH / 任务 / Cron / 审批</tspan>
+</text>
+<text x="911" y="516" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="911" dy="0">• 报告导出 / 定时巡检</tspan>
+</text>
+<text x="911" y="550" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="911" dy="0">• 变更动作需人工确认</tspan>
+</text>
+</g>
+<g>
+<rect x="1247" y="412" width="338" height="166" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="1247" y="412" width="6" height="166" rx="3" fill="#0ea5e9"/>
+<rect x="1499" y="428" width="70" height="28" rx="14" fill="#f8fafc" stroke="#e5e7eb"/>
+<text x="1534.0" y="447" text-anchor="middle" fill="#0ea5e9" font-size="12" font-weight="700">Agent</text>
+<text x="1267" y="450" fill="#111827" font-size="20" font-weight="800">AI 工作台</text>
+<text x="1267" y="482" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1267" dy="0">• 对话式排障与代码上下文</tspan>
+</text>
+<text x="1267" y="516" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1267" dy="0">• 多模型切换 / 历史会话</tspan>
+</text>
+<text x="1267" y="550" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1267" dy="0">• 记忆检索 / 报告生成</tspan>
+</text>
+</g>
+<g><rect x="535" y="650" width="1050" height="650" rx="22" fill="#fbfdff" stroke="#e5e7eb"/><rect x="535" y="650" width="6" height="650" rx="3" fill="#10a37f"/><text x="555" y="686" fill="#111827" font-size="20" font-weight="800">核心闭环</text><text x="555" y="714" fill="#6b7280" font-size="14">从触发到分析，再到处置和沉淀，形成可复用的运维闭环</text></g>
+<g><rect x="555" y="742" width="142" height="32" rx="16" fill="#f8fafc" stroke="#e5e7eb"/><text x="626.0" y="763" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">AlertManager</text></g>
+<g><rect x="657" y="742" width="62" height="32" rx="16" fill="#f8fafc" stroke="#e5e7eb"/><text x="688.0" y="763" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">Loki</text></g>
+<g><rect x="759" y="742" width="122" height="32" rx="16" fill="#f8fafc" stroke="#e5e7eb"/><text x="820.0" y="763" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">Prometheus</text></g>
+<g><rect x="861" y="742" width="122" height="32" rx="16" fill="#f8fafc" stroke="#e5e7eb"/><text x="922.0" y="763" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">SkyWalking</text></g>
+<g><rect x="993" y="742" width="62" height="32" rx="16" fill="#f8fafc" stroke="#e5e7eb"/><text x="1024.0" y="763" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">CMDB</text></g>
+<g><rect x="1095" y="742" width="52" height="32" rx="16" fill="#f8fafc" stroke="#e5e7eb"/><text x="1121.0" y="763" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">SSH</text></g>
+<g><rect x="1197" y="742" width="58" height="32" rx="16" fill="#f8fafc" stroke="#e5e7eb"/><text x="1226.0" y="763" text-anchor="middle" fill="#111827" font-size="13" font-weight="600">飞书</text></g>
+<g><rect x="555" y="808" width="236" height="180" rx="18" fill="#ffffff" stroke="#e5e7eb"/><circle cx="577" cy="830" r="10" fill="#2563eb"/><text x="597" y="835" fill="#111827" font-size="16" font-weight="800">1 触发</text><text x="573" y="870" fill="#6b7280" font-size="14" font-weight="400">
+  <tspan x="573" dy="0">告警到来</tspan>
+  <tspan x="573" dy="18">用户点击分析</tspan>
+  <tspan x="573" dy="18">定时巡检</tspan>
+</text></g>
+<line x1="801" y1="898" x2="819" y2="898" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<g><rect x="813" y="808" width="236" height="180" rx="18" fill="#ffffff" stroke="#e5e7eb"/><circle cx="835" cy="830" r="10" fill="#f97316"/><text x="855" y="835" fill="#111827" font-size="16" font-weight="800">2 采集</text><text x="831" y="870" fill="#6b7280" font-size="14" font-weight="400">
+  <tspan x="831" dy="0">并发拉取日志</tspan>
+  <tspan x="831" dy="18">指标、Trace、资产</tspan>
+  <tspan x="831" dy="18">压缩上下文</tspan>
+</text></g>
+<line x1="1059" y1="898" x2="1077" y2="898" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<g><rect x="1071" y="808" width="236" height="180" rx="18" fill="#ffffff" stroke="#e5e7eb"/><circle cx="1093" cy="830" r="10" fill="#7c3aed"/><text x="1113" y="835" fill="#111827" font-size="16" font-weight="800">3 推理</text><text x="1089" y="870" fill="#6b7280" font-size="14" font-weight="400">
+  <tspan x="1089" dy="0">LangGraph ReAct</tspan>
+  <tspan x="1089" dy="18">工具调用 + 记忆</tspan>
+  <tspan x="1089" dy="18">生成结构化结论</tspan>
+</text></g>
+<line x1="1317" y1="898" x2="1335" y2="898" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<g><rect x="1329" y="808" width="236" height="180" rx="18" fill="#ffffff" stroke="#e5e7eb"/><circle cx="1351" cy="830" r="10" fill="#10a37f"/><text x="1371" y="835" fill="#111827" font-size="16" font-weight="800">4 输出</text><text x="1347" y="870" fill="#6b7280" font-size="14" font-weight="400">
+  <tspan x="1347" dy="0">RCA 卡片</tspan>
+  <tspan x="1347" dy="18">飞书通知 / 工单</tspan>
+  <tspan x="1347" dy="18">报告和知识沉淀</tspan>
+</text></g>
+<g><rect x="555" y="1022" width="1010" height="230" rx="18" fill="#f8fafc" stroke="#e5e7eb"/><text x="575" y="1054" fill="#111827" font-size="16" font-weight="800">输出物</text><text x="575" y="1086" fill="#6b7280" font-size="14" font-weight="400">
+  <tspan x="575" dy="0">RCA 摘要 / 处置建议 / 相似案例 / 复盘报告 / 模型与技能配置</tspan>
+</text></g>
+<g>
+<rect x="1648" y="228" width="674" height="244" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="1648" y="228" width="6" height="244" rx="3" fill="#10a37f"/>
+<text x="1668" y="266" fill="#111827" font-size="20" font-weight="800">Phase 1 · 告警治理</text>
+<text x="1668" y="298" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• Webhook 接入</tspan>
+</text>
+<text x="1668" y="332" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• 去重聚合与抑制</tspan>
+</text>
+<text x="1668" y="366" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• 告警中心 + 飞书卡片</tspan>
+</text>
+</g>
+<g>
+<rect x="1648" y="490" width="674" height="244" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="1648" y="490" width="6" height="244" rx="3" fill="#2563eb"/>
+<text x="1668" y="528" fill="#111827" font-size="20" font-weight="800">Phase 2 · RCA 闭环</text>
+<text x="1668" y="560" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• 上下文采集</tspan>
+</text>
+<text x="1668" y="594" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• AI 分析 + 异常检测</tspan>
+</text>
+<text x="1668" y="628" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• 报告导出 + 历史复盘</tspan>
+</text>
+</g>
+<g>
+<rect x="1648" y="752" width="674" height="244" rx="18" fill="#ffffff" stroke="#e5e7eb"/>
+<rect x="1648" y="752" width="6" height="244" rx="3" fill="#7c3aed"/>
+<text x="1668" y="790" fill="#111827" font-size="20" font-weight="800">Phase 3 · 资产扩展</text>
+<text x="1668" y="822" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• CloudAdapter</tspan>
+</text>
+<text x="1668" y="856" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• 多云接入 + 成本汇总</tspan>
+</text>
+<text x="1668" y="890" fill="#6b7280" font-size="15" font-weight="400">
+  <tspan x="1668" dy="0">• 统一资产视图</tspan>
+</text>
+</g>
+<g><rect x="1648" y="1038" width="674" height="318" rx="18" fill="#fbfdff" stroke="#e5e7eb"/><text x="1666" y="1072" fill="#111827" font-size="18" font-weight="800">关键指标</text><g><rect x="1666" y="1104" width="110" height="32" rx="16" fill="#ecfdf5" stroke="#bbf7d0"/><text x="1721.0" y="1125" text-anchor="middle" fill="#10a37f" font-size="13" font-weight="600">30 秒 RCA</text></g><g><rect x="1840" y="1104" width="108" height="32" rx="16" fill="#eff6ff" stroke="#bfdbfe"/><text x="1894.0" y="1125" text-anchor="middle" fill="#2563eb" font-size="13" font-weight="600">20→1 卡片</text></g><g><rect x="1666" y="1150" width="108" height="32" rx="16" fill="#fff7ed" stroke="#fed7aa"/><text x="1720.0" y="1171" text-anchor="middle" fill="#f97316" font-size="13" font-weight="600">9:00 报告</text></g><g><rect x="1840" y="1150" width="94" height="32" rx="16" fill="#faf5ff" stroke="#e9d5ff"/><text x="1887.0" y="1171" text-anchor="middle" fill="#7c3aed" font-size="13" font-weight="600">分组权限</text></g><text x="1666" y="1214" fill="#6b7280" font-size="14" font-weight="400">
+  <tspan x="1666" dy="0">验收关注点：告警后是否能快速给出结论，是否能减少夜班噪音，是否能把结果</tspan>
+  <tspan x="1666" dy="18">沉淀成可复用知识。</tspan>
+</text></g>
+<text x="60" y="1548" fill="#94a3b8" font-size="12">基于当前仓库中的 AIOps 智能运维平台功能整理</text><text x="2340" y="1548" text-anchor="end" fill="#94a3b8" font-size="12">screenshots/project_prd_overview.svg</text></svg>

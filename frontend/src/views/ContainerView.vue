@@ -76,24 +76,23 @@
             </div>
             <div class="cluster-card-context">{{ cluster.context || '默认 context' }}</div>
             <div class="cluster-card-desc">{{ cluster.description || '未填写描述' }}</div>
-            <div class="cluster-card-path mono">{{ cluster.kubeconfig }}</div>
           </div>
         </div>
       </aside>
 
       <section class="content-area">
         <div class="cluster-meta">
-          <div class="meta-card">
+          <div class="meta-card compact">
             <div class="meta-label">当前集群</div>
             <div class="meta-value">{{ activeCluster?.name || '未选择' }}</div>
             <div class="meta-sub">{{ activeCluster?.context || '默认 context' }}</div>
           </div>
-          <div class="meta-card">
+          <div class="meta-card compact">
             <div class="meta-label">默认访问</div>
             <div class="meta-value">{{ activeCluster?.is_default ? '是' : '否' }}</div>
             <div class="meta-sub">{{ activeCluster?.is_default ? '未指定 cluster_id 时默认使用该集群' : '可在左侧卡片中设为默认集群' }}</div>
           </div>
-          <div class="meta-card wide">
+          <div class="meta-card wide compact">
             <div class="meta-label">kubeconfig</div>
             <div class="meta-value mono">{{ activeCluster?.kubeconfig || '未配置' }}</div>
             <div class="meta-sub">{{ activeCluster?.description || '可使用不同 kubeconfig 路径分别管理多个集群' }}</div>
@@ -185,7 +184,7 @@
             </div>
             <div class="stat-body">
               <div class="stat-value">{{ summary.pods.running }}<span class="stat-total">/{{ summary.pods.total }}</span></div>
-              <div class="stat-label">Pod Running</div>
+              <div class="stat-label">Pods</div>
             </div>
           </div>
           <div class="stat-card" :class="{ warn: summary.deployments.ready < summary.deployments.total }">
@@ -197,10 +196,10 @@
             </div>
             <div class="stat-body">
               <div class="stat-value">{{ summary.deployments.ready }}<span class="stat-total">/{{ summary.deployments.total }}</span></div>
-              <div class="stat-label">Deployment Ready</div>
+              <div class="stat-label">Deployments</div>
             </div>
           </div>
-          <div class="stat-card" :class="{ warn: summary.daemonSets?.ready < summary.daemonSets?.total }">
+          <div class="stat-card compact" :class="{ warn: summary.daemonSets?.ready < summary.daemonSets?.total }">
             <div class="stat-icon daemon">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
                 <circle cx="12" cy="12" r="3" />
@@ -209,10 +208,10 @@
             </div>
             <div class="stat-body">
               <div class="stat-value">{{ summary.daemonSets?.ready || 0 }}<span class="stat-total">/{{ summary.daemonSets?.total || 0 }}</span></div>
-              <div class="stat-label">DaemonSet Ready</div>
+              <div class="stat-label">DaemonSets</div>
             </div>
           </div>
-          <div class="stat-card" :class="{ warn: summary.statefulSets?.ready < summary.statefulSets?.total }">
+          <div class="stat-card compact" :class="{ warn: summary.statefulSets?.ready < summary.statefulSets?.total }">
             <div class="stat-icon stateful">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
                 <rect x="4" y="4" width="16" height="5" rx="1.5" />
@@ -222,10 +221,10 @@
             </div>
             <div class="stat-body">
               <div class="stat-value">{{ summary.statefulSets?.ready || 0 }}<span class="stat-total">/{{ summary.statefulSets?.total || 0 }}</span></div>
-              <div class="stat-label">StatefulSet Ready</div>
+              <div class="stat-label">StatefulSets</div>
             </div>
           </div>
-          <div class="stat-card" :class="{ warn: summary.jobs?.complete < summary.jobs?.total }">
+          <div class="stat-card compact" :class="{ warn: summary.jobs?.complete < summary.jobs?.total }">
             <div class="stat-icon job">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
                 <path d="M8 6h13M8 12h13M8 18h13" />
@@ -234,10 +233,10 @@
             </div>
             <div class="stat-body">
               <div class="stat-value">{{ summary.jobs?.complete || 0 }}<span class="stat-total">/{{ summary.jobs?.total || 0 }}</span></div>
-              <div class="stat-label">Job Complete</div>
+              <div class="stat-label">Jobs</div>
             </div>
           </div>
-          <div class="stat-card" :class="{ warn: (summary.cronJobs?.suspended || 0) > 0 }">
+          <div class="stat-card compact" :class="{ warn: (summary.cronJobs?.suspended || 0) > 0 }">
             <div class="stat-icon cron">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
                 <circle cx="12" cy="12" r="8" />
@@ -1595,7 +1594,7 @@ onBeforeUnmount(() => { _destroyExec() })
 <style scoped>
 .container-view { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-primary); }
 
-.page-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 12px; border-bottom: 1px solid var(--border-light); flex-shrink: 0; gap: 16px; }
+.page-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 10px; border-bottom: 1px solid var(--border-light); flex-shrink: 0; gap: 12px; }
 .header-left h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
 .subtitle { font-size: 12px; color: var(--text-muted); }
 .header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
@@ -1610,7 +1609,7 @@ onBeforeUnmount(() => { _destroyExec() })
   font-size: 12px;
 }
 
-.search-input { padding: 6px 10px; min-width: 180px; width: 220px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); outline: none; }
+.search-input { padding: 6px 10px; min-width: 160px; width: 200px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); outline: none; }
 .search-input:focus { border-color: var(--accent); }
 .ns-select { padding: 6px 10px; cursor: pointer; min-width: 180px; }
 
@@ -1697,22 +1696,22 @@ onBeforeUnmount(() => { _destroyExec() })
 
 .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .empty-card {
-  width: min(520px, 100%);
+  width: min(460px, 100%);
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 28px;
+  padding: 22px;
   text-align: center;
   box-shadow: var(--shadow-sm);
 }
-.empty-title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
-.empty-subtitle { color: var(--text-muted); font-size: 13px; line-height: 1.7; margin-bottom: 18px; }
+.empty-title { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.empty-subtitle { color: var(--text-muted); font-size: 13px; line-height: 1.6; margin-bottom: 16px; }
 
-.workspace-body { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 12px 20px 20px; }
+.workspace-body { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 10px 16px 16px; }
 
 .cluster-sidebar {
-  width: 300px;
-  min-width: 300px;
+  width: 270px;
+  min-width: 270px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1722,7 +1721,7 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 
 .sidebar-head {
-  padding: 14px 14px 10px;
+  padding: 12px 12px 8px;
   border-bottom: 1px solid var(--border-light);
   display: flex;
   align-items: center;
@@ -1731,20 +1730,20 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 
 .sidebar-title { font-size: 14px; font-weight: 600; }
-.sidebar-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.sidebar-subtitle { display: none; }
 
 .cluster-card-list {
-  padding: 12px;
+  padding: 10px;
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .cluster-card {
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px;
+  padding: 10px;
   background: var(--bg-base);
   cursor: pointer;
   transition: all .15s ease;
@@ -1783,35 +1782,30 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 
 .cluster-card-context { margin-top: 8px; font-size: 11px; color: var(--text-secondary); }
-.cluster-card-desc { margin-top: 6px; font-size: 12px; color: var(--text-muted); line-height: 1.6; min-height: 38px; }
-.cluster-card-path {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border-light);
-  font-size: 10.5px;
-  color: var(--text-secondary);
-  word-break: break-all;
-}
+.cluster-card-desc { display: none; }
+.cluster-card-path { display: none; }
 
 .content-area { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
-.cluster-meta { display: grid; grid-template-columns: 220px 220px 1fr; gap: 12px; flex-shrink: 0; }
+.cluster-meta { display: grid; grid-template-columns: 200px 200px 1fr; gap: 10px; flex-shrink: 0; }
 .meta-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 14px 16px;
+  padding: 12px 14px;
   min-width: 0;
 }
 .meta-card.wide { min-width: 0; }
 .meta-label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
 .meta-value { font-size: 14px; font-weight: 600; color: var(--text-primary); word-break: break-all; }
-.meta-sub { margin-top: 4px; font-size: 11px; color: var(--text-secondary); line-height: 1.6; }
+.meta-sub { display: none; }
+.meta-card.compact { padding: 10px 12px; }
 
-.summary-row { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 12px; flex-shrink: 0; }
-.stat-card { flex: 1 1 180px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+.summary-row { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 10px; flex-shrink: 0; }
+.stat-card { flex: 1 1 180px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; }
+.stat-card.compact { display: none; }
 .stat-card.warn { border-color: rgba(154,103,0,0.3); background: rgba(154,103,0,0.05); }
-.stat-icon { width: 38px; height: 38px; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+.stat-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
 .stat-icon.node { background: var(--accent-dim); color: var(--accent); }
 .stat-icon.pod { background: rgba(26,127,55,0.12); color: var(--success); }
 .stat-icon.deploy { background: rgba(154,103,0,0.12); color: var(--warning); }
@@ -1819,17 +1813,17 @@ onBeforeUnmount(() => { _destroyExec() })
 .stat-icon.stateful { background: rgba(14,165,233,0.12); color: #0284c7; }
 .stat-icon.job { background: rgba(20,184,166,0.12); color: #0f766e; }
 .stat-icon.cron { background: rgba(217,119,6,0.12); color: #b45309; }
-.stat-value { font-size: 22px; font-weight: 700; line-height: 1; }
-.stat-total { font-size: 14px; color: var(--text-muted); font-weight: 400; }
+.stat-value { font-size: 20px; font-weight: 700; line-height: 1; }
+.stat-total { font-size: 13px; color: var(--text-muted); font-weight: 400; }
 .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 
-.tab-row { display: flex; gap: 4px; padding-top: 10px; flex-shrink: 0; }
-.tab-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; background: none; color: var(--text-secondary); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all .15s; }
+.tab-row { display: flex; gap: 4px; padding-top: 8px; flex-shrink: 0; }
+.tab-btn { padding: 5px 12px; border-radius: 6px; border: 1px solid transparent; background: none; color: var(--text-secondary); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all .15s; }
 .tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 .tab-btn.active { background: var(--accent-dim); border-color: var(--border-accent); color: var(--accent); font-weight: 500; }
 .tab-count { font-size: 10px; background: var(--bg-surface); border: 1px solid var(--border); padding: 1px 5px; border-radius: 8px; color: var(--text-secondary); }
 
-.loading-row { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 40px; color: var(--text-muted); }
+.loading-row { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 28px; color: var(--text-muted); }
 .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
