@@ -35,6 +35,16 @@ _SUMMARY_CACHE: TTLCache = TTLCache(maxsize=16, ttl=15)
 _SUMMARY_LOCKS: dict[str, asyncio.Lock] = {}
 
 
+def _read_text_auto(path: Path) -> str:
+    """读取文件，优先 UTF-8，失败时回退到系统编码（兼容中文 Windows GBK 环境）。"""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        import locale
+        fallback = locale.getpreferredencoding(False) or "gbk"
+        return path.read_text(encoding=fallback, errors="replace")
+
+
 class K8sClusterPayload(BaseModel):
     name: str
     kubeconfig: str
@@ -109,7 +119,17 @@ def _resolve_single_runtime_kubeconfig_path(raw_path: str) -> str:
     if not path_value:
         return ""
 
-    expanded = os.path.expandvars(os.path.expanduser(path_value))
+    # Use pathlib for expanduser to avoid os.path encoding issues on Windows with Chinese paths.
+    # Fall back to os.path.expandvars only when the string actually contains '%' (env var markers).
+    try:
+        expanded = str(Path(path_value).expanduser())
+    except Exception:
+        expanded = path_value
+    if "%" in expanded or "$" in expanded:
+        try:
+            expanded = os.path.expandvars(expanded)
+        except Exception:
+            pass
     if not expanded:
         return ""
 
@@ -117,6 +137,11 @@ def _resolve_single_runtime_kubeconfig_path(raw_path: str) -> str:
         return str(Path(expanded))
 
     if expanded.startswith("/"):
+        return expanded
+
+    # Handle Windows absolute paths (e.g. C:\Users\...) even on Linux containers.
+    import re as _re
+    if _re.match(r"^[A-Za-z]:[/\\]", expanded):
         return expanded
 
     if Path(expanded).is_absolute():
@@ -201,7 +226,7 @@ def _build_kubectl_command(cluster_id: str | None = None) -> str:
     try:
         import yaml
 
-        content = yaml.safe_load(Path(kubeconfig_path).read_text(encoding="utf-8")) or {}
+        content = yaml.safe_load(_read_text_auto(Path(kubeconfig_path))) or {}
         selected_context_name = str(cluster.get("context") or "").strip() or str(content.get("current-context") or "").strip()
         if selected_context_name:
             parts.extend(["--context", selected_context_name])
@@ -329,7 +354,7 @@ def _merge_kubeconfigs(paths: list[str]) -> str:
     }
     for path in paths:
         try:
-            data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load(_read_text_auto(Path(path))) or {}
         except Exception as exc:
             logger.warning("[k8s] 跳过无法读取的 kubeconfig %s: %s", path, exc)
             continue
@@ -964,7 +989,7 @@ def _detect_kubeconfig_auth(kubeconfig_path: str) -> dict:
             results.append({"path": path, "error": "文件不存在"})
             continue
         try:
-            data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load(_read_text_auto(Path(path))) or {}
         except Exception as e:
             results.append({"path": path, "error": f"解析失败: {e}"})
             continue
