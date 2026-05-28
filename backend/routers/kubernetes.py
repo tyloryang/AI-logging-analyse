@@ -383,14 +383,16 @@ def _make_ssl_permissive_client(config_file: str, context: str | None):
     from kubernetes import config as k8s_config, client as k8s_client
 
     # 先尝试默认加载
+    _first_exc: Exception | None = None
     try:
         return k8s_config.new_client_from_config(config_file=config_file, context=context)
-    except Exception as first_exc:
-        if "CA_MD_TOO_WEAK" not in str(first_exc) and "WEAK" not in str(first_exc).upper():
+    except Exception as _e:
+        _first_exc = _e
+        if "CA_MD_TOO_WEAK" not in str(_e) and "WEAK" not in str(_e).upper():
             raise
 
     # CA_MD_TOO_WEAK：降级 OpenSSL 安全级别后重建 ApiClient
-    logger.warning("[k8s] CA_MD_TOO_WEAK detected, retrying with SECLEVEL=1: %s", first_exc)
+    logger.warning("[k8s] CA_MD_TOO_WEAK detected, retrying with SECLEVEL=1: %s", _first_exc)
     cfg = k8s_client.Configuration()
     k8s_config.load_kube_config(
         config_file=config_file,
