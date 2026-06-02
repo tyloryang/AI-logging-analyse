@@ -73,6 +73,16 @@
       </div>
 
       <div class="svc-list-wrap">
+        <!-- 服务搜索 -->
+        <div class="svc-search-wrap">
+          <span class="svc-search-icon">🔍</span>
+          <input
+            v-model="serviceSearch"
+            class="svc-search-input"
+            placeholder="搜索服务名..."
+          />
+          <button v-if="serviceSearch" class="kw-clear" @click="serviceSearch = ''">✕</button>
+        </div>
         <div class="svc-item" :class="{ active: selectedService === '' }" @click="selectService('')">
           <span class="svc-dot all"></span>
           <span class="svc-label">全部服务</span>
@@ -81,9 +91,12 @@
         <div v-if="loadingSvcs" class="loading-row">
           <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
         </div>
+        <div v-else-if="serviceSearch && !hasSearchMatch" class="svc-empty">
+          未找到匹配 <em>{{ serviceSearch }}</em> 的服务
+        </div>
         <!-- 按 namespace 分组展示 -->
-        <template v-if="serviceGroups.length">
-          <div v-for="grp in serviceGroups" :key="grp.key || grp.namespace || grp.label" class="svc-ns-group">
+        <template v-if="visibleServiceGroups.length">
+          <div v-for="grp in visibleServiceGroups" :key="grp.key || grp.namespace || grp.label" class="svc-ns-group">
             <div class="svc-ns-header" @click="toggleNs(grp.key || grp.namespace || grp.label)">
               <span class="svc-ns-arrow" :class="{ open: openNs.has(grp.key || grp.namespace || grp.label) }">▶</span>
               <span class="svc-ns-label">{{ grp.label || grp.key || grp.namespace }}</span>
@@ -106,7 +119,7 @@
         <!-- 无 namespace 时平铺 -->
         <template v-else>
           <div
-            v-for="svc in services" :key="svc.name"
+            v-for="svc in visibleServices" :key="svc.name"
             class="svc-item"
             :class="{ active: isSelectedService(svc.name) }"
             @click="selectService(svc.name)"
@@ -141,16 +154,26 @@
         </div>
         <div class="toolbar-right">
           <!-- 关键字搜索（日志流 / 模板聚合 tab 共用） -->
-          <div v-if="activeTab !== 'trace'" class="keyword-wrap">
+          <div v-if="activeTab !== 'trace'" class="keyword-wrap" title="服务端关键字（重新查询 Loki）">
             <span class="kw-icon">🔍</span>
             <input
               v-model="keyword"
               class="kw-input"
-              placeholder="关键字过滤..."
+              placeholder="后端关键字（查询 Loki）..."
               @input="onKeywordInput"
               @keyup.enter="onParamChange"
             />
             <button v-if="keyword" class="kw-clear" @click="clearKeyword">✕</button>
+          </div>
+          <!-- 二次本地过滤（仅日志流 tab，不重查后端，纯客户端 includes 过滤） -->
+          <div v-if="activeTab === 'logs'" class="keyword-wrap secondary" title="在已加载结果内本地过滤">
+            <span class="kw-icon">⊕</span>
+            <input
+              v-model="localKeyword"
+              class="kw-input"
+              placeholder="结果内再过滤..."
+            />
+            <button v-if="localKeyword" class="kw-clear" @click="localKeyword = ''">✕</button>
           </div>
 
           <!-- 日志流专有控件 -->
@@ -302,11 +325,11 @@
 
       <!-- 日志详情抽屉 -->
       <transition name="drawer-slide">
-        <div v-if="detailLog" class="log-detail-drawer" @click.self="detailLog = null">
+        <div v-if="detailLog" class="log-detail-drawer" @click.self="closeDetail">
           <div class="drawer-panel">
             <div class="drawer-header">
               <span>日志详情</span>
-              <button class="drawer-close" @click="detailLog = null">✕</button>
+              <button class="drawer-close" @click="closeDetail">✕</button>
             </div>
             <div class="drawer-body">
               <div class="drawer-row">
@@ -336,6 +359,61 @@
               <div class="drawer-row drawer-row-full">
                 <span class="drawer-label">内容</span>
                 <pre class="drawer-content">{{ detailLog.line }}</pre>
+              </div>
+              <div class="drawer-row drawer-row-full">
+                <div class="drawer-section-header">
+                  <span class="drawer-section-title">上下文</span>
+                  <div class="drawer-section-actions">
+                    <span v-if="detailContextLogs.length" class="drawer-section-meta">
+                      前 {{ detailContextBeforeCount }} / 后 {{ detailContextAfterCount }}
+                    </span>
+                    <button class="btn btn-outline btn-xs" @click="loadLogContext(detailLog, { reset: true })">刷新</button>
+                  </div>
+                </div>
+                <div v-if="loadingDetailContext" class="drawer-context-state">
+                  <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
+                  正在加载上下文...
+                </div>
+                <div v-else-if="detailContextError" class="drawer-context-state drawer-context-state-error">
+                  {{ detailContextError }}
+                </div>
+                <div
+                  v-else-if="detailContextLogs.length"
+                  ref="contextScrollWrap"
+                  class="drawer-context-list"
+                  @scroll.passive="onContextScroll"
+                >
+                  <div v-if="loadingContextBefore" class="drawer-context-loading-more">
+                    <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+                    正在加载更早的上下文...
+                  </div>
+                  <div v-else-if="contextBeforeAtLimit" class="drawer-context-hint">已到达可用上下文上限</div>
+                  <button
+                    v-for="(item, idx) in detailContextLogs"
+                    :key="`${item.timestamp_ns}-${idx}`"
+                    type="button"
+                    class="drawer-context-item"
+                    :class="[
+                      { active: idx === detailContextAnchorIndex },
+                      logClass(item.line),
+                    ]"
+                    @click="openDetail(item)"
+                  >
+                    <span class="drawer-context-ts">{{ item.timestamp }}</span>
+                    <span class="drawer-context-svc">{{ logServiceName(item) }}</span>
+                    <span class="drawer-context-text">{{ item.line }}</span>
+                  </button>
+                  <div v-if="loadingContextAfter" class="drawer-context-loading-more">
+                    <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+                    正在加载更晚的上下文...
+                  </div>
+                  <div v-else-if="contextAfterAtLimit" class="drawer-context-hint">已到达可用上下文上限</div>
+                  <div v-if="!detailContextAnchorFound" class="drawer-context-hint">
+                    未精确定位当前行，已展示同一日志流的邻近上下文。
+                  </div>
+                  <div class="drawer-context-hint">滚动到顶/底自动加载更多上下文，点击行可定位详情。</div>
+                </div>
+                <div v-else class="drawer-context-state">未找到可展示的上下文日志。</div>
               </div>
             </div>
           </div>
@@ -594,7 +672,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api, streamSSE } from '../api/index.js'
 
 // ── 公共状态 ─────────────────────────────
@@ -602,6 +680,7 @@ const services       = ref([])
 const serviceGroups  = ref([])   // 按 namespace 分组 [{namespace, label, services:[]}]
 const openNs         = ref(new Set())  // 已展开的 namespace
 const selectedService = ref('')
+const serviceSearch  = ref('')   // 左侧服务名搜索
 const hours          = ref('1')
 const loadingSvcs    = ref(false)
 const groupBy        = ref('namespace')
@@ -629,17 +708,20 @@ const customStart = ref('')
 const customEnd   = ref('')
 
 // 关键字搜索
-const keyword      = ref('')
+const keyword      = ref('')         // 后端关键字（重查 Loki）
+const localKeyword = ref('')         // 本地二次过滤（已加载结果内 includes 过滤）
 let   searchTimer  = null
 let   servicesAbort = null
 let   logsAbort = null
 let   loadMoreAbort = null
 let   templatesAbort = null
 let   traceLogsAbort = null
+let   detailContextAbort = null
 let   servicesRequestId = 0
 let   logsRequestId = 0
 let   loadMoreRequestId = 0
 let   templatesRequestId = 0
+let   detailContextRequestId = 0
 
 const totalErrors = computed(() =>
   services.value.reduce((s, v) => s + v.error_count, 0)
@@ -653,6 +735,38 @@ const groupByOptions = computed(() => {
     options.unshift({ value: groupBy.value, label: groupBy.value })
   }
   return options
+})
+
+// 服务搜索：本地过滤分组列表与扁平列表，命中后自动展开 namespace
+const visibleServiceGroups = computed(() => {
+  if (!serviceSearch.value.trim()) return serviceGroups.value
+  const q = serviceSearch.value.trim().toLowerCase()
+  return serviceGroups.value
+    .map(grp => ({
+      ...grp,
+      services: grp.services.filter(s => (s.name || '').toLowerCase().includes(q)),
+    }))
+    .filter(grp => grp.services.length > 0)
+})
+
+const visibleServices = computed(() => {
+  if (!serviceSearch.value.trim()) return services.value
+  const q = serviceSearch.value.trim().toLowerCase()
+  return services.value.filter(s => (s.name || '').toLowerCase().includes(q))
+})
+
+const hasSearchMatch = computed(() =>
+  visibleServiceGroups.value.length > 0 || visibleServices.value.length > 0
+)
+
+// 搜索命中时自动展开所有命中的 namespace
+watch(serviceSearch, (q) => {
+  if (!q.trim()) return
+  const next = new Set(openNs.value)
+  for (const grp of visibleServiceGroups.value) {
+    next.add(grp.key || grp.namespace || grp.label)
+  }
+  openNs.value = next
 })
 
 function logServiceName(log) {
@@ -724,6 +838,28 @@ const INCIDENT_KEYWORDS = ['error', 'exception', 'fail', 'timeout', 'refused', '
 
 // 详情抽屉
 const detailLog   = ref(null)
+const loadingDetailContext = ref(false)
+const detailContextLogs = ref([])
+const detailContextAnchorIndex = ref(-1)
+const detailContextAnchorFound = ref(true)
+const detailContextBeforeCount = ref(0)
+const detailContextAfterCount = ref(0)
+const detailContextError = ref('')
+const contextScrollWrap = ref(null)
+
+// 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
+const CONTEXT_INITIAL_BEFORE = 250
+const CONTEXT_INITIAL_AFTER  = 250
+const CONTEXT_PAGE_STEP      = 200
+const CONTEXT_MAX_SIDE       = 500   // 后端 /api/logs/context 的 le=500
+const contextWantedBefore = ref(CONTEXT_INITIAL_BEFORE)
+const contextWantedAfter  = ref(CONTEXT_INITIAL_AFTER)
+const loadingContextBefore = ref(false)
+const loadingContextAfter  = ref(false)
+// 实际返回数小于请求数时，表示该方向已无更多数据（或到达边界）
+const contextBeforeAtLimit = ref(false)
+const contextAfterAtLimit  = ref(false)
+let contextScrollPending = null   // 用于触底/触顶滚动锚点保留
 
 // 提取日志级别
 function extractLevel(line) {
@@ -752,6 +888,11 @@ const filteredLogs = computed(() => {
              INCIDENT_KEYWORDS.some(kw => l.includes(kw))
     })
   }
+  // 本地二次关键字过滤（不重查后端，仅在已加载结果内做 includes）
+  const lq = localKeyword.value.trim().toLowerCase()
+  if (lq) {
+    list = list.filter(log => (log.line || '').toLowerCase().includes(lq))
+  }
   return list
 })
 
@@ -768,8 +909,178 @@ function toggleIncident() {
   incidentOnly.value = !incidentOnly.value
 }
 
+function contextServiceName(log) {
+  return log?.labels?.app || log?.labels?.job || selectedService.value || ''
+}
+
+function normalizeRequestError(error) {
+  if (typeof error === 'string') return error
+  if (Array.isArray(error)) {
+    return error
+      .map(item => item?.msg || item?.message || '')
+      .filter(Boolean)
+      .join('；') || '请求失败'
+  }
+  if (error?.detail) return normalizeRequestError(error.detail)
+  return error?.message || '请求失败'
+}
+
+function closeDetail() {
+  detailContextAbort?.abort()
+  detailContextAbort = null
+  detailLog.value = null
+  loadingDetailContext.value = false
+  loadingContextBefore.value = false
+  loadingContextAfter.value = false
+  detailContextLogs.value = []
+  detailContextAnchorIndex.value = -1
+  detailContextAnchorFound.value = true
+  detailContextBeforeCount.value = 0
+  detailContextAfterCount.value = 0
+  detailContextError.value = ''
+  contextWantedBefore.value = CONTEXT_INITIAL_BEFORE
+  contextWantedAfter.value = CONTEXT_INITIAL_AFTER
+  contextBeforeAtLimit.value = false
+  contextAfterAtLimit.value = false
+  contextScrollPending = null
+}
+
+/**
+ * 加载上下文。统一入口：
+ *   - opts.reset: true   重置 wanted before/after 至初始值（默认 false，保留扩展量）
+ *   - opts.direction: 'before' | 'after' | null  滚动加载方向，用于保留滚动锚点
+ */
+async function loadLogContext(log = detailLog.value, opts = {}) {
+  if (!log?.timestamp_ns) return
+
+  if (opts.reset) {
+    contextWantedBefore.value = CONTEXT_INITIAL_BEFORE
+    contextWantedAfter.value = CONTEXT_INITIAL_AFTER
+    contextBeforeAtLimit.value = false
+    contextAfterAtLimit.value = false
+  }
+
+  const requestId = ++detailContextRequestId
+  detailContextAbort?.abort()
+  const controller = new AbortController()
+  detailContextAbort = controller
+
+  const direction = opts.direction || null
+  if (!direction) loadingDetailContext.value = true
+  if (direction === 'before') loadingContextBefore.value = true
+  if (direction === 'after')  loadingContextAfter.value = true
+  if (!direction) {
+    detailContextLogs.value = []
+    detailContextAnchorIndex.value = -1
+    detailContextAnchorFound.value = true
+    detailContextBeforeCount.value = 0
+    detailContextAfterCount.value = 0
+  }
+  detailContextError.value = ''
+
+  // 保留滚动锚点（用于"加载更早"时不让用户跳到顶部）
+  const wrap = contextScrollWrap.value
+  let savedScroll = null
+  if (direction === 'before' && wrap) {
+    savedScroll = { prevHeight: wrap.scrollHeight, prevTop: wrap.scrollTop }
+  }
+
+  const wantedBefore = Math.min(contextWantedBefore.value, CONTEXT_MAX_SIDE)
+  const wantedAfter  = Math.min(contextWantedAfter.value, CONTEXT_MAX_SIDE)
+
+  try {
+    const result = await api.getLogContext({
+      timestamp_ns: log.timestamp_ns,
+      service: contextServiceName(log) || undefined,
+      line_prefix: (log.line || '').slice(0, 200) || undefined,
+      labels_json: JSON.stringify(log.labels || {}),
+      before: wantedBefore,
+      after: wantedAfter,
+      ...timeParams(),
+    }, { signal: controller.signal })
+
+    if (requestId !== detailContextRequestId || detailLog.value !== log) return
+
+    const prevBeforeCount = detailContextBeforeCount.value
+    detailContextLogs.value = result.data || []
+    detailContextAnchorIndex.value = result.anchor_index ?? -1
+    detailContextAnchorFound.value = result.anchor_found !== false
+    detailContextBeforeCount.value = result.before_count ?? 0
+    detailContextAfterCount.value = result.after_count ?? 0
+
+    // 判断该方向是否还能继续扩展：
+    //  - 返回数 < 请求数 → 该方向已无更多日志
+    //  - 已达后端 le=500 上限 → 不能再扩
+    if (direction === 'before' || opts.reset || !direction) {
+      contextBeforeAtLimit.value = (detailContextBeforeCount.value < wantedBefore) ||
+                                   wantedBefore >= CONTEXT_MAX_SIDE
+    }
+    if (direction === 'after' || opts.reset || !direction) {
+      contextAfterAtLimit.value = (detailContextAfterCount.value < wantedAfter) ||
+                                  wantedAfter >= CONTEXT_MAX_SIDE
+    }
+
+    // 'before' 方向加载完后，把 scrollTop 补到新的同等"上方距离"，避免视野跳变
+    if (direction === 'before' && wrap && savedScroll) {
+      await nextTick()
+      const addedHeight = wrap.scrollHeight - savedScroll.prevHeight
+      wrap.scrollTop = savedScroll.prevTop + addedHeight
+    }
+  } catch (error) {
+    if (isCanceled(error)) return
+    if (requestId !== detailContextRequestId || detailLog.value !== log) return
+    if (!direction) detailContextError.value = normalizeRequestError(error)
+  } finally {
+    if (requestId === detailContextRequestId) {
+      if (!direction) loadingDetailContext.value = false
+      if (direction === 'before') loadingContextBefore.value = false
+      if (direction === 'after')  loadingContextAfter.value = false
+    }
+    if (detailContextAbort === controller) {
+      detailContextAbort = null
+    }
+  }
+}
+
+function loadMoreContextBefore() {
+  if (loadingDetailContext.value || loadingContextBefore.value) return
+  if (contextBeforeAtLimit.value) return
+  if (contextWantedBefore.value >= CONTEXT_MAX_SIDE) {
+    contextBeforeAtLimit.value = true
+    return
+  }
+  contextWantedBefore.value = Math.min(contextWantedBefore.value + CONTEXT_PAGE_STEP, CONTEXT_MAX_SIDE)
+  loadLogContext(detailLog.value, { direction: 'before' })
+}
+
+function loadMoreContextAfter() {
+  if (loadingDetailContext.value || loadingContextAfter.value) return
+  if (contextAfterAtLimit.value) return
+  if (contextWantedAfter.value >= CONTEXT_MAX_SIDE) {
+    contextAfterAtLimit.value = true
+    return
+  }
+  contextWantedAfter.value = Math.min(contextWantedAfter.value + CONTEXT_PAGE_STEP, CONTEXT_MAX_SIDE)
+  loadLogContext(detailLog.value, { direction: 'after' })
+}
+
+function onContextScroll(event) {
+  const t = event?.target
+  if (!t) return
+  if (loadingDetailContext.value) return
+  // 距顶部 < 80px → 加载更早；距底部 < 80px → 加载更晚
+  if (t.scrollTop < 80 && !loadingContextBefore.value) {
+    loadMoreContextBefore()
+  }
+  const distBottom = t.scrollHeight - t.scrollTop - t.clientHeight
+  if (distBottom < 80 && !loadingContextAfter.value) {
+    loadMoreContextAfter()
+  }
+}
+
 function openDetail(log) {
   detailLog.value = log
+  loadLogContext(log, { reset: true })   // 切换日志时重置窗口
 }
 
 function onLevelChange() {
@@ -1301,6 +1612,7 @@ onBeforeUnmount(() => {
   loadMoreAbort?.abort()
   templatesAbort?.abort()
   traceLogsAbort?.abort()
+  detailContextAbort?.abort()
 })
 </script>
 
@@ -1478,7 +1790,37 @@ onBeforeUnmount(() => {
 }
 .kw-clear:hover { color: var(--text-primary); }
 
-.svc-list-wrap { flex: 1; overflow-y: auto; padding: 8px; }
+/* 二次本地过滤框：次要色调，与服务端 keyword 视觉区分 */
+.keyword-wrap.secondary {
+  border-color: rgba(99,102,241,.35);
+  background: rgba(99,102,241,.06);
+  min-width: 150px; max-width: 200px;
+}
+.keyword-wrap.secondary .kw-icon { color: var(--accent, #818cf8); }
+
+/* 左侧服务名搜索框 */
+.svc-search-wrap {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  margin: 8px 8px 4px;
+}
+.svc-search-icon { font-size: 12px; flex-shrink: 0; color: var(--text-muted); }
+.svc-search-input {
+  flex: 1; background: transparent; border: none;
+  color: var(--text-primary); font-size: 12px;
+  padding: 6px 0; outline: none;
+}
+.svc-search-input::placeholder { color: var(--text-muted); }
+.svc-empty {
+  font-size: 12px; color: var(--text-muted);
+  padding: 12px 10px; text-align: center;
+}
+.svc-empty em { color: var(--text-primary); font-style: normal; }
+
+.svc-list-wrap { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
 .svc-item {
   display: flex; align-items: center; gap: 8px;
   padding: 7px 10px; border-radius: 6px;
@@ -1699,6 +2041,78 @@ onBeforeUnmount(() => {
 }
 
 /* 抽屉动画 */
+.drawer-section-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px;
+}
+.drawer-section-title {
+  font-size: 12px; font-weight: 600; color: var(--text-primary);
+}
+.drawer-section-actions {
+  display: flex; align-items: center; gap: 8px;
+}
+.drawer-section-meta {
+  font-size: 11px; color: var(--text-muted);
+}
+.drawer-context-state {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 42px; padding: 0 2px;
+  font-size: 12px; color: var(--text-muted);
+}
+.drawer-context-state-error { color: var(--error); }
+.drawer-context-list {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 60vh; overflow-y: auto;
+  padding-right: 4px;
+}
+.drawer-context-loading-more {
+  display: flex; align-items: center; justify-content: center;
+  gap: 8px; padding: 8px;
+  font-size: 11px; color: var(--text-muted);
+  background: var(--bg-base);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.drawer-context-item {
+  width: 100%; display: grid;
+  grid-template-columns: 138px 120px minmax(0, 1fr);
+  gap: 10px; align-items: start;
+  padding: 10px 12px;
+  background: var(--bg-base); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text-secondary);
+  font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.6;
+  text-align: left; cursor: pointer; transition: border-color .15s, background .15s;
+}
+.drawer-context-item:hover { border-color: rgba(99,102,241,.35); }
+.drawer-context-item.active {
+  border-color: rgba(99,102,241,.55);
+  background: rgba(99,102,241,.08);
+}
+.drawer-context-item.level-error { background: var(--log-error); }
+.drawer-context-item.level-warn { background: var(--log-warn); }
+.drawer-context-item.active.level-error,
+.drawer-context-item.active.level-warn {
+  box-shadow: inset 0 0 0 1px rgba(99,102,241,.45);
+}
+.drawer-context-ts,
+.drawer-context-svc { color: var(--text-muted); white-space: nowrap; }
+.drawer-context-svc {
+  color: var(--accent-hover); overflow: hidden; text-overflow: ellipsis;
+}
+.drawer-context-text {
+  min-width: 0; word-break: break-all;
+}
+.drawer-context-hint {
+  font-size: 11px; color: var(--text-muted); padding: 0 2px;
+}
+
+@media (max-width: 720px) {
+  .drawer-context-item {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
 .drawer-slide-enter-active, .drawer-slide-leave-active {
   transition: all .2s ease;
 }
