@@ -374,77 +374,46 @@ def _merge_kubeconfigs(paths: list[str]) -> str:
     return tmp.name
 
 
-def _make_ssl_permissive_client(config_file: str, context: str | None):
-    """
-    构造 kubernetes ApiClient，在标准加载失败时降低 OpenSSL 安全级别重试。
-    解决 [SSL: CA_MD_TOO_WEAK] 错误（旧版 k8s CA 使用 MD5/SHA1 签名时触发）。
-    """
-    import ssl
-    from kubernetes import config as k8s_config, client as k8s_client
-
-    # 先尝试默认加载
-    _first_exc: Exception | None = None
-    try:
-        return k8s_config.new_client_from_config(config_file=config_file, context=context)
-    except Exception as _e:
-        _first_exc = _e
-        if "CA_MD_TOO_WEAK" not in str(_e) and "WEAK" not in str(_e).upper():
-            raise
-
-    # CA_MD_TOO_WEAK：降级 OpenSSL 安全级别后重建 ApiClient
-    logger.warning("[k8s] CA_MD_TOO_WEAK detected, retrying with SECLEVEL=1: %s", _first_exc)
-    cfg = k8s_client.Configuration()
-    k8s_config.load_kube_config(
-        config_file=config_file,
-        context=context,
-        client_configuration=cfg,
-    )
-    # 构造宽松 SSL context（SECLEVEL=1 允许 SHA1/MD5 签名的 CA）
-    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ssl_ctx.set_ciphers("DEFAULT@SECLEVEL=1")
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE if cfg.verify_ssl is False else ssl.CERT_REQUIRED
-    if cfg.verify_ssl and cfg.ssl_ca_cert:
-        try:
-            ssl_ctx.load_verify_locations(cfg.ssl_ca_cert)
-        except Exception as ca_exc:
-            logger.warning("[k8s] 加载 CA 失败，改为不验证: %s", ca_exc)
-            ssl_ctx.verify_mode = ssl.CERT_NONE
-    if cfg.cert_file and cfg.key_file:
-        ssl_ctx.load_cert_chain(cfg.cert_file, cfg.key_file)
-
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    cfg.verify_ssl = False          # kubernetes sdk 内部跳过自有验证
-    cfg.ssl_ca_cert = None
-    return k8s_client.ApiClient(configuration=cfg)
-
-
 def _get_api_client(cluster_id: str | None = None):
-    from kubernetes import config as k8s_config
+    from kubernetes import config as k8s_config, client as k8s_client
+    import ssl, urllib3
 
-    cluster     = _get_cluster(cluster_id)
-    paths       = _resolve_runtime_kubeconfig_paths(cluster.get("kubeconfig") or "")
-    context     = str(cluster.get("context") or "").strip() or None
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    cluster = _get_cluster(cluster_id)
+    paths   = _resolve_runtime_kubeconfig_paths(cluster.get("kubeconfig") or "")
+    context = str(cluster.get("context") or "").strip() or None
     if not paths:
         raise RuntimeError(f"集群 [{cluster['name']}] 未配置 kubeconfig 路径")
 
-    try:
-        if len(paths) == 1:
-            return _make_ssl_permissive_client(paths[0], context)
+    config_file = _merge_kubeconfigs(paths) if len(paths) > 1 else paths[0]
 
-        # 多文件合并
-        merged_path = _merge_kubeconfigs(paths)
-        try:
-            return _make_ssl_permissive_client(merged_path, context)
-        finally:
-            try:
-                Path(merged_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-    except Exception as exc:
-        raise RuntimeError(f"无法加载集群 [{cluster['name']}] 的 kubeconfig: {exc}") from exc
+    cfg = k8s_client.Configuration()
+    k8s_config.load_kube_config(
+        config_file=config_file, context=context, client_configuration=cfg,
+    )
+    cfg.verify_ssl = False
+    cfg.ssl_ca_cert = None
+
+    api_client = k8s_client.ApiClient(configuration=cfg)
+
+    # 关键：重建底层 PoolManager，使用 SECLEVEL=0 的 SSL context
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_ctx.set_ciphers("DEFAULT@SECLEVEL=0")
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    # 双向 TLS：必须加载客户端证书
+    if cfg.cert_file and cfg.key_file:
+        ssl_ctx.load_cert_chain(cfg.cert_file, cfg.key_file)
+
+    api_client.rest_client.pool_manager = urllib3.PoolManager(
+        num_pools=4,
+        maxsize=4,
+        ssl_context=ssl_ctx,
+        cert_reqs="CERT_NONE",
+    )
+
+    return api_client
 
 
 def _get_batch_client(cluster_id: str | None = None):
