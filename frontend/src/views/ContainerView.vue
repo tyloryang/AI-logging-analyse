@@ -521,6 +521,39 @@
             <input v-model="clusterForm.name" class="form-input" placeholder="生产-k8s-01" />
           </label>
 
+          <!-- 粘贴 kubeconfig 文本（自动识别 *-data base64 内嵌格式） -->
+          <div class="field">
+            <div class="paste-header" @click="pasteOpen = !pasteOpen">
+              <span class="paste-toggle">{{ pasteOpen ? '▼' : '▶' }}</span>
+              <span>或粘贴 kubeconfig 文本（自动识别 apiVersion / clusters / users / contexts）</span>
+            </div>
+            <div v-if="pasteOpen" class="paste-body">
+              <textarea
+                v-model="pasteContent"
+                class="form-textarea"
+                rows="8"
+                placeholder="apiVersion: v1&#10;clusters:&#10;- cluster:&#10;    certificate-authority-data: ...&#10;    server: https://x.x.x.x:6443&#10;..."
+              />
+              <div class="paste-actions">
+                <button
+                  class="btn-detect"
+                  :class="{ loading: pasteLoading }"
+                  type="button"
+                  :disabled="pasteLoading || !clusterForm.name.trim() || !pasteContent.trim()"
+                  @click="savePastedKubeconfig"
+                >
+                  {{ pasteLoading ? '保存中...' : '保存并自动识别' }}
+                </button>
+                <span v-if="pasteResult" class="paste-success">
+                  ✓ 已保存到 {{ pasteResult.relative }}
+                  <em v-if="pasteResult.server">· server={{ pasteResult.server }}</em>
+                  <em v-if="pasteResult.current_context">· context={{ pasteResult.current_context }}</em>
+                </span>
+                <span v-if="pasteError" class="paste-error">{{ pasteError }}</span>
+              </div>
+            </div>
+          </div>
+
           <!-- kubeconfig 路径 + 自动识别 -->
           <div class="field">
             <span>kubeconfig 路径</span>
@@ -833,6 +866,12 @@ const authMode     = ref('kubeconfig')
 const detectLoading = ref(false)
 const detectResult  = ref(null)   // 识别出的单个 file 对象
 const detectError   = ref('')
+// 粘贴文本入口
+const pasteOpen     = ref(false)
+const pasteContent  = ref('')
+const pasteLoading  = ref(false)
+const pasteResult   = ref(null)
+const pasteError    = ref('')
 
 const certForm = reactive({
   server: '',
@@ -906,6 +945,30 @@ async function autoDetect() {
     detectError.value = '识别失败: ' + e
   } finally {
     detectLoading.value = false
+  }
+}
+
+// 把粘贴的 kubeconfig 文本提交后端落盘，再触发 autoDetect 走原流程
+async function savePastedKubeconfig() {
+  const name = clusterForm.name.trim()
+  const content = pasteContent.value.trim()
+  if (!name) { pasteError.value = '请先填写集群名称'; return }
+  if (!content) { pasteError.value = 'kubeconfig 文本不能为空'; return }
+
+  pasteLoading.value = true
+  pasteResult.value  = null
+  pasteError.value   = ''
+  try {
+    const r = await api.k8sUploadKubeconfigText(name, content)
+    pasteResult.value = r
+    // 回填路径，触发已有 autoDetect 流程
+    clusterForm.kubeconfig = r.relative
+    if (r.current_context) clusterForm.context = r.current_context
+    await autoDetect()
+  } catch (e) {
+    pasteError.value = '保存失败: ' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    pasteLoading.value = false
   }
 }
 
@@ -1167,6 +1230,11 @@ function closeClusterModal() {
   authMode.value      = 'kubeconfig'
   detectResult.value  = null
   detectError.value   = ''
+  pasteOpen.value     = false
+  pasteContent.value  = ''
+  pasteResult.value   = null
+  pasteError.value    = ''
+  pasteLoading.value  = false
   Object.assign(certForm, {
     server: '', insecureSkipTLS: false, caPath: '', caUploading: false,
     clientCertPath: '', clientCertUploading: false,
@@ -1905,6 +1973,38 @@ onBeforeUnmount(() => { _destroyExec() })
 .btn-detect:hover:not(:disabled) { background: rgba(56,139,253,.18); }
 .btn-detect:disabled { opacity: .5; cursor: not-allowed; }
 .btn-detect.loading { opacity: .7; }
+
+/* 粘贴 kubeconfig 文本 */
+.paste-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 0; cursor: pointer;
+  color: var(--text-muted); font-size: 12px;
+  user-select: none;
+}
+.paste-header:hover { color: var(--text-primary); }
+.paste-toggle { display: inline-block; width: 10px; font-size: 9px; }
+.paste-body {
+  margin-top: 6px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.paste-actions {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
+}
+.paste-success {
+  color: var(--success, #3fb950);
+  font-size: 12px;
+}
+.paste-success em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-family: monospace;
+  margin-left: 4px;
+}
+.paste-error {
+  color: var(--error, #f85149);
+  font-size: 12px;
+}
 
 /* 识别结果卡片 */
 .detect-result {

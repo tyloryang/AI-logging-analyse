@@ -875,6 +875,83 @@ async def generate_kubeconfig(
     return {"path": str(output_path), "relative": relative}
 
 
+class K8sKubeconfigTextPayload(BaseModel):
+    name: str
+    content: str
+
+
+@router.post("/kubeconfigs/upload-text")
+async def upload_kubeconfig_text(
+    body: K8sKubeconfigTextPayload, _: User = Depends(require_admin)
+):
+    """
+    接收粘贴的 kubeconfig YAML 文本，校验结构后落盘。
+    自动识别支持 *-data (base64 内嵌) 与 *-file (外部文件) 两种证书引用形式。
+    返回相对路径，前端可直接填入 cluster.kubeconfig 字段后走 autoDetect。
+    """
+    import re
+    import yaml as _yaml
+
+    name = body.name.strip()
+    content = (body.content or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="集群名称不能为空")
+    if not content:
+        raise HTTPException(status_code=400, detail="kubeconfig 文本不能为空")
+
+    try:
+        parsed = _yaml.safe_load(content)
+    except _yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"YAML 解析失败: {exc}")
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="kubeconfig 顶层必须是对象")
+
+    api_version = str(parsed.get("apiVersion") or "").strip()
+    kind = str(parsed.get("kind") or "").strip()
+    clusters_list = parsed.get("clusters") or []
+    contexts_list = parsed.get("contexts") or []
+    users_list = parsed.get("users") or []
+
+    if api_version != "v1" or kind != "Config":
+        raise HTTPException(
+            status_code=400,
+            detail=f"非合法 kubeconfig: apiVersion={api_version or '空'}, kind={kind or '空'}",
+        )
+    if not (clusters_list and contexts_list and users_list):
+        raise HTTPException(
+            status_code=400,
+            detail="kubeconfig 缺少 clusters / contexts / users 之一",
+        )
+
+    server = ""
+    first_cluster = clusters_list[0]
+    if isinstance(first_cluster, dict):
+        server = str((first_cluster.get("cluster") or {}).get("server") or "").strip()
+    current_context = str(parsed.get("current-context") or "").strip()
+
+    safe_name = re.sub(r"[^\w\-]", "_", name) or "cluster"
+    output_path = _KUBECONFIG_GEN_DIR / f"{safe_name}.yaml"
+    _KUBECONFIG_GEN_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        output_path.write_text(content, encoding="utf-8")
+    except Exception as exc:
+        logger.error("[k8s] upload-text write failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"写入 kubeconfig 失败: {exc}")
+
+    logger.info("[k8s] kubeconfig text saved → %s", output_path)
+    relative = f"backend/data/kubeconfigs/{safe_name}.yaml"
+    return {
+        "path": str(output_path),
+        "relative": relative,
+        "server": server,
+        "current_context": current_context,
+        "clusters": [c.get("name") for c in clusters_list if isinstance(c, dict)],
+        "contexts": [c.get("name") for c in contexts_list if isinstance(c, dict)],
+        "users":    [u.get("name") for u in users_list    if isinstance(u, dict)],
+    }
+
+
 # ── 集群列表 ──────────────────────────────────────────────────────────────────
 
 @router.get("/clusters")

@@ -23,6 +23,7 @@ export const api = {
   getLogLabelValues:  (label, params = {}, config = {}) => http.get(`/logs/labels/${encodeURIComponent(label)}/values`, { ...config, params }),
   // 日志
   getLogs:        (params, config = {}) => http.get('/logs', { ...config, params }),
+  getLogContext:  (params, config = {}) => http.get('/logs/context', { ...config, params }),
   getErrorLogs:   (params) => http.get('/logs/errors', { params }),
   // 指标
   getErrorMetrics: (hours = 24) => http.get('/metrics/errors', { params: { hours } }),
@@ -160,6 +161,7 @@ export const api = {
     return http.post(`/k8s/certs/upload?cert_type=${certType}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
   k8sGenerateKubeconfig: (data)        => http.post('/k8s/generate-kubeconfig', data),
+  k8sUploadKubeconfigText: (name, content) => http.post('/k8s/kubeconfigs/upload-text', { name, content }),
   // K8s 集群管理
   k8sClusters:      ()                 => http.get('/k8s/clusters'),
   k8sAddCluster:    (data)             => http.post('/k8s/clusters', data),
