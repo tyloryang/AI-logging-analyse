@@ -1080,6 +1080,44 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
     detailContextBeforeCount.value = result.before_count ?? 0
     detailContextAfterCount.value = result.after_count ?? 0
 
+    // 前端兜底：保证锚点 = 用户实际点击的那条
+    //   1) 用 timestamp_ns + line 严格匹配查 anchor index
+    //   2) 同 ts 但 line 不同 → 用 detailLog 覆盖那一行
+    //   3) 完全找不到 → 按 ts 排序插入 detailLog 作为锚点行
+    if (log?.timestamp_ns && detailContextLogs.value.length) {
+      const targetTs   = String(log.timestamp_ns)
+      const targetLine = log.line || ''
+
+      let exact = detailContextLogs.value.findIndex(
+        item => String(item.timestamp_ns) === targetTs && item.line === targetLine,
+      )
+
+      if (exact < 0) {
+        // 同 ts 但 line 内容不同的位置：用 detailLog 替换那条
+        const sameTsIdx = detailContextLogs.value.findIndex(
+          item => String(item.timestamp_ns) === targetTs,
+        )
+        if (sameTsIdx >= 0) {
+          detailContextLogs.value.splice(sameTsIdx, 1, { ...log })
+          exact = sameTsIdx
+        }
+      }
+
+      if (exact < 0) {
+        // 完全没有同 ts 行 → 按时间戳升序插入
+        const targetNum = Number(targetTs)
+        let insertAt = detailContextLogs.value.findIndex(
+          item => Number(item.timestamp_ns) > targetNum,
+        )
+        if (insertAt < 0) insertAt = detailContextLogs.value.length
+        detailContextLogs.value.splice(insertAt, 0, { ...log })
+        exact = insertAt
+      }
+
+      detailContextAnchorIndex.value = exact
+      detailContextAnchorFound.value = true
+    }
+
     // 判断该方向是否还能继续扩展：
     //  - 返回数 < 请求数 → 该方向已无更多日志
     //  - 已达后端 le=500 上限 → 不能再扩
