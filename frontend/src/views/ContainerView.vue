@@ -107,56 +107,30 @@
           </div>
         </div>
 
-        <!-- kubeconfig 检测工具 -->
+        <!-- 资源关键字搜索（取代原"kubeconfig 认证检测"卡片）-->
         <div class="inspect-card">
-          <div class="inspect-title">🔍 kubeconfig 认证检测</div>
+          <div class="inspect-title">🔍 资源关键字搜索</div>
           <div class="inspect-row">
-            <input v-model="inspectPath" class="form-input inspect-input"
-              placeholder="输入 kubeconfig 路径，如 backend/data/kubeconfig 或 test/cert-kubeconfig"
-              @keyup.enter="runInspect" />
-            <button class="btn-ghost inspect-btn" @click="runInspect" :disabled="inspectLoading">
-              {{ inspectLoading ? '检测中...' : '检测' }}
-            </button>
+            <input v-model="searchKeyword" class="form-input inspect-input"
+              placeholder="搜索当前集群所有资源 (Pod / Deployment / Service / Node ...) 的名称、镜像、命名空间..."
+              :disabled="!activeClusterId" />
+            <button v-if="searchKeyword" class="btn-ghost inspect-btn" @click="searchKeyword = ''">清空</button>
           </div>
-          <div v-if="inspectResult" class="inspect-result">
-            <div v-if="inspectResult.error" class="inspect-err">{{ inspectResult.error }}</div>
-            <div v-else v-for="f in inspectResult.files" :key="f.path" class="inspect-file">
-              <div class="inspect-file-path">📄 {{ f.path }}</div>
-              <div v-if="f.error" class="inspect-err">{{ f.error }}</div>
-              <template v-else>
-                <div class="inspect-row-info">
-                  <span class="inspect-tag" :class="'tag-' + f.auth?.type">
-                    {{ { certificate:'证书认证', token:'Token认证', exec:'Exec插件', basic:'用户名密码' }[f.auth?.type] || f.auth?.type }}
-                  </span>
-                  <span class="inspect-server">{{ f.server }}</span>
-                  <span v-if="f.insecure" class="inspect-tag tag-warn">跳过TLS验证</span>
-                </div>
-                <!-- 证书认证详情 -->
-                <template v-if="f.auth?.type === 'certificate'">
-                  <div class="inspect-detail">客户端证书: {{ f.auth.client_certificate }}</div>
-                  <div class="inspect-detail">客户端私钥: {{ f.auth.client_key }}</div>
-                  <div v-if="f.auth.cert_detail?.subject" class="inspect-detail">证书主体: {{ f.auth.cert_detail.subject }}</div>
-                  <div v-if="f.auth.cert_detail?.not_after" class="inspect-detail"
-                    :class="{ 'inspect-warn': new Date(f.auth.cert_detail.not_after) < new Date() }">
-                    过期时间: {{ f.auth.cert_detail.not_after }}
-                  </div>
-                </template>
-                <!-- Token 认证详情 -->
-                <template v-if="f.auth?.type === 'token'">
-                  <div class="inspect-detail" v-if="f.auth.token_file">Token 文件: {{ f.auth.token_file }}</div>
-                  <div class="inspect-detail" v-else>Token: {{ f.auth.token_preview }}</div>
-                </template>
-                <!-- Exec 插件详情 -->
-                <template v-if="f.auth?.type === 'exec'">
-                  <div class="inspect-detail">命令: {{ f.auth.command }} {{ (f.auth.args||[]).join(' ') }}</div>
-                </template>
-                <!-- CA 信息 -->
-                <div class="inspect-detail">CA: {{ f.ca }}</div>
-                <div v-if="f.ca_detail?.subject" class="inspect-detail inspect-muted">CA主体: {{ f.ca_detail.subject }}</div>
-                <div v-if="f.all_contexts?.length > 1" class="inspect-detail inspect-muted">
-                  所有 context: {{ f.all_contexts.join(' | ') }}
-                </div>
-              </template>
+          <div v-if="searchKeyword" class="inspect-result">
+            <div class="search-stats">
+              <button
+                v-for="item in searchMatchSummary"
+                :key="item.tab"
+                class="search-stat-chip"
+                :class="{ active: activeTab === item.tab, zero: item.count === 0 }"
+                @click="activeTab = item.tab"
+              >
+                <span class="search-stat-name">{{ item.label }}</span>
+                <span class="search-stat-count">{{ item.count }}</span>
+              </button>
+            </div>
+            <div v-if="searchTotalCount === 0" class="search-empty">
+              未在当前集群任何资源中匹配到 <em>{{ searchKeyword }}</em>
             </div>
           </div>
         </div>
@@ -1607,23 +1581,21 @@ async function testActiveCluster() {
   }
 }
 
-// ── 独立 kubeconfig 检测 ──────────────────────────────────────────────────────
-const inspectPath    = ref('')
-const inspectResult  = ref(null)
-const inspectLoading = ref(false)
-
-async function runInspect() {
-  if (!inspectPath.value.trim()) return
-  inspectLoading.value = true
-  inspectResult.value  = null
-  try {
-    inspectResult.value = await api.k8sInspectKubeconfig(inspectPath.value.trim())
-  } catch (e) {
-    inspectResult.value = { error: String(e) }
-  } finally {
-    inspectLoading.value = false
-  }
-}
+// ── 资源关键字搜索统计（替代原 kubeconfig 认证检测）──────────────────────────
+// 按 tab 顺序汇总每类资源在 searchKeyword 下的匹配数；点击 chip 可直接跳到对应 tab
+const searchMatchSummary = computed(() => [
+  { tab: 'pods',         label: 'Pods',         count: filteredPods.value.length },
+  { tab: 'deployments',  label: 'Deployments',  count: filteredDeployments.value.length },
+  { tab: 'daemonSets',   label: 'DaemonSets',   count: filteredDaemonSets.value.length },
+  { tab: 'statefulSets', label: 'StatefulSets', count: filteredStatefulSets.value.length },
+  { tab: 'jobs',         label: 'Jobs',         count: filteredJobs.value.length },
+  { tab: 'cronJobs',     label: 'CronJobs',     count: filteredCronJobs.value.length },
+  { tab: 'services',     label: 'Services',     count: filteredServices.value.length },
+  { tab: 'nodes',        label: 'Nodes',        count: filteredNodes.value.length },
+])
+const searchTotalCount = computed(() =>
+  searchMatchSummary.value.reduce((s, i) => s + i.count, 0)
+)
 
 function _stopAutoRefresh() {
   if (_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null }
@@ -1867,28 +1839,54 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 
 .cluster-banner,
-/* kubeconfig 检测 */
-.inspect-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+/* 资源关键字搜索卡片（原 kubeconfig 检测卡片改造） */
+.inspect-card  { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
 .inspect-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
-.inspect-row { display: flex; gap: 8px; align-items: center; }
-.inspect-input { flex: 1; font-family: monospace; font-size: 12px; }
-.inspect-btn { flex-shrink: 0; white-space: nowrap; }
+.inspect-row   { display: flex; gap: 8px; align-items: center; }
+.inspect-input { flex: 1; font-family: inherit; font-size: 13px; }
+.inspect-btn   { flex-shrink: 0; white-space: nowrap; }
 .inspect-result { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-.inspect-file { background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
-.inspect-file-path { font-size: 11px; font-family: monospace; color: var(--text-muted); margin-bottom: 5px; }
-.inspect-row-info { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
-.inspect-server { font-size: 12px; color: var(--text-primary); font-family: monospace; }
-.inspect-tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 3px; flex-shrink: 0; }
-.tag-certificate { background: rgba(56,139,253,.15); color: var(--accent); }
-.tag-token       { background: rgba(63,185,80,.15);  color: #3fb950; }
-.tag-exec        { background: rgba(163,113,247,.15);color: #a371f7; }
-.tag-basic       { background: rgba(210,153,34,.15); color: var(--warning); }
-.tag-unknown     { background: var(--bg-card); color: var(--text-muted); }
-.tag-warn        { background: rgba(210,153,34,.15); color: var(--warning); }
-.inspect-detail  { font-size: 11px; color: var(--text-secondary); font-family: monospace; padding: 1px 0; word-break: break-all; }
-.inspect-muted   { color: var(--text-muted); }
-.inspect-warn    { color: var(--error) !important; font-weight: 600; }
-.inspect-err     { font-size: 11px; color: var(--error); }
+
+/* 资源匹配统计 chip 群 */
+.search-stats {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.search-stat-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 9999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px; cursor: pointer;
+  transition: all .12s;
+}
+.search-stat-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.search-stat-chip.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.search-stat-chip.zero {
+  opacity: .45;
+}
+.search-stat-name  { font-weight: 500; }
+.search-stat-count {
+  background: var(--bg-card);
+  padding: 1px 6px; border-radius: 9999px;
+  font-weight: 700; font-size: 10px;
+}
+.search-stat-chip.active .search-stat-count {
+  background: var(--accent);
+  color: var(--bg-card);
+}
+.search-empty {
+  font-size: 12px; color: var(--text-muted); padding: 6px 2px;
+}
+.search-empty em { color: var(--text-primary); font-style: normal; font-family: monospace; }
 
 .error-banner {
   margin: 12px 20px 0;
