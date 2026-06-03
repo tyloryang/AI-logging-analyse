@@ -346,33 +346,50 @@
               <button class="drawer-close" @click="closeDetail">✕</button>
             </div>
             <div class="drawer-body">
-              <div class="drawer-row">
-                <span class="drawer-label">时间</span>
-                <span class="drawer-val">{{ detailLog.timestamp }}</span>
-              </div>
-              <div class="drawer-row">
-                <span class="drawer-label">级别</span>
-                <span class="lvl-badge" :class="'lvl-badge-' + extractLevel(detailLog.line)">
-                  {{ extractLevel(detailLog.line).toUpperCase() }}
-                </span>
-              </div>
-              <div class="drawer-row">
-                <span class="drawer-label">服务</span>
-                <span class="drawer-val">{{ logServiceName(detailLog) }}</span>
-              </div>
-              <div class="drawer-row">
-                <span class="drawer-label">分组</span>
-                <span class="drawer-val">{{ logGroup(detailLog) }}</span>
-              </div>
-              <div v-if="detailLog.labels && Object.keys(detailLog.labels).length" class="drawer-row">
-                <span class="drawer-label">标签</span>
-                <div class="drawer-tags">
-                  <span v-for="(v, k) in detailLog.labels" :key="k" class="drawer-tag">{{ k }}=<em>{{ v }}</em></span>
+              <!-- 元数据折叠区（默认收起，header 显示关键摘要，留更多空间给上下文） -->
+              <div class="drawer-meta-section" :class="{ open: metaOpen }">
+                <div class="drawer-meta-header" @click="metaOpen = !metaOpen">
+                  <span class="meta-toggle">{{ metaOpen ? '▼' : '▶' }}</span>
+                  <span class="meta-title">元数据</span>
+                  <span class="meta-summary">
+                    <span class="meta-summary-ts">{{ detailLog.timestamp }}</span>
+                    <span class="lvl-badge mini" :class="'lvl-badge-' + extractLevel(detailLog.line)">
+                      {{ extractLevel(detailLog.line).toUpperCase() }}
+                    </span>
+                    <span class="meta-summary-svc">{{ logServiceName(detailLog) }}</span>
+                    <span class="meta-summary-ns">{{ logGroup(detailLog) }}</span>
+                  </span>
                 </div>
-              </div>
-              <div class="drawer-row drawer-row-full">
-                <span class="drawer-label">内容</span>
-                <pre class="drawer-content">{{ detailLog.line }}</pre>
+                <div v-if="metaOpen" class="drawer-meta-body">
+                  <div class="drawer-row">
+                    <span class="drawer-label">时间</span>
+                    <span class="drawer-val">{{ detailLog.timestamp }}</span>
+                  </div>
+                  <div class="drawer-row">
+                    <span class="drawer-label">级别</span>
+                    <span class="lvl-badge" :class="'lvl-badge-' + extractLevel(detailLog.line)">
+                      {{ extractLevel(detailLog.line).toUpperCase() }}
+                    </span>
+                  </div>
+                  <div class="drawer-row">
+                    <span class="drawer-label">服务</span>
+                    <span class="drawer-val">{{ logServiceName(detailLog) }}</span>
+                  </div>
+                  <div class="drawer-row">
+                    <span class="drawer-label">分组</span>
+                    <span class="drawer-val">{{ logGroup(detailLog) }}</span>
+                  </div>
+                  <div v-if="detailLog.labels && Object.keys(detailLog.labels).length" class="drawer-row">
+                    <span class="drawer-label">标签</span>
+                    <div class="drawer-tags">
+                      <span v-for="(v, k) in detailLog.labels" :key="k" class="drawer-tag">{{ k }}=<em>{{ v }}</em></span>
+                    </div>
+                  </div>
+                  <div class="drawer-row drawer-row-full">
+                    <span class="drawer-label">内容</span>
+                    <pre class="drawer-content">{{ detailLog.line }}</pre>
+                  </div>
+                </div>
               </div>
               <div class="drawer-row drawer-row-full">
                 <div class="drawer-section-header">
@@ -893,6 +910,7 @@ const detailContextBeforeCount = ref(0)
 const detailContextAfterCount = ref(0)
 const detailContextError = ref('')
 const contextScrollWrap = ref(null)
+const metaOpen = ref(false)   // 元数据折叠状态：默认收起，给上下文留位
 
 // 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
 const CONTEXT_INITIAL_BEFORE = 250
@@ -982,6 +1000,7 @@ function closeDetail() {
   detailContextAbort?.abort()
   detailContextAbort = null
   detailLog.value = null
+  metaOpen.value = false   // 下次打开重新收起，焦点回到上下文
   loadingDetailContext.value = false
   loadingContextBefore.value = false
   loadingContextAfter.value = false
@@ -2141,7 +2160,50 @@ onBeforeUnmount(() => {
   font-size: 14px; cursor: pointer; padding: 4px;
 }
 .drawer-close:hover { color: var(--text-primary); }
-.drawer-body { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.drawer-body { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+
+/* 元数据折叠区 */
+.drawer-meta-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-base);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.drawer-meta-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  transition: background .15s;
+}
+.drawer-meta-header:hover { background: var(--bg-hover); }
+.drawer-meta-section.open .drawer-meta-header {
+  border-bottom: 1px solid var(--border);
+}
+.meta-toggle {
+  display: inline-block;
+  width: 10px;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.meta-title { font-weight: 600; color: var(--text-secondary); }
+.meta-summary {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px;
+}
+.meta-summary-ts { color: var(--text-muted); font-family: monospace; }
+.meta-summary-svc { color: var(--accent); font-weight: 500; }
+.meta-summary-ns  { color: var(--text-muted); }
+.lvl-badge.mini { font-size: 9px; padding: 0 5px; line-height: 1.4; }
+.drawer-meta-body {
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--bg-card);
+}
 .drawer-row { display: flex; align-items: flex-start; gap: 12px; }
 .drawer-row-full { flex-direction: column; gap: 6px; }
 .drawer-label {
@@ -2187,7 +2249,7 @@ onBeforeUnmount(() => {
 .drawer-context-state-error { color: var(--error); }
 .drawer-context-list {
   display: flex; flex-direction: column; gap: 6px;
-  max-height: 60vh; overflow-y: auto;
+  max-height: 76vh; overflow-y: auto;
   padding: 4px 4px 4px 28px;   /* 左侧 28px 给锚点 ▶ 标记预留 */
 }
 .drawer-context-loading-more {
