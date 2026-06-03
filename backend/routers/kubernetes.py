@@ -1341,15 +1341,57 @@ async def list_pods(
         for pod in pods.items:
             status = _pod_status(pod)
             containers = [
-                {"name": c.name, "image": c.image, "ready": False, "restarts": 0}
+                {
+                    "name": c.name, "image": c.image, "ready": False, "restarts": 0,
+                    # 上次终止信息（来自 lastState.terminated）
+                    "last_restart_reason": None,
+                    "last_restart_time": None,
+                    "last_restart_exit_code": None,
+                    # 当前 waiting 原因（如 CrashLoopBackOff / ImagePullBackOff）
+                    "waiting_reason": None,
+                }
                 for c in (pod.spec.containers or [])
             ]
             if pod.status.container_statuses:
                 for cs in pod.status.container_statuses:
                     for c in containers:
-                        if c["name"] == cs.name:
-                            c["ready"] = cs.ready or False
-                            c["restarts"] = cs.restart_count or 0
+                        if c["name"] != cs.name:
+                            continue
+                        c["ready"] = cs.ready or False
+                        c["restarts"] = cs.restart_count or 0
+                        # 上次终止状态：containerStatuses[*].lastState.terminated
+                        last_state = getattr(cs, "last_state", None)
+                        terminated = getattr(last_state, "terminated", None) if last_state else None
+                        if terminated is not None:
+                            c["last_restart_reason"] = terminated.reason or None
+                            c["last_restart_exit_code"] = (
+                                terminated.exit_code
+                                if terminated.exit_code is not None else None
+                            )
+                            finished_at = getattr(terminated, "finished_at", None)
+                            if finished_at:
+                                c["last_restart_time"] = finished_at.isoformat() if hasattr(finished_at, "isoformat") else str(finished_at)
+                        # 当前 waiting 原因（用于补充 CrashLoopBackOff 这类）
+                        cur_state = getattr(cs, "state", None)
+                        waiting = getattr(cur_state, "waiting", None) if cur_state else None
+                        if waiting is not None and waiting.reason:
+                            c["waiting_reason"] = waiting.reason
+
+            # Pod 级汇总：取重启最多的 container 的 last_restart_reason；都为 0 时取首个 waiting_reason
+            with_restart = [c for c in containers if c["restarts"] > 0 and c["last_restart_reason"]]
+            if with_restart:
+                primary = max(with_restart, key=lambda c: c["restarts"])
+                pod_last_reason = primary["last_restart_reason"]
+                pod_last_time = primary["last_restart_time"]
+                pod_last_exit = primary["last_restart_exit_code"]
+                pod_last_container = primary["name"]
+            else:
+                first_waiting = next((c for c in containers if c["waiting_reason"]), None)
+                pod_last_reason = first_waiting["waiting_reason"] if first_waiting else None
+                pod_last_time = None
+                pod_last_exit = None
+                pod_last_container = first_waiting["name"] if first_waiting else None
+
             result.append(
                 {
                     "name": pod.metadata.name,
@@ -1360,6 +1402,10 @@ async def list_pods(
                     "ip": pod.status.pod_ip or "",
                     "containers": containers,
                     "restarts": sum(c["restarts"] for c in containers),
+                    "last_restart_reason":     pod_last_reason,
+                    "last_restart_time":       pod_last_time,
+                    "last_restart_exit_code":  pod_last_exit,
+                    "last_restart_container":  pod_last_container,
                     "age": _safe_age(pod.metadata.creation_timestamp),
                 }
             )

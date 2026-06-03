@@ -256,6 +256,17 @@
                   · 频繁 {{ podRestartStats.frequent }}
                 </span>
               </div>
+              <div v-if="podRestartStats.topReasons.length" class="restart-reason-row">
+                <span
+                  v-for="r in podRestartStats.topReasons"
+                  :key="r.reason"
+                  class="restart-reason mini"
+                  :class="restartReasonClass(r.reason)"
+                  :title="`${r.reason}: ${r.count} 个 Pod`"
+                >
+                  {{ r.reason }} <em>{{ r.count }}</em>
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -307,7 +318,17 @@
                     {{ container.name }}
                   </span>
                 </td>
-                <td><span class="restart-badge" :class="restartClass(pod.restarts)">{{ pod.restarts }}</span></td>
+                <td>
+                  <span class="restart-badge" :class="restartClass(pod.restarts)">{{ pod.restarts }}</span>
+                  <span
+                    v-if="pod.last_restart_reason"
+                    class="restart-reason"
+                    :class="restartReasonClass(pod.last_restart_reason)"
+                    :title="restartReasonTitle(pod)"
+                  >
+                    {{ pod.last_restart_reason }}
+                  </span>
+                </td>
                 <td class="muted">{{ pod.age }}</td>
                 <td class="action-cell">
                   <div class="action-group">
@@ -1616,15 +1637,43 @@ async function testActiveCluster() {
 
 // ── Pod 重启次数统计 ─────────────────────────────────────────────────────────
 const FREQUENT_RESTART_THRESHOLD = 5
+// 重启原因严重度分级：danger (内存/被杀) / warn (退出错误) / info (正常完成/拉镜像中)
+const RESTART_REASON_LEVEL = {
+  OOMKilled:           'danger',
+  Error:               'danger',
+  ContainerCannotRun:  'danger',
+  CrashLoopBackOff:    'danger',
+  DeadlineExceeded:    'danger',
+  Evicted:             'danger',
+  Killed:              'warn',
+  ContainerStatusUnknown: 'warn',
+  ImagePullBackOff:    'warn',
+  ErrImagePull:        'warn',
+  CreateContainerError:'warn',
+  CreateContainerConfigError: 'warn',
+  Completed:           'info',
+  ContainerCreating:   'info',
+  PodInitializing:     'info',
+}
+
 const podRestartStats = computed(() => {
   let total = 0, withRestart = 0, frequent = 0, maxRestart = 0, maxPod = null
+  const reasonCounts = {}
   for (const p of pods.value) {
     const r = Number(p.restarts) || 0
     total += r
     if (r > 0) withRestart++
     if (r >= FREQUENT_RESTART_THRESHOLD) frequent++
     if (r > maxRestart) { maxRestart = r; maxPod = p }
+    if (r > 0 && p.last_restart_reason) {
+      reasonCounts[p.last_restart_reason] = (reasonCounts[p.last_restart_reason] || 0) + 1
+    }
   }
+  // 取出现最多的 top 3 原因
+  const topReasons = Object.entries(reasonCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([reason, count]) => ({ reason, count }))
   return {
     totalRestarts: total,
     withRestart,
@@ -1632,6 +1681,7 @@ const podRestartStats = computed(() => {
     maxRestart,
     maxPod,
     podTotal: pods.value.length,
+    topReasons,
   }
 })
 
@@ -1640,6 +1690,22 @@ function restartClass(n) {
   if (v >= FREQUENT_RESTART_THRESHOLD) return 'restart-high'
   if (v > 0) return 'restart-mid'
   return 'restart-zero'
+}
+
+function restartReasonClass(reason) {
+  return 'reason-' + (RESTART_REASON_LEVEL[reason] || 'neutral')
+}
+
+function restartReasonTitle(pod) {
+  const parts = [`原因: ${pod.last_restart_reason}`]
+  if (pod.last_restart_container) parts.push(`容器: ${pod.last_restart_container}`)
+  if (pod.last_restart_exit_code !== null && pod.last_restart_exit_code !== undefined) {
+    parts.push(`退出码: ${pod.last_restart_exit_code}`)
+  }
+  if (pod.last_restart_time) {
+    parts.push(`时间: ${new Date(pod.last_restart_time).toLocaleString()}`)
+  }
+  return parts.join('\n')
 }
 
 // Pods 表格按重启次数排序：null=默认时间序 / 'desc' / 'asc'
@@ -2171,6 +2237,32 @@ onBeforeUnmount(() => { _destroyExec() })
 .sortable-th { cursor: pointer; user-select: none; }
 .sortable-th:hover { color: var(--text-primary); }
 .sort-indicator { font-size: 10px; margin-left: 4px; opacity: .7; }
+
+/* 重启原因标签：danger=红、warn=黄、info=蓝、neutral=灰 */
+.restart-reason {
+  display: inline-flex; align-items: center;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px; font-weight: 600;
+  font-family: monospace;
+  cursor: help;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.restart-reason.reason-danger  { background: rgba(248,81,73,.12); color: var(--error, #f85149); border-color: rgba(248,81,73,.3); }
+.restart-reason.reason-warn    { background: rgba(210,153,34,.15); color: var(--warning); border-color: rgba(210,153,34,.3); }
+.restart-reason.reason-info    { background: rgba(56,139,253,.12); color: var(--accent); border-color: rgba(56,139,253,.3); }
+.restart-reason.reason-neutral { background: var(--bg-input); color: var(--text-muted); border-color: var(--border); }
+.restart-reason.mini { font-size: 9px; padding: 0 5px; }
+.restart-reason em { font-style: normal; opacity: .75; margin-left: 3px; }
+
+/* 汇总卡片底部 reason 行 */
+.restart-reason-row {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 4px;
+}
+.restart-reason-row .restart-reason { margin-left: 0; }
 
 .modal-mask {
   position: fixed;
