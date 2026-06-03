@@ -13,14 +13,22 @@
           placeholder="关键字搜索"
           :disabled="!activeClusterId || loading"
         />
-        <select v-model="activeNs" class="ns-select" :disabled="!activeClusterId || loading" @change="fetchAll">
+        <select v-model="activeNs" class="ns-select" :disabled="!activeClusterId || loading" @change="fetchAll()">
           <option value="">全部命名空间</option>
           <option v-for="ns in namespaces" :key="ns.name" :value="ns.name">{{ ns.name }}</option>
+        </select>
+        <span v-if="lastFetchedAt" class="cache-stamp" :title="`数据缓存时间 ${new Date(lastFetchedAt).toLocaleString()}`">
+          ⏱ {{ lastFetchedText }}
+        </span>
+        <select v-model="autoRefreshInterval" class="ns-select auto-refresh-select" :disabled="!activeClusterId" title="自动刷新">
+          <option v-for="opt in AUTO_REFRESH_OPTIONS" :key="opt.value" :value="opt.value">
+            {{ opt.value === 'off' ? '自动刷新：关' : `自动 ${opt.label}` }}
+          </option>
         </select>
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="openEditCluster">编辑</button>
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="testActiveCluster">测试</button>
         <button v-if="canManageClusters" class="btn-ghost danger" :disabled="!activeCluster" @click="removeCluster">删除</button>
-        <button class="btn-refresh" @click="fetchAll" :disabled="loading || !activeClusterId">
+        <button class="btn-refresh" @click="refreshAll" :disabled="loading || !activeClusterId" title="跳过缓存强制重拉">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <polyline points="23 4 23 10 17 10" />
             <polyline points="1 20 1 14 7 14" />
@@ -785,7 +793,20 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onBeforeUnmount, reactive, ref, nextTick, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, reactive, ref, nextTick, watch } from 'vue'
+
+defineOptions({ name: 'Containers' })
+
+// ── 模块级缓存（跨组件实例存活；keep-alive 失效或首次实例化都能复用）
+// key: `${clusterId}|${namespace}`  value: { summary, namespaces, pods, ..., lastFetchedAt }
+const _resourceCache = new Map()
+const CACHE_TTL_MS = 30_000   // 30 秒内 hit cache 直接返回，超过自动 miss
+const AUTO_REFRESH_OPTIONS = [
+  { value: 'off', label: '关闭', sec: 0 },
+  { value: '30',  label: '30 秒', sec: 30 },
+  { value: '60',  label: '1 分钟', sec: 60 },
+  { value: '300', label: '5 分钟', sec: 300 },
+]
 import { api } from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { Terminal } from 'xterm'
@@ -819,6 +840,12 @@ const LOGGABLE_KINDS = new Set(['pod', 'deployment', 'daemonset', 'statefulset',
 const activeTab = ref('pods')
 const activeClusterId = ref('')
 const activeNs = ref('')
+// 缓存元数据 & 自动刷新
+const lastFetchedAt = ref(0)              // 当前展示数据的 fetch 时间（ms）
+const autoRefreshInterval = ref('off')    // 自动刷新档位：'off' / '30' / '60' / '300'
+const _nowTick = ref(Date.now())          // 触发"X 秒前"相对时间重新计算
+let _autoRefreshTimer = null              // 自动刷新 setInterval handle
+let _nowTickTimer = null                  // _nowTick 每秒更新的 setInterval handle
 const loading = ref(false)
 const error = ref('')
 
@@ -1127,6 +1154,16 @@ function resetNotice() {
   clusterTestMsg.value = ''
 }
 
+const lastFetchedText = computed(() => {
+  if (!lastFetchedAt.value) return '尚未加载'
+  const diff = Math.max(0, _nowTick.value - lastFetchedAt.value)
+  const sec = Math.floor(diff / 1000)
+  if (sec < 5)    return '刚刚'
+  if (sec < 60)   return `${sec} 秒前`
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`
+  return new Date(lastFetchedAt.value).toLocaleTimeString()
+})
+
 function tabCount(id) {
   const mapping = {
     pods: filteredPods.value.length,
@@ -1159,38 +1196,73 @@ async function loadClusters() {
   }
 }
 
-async function fetchAll() {
+function _applyCachedPayload(payload) {
+  summary.value      = payload.summary
+  namespaces.value   = payload.namespaces
+  pods.value         = payload.pods
+  deployments.value  = payload.deployments
+  daemonSets.value   = payload.daemonSets
+  statefulSets.value = payload.statefulSets
+  jobs.value         = payload.jobs
+  cronJobs.value     = payload.cronJobs
+  services.value     = payload.services
+  nodes.value        = payload.nodes
+  lastFetchedAt.value = payload.lastFetchedAt
+}
+
+// fetchAll(opts)
+//   opts.force = true  → 跳过缓存强制重拉（手动「刷新」按钮 / 自动 timer）
+//   默认走缓存：命中 TTL 内的缓存就直接渲染，否则才发请求
+//   兼容旧调用：参数若为 Event（select.change 等），按非 force 处理
+async function fetchAll(opts) {
+  const force = (opts && opts.force === true) === true
   if (!activeClusterId.value) {
     resetData()
     return
   }
+  const clusterId = activeClusterId.value
+  const ns = activeNs.value || ''
+  const key = `${clusterId}|${ns}`
+
+  if (!force) {
+    const cached = _resourceCache.get(key)
+    if (cached && Date.now() - cached.lastFetchedAt < CACHE_TTL_MS) {
+      _applyCachedPayload(cached)
+      return
+    }
+  }
+
   loading.value = true
   error.value = ''
   try {
-    const ns = activeNs.value || undefined
-    const clusterId = activeClusterId.value
+    const nsArg = ns || undefined
     const [sum, nsList, podList, depList, daemonSetList, statefulSetList, jobList, cronJobList, svcList, nodeList] = await Promise.all([
       api.k8sSummary(clusterId).catch(() => null),
       api.k8sNamespaces(clusterId).catch(() => []),
-      api.k8sPods(clusterId, ns).catch(() => []),
-      api.k8sDeployments(clusterId, ns).catch(() => []),
-      api.k8sDaemonSets(clusterId, ns).catch(() => []),
-      api.k8sStatefulSets(clusterId, ns).catch(() => []),
-      api.k8sJobs(clusterId, ns).catch(() => []),
-      api.k8sCronJobs(clusterId, ns).catch(() => []),
-      api.k8sServices(clusterId, ns).catch(() => []),
+      api.k8sPods(clusterId, nsArg).catch(() => []),
+      api.k8sDeployments(clusterId, nsArg).catch(() => []),
+      api.k8sDaemonSets(clusterId, nsArg).catch(() => []),
+      api.k8sStatefulSets(clusterId, nsArg).catch(() => []),
+      api.k8sJobs(clusterId, nsArg).catch(() => []),
+      api.k8sCronJobs(clusterId, nsArg).catch(() => []),
+      api.k8sServices(clusterId, nsArg).catch(() => []),
       api.k8sNodes(clusterId).catch(() => []),
     ])
-    summary.value = sum
-    namespaces.value = nsList
-    pods.value = podList
-    deployments.value = depList
-    daemonSets.value = daemonSetList
-    statefulSets.value = statefulSetList
-    jobs.value = jobList
-    cronJobs.value = cronJobList
-    services.value = svcList
-    nodes.value = nodeList
+    const payload = {
+      summary: sum,
+      namespaces: nsList,
+      pods: podList,
+      deployments: depList,
+      daemonSets: daemonSetList,
+      statefulSets: statefulSetList,
+      jobs: jobList,
+      cronJobs: cronJobList,
+      services: svcList,
+      nodes: nodeList,
+      lastFetchedAt: Date.now(),
+    }
+    _resourceCache.set(key, payload)
+    _applyCachedPayload(payload)
   } catch (e) {
     error.value = `加载失败: ${e}`
   } finally {
@@ -1198,12 +1270,17 @@ async function fetchAll() {
   }
 }
 
+// 用户主动刷新（按钮 / timer）：跳过缓存
+function refreshAll() {
+  return fetchAll({ force: true })
+}
+
 async function selectCluster(clusterId) {
   if (!clusterId || clusterId === activeClusterId.value) return
   activeClusterId.value = clusterId
   activeNs.value = ''
   resetNotice()
-  await fetchAll()
+  await fetchAll()   // 走缓存：切回老集群时秒回
 }
 
 function openAddCluster() {
@@ -1428,11 +1505,15 @@ async function saveCluster() {
     return
   }
   try {
+    // 集群配置可能变了，清掉这个集群相关的缓存
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${saved.id}|`)) _resourceCache.delete(key)
+    }
     await loadClusters()
     activeClusterId.value = saved.id
     activeNs.value = ''
     closeClusterModal()
-    await fetchAll()
+    await fetchAll({ force: true })
     clusterTestResult.value = true
     clusterTestMsg.value = successMsg
   } catch (e) {
@@ -1466,9 +1547,14 @@ async function setDefaultCluster(cluster) {
 async function removeCluster() {
   if (!activeCluster.value) return
   if (!confirm(`确认删除集群「${activeCluster.value.name}」？`)) return
+  const deletedId = activeCluster.value.id
   try {
-    await api.k8sDeleteCluster(activeCluster.value.id)
+    await api.k8sDeleteCluster(deletedId)
     resetNotice()
+    // 清掉这个集群在缓存里的所有 ns 条目
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${deletedId}|`)) _resourceCache.delete(key)
+    }
   } catch (e) {
     clusterTestResult.value = false
     clusterTestMsg.value = `删除集群失败：${e}`
@@ -1539,9 +1625,56 @@ async function runInspect() {
   }
 }
 
+function _stopAutoRefresh() {
+  if (_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null }
+}
+
+function _startAutoRefresh() {
+  _stopAutoRefresh()
+  const opt = AUTO_REFRESH_OPTIONS.find(o => o.value === autoRefreshInterval.value)
+  if (!opt || opt.sec <= 0) return
+  _autoRefreshTimer = setInterval(() => {
+    // 仅当没在加载、且页面可见时触发
+    if (loading.value) return
+    if (typeof document !== 'undefined' && document.hidden) return
+    refreshAll()
+  }, opt.sec * 1000)
+}
+
+function _startNowTick() {
+  if (_nowTickTimer) return
+  _nowTickTimer = setInterval(() => { _nowTick.value = Date.now() }, 1000)
+}
+function _stopNowTick() {
+  if (_nowTickTimer) { clearInterval(_nowTickTimer); _nowTickTimer = null }
+}
+
+// 用户改自动刷新档位 → 立即应用
+watch(autoRefreshInterval, () => _startAutoRefresh())
+
 onMounted(async () => {
+  _startNowTick()
   await loadClusters()
+  // 首次进入：走缓存逻辑；若是冷启动 cache miss 会拉一次
   await fetchAll()
+  _startAutoRefresh()
+})
+
+// keep-alive 复活：只重启 timer，不重拉数据（让用户决定）
+onActivated(() => {
+  _startNowTick()
+  _startAutoRefresh()
+})
+
+// keep-alive 离开：暂停 timer，避免无谓请求
+onDeactivated(() => {
+  _stopAutoRefresh()
+  _stopNowTick()
+})
+
+onBeforeUnmount(() => {
+  _stopAutoRefresh()
+  _stopNowTick()
 })
 
 // ── Container Exec ────────────────────────────────────────────────────────────
@@ -1680,6 +1813,14 @@ onBeforeUnmount(() => { _destroyExec() })
 .search-input { padding: 6px 10px; min-width: 160px; width: 200px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); outline: none; }
 .search-input:focus { border-color: var(--accent); }
 .ns-select { padding: 6px 10px; cursor: pointer; min-width: 180px; }
+.auto-refresh-select { min-width: 130px; }
+.cache-stamp {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 10px; border-radius: 6px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-muted); white-space: nowrap;
+  user-select: none;
+}
 
 .btn-refresh,
 .btn-ghost,

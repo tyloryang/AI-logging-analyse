@@ -7,7 +7,7 @@
     <div v-else class="layout">
       <Sidebar />
       <main class="main-content">
-        <keep-alive include="Dashboard">
+        <keep-alive :include="['Dashboard', 'Containers']">
           <component :is="Component" />
         </keep-alive>
       </main>
