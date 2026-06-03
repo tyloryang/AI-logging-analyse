@@ -230,6 +230,34 @@
               <div class="stat-label">CronJob 总数 / 活跃 {{ summary.cronJobs?.active || 0 }}</div>
             </div>
           </div>
+          <!-- Pod 重启统计：点击 → 跳到 Pods tab 并按重启降序排 -->
+          <div
+            class="stat-card restart-card"
+            :class="{ warn: podRestartStats.frequent > 0, danger: podRestartStats.maxRestart >= 10 }"
+            :title="podRestartStats.maxPod ? `重启最多的 Pod: ${podRestartStats.maxPod.namespace}/${podRestartStats.maxPod.name} (${podRestartStats.maxRestart} 次)` : ''"
+            @click="activeTab = 'pods'; podRestartSortOrder = 'desc'"
+            style="cursor: pointer"
+          >
+            <div class="stat-icon restart">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+              </svg>
+            </div>
+            <div class="stat-body">
+              <div class="stat-value">
+                {{ podRestartStats.totalRestarts }}
+                <span class="stat-total">/ {{ podRestartStats.withRestart }} 个 Pod</span>
+              </div>
+              <div class="stat-label">
+                Pod 重启总次数
+                <span v-if="podRestartStats.frequent > 0" class="stat-warn-tag">
+                  · 频繁 {{ podRestartStats.frequent }}
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="tab-row">
@@ -254,12 +282,17 @@
           <table class="k8s-table">
             <thead>
               <tr>
-                <th>名称</th><th>命名空间</th><th>状态</th><th>节点</th><th>容器</th><th>重启</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>状态</th><th>节点</th><th>容器</th>
+                <th class="sortable-th" @click="togglePodRestartSort" :title="`点击切换排序 (当前: ${ {desc:'降序',asc:'升序',null:'默认'}[podRestartSortOrder] || '默认' })`">
+                  重启
+                  <span class="sort-indicator">{{ podRestartSortOrder === 'desc' ? '↓' : podRestartSortOrder === 'asc' ? '↑' : '⇅' }}</span>
+                </th>
+                <th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredPods.length"><td colspan="8" class="empty">暂无数据</td></tr>
-              <tr v-for="pod in filteredPods" :key="pod.namespace + '/' + pod.name">
+              <tr v-if="!sortedFilteredPods.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-for="pod in sortedFilteredPods" :key="pod.namespace + '/' + pod.name">
                 <td class="name-cell">{{ pod.name }}</td>
                 <td><span class="ns-tag">{{ pod.namespace }}</span></td>
                 <td><span class="status-dot" :class="pod.statusClass"></span>{{ pod.status }}</td>
@@ -274,7 +307,7 @@
                     {{ container.name }}
                   </span>
                 </td>
-                <td :class="{ 'col-warn': pod.restarts > 0 }">{{ pod.restarts }}</td>
+                <td><span class="restart-badge" :class="restartClass(pod.restarts)">{{ pod.restarts }}</span></td>
                 <td class="muted">{{ pod.age }}</td>
                 <td class="action-cell">
                   <div class="action-group">
@@ -1581,6 +1614,48 @@ async function testActiveCluster() {
   }
 }
 
+// ── Pod 重启次数统计 ─────────────────────────────────────────────────────────
+const FREQUENT_RESTART_THRESHOLD = 5
+const podRestartStats = computed(() => {
+  let total = 0, withRestart = 0, frequent = 0, maxRestart = 0, maxPod = null
+  for (const p of pods.value) {
+    const r = Number(p.restarts) || 0
+    total += r
+    if (r > 0) withRestart++
+    if (r >= FREQUENT_RESTART_THRESHOLD) frequent++
+    if (r > maxRestart) { maxRestart = r; maxPod = p }
+  }
+  return {
+    totalRestarts: total,
+    withRestart,
+    frequent,
+    maxRestart,
+    maxPod,
+    podTotal: pods.value.length,
+  }
+})
+
+function restartClass(n) {
+  const v = Number(n) || 0
+  if (v >= FREQUENT_RESTART_THRESHOLD) return 'restart-high'
+  if (v > 0) return 'restart-mid'
+  return 'restart-zero'
+}
+
+// Pods 表格按重启次数排序：null=默认时间序 / 'desc' / 'asc'
+const podRestartSortOrder = ref(null)
+function togglePodRestartSort() {
+  podRestartSortOrder.value =
+    podRestartSortOrder.value === null  ? 'desc' :
+    podRestartSortOrder.value === 'desc' ? 'asc'  : null
+}
+const sortedFilteredPods = computed(() => {
+  const list = filteredPods.value
+  if (!podRestartSortOrder.value) return list
+  const dir = podRestartSortOrder.value === 'desc' ? -1 : 1
+  return [...list].sort((a, b) => dir * ((Number(a.restarts) || 0) - (Number(b.restarts) || 0)))
+})
+
 // ── 资源关键字搜索统计（替代原 kubeconfig 认证检测）──────────────────────────
 // 按 tab 顺序汇总每类资源在 searchKeyword 下的匹配数；点击 chip 可直接跳到对应 tab
 const searchMatchSummary = computed(() => [
@@ -2020,6 +2095,11 @@ onBeforeUnmount(() => { _destroyExec() })
 .stat-icon.stateful { background: rgba(14,165,233,0.12); color: #0284c7; }
 .stat-icon.job { background: rgba(20,184,166,0.12); color: #0f766e; }
 .stat-icon.cron { background: rgba(217,119,6,0.12); color: #b45309; }
+.stat-icon.restart { background: rgba(248,81,73,.12); color: var(--error, #f85149); }
+.restart-card { transition: border-color .15s, transform .12s; }
+.restart-card:hover { transform: translateY(-1px); border-color: var(--accent); }
+.restart-card.danger { border-color: rgba(248,81,73,.5) !important; background: rgba(248,81,73,.05) !important; }
+.stat-warn-tag { color: var(--warning); font-weight: 600; margin-left: 4px; }
 .stat-value { font-size: 20px; font-weight: 700; line-height: 1; }
 .stat-total { font-size: 13px; color: var(--text-muted); font-weight: 400; }
 .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
@@ -2074,6 +2154,23 @@ onBeforeUnmount(() => { _destroyExec() })
 .small { font-size: 11px; }
 .muted { color: var(--text-muted); }
 .col-warn { color: var(--warning); font-weight: 500; }
+
+/* Pod 重启次数徽章：0=灰 1-4=黄 ≥5=红 */
+.restart-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; padding: 1px 8px;
+  border-radius: 9999px;
+  font-size: 11px; font-weight: 700;
+  font-family: monospace;
+}
+.restart-badge.restart-zero { background: var(--bg-input); color: var(--text-muted); }
+.restart-badge.restart-mid  { background: rgba(210,153,34,.18); color: var(--warning); }
+.restart-badge.restart-high { background: rgba(248,81,73,.18); color: var(--error, #f85149); }
+
+/* 可排序表头 */
+.sortable-th { cursor: pointer; user-select: none; }
+.sortable-th:hover { color: var(--text-primary); }
+.sort-indicator { font-size: 10px; margin-left: 4px; opacity: .7; }
 
 .modal-mask {
   position: fixed;
