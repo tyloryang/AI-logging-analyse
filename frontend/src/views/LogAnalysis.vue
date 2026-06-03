@@ -402,23 +402,20 @@
                     正在加载更早的上下文...
                   </div>
                   <div v-else-if="contextBeforeAtLimit" class="drawer-context-hint">已到达可用上下文上限</div>
-                  <button
+                  <div
                     v-for="(item, idx) in detailContextLogs"
                     :key="`${item.timestamp_ns}-${idx}`"
-                    type="button"
-                    :ref="el => { if (idx === detailContextAnchorIndex) anchorRowEl = el }"
                     class="drawer-context-item"
                     :class="[
                       { active: idx === detailContextAnchorIndex },
                       logClass(item.line),
                     ]"
-                    @click="openDetail(item)"
                   >
                     <span v-if="idx === detailContextAnchorIndex" class="anchor-marker" title="当前查询的记录">▶</span>
                     <span class="drawer-context-ts">{{ item.timestamp }}</span>
                     <span class="drawer-context-svc">{{ logServiceName(item) }}</span>
                     <span class="drawer-context-text">{{ item.line }}</span>
-                  </button>
+                  </div>
                   <div v-if="loadingContextAfter" class="drawer-context-loading-more">
                     <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
                     正在加载更晚的上下文...
@@ -427,7 +424,7 @@
                   <div v-if="!detailContextAnchorFound" class="drawer-context-hint">
                     未精确定位当前行，已展示同一日志流的邻近上下文。
                   </div>
-                  <div class="drawer-context-hint">滚动到顶/底自动加载更多上下文，点击行可定位详情。</div>
+                  <div class="drawer-context-hint">滚动到顶/底自动加载更多上下文。</div>
                 </div>
                 <div v-else class="drawer-context-state">未找到可展示的上下文日志。</div>
               </div>
@@ -896,7 +893,6 @@ const detailContextBeforeCount = ref(0)
 const detailContextAfterCount = ref(0)
 const detailContextError = ref('')
 const contextScrollWrap = ref(null)
-const anchorRowEl = ref(null)
 
 // 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
 const CONTEXT_INITIAL_BEFORE = 250
@@ -1087,7 +1083,10 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
     // 初始加载或刷新：自动滚到锚点居中
     if (!direction && detailContextAnchorIndex.value >= 0) {
       await nextTick()
-      anchorRowEl.value?.scrollIntoView({ block: 'center', behavior: 'auto' })
+      // 直接在 scroll 容器内查 .active 行，比函数式 ref 可靠
+      // (setup script 模板里 ref 自动 unwrap，:ref="el => myRef = el" 写法不会回写)
+      const anchor = contextScrollWrap.value?.querySelector('.drawer-context-item.active')
+      if (anchor) anchor.scrollIntoView({ block: 'center', behavior: 'auto' })
     }
   } catch (error) {
     if (isCanceled(error)) return
@@ -2189,7 +2188,7 @@ onBeforeUnmount(() => {
 .drawer-context-list {
   display: flex; flex-direction: column; gap: 6px;
   max-height: 60vh; overflow-y: auto;
-  padding-right: 4px;
+  padding: 4px 4px 4px 28px;   /* 左侧 28px 给锚点 ▶ 标记预留 */
 }
 .drawer-context-loading-more {
   display: flex; align-items: center; justify-content: center;
@@ -2207,47 +2206,65 @@ onBeforeUnmount(() => {
   background: var(--bg-base); border: 1px solid var(--border);
   border-radius: 6px; color: var(--text-secondary);
   font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.6;
-  text-align: left; cursor: pointer; transition: border-color .15s, background .15s;
-}
-.drawer-context-item:hover { border-color: rgba(99,102,241,.35); }
-.drawer-context-item.active {
-  border-color: rgba(99,102,241,.9);
-  background: rgba(99,102,241,.18);
-  box-shadow:
-    inset 4px 0 0 0 var(--accent),
-    0 0 0 2px rgba(99,102,241,.4),
-    0 6px 16px rgba(99,102,241,.18);
-  color: var(--text-primary);
-  font-weight: 500;
+  text-align: left; cursor: default;
   position: relative;
-  z-index: 1;
+}
+.drawer-context-item.level-error { background: var(--log-error); }
+.drawer-context-item.level-warn  { background: var(--log-warn); }
+
+/* 锚点行（开始查看的日志）— 实色高反差 */
+.drawer-context-item.active {
+  background: #facc15;            /* 实色亮黄 */
+  border-color: #facc15;
+  color: #1f2937;                  /* 深字 */
+  font-weight: 600;
+  box-shadow:
+    inset 5px 0 0 0 #ea580c,       /* 左侧橙色实色条 */
+    0 0 0 2px #facc15,
+    0 8px 22px rgba(250,204,21,.45);
+  z-index: 2;
 }
 .drawer-context-item.active .drawer-context-ts,
-.drawer-context-item.active .drawer-context-svc { color: var(--text-primary); }
-.drawer-context-item.level-error { background: var(--log-error); }
-.drawer-context-item.level-warn { background: var(--log-warn); }
+.drawer-context-item.active .drawer-context-svc,
+.drawer-context-item.active .drawer-context-text {
+  color: #1f2937;
+}
+/* 锚点是 error/warn 时：用红色实色加重，因为问题日志更要突出 */
 .drawer-context-item.active.level-error,
 .drawer-context-item.active.level-warn {
+  background: #f85149;
+  border-color: #f85149;
+  color: #fff;
   box-shadow:
-    inset 4px 0 0 0 var(--error, #f85149),
-    0 0 0 2px rgba(248,81,73,.4);
-  background: rgba(248,81,73,.18);
+    inset 5px 0 0 0 #7f1d1d,
+    0 0 0 2px #f85149,
+    0 8px 22px rgba(248,81,73,.5);
 }
+.drawer-context-item.active.level-error .drawer-context-ts,
+.drawer-context-item.active.level-warn  .drawer-context-ts,
+.drawer-context-item.active.level-error .drawer-context-svc,
+.drawer-context-item.active.level-warn  .drawer-context-svc,
+.drawer-context-item.active.level-error .drawer-context-text,
+.drawer-context-item.active.level-warn  .drawer-context-text {
+  color: #fff;
+}
+
 .anchor-marker {
   position: absolute;
-  left: -2px;
+  left: -22px;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--accent);
-  font-size: 9px;
+  color: #ea580c;
+  font-size: 14px;
+  font-weight: 900;
   pointer-events: none;
-  animation: anchor-pulse 1.5s ease-in-out infinite;
+  animation: anchor-pulse 1.2s ease-in-out infinite;
 }
 .drawer-context-item.active.level-error .anchor-marker,
-.drawer-context-item.active.level-warn .anchor-marker { color: var(--error, #f85149); }
+.drawer-context-item.active.level-warn  .anchor-marker { color: #f85149; }
 @keyframes anchor-pulse {
-  0%, 100% { opacity: 1; transform: translateX(0); }
-  50%      { opacity: .5; transform: translateX(2px); }
+  0%, 100% { opacity: 1; transform: translateY(-50%) translateX(0); }
+  50%      { opacity: .55; transform: translateY(-50%) translateX(3px); }
 }
 .drawer-context-ts,
 .drawer-context-svc { color: var(--text-muted); white-space: nowrap; }
