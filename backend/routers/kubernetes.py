@@ -64,7 +64,16 @@ def _settings() -> dict:
 
 
 def _safe_age(value) -> str:
-    return str(value)[:10] if value else ""
+    """返回 ISO 8601 完整时间戳（带时区），便于前端按本地时区格式化到秒。
+    空值或解析失败返回空字符串。"""
+    if not value:
+        return ""
+    try:
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+    except Exception:
+        return str(value)[:19]
 
 
 def _normalize_cluster(item: dict) -> dict:

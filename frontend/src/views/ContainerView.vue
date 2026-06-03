@@ -329,7 +329,7 @@
                     {{ pod.last_restart_reason }}
                   </span>
                 </td>
-                <td class="muted">{{ pod.age }}</td>
+                <td class="muted mono small" :title="formatRelative(pod.age)">{{ formatDateTime(pod.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('pod', pod)">详情</button>
@@ -362,7 +362,7 @@
                 <td><span class="status-dot" :class="deployment.statusClass"></span>{{ deployment.status }}</td>
                 <td>{{ deployment.ready }}/{{ deployment.desired }}</td>
                 <td class="mono small">{{ deployment.images.join(', ') }}</td>
-                <td class="muted">{{ deployment.age }}</td>
+                <td class="muted mono small" :title="formatRelative(deployment.age)">{{ formatDateTime(deployment.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('deployment', deployment)">详情</button>
@@ -391,7 +391,7 @@
                 <td>{{ daemonSet.current }}/{{ daemonSet.updated }}</td>
                 <td>{{ daemonSet.available }}</td>
                 <td class="mono small">{{ daemonSet.images.join(', ') }}</td>
-                <td class="muted">{{ daemonSet.age }}</td>
+                <td class="muted mono small" :title="formatRelative(daemonSet.age)">{{ formatDateTime(daemonSet.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('daemonset', daemonSet)">详情</button>
@@ -420,7 +420,7 @@
                 <td>{{ statefulSet.current }}</td>
                 <td>{{ statefulSet.updated }}</td>
                 <td class="mono small">{{ statefulSet.images.join(', ') }}</td>
-                <td class="muted">{{ statefulSet.age }}</td>
+                <td class="muted mono small" :title="formatRelative(statefulSet.age)">{{ formatDateTime(statefulSet.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('statefulset', statefulSet)">详情</button>
@@ -450,7 +450,7 @@
                 <td>{{ job.active }}</td>
                 <td :class="{ 'col-warn': job.failed > 0 }">{{ job.failed }}</td>
                 <td class="mono small">{{ job.images.join(', ') }}</td>
-                <td class="muted">{{ job.age }}</td>
+                <td class="muted mono small" :title="formatRelative(job.age)">{{ formatDateTime(job.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('job', job)">详情</button>
@@ -478,9 +478,9 @@
                 <td class="mono small">{{ cronJob.schedule }}</td>
                 <td>{{ cronJob.suspend ? '是' : '否' }}</td>
                 <td class="mono small">{{ cronJob.activeJobs.length ? cronJob.activeJobs.join(', ') : cronJob.active }}</td>
-                <td class="muted">{{ cronJob.lastScheduleTime || '-' }}</td>
-                <td class="muted">{{ cronJob.lastSuccessfulTime || '-' }}</td>
-                <td class="muted">{{ cronJob.age }}</td>
+                <td class="muted mono small" :title="formatRelative(cronJob.lastScheduleTime)">{{ formatDateTime(cronJob.lastScheduleTime) }}</td>
+                <td class="muted mono small" :title="formatRelative(cronJob.lastSuccessfulTime)">{{ formatDateTime(cronJob.lastSuccessfulTime) }}</td>
+                <td class="muted mono small" :title="formatRelative(cronJob.age)">{{ formatDateTime(cronJob.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('cronjob', cronJob)">详情</button>
@@ -507,7 +507,7 @@
                 <td><span class="svc-type" :class="service.type.toLowerCase()">{{ service.type }}</span></td>
                 <td class="mono small">{{ service.clusterIP }}</td>
                 <td class="mono small">{{ service.ports.join(', ') }}</td>
-                <td class="muted">{{ service.age }}</td>
+                <td class="muted mono small" :title="formatRelative(service.age)">{{ formatDateTime(service.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('service', service)">详情</button>
@@ -533,7 +533,7 @@
                 <td><span class="role-tag">{{ node.roles }}</span></td>
                 <td class="mono small">{{ node.version }}</td>
                 <td class="small muted">{{ node.os }}</td>
-                <td class="muted">{{ node.age }}</td>
+                <td class="muted mono small" :title="formatRelative(node.age)">{{ formatDateTime(node.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
                     <button class="action-btn" @click="openResourceDetail('node', node)">详情</button>
@@ -1694,6 +1694,35 @@ function restartClass(n) {
 
 function restartReasonClass(reason) {
   return 'reason-' + (RESTART_REASON_LEVEL[reason] || 'neutral')
+}
+
+// 把后端返回的 ISO 时间戳格式化为本地时区 YYYY-MM-DD HH:MM:SS（精确到秒）
+function formatDateTime(iso) {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return String(iso)
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// 相对时间（"3 天前 / 5 小时前 / 12 分钟前 / 35 秒前"），用于 hover title
+function formatRelative(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const diff = Date.now() - d.getTime()
+  if (diff < 0) return '未来'
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60)   return `${sec} 秒前`
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`
+  if (sec < 86400) {
+    const h = Math.floor(sec / 3600)
+    const m = Math.floor((sec % 3600) / 60)
+    return m ? `${h} 小时 ${m} 分前` : `${h} 小时前`
+  }
+  const days = Math.floor(sec / 86400)
+  const hours = Math.floor((sec % 86400) / 3600)
+  return hours ? `${days} 天 ${hours} 小时前` : `${days} 天前`
 }
 
 function restartReasonTitle(pod) {
