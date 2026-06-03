@@ -165,15 +165,29 @@
             />
             <button v-if="keyword" class="kw-clear" @click="clearKeyword">✕</button>
           </div>
-          <!-- 二次本地过滤（仅日志流 tab，不重查后端，纯客户端 includes 过滤） -->
-          <div v-if="activeTab === 'logs'" class="keyword-wrap secondary" title="在已加载结果内本地过滤">
+          <!-- 多条件本地过滤（仅日志流 tab；每个 chip 一条规则，AND 组合；- 前缀 = 排除） -->
+          <div v-if="activeTab === 'logs'" class="multi-filter-wrap" title="多条件本地过滤：输入回车成条件；- 前缀=排除；点击 chip 可切换包含/排除">
             <span class="kw-icon">⊕</span>
+            <span
+              v-for="(chip, i) in localKeywords"
+              :key="i"
+              class="filter-chip"
+              :class="chip.exclude ? 'exclude' : 'include'"
+              @click="toggleChipExclude(i)"
+              :title="chip.exclude ? '排除（点击切回包含）' : '包含（点击切为排除）'"
+            >
+              <span class="chip-prefix">{{ chip.exclude ? '−' : '+' }}</span>
+              <span class="chip-text">{{ chip.text }}</span>
+              <span class="chip-remove" @click.stop="removeChip(i)" title="删除条件">✕</span>
+            </span>
             <input
-              v-model="localKeyword"
-              class="kw-input"
-              placeholder="结果内再过滤..."
+              v-model="localKeywordInput"
+              class="kw-input multi-input"
+              :placeholder="localKeywords.length ? '继续加条件...' : '关键字 (回车加入；- 前缀=排除)'"
+              @keyup.enter="addChipFromInput"
+              @keydown.backspace="onMultiInputBackspace"
             />
-            <button v-if="localKeyword" class="kw-clear" @click="localKeyword = ''">✕</button>
+            <button v-if="localKeywords.length" class="kw-clear" @click="localKeywords = []" title="清空全部条件">✕</button>
           </div>
 
           <!-- 日志流专有控件 -->
@@ -323,12 +337,12 @@
         </template>
       </div>
 
-      <!-- 日志详情抽屉 -->
-      <transition name="drawer-slide">
-        <div v-if="detailLog" class="log-detail-drawer" @click.self="closeDetail">
-          <div class="drawer-panel">
+      <!-- 日志详情模态框（居中弹出，包含原始记录 + 上下文滚动）-->
+      <transition name="modal-fade">
+        <div v-if="detailLog" class="log-detail-modal-mask" @click.self="closeDetail" @keyup.esc="closeDetail" tabindex="0">
+          <div class="drawer-panel log-detail-modal">
             <div class="drawer-header">
-              <span>日志详情</span>
+              <span>日志详情 · 上下文</span>
               <button class="drawer-close" @click="closeDetail">✕</button>
             </div>
             <div class="drawer-body">
@@ -392,6 +406,7 @@
                     v-for="(item, idx) in detailContextLogs"
                     :key="`${item.timestamp_ns}-${idx}`"
                     type="button"
+                    :ref="el => { if (idx === detailContextAnchorIndex) anchorRowEl = el }"
                     class="drawer-context-item"
                     :class="[
                       { active: idx === detailContextAnchorIndex },
@@ -399,6 +414,7 @@
                     ]"
                     @click="openDetail(item)"
                   >
+                    <span v-if="idx === detailContextAnchorIndex" class="anchor-marker" title="当前查询的记录">▶</span>
                     <span class="drawer-context-ts">{{ item.timestamp }}</span>
                     <span class="drawer-context-svc">{{ logServiceName(item) }}</span>
                     <span class="drawer-context-text">{{ item.line }}</span>
@@ -709,8 +725,42 @@ const customEnd   = ref('')
 
 // 关键字搜索
 const keyword      = ref('')         // 后端关键字（重查 Loki）
-const localKeyword = ref('')         // 本地二次过滤（已加载结果内 includes 过滤）
+const localKeywords     = ref([])    // 本地多条件过滤：[{ text, exclude }] AND 组合
+const localKeywordInput = ref('')    // 多条件输入框临时状态
 let   searchTimer  = null
+
+function addChipFromInput() {
+  const raw = (localKeywordInput.value || '').trim()
+  if (!raw) return
+  // - 前缀视为排除
+  const exclude = raw.startsWith('-') && raw.length > 1
+  const text = exclude ? raw.slice(1).trim() : raw
+  if (!text) return
+  // 同文本去重
+  if (localKeywords.value.some(c => c.text === text && c.exclude === exclude)) {
+    localKeywordInput.value = ''
+    return
+  }
+  localKeywords.value.push({ text, exclude })
+  localKeywordInput.value = ''
+}
+
+function toggleChipExclude(i) {
+  const c = localKeywords.value[i]
+  if (!c) return
+  localKeywords.value.splice(i, 1, { ...c, exclude: !c.exclude })
+}
+
+function removeChip(i) {
+  localKeywords.value.splice(i, 1)
+}
+
+// 输入框空时按 backspace：删掉最后一个 chip（IDE / 邮件客户端常见交互）
+function onMultiInputBackspace() {
+  if (localKeywordInput.value === '' && localKeywords.value.length) {
+    localKeywords.value.pop()
+  }
+}
 let   servicesAbort = null
 let   logsAbort = null
 let   loadMoreAbort = null
@@ -846,6 +896,7 @@ const detailContextBeforeCount = ref(0)
 const detailContextAfterCount = ref(0)
 const detailContextError = ref('')
 const contextScrollWrap = ref(null)
+const anchorRowEl = ref(null)
 
 // 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
 const CONTEXT_INITIAL_BEFORE = 250
@@ -888,10 +939,16 @@ const filteredLogs = computed(() => {
              INCIDENT_KEYWORDS.some(kw => l.includes(kw))
     })
   }
-  // 本地二次关键字过滤（不重查后端，仅在已加载结果内做 includes）
-  const lq = localKeyword.value.trim().toLowerCase()
-  if (lq) {
-    list = list.filter(log => (log.line || '').toLowerCase().includes(lq))
+  // 本地多条件过滤：include 全部命中(AND)；任一 exclude 命中即剔除
+  if (localKeywords.value.length) {
+    const includes = localKeywords.value.filter(c => !c.exclude).map(c => c.text.toLowerCase())
+    const excludes = localKeywords.value.filter(c =>  c.exclude).map(c => c.text.toLowerCase())
+    list = list.filter(log => {
+      const line = (log.line || '').toLowerCase()
+      if (includes.length && !includes.every(t => line.includes(t))) return false
+      if (excludes.length &&  excludes.some(t => line.includes(t))) return false
+      return true
+    })
   }
   return list
 })
@@ -1025,6 +1082,12 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
       await nextTick()
       const addedHeight = wrap.scrollHeight - savedScroll.prevHeight
       wrap.scrollTop = savedScroll.prevTop + addedHeight
+    }
+
+    // 初始加载或刷新：自动滚到锚点居中
+    if (!direction && detailContextAnchorIndex.value >= 0) {
+      await nextTick()
+      anchorRowEl.value?.scrollIntoView({ block: 'center', behavior: 'auto' })
     }
   } catch (error) {
     if (isCanceled(error)) return
@@ -1798,6 +1861,64 @@ onBeforeUnmount(() => {
 }
 .keyword-wrap.secondary .kw-icon { color: var(--accent, #818cf8); }
 
+/* 多条件本地过滤 */
+.multi-filter-wrap {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid rgba(99,102,241,.35);
+  background: rgba(99,102,241,.06);
+  border-radius: 6px;
+  min-width: 220px;
+  max-width: 460px;
+}
+.multi-filter-wrap .kw-icon { color: var(--accent, #818cf8); flex-shrink: 0; margin-right: 2px; }
+.multi-filter-wrap .multi-input {
+  flex: 1;
+  min-width: 90px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 0;
+  outline: none;
+}
+.multi-filter-wrap .multi-input::placeholder { color: var(--text-muted); }
+
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: monospace;
+  cursor: pointer;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  user-select: none;
+  transition: background .12s, border-color .12s;
+}
+.filter-chip.include {
+  background: rgba(63,185,80,.15);
+  border-color: rgba(63,185,80,.35);
+  color: #3fb950;
+}
+.filter-chip.exclude {
+  background: rgba(248,81,73,.15);
+  border-color: rgba(248,81,73,.35);
+  color: var(--error, #f85149);
+  text-decoration: line-through;
+}
+.filter-chip:hover { filter: brightness(1.15); }
+.chip-prefix { font-weight: 700; opacity: .8; }
+.chip-text { font-weight: 500; }
+.chip-remove {
+  margin-left: 2px;
+  padding: 0 2px;
+  font-size: 10px;
+  opacity: .6;
+  cursor: pointer;
+}
+.chip-remove:hover { opacity: 1; }
+
 /* 左侧服务名搜索框 */
 .svc-search-wrap {
   display: flex; align-items: center; gap: 5px;
@@ -1993,17 +2114,22 @@ onBeforeUnmount(() => {
   font-size: 12px; color: var(--text-muted);
 }
 
-/* 日志详情抽屉 */
-.log-detail-drawer {
+/* 日志详情居中模态框 */
+.log-detail-modal-mask {
   position: fixed; inset: 0; z-index: 300;
-  background: rgba(0,0,0,.45); display: flex; justify-content: flex-end;
+  background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 32px;
+  outline: none;
 }
-.drawer-panel {
-  width: min(560px, 90vw); height: 100%;
+.drawer-panel.log-detail-modal {
+  width: min(880px, 96vw); max-height: 92vh; height: auto;
   background: var(--bg-card);
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
   display: flex; flex-direction: column;
-  box-shadow: -4px 0 24px rgba(0,0,0,.4);
+  box-shadow: 0 24px 80px rgba(0,0,0,.55);
+  overflow: hidden;
 }
 .drawer-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -2085,14 +2211,43 @@ onBeforeUnmount(() => {
 }
 .drawer-context-item:hover { border-color: rgba(99,102,241,.35); }
 .drawer-context-item.active {
-  border-color: rgba(99,102,241,.55);
-  background: rgba(99,102,241,.08);
+  border-color: rgba(99,102,241,.9);
+  background: rgba(99,102,241,.18);
+  box-shadow:
+    inset 4px 0 0 0 var(--accent),
+    0 0 0 2px rgba(99,102,241,.4),
+    0 6px 16px rgba(99,102,241,.18);
+  color: var(--text-primary);
+  font-weight: 500;
+  position: relative;
+  z-index: 1;
 }
+.drawer-context-item.active .drawer-context-ts,
+.drawer-context-item.active .drawer-context-svc { color: var(--text-primary); }
 .drawer-context-item.level-error { background: var(--log-error); }
 .drawer-context-item.level-warn { background: var(--log-warn); }
 .drawer-context-item.active.level-error,
 .drawer-context-item.active.level-warn {
-  box-shadow: inset 0 0 0 1px rgba(99,102,241,.45);
+  box-shadow:
+    inset 4px 0 0 0 var(--error, #f85149),
+    0 0 0 2px rgba(248,81,73,.4);
+  background: rgba(248,81,73,.18);
+}
+.anchor-marker {
+  position: absolute;
+  left: -2px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--accent);
+  font-size: 9px;
+  pointer-events: none;
+  animation: anchor-pulse 1.5s ease-in-out infinite;
+}
+.drawer-context-item.active.level-error .anchor-marker,
+.drawer-context-item.active.level-warn .anchor-marker { color: var(--error, #f85149); }
+@keyframes anchor-pulse {
+  0%, 100% { opacity: 1; transform: translateX(0); }
+  50%      { opacity: .5; transform: translateX(2px); }
 }
 .drawer-context-ts,
 .drawer-context-svc { color: var(--text-muted); white-space: nowrap; }
@@ -2113,13 +2268,19 @@ onBeforeUnmount(() => {
   }
 }
 
-.drawer-slide-enter-active, .drawer-slide-leave-active {
-  transition: all .2s ease;
+/* 模态淡入 + 卡片轻微上推 */
+.modal-fade-enter-active, .modal-fade-leave-active {
+  transition: opacity .18s ease, background .18s ease;
 }
-.drawer-slide-enter-from .drawer-panel, .drawer-slide-leave-to .drawer-panel {
-  transform: translateX(100%);
+.modal-fade-enter-from, .modal-fade-leave-to { opacity: 0; background: transparent; }
+.modal-fade-enter-active .drawer-panel.log-detail-modal,
+.modal-fade-leave-active .drawer-panel.log-detail-modal {
+  transition: transform .18s ease, opacity .18s ease;
 }
-.drawer-slide-enter-from, .drawer-slide-leave-to { background: transparent; }
+.modal-fade-enter-from .drawer-panel.log-detail-modal,
+.modal-fade-leave-to   .drawer-panel.log-detail-modal {
+  transform: translateY(12px) scale(.985); opacity: 0;
+}
 
 /* ── 模板聚合 ── */
 .template-container { flex: 1; overflow-y: auto; padding: 12px 16px; }
