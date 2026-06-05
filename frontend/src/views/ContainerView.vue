@@ -590,25 +590,32 @@
             </div>
           </div>
 
-          <!-- kubeconfig 路径 + 自动识别 -->
+          <!-- kubeconfig 路径 + 自动识别（支持直接粘贴 yaml 文本：含 apiVersion: 自动落盘） -->
           <div class="field">
-            <span>kubeconfig 路径</span>
+            <span>kubeconfig 路径 <small style="color:var(--text-muted);font-weight:400">（可直接粘贴 yaml 文本）</small></span>
             <div class="detect-row">
               <input v-model="clusterForm.kubeconfig" class="form-input detect-input"
-                placeholder="backend/data/test/cert-kubeconfig 或 ~/.kube/config"
+                placeholder="路径 (~/.kube/config) 或粘贴 yaml 文本（含 apiVersion:）"
+                @paste="onPathInputPaste"
                 @keyup.enter="autoDetect" />
-              <button class="btn-detect" :class="{ loading: detectLoading }"
-                @click="autoDetect" type="button" :disabled="detectLoading || !clusterForm.kubeconfig.trim()">
-                {{ detectLoading ? '识别中...' : '自动识别' }}
+              <button class="btn-detect" :class="{ loading: detectLoading || pasteLoading }"
+                @click="autoDetect" type="button" :disabled="detectLoading || pasteLoading || !clusterForm.kubeconfig.trim()">
+                {{ pasteLoading ? '解析文本...' : detectLoading ? '识别中...' : '自动识别' }}
               </button>
             </div>
+            <div v-if="pasteError" class="paste-error" style="margin-top:6px">{{ pasteError }}</div>
           </div>
 
           <!-- 识别结果徽章 -->
           <div v-if="detectResult" class="detect-result" :class="'detect-' + (detectResult.auth?.type || 'unknown')">
             <span class="detect-icon">{{ { certificate:'🔐', token:'🎫', exec:'⚙️', basic:'👤', unknown:'❓' }[detectResult.auth?.type] || '❓' }}</span>
             <div class="detect-info">
-              <span class="detect-type">{{ { certificate:'证书认证', token:'Token 认证', exec:'Exec 插件', basic:'用户名密码', unknown:'未知类型' }[detectResult.auth?.type] }}</span>
+              <span class="detect-type">
+                {{ { certificate:'证书认证', token:'Token 认证', exec:'Exec 插件', basic:'用户名密码', unknown:'未知类型' }[detectResult.auth?.type] }}
+                <span v-if="detectResult.auth?.cert_embedded" class="detect-tag-embedded" title="证书已通过 *-data base64 内嵌在 kubeconfig 中，无需外部文件">
+                  ✓ 内嵌证书
+                </span>
+              </span>
               <span class="detect-server">{{ detectResult.server }}</span>
               <span v-if="detectResult.auth?.cert_detail?.subject" class="detect-sub">{{ detectResult.auth.cert_detail.subject }}</span>
               <span v-if="detectResult.auth?.cert_detail?.not_after" class="detect-sub"
@@ -985,9 +992,17 @@ async function autoDetect() {
     // 自动切换模式并填充字段
     if (auth.type === 'certificate') {
       authMode.value = 'cert'
-      certForm.caPath         = firstFile.ca && firstFile.ca !== '(none)' && firstFile.ca !== '(embedded)' ? firstFile.ca : ''
-      certForm.clientCertPath = auth.client_certificate && auth.client_certificate !== '(embedded)' ? auth.client_certificate : ''
-      certForm.clientKeyPath  = auth.client_key         && auth.client_key         !== '(embedded)' ? auth.client_key         : ''
+      // 内嵌证书时显式标注"(已内嵌)"，让用户知道认证 OK，无需手动填路径
+      const isEmbedded = auth.cert_embedded === true
+      certForm.caPath = firstFile.ca && firstFile.ca !== '(none)' && firstFile.ca !== '(embedded)'
+        ? firstFile.ca
+        : (isEmbedded ? '(已内嵌在 kubeconfig 中，无需路径)' : '')
+      certForm.clientCertPath = auth.client_certificate && auth.client_certificate !== '(embedded)'
+        ? auth.client_certificate
+        : (isEmbedded ? '(已内嵌在 kubeconfig 中，无需路径)' : '')
+      certForm.clientKeyPath = auth.client_key && auth.client_key !== '(embedded)'
+        ? auth.client_key
+        : (isEmbedded ? '(已内嵌在 kubeconfig 中，无需路径)' : '')
     } else if (auth.type === 'token') {
       authMode.value = 'token'
       certForm.caPath = firstFile.ca && firstFile.ca !== '(none)' && firstFile.ca !== '(embedded)' ? firstFile.ca : ''
@@ -1000,6 +1015,48 @@ async function autoDetect() {
     detectError.value = '识别失败: ' + e
   } finally {
     detectLoading.value = false
+  }
+}
+
+// 用户在「kubeconfig 路径」框 paste 时：检测粘贴内容是不是 yaml 文本
+//   - 是 yaml (含 apiVersion: + clusters: 等关键字) → 自动 upload-text 落盘 → 路径回填 → autoDetect
+//   - 是普通路径 → 让浏览器默认 paste 进入输入框
+async function onPathInputPaste(event) {
+  const clipboard = event.clipboardData || window.clipboardData
+  if (!clipboard) return
+  const text = clipboard.getData('text') || ''
+  if (!text) return
+
+  // 关键字识别：必须同时含 apiVersion: 和 clusters: / kind: Config 至少一个 → 视为 kubeconfig yaml
+  const lower = text.toLowerCase()
+  const looksLikeYaml = lower.includes('apiversion:') &&
+                        (lower.includes('clusters:') || lower.includes('kind: config') || lower.includes('kind:config'))
+  if (!looksLikeYaml) return   // 当成普通路径处理
+
+  // 拦截默认 paste，走自动落盘流程
+  event.preventDefault()
+  pasteContent.value = text
+  pasteError.value   = ''
+
+  // 集群名兜底：用户没填 → 生成临时名 (后续保存集群时仍用 form.name 真名)
+  const fallbackName = (clusterForm.name || '').trim() ||
+                       `pasted-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
+
+  pasteLoading.value = true
+  pasteResult.value  = null
+  try {
+    const r = await api.k8sUploadKubeconfigText(fallbackName, text)
+    pasteResult.value = r
+    // 把后端返回的 relative 路径填进输入框, 替换原始粘贴文本
+    clusterForm.kubeconfig = r.relative
+    if (r.current_context) clusterForm.context = r.current_context
+    await autoDetect()   // 自动触发证书/Token 识别
+  } catch (e) {
+    pasteError.value = '落盘失败: ' + (e?.response?.data?.detail || e?.message || e)
+    // 失败也把文本填进输入框，让用户能手动改
+    clusterForm.kubeconfig = text.split('\n')[0].slice(0, 80) + '...'
+  } finally {
+    pasteLoading.value = false
   }
 }
 
@@ -2361,6 +2418,18 @@ onBeforeUnmount(() => { _destroyExec() })
 .paste-error {
   color: var(--error, #f85149);
   font-size: 12px;
+}
+.detect-tag-embedded {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  background: rgba(63,185,80,.18);
+  color: #3fb950;
+  border: 1px solid rgba(63,185,80,.4);
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
 }
 
 /* 识别结果卡片 */
