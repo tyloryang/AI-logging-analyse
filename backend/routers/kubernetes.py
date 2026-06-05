@@ -383,11 +383,102 @@ def _merge_kubeconfigs(paths: list[str]) -> str:
     return tmp.name
 
 
+def _build_seclevel0_ssl_context(cfg):
+    """构造 SECLEVEL=0 + CERT_NONE 的 SSLContext，兼容 K8s 1.18 弱签名证书。
+    cfg 为 kubernetes.client.Configuration 实例，提供 cert_file/key_file 路径。
+
+    被 _get_api_client (urllib3 PoolManager) 与 WebSocket exec 共用，
+    确保两条 SSL 路径行为一致。
+    """
+    import ssl
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_ctx.set_ciphers("DEFAULT@SECLEVEL=0")
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    if getattr(cfg, "cert_file", None) and getattr(cfg, "key_file", None):
+        ssl_ctx.load_cert_chain(cfg.cert_file, cfg.key_file)
+    return ssl_ctx
+
+
+def _patch_k8s_websocket_ssl_once() -> None:
+    """全局 monkey-patch kubernetes.stream.ws_client.create_websocket，
+    让 exec/portforward 等 WebSocket 调用走 SECLEVEL=0 SSLContext。
+
+    SDK 默认的 create_websocket 用 ssl_opts 字典传 cert_reqs/ca_certs/certfile/keyfile，
+    内部用系统默认 SSL context (SECLEVEL=2)，对 1.18 集群的 SHA1/MD5 证书拒绝握手。
+    这里在每次建连时构造 SECLEVEL=0 SSLContext, 通过 sslopt={'context': ...}
+    传给 websocket-client (它会优先使用 context 替代独立字段重建)。
+
+    幂等: 模块全局 patch 一次。代价: 所有 K8s ws 调用都过弱算法 SSL,
+    项目只 exec 用 ws, 影响可控。
+    """
+    import ssl
+    try:
+        from kubernetes.stream import ws_client as _ws_mod
+    except Exception as exc:
+        logger.warning("[k8s] kubernetes.stream.ws_client 不可用, 跳过 WebSocket SSL patch: %s", exc)
+        return
+
+    if getattr(_ws_mod, "_aiops_patched_seclevel0", False):
+        return
+
+    # 保存原版作为应急回退 (本次不调用, 因为原版逻辑会读 cfg 重建受限 SSL ctx)
+    _ws_mod._original_create_websocket = _ws_mod.create_websocket
+
+    def _patched_create_websocket(configuration, url, headers=None):
+        """重写 create_websocket: 同 SDK 29.0.0 行为, 但注入 SECLEVEL=0 SSLContext。"""
+        from websocket import WebSocket, enableTrace
+        enableTrace(False)
+
+        header_list: list[str] = []
+        if headers and "authorization" in headers:
+            header_list.append("authorization: %s" % headers["authorization"])
+        if headers and "sec-websocket-protocol" in headers:
+            header_list.append("sec-websocket-protocol: %s" % headers["sec-websocket-protocol"])
+        else:
+            header_list.append("sec-websocket-protocol: v4.channel.k8s.io")
+
+        # 关键: 构造与 urllib3 路径完全一致的 SECLEVEL=0 SSLContext
+        ssl_ctx = _build_seclevel0_ssl_context(configuration)
+        ssl_opts = {
+            "context": ssl_ctx,
+            "cert_reqs": ssl.CERT_NONE,
+        }
+        # 客户端证书也通过 ssl_ctx.load_cert_chain 注入了, 不再传 certfile/keyfile
+
+        ws = WebSocket(sslopt=ssl_opts, skip_utf8_validation=True)
+        connect_opt: dict = {"header": header_list}
+
+        # 复刻 SDK 的代理处理
+        proxy = getattr(configuration, "proxy", None)
+        if proxy:
+            from urllib.parse import urlparse
+            proxy_url = urlparse(proxy)
+            connect_opt["http_proxy_host"] = proxy_url.hostname
+            connect_opt["http_proxy_port"] = proxy_url.port
+            proxy_headers = getattr(configuration, "proxy_headers", None)
+            if proxy_headers:
+                connect_opt["http_proxy_auth"] = (
+                    proxy_headers.get("proxy-username"),
+                    proxy_headers.get("proxy-password"),
+                )
+
+        ws.connect(url, **connect_opt)
+        return ws
+
+    _ws_mod.create_websocket = _patched_create_websocket
+    _ws_mod._aiops_patched_seclevel0 = True
+    logger.info("[k8s] WebSocket SSL patched: SECLEVEL=0 + CERT_NONE 已注入")
+
+
 def _get_api_client(cluster_id: str | None = None):
     from kubernetes import config as k8s_config, client as k8s_client
-    import ssl, urllib3
+    import urllib3
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # 保证 exec WebSocket 也走 SECLEVEL=0 (模块级幂等 patch)
+    _patch_k8s_websocket_ssl_once()
 
     cluster = _get_cluster(cluster_id)
     paths   = _resolve_runtime_kubeconfig_paths(cluster.get("kubeconfig") or "")
@@ -406,14 +497,8 @@ def _get_api_client(cluster_id: str | None = None):
 
     api_client = k8s_client.ApiClient(configuration=cfg)
 
-    # 关键：重建底层 PoolManager，使用 SECLEVEL=0 的 SSL context
-    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ssl_ctx.set_ciphers("DEFAULT@SECLEVEL=0")
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
-    # 双向 TLS：必须加载客户端证书
-    if cfg.cert_file and cfg.key_file:
-        ssl_ctx.load_cert_chain(cfg.cert_file, cfg.key_file)
+    # 关键: 重建底层 PoolManager，使用 SECLEVEL=0 的 SSL context (与 ws 路径共用同一构造)
+    ssl_ctx = _build_seclevel0_ssl_context(cfg)
 
     api_client.rest_client.pool_manager = urllib3.PoolManager(
         num_pools=4,
