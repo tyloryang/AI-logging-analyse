@@ -360,7 +360,14 @@
                 <td class="name-cell">{{ deployment.name }}</td>
                 <td><span class="ns-tag">{{ deployment.namespace }}</span></td>
                 <td><span class="status-dot" :class="deployment.statusClass"></span>{{ deployment.status }}</td>
-                <td>{{ deployment.ready }}/{{ deployment.desired }}</td>
+                <td>
+                  <span class="ready-frac">{{ deployment.ready }}/{{ deployment.desired }}</span>
+                  <span class="scale-ctrl">
+                    <button class="scale-btn" :disabled="scalingKey === scaleKey('deployment', deployment) || (deployment.desired || 0) <= 0" @click="scaleResource('deployment', deployment, -1)" title="副本数 -1">−</button>
+                    <button class="scale-btn" :disabled="scalingKey === scaleKey('deployment', deployment)" @click="scaleResource('deployment', deployment, +1)" title="副本数 +1">+</button>
+                    <span v-if="scalingKey === scaleKey('deployment', deployment)" class="scale-spinner spinner"></span>
+                  </span>
+                </td>
                 <td class="mono small">{{ deployment.images.join(', ') }}</td>
                 <td class="muted mono small" :title="formatRelative(deployment.age)">{{ formatDateTime(deployment.age) }}</td>
                 <td class="action-cell">
@@ -416,7 +423,14 @@
                 <td class="name-cell">{{ statefulSet.name }}</td>
                 <td><span class="ns-tag">{{ statefulSet.namespace }}</span></td>
                 <td><span class="status-dot" :class="statefulSet.statusClass"></span>{{ statefulSet.status }}</td>
-                <td>{{ statefulSet.ready }}/{{ statefulSet.desired }}</td>
+                <td>
+                  <span class="ready-frac">{{ statefulSet.ready }}/{{ statefulSet.desired }}</span>
+                  <span class="scale-ctrl">
+                    <button class="scale-btn" :disabled="scalingKey === scaleKey('statefulset', statefulSet) || (statefulSet.desired || 0) <= 0" @click="scaleResource('statefulset', statefulSet, -1)" title="副本数 -1">−</button>
+                    <button class="scale-btn" :disabled="scalingKey === scaleKey('statefulset', statefulSet)" @click="scaleResource('statefulset', statefulSet, +1)" title="副本数 +1">+</button>
+                    <span v-if="scalingKey === scaleKey('statefulset', statefulSet)" class="scale-spinner spinner"></span>
+                  </span>
+                </td>
                 <td>{{ statefulSet.current }}</td>
                 <td>{{ statefulSet.updated }}</td>
                 <td class="mono small">{{ statefulSet.images.join(', ') }}</td>
@@ -711,12 +725,21 @@
 
     <div v-if="showDetailModal" class="modal-mask" @click.self="closeDetailModal">
       <div class="modal-card detail-modal-card">
-        <div class="modal-title">{{ detailModalTitle }}</div>
+        <div class="modal-title">
+          {{ detailModalTitle }}
+          <div class="detail-view-tabs">
+            <button :class="['detail-tab', { active: detailView === 'json' }]" @click="switchDetailView('json')" type="button">JSON</button>
+            <button :class="['detail-tab', { active: detailView === 'yaml' }]" @click="switchDetailView('yaml')" type="button">YAML</button>
+          </div>
+        </div>
         <div class="modal-body">
           <div class="resource-head">
             <span class="resource-kind">{{ kindLabel(detailMeta.kind) }}</span>
             <span class="mono">{{ detailMeta.name }}</span>
             <span v-if="detailMeta.namespace" class="ns-tag">{{ detailMeta.namespace }}</span>
+            <span v-if="detailView === 'yaml' && yamlEditing" class="yaml-edit-badge">编辑模式</span>
+            <span v-if="yamlApplyError" class="yaml-apply-error" :title="yamlApplyError">⚠ 应用失败</span>
+            <span v-if="yamlApplySuccess" class="yaml-apply-success">✓ 已应用</span>
           </div>
           <div v-if="detailError" class="modal-tip modal-tip-error">{{ detailError }}</div>
           <div v-else class="code-panel">
@@ -724,10 +747,28 @@
               <span class="spinner"></span>
               正在加载详情...
             </div>
-            <pre v-else class="json-view">{{ detailText }}</pre>
+            <pre v-else-if="detailView === 'json'" class="json-view">{{ detailText }}</pre>
+            <textarea
+              v-else
+              v-model="yamlBuffer"
+              class="yaml-editor"
+              :readonly="!yamlEditing"
+              spellcheck="false"
+              @input="onYamlInput"
+            ></textarea>
           </div>
+          <div v-if="yamlApplyError" class="modal-tip modal-tip-error" style="margin-top:8px;white-space:pre-wrap">{{ yamlApplyError }}</div>
         </div>
         <div class="modal-actions">
+          <template v-if="detailView === 'yaml'">
+            <button v-if="!yamlEditing" class="btn-ghost" @click="startYamlEdit" :disabled="!detailData">✏️ 编辑</button>
+            <template v-else>
+              <button class="btn-ghost" @click="cancelYamlEdit">撤销</button>
+              <button class="btn-primary-sm" @click="applyYamlEdit" :disabled="yamlApplying || !yamlDirty">
+                {{ yamlApplying ? '应用中...' : '✓ 应用' }}
+              </button>
+            </template>
+          </template>
           <button class="btn-ghost" @click="closeDetailModal">关闭</button>
         </div>
       </div>
@@ -900,6 +941,14 @@ const showDetailModal = ref(false)
 const detailLoading = ref(false)
 const detailError = ref('')
 const detailData = ref(null)
+// 详情视图 + YAML 编辑状态
+const detailView = ref('json')        // 'json' | 'yaml'
+const yamlBuffer = ref('')            // textarea 双向绑定
+const yamlOriginal = ref('')          // 加载后的原始 yaml（撤销用）
+const yamlEditing = ref(false)
+const yamlApplying = ref(false)
+const yamlApplyError = ref('')
+const yamlApplySuccess = ref(false)
 const detailMeta = reactive({
   kind: '',
   name: '',
@@ -1195,12 +1244,118 @@ function resetDetailState() {
   detailLoading.value = false
   detailError.value = ''
   detailData.value = null
+  detailView.value = 'json'
+  yamlBuffer.value = ''
+  yamlOriginal.value = ''
+  yamlEditing.value = false
+  yamlApplying.value = false
+  yamlApplyError.value = ''
+  yamlApplySuccess.value = false
   Object.assign(detailMeta, { kind: '', name: '', namespace: '' })
 }
 
 function closeDetailModal() {
   showDetailModal.value = false
   resetDetailState()
+}
+
+// ── YAML 编辑 ────────────────────────────────────────────────────────────────
+const yamlDirty = computed(() => yamlBuffer.value !== yamlOriginal.value)
+
+function switchDetailView(view) {
+  // 切走 yaml 视图时, 若有未保存编辑给个确认
+  if (detailView.value === 'yaml' && yamlEditing.value && yamlDirty.value && view !== 'yaml') {
+    if (!confirm('有未应用的 YAML 修改, 切走将丢弃, 是否继续?')) return
+    cancelYamlEdit()
+  }
+  detailView.value = view
+  yamlApplySuccess.value = false
+}
+
+function startYamlEdit() {
+  yamlEditing.value = true
+  yamlApplyError.value = ''
+  yamlApplySuccess.value = false
+}
+
+function cancelYamlEdit() {
+  yamlBuffer.value = yamlOriginal.value
+  yamlEditing.value = false
+  yamlApplyError.value = ''
+}
+
+function onYamlInput() {
+  yamlApplySuccess.value = false
+}
+
+// ── 行内副本数 ± 控制 (Deployment / StatefulSet) ───────────────────────────
+const scalingKey = ref('')   // 正在 scale 的资源唯一 key, 用于禁用按钮 + 显示 spinner
+
+function scaleKey(kind, row) {
+  return `${kind}:${row?.namespace || ''}/${row?.name || ''}`
+}
+
+async function scaleResource(kind, row, delta) {
+  if (!row?.name || !row?.namespace) return
+  const current = Number(row.desired) || 0
+  const next = current + delta
+  if (next < 0) return
+  if (next > 1000) { alert('副本数不能超过 1000'); return }
+  if (delta < 0 && next === 0) {
+    if (!confirm(`将 ${kind} ${row.namespace}/${row.name} 缩到 0 副本 (停止服务)?`)) return
+  }
+  const key = scaleKey(kind, row)
+  scalingKey.value = key
+  try {
+    await api.k8sScaleResource(activeClusterId.value, kind, row.name, row.namespace, next)
+    // 乐观更新 UI: 立即改 row 的 desired (ready 等下次刷新真实数据)
+    row.desired = next
+    // 清缓存让下次 fetchAll 拿真实数据
+    for (const cacheKey of Array.from(_resourceCache.keys())) {
+      if (cacheKey.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(cacheKey)
+    }
+    // 静默后台刷新 (不显示 loading)
+    setTimeout(() => refreshAll(), 1200)
+  } catch (e) {
+    const detail = e?.response?.data?.detail || e?.message || String(e)
+    alert(`扩缩容失败: ${detail}`)
+  } finally {
+    scalingKey.value = ''
+  }
+}
+
+async function applyYamlEdit() {
+  if (!yamlDirty.value) return
+  if (!confirm(`确认应用对 ${detailMeta.kind}/${detailMeta.name} 的 YAML 修改? 这将直接 replace 到集群.`)) return
+  yamlApplying.value = true
+  yamlApplyError.value = ''
+  yamlApplySuccess.value = false
+  try {
+    const r = await api.k8sUpdateResourceYaml(
+      activeClusterId.value, detailMeta.kind, detailMeta.name, detailMeta.namespace, yamlBuffer.value,
+    )
+    detailData.value = r?.data ?? r
+    // 后端返回最新对象, 重新生成 yaml (前端简化: 重置 original = buffer, 让 dirty=false)
+    // 同时再调一次 detail 拿规范化 yaml (resourceVersion 等会变)
+    try {
+      const fresh = await api.k8sResourceDetail(activeClusterId.value, detailMeta.kind, detailMeta.name, detailMeta.namespace)
+      detailData.value = fresh?.data ?? fresh
+      yamlOriginal.value = fresh?.yaml || yamlBuffer.value
+      yamlBuffer.value = yamlOriginal.value
+    } catch {
+      yamlOriginal.value = yamlBuffer.value
+    }
+    yamlEditing.value = false
+    yamlApplySuccess.value = true
+    // 清掉对应集群缓存（让用户切回列表立即看到新状态）
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+    }
+  } catch (e) {
+    yamlApplyError.value = e?.response?.data?.detail || e?.message || String(e)
+  } finally {
+    yamlApplying.value = false
+  }
 }
 
 function resetLogState() {
@@ -1418,6 +1573,8 @@ async function openResourceDetail(kind, row) {
   try {
     const result = await api.k8sResourceDetail(activeClusterId.value, detailMeta.kind, detailMeta.name, detailMeta.namespace)
     detailData.value = result?.data ?? result
+    yamlOriginal.value = result?.yaml || ''
+    yamlBuffer.value = yamlOriginal.value
   } catch (e) {
     detailError.value = `加载详情失败：${e}`
   } finally {
@@ -2497,7 +2654,8 @@ onBeforeUnmount(() => { _destroyExec() })
   overflow: auto;
 }
 .json-view,
-.log-view {
+.log-view,
+.yaml-editor {
   margin: 0;
   padding: 14px 16px;
   min-height: 320px;
@@ -2507,6 +2665,108 @@ onBeforeUnmount(() => { _destroyExec() })
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* YAML 编辑器: 复用 code-panel 样式, 编辑模式有蓝边强调 */
+.yaml-editor {
+  width: 100%;
+  min-height: 50vh;
+  max-height: 62vh;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: vertical;
+  tab-size: 2;
+}
+.yaml-editor:not([readonly]) {
+  background: rgba(56,139,253,.04);
+  box-shadow: inset 0 0 0 2px rgba(56,139,253,.4);
+  border-radius: 8px;
+}
+
+/* 详情视图切换 tabs: 模态标题右侧 */
+.modal-title {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.detail-view-tabs {
+  display: inline-flex; gap: 2px;
+  padding: 3px; background: var(--bg-input);
+  border-radius: 6px;
+  font-weight: 500;
+}
+.detail-tab {
+  padding: 4px 12px;
+  background: none; border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all .12s;
+}
+.detail-tab:hover { color: var(--text-primary); }
+.detail-tab.active {
+  background: var(--bg-card);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(0,0,0,.15);
+}
+
+/* 状态徽章 */
+.yaml-edit-badge {
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(56,139,253,.15); color: var(--accent);
+  border: 1px solid rgba(56,139,253,.3);
+  font-size: 10px; font-weight: 700;
+}
+.yaml-apply-error {
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(248,81,73,.15); color: var(--error, #f85149);
+  font-size: 10px; font-weight: 700;
+  cursor: help;
+}
+.yaml-apply-success {
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(63,185,80,.15); color: #3fb950;
+  font-size: 10px; font-weight: 700;
+}
+
+.btn-primary-sm {
+  padding: 6px 14px; border-radius: 6px;
+  background: var(--accent); color: white;
+  border: 1px solid var(--accent);
+  font-size: 12px; cursor: pointer;
+  transition: all .12s;
+}
+.btn-primary-sm:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-primary-sm:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 行内 scale ± 控件 */
+.ready-frac { display: inline-block; min-width: 40px; }
+.scale-ctrl {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.scale-btn {
+  width: 22px; height: 22px;
+  padding: 0; line-height: 1;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer;
+  transition: all .12s;
+}
+.scale-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.scale-btn:disabled { opacity: .35; cursor: not-allowed; }
+.scale-spinner {
+  width: 11px; height: 11px;
+  border-width: 1.5px;
+  margin-left: 3px;
 }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {

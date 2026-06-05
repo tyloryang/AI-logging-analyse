@@ -181,6 +181,14 @@ export const api = {
   k8sNamespaces:    (clusterId)        => http.get('/k8s/namespaces',  { params: clusterId ? { cluster_id: clusterId } : {} }),
   k8sResourceDetail:(clusterId, kind, name, namespace = '') => http.get('/k8s/resource-detail', { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
   k8sResourcePods:  (clusterId, kind, name, namespace = '') => http.get('/k8s/resource-pods',   { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
+  k8sUpdateResourceYaml: (clusterId, kind, name, namespace, yamlText) =>
+    http.put('/k8s/resource-yaml',
+      { yaml_text: yamlText },
+      { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
+  k8sScaleResource: (clusterId, kind, name, namespace, replicas) =>
+    http.post('/k8s/resource-scale',
+      { replicas },
+      { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
   k8sPodLogs:       (clusterId, namespace, podName, container = '', tailLines = 200) => http.get('/k8s/pod-logs', { params: { ...(clusterId ? { cluster_id: clusterId } : {}), namespace, pod_name: podName, container, tail_lines: tailLines } }),
   // Ansible 任务中心
   ansibleTasks:     ()           => http.get('/ansible/tasks'),

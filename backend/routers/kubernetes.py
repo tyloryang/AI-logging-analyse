@@ -1325,17 +1325,147 @@ async def resource_detail(
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         resource = _read_k8s_resource(cluster["id"], kind, namespace, name)
+        data = _serialize_k8s_resource(cluster["id"], resource)
+        # 同步返回 yaml 字符串, 让前端不必引入 yaml 库
+        import yaml as _yaml
+        try:
+            yaml_text = _yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        except Exception:
+            yaml_text = ""
         return {
             "kind": _normalize_resource_kind(kind),
             "name": name,
             "namespace": namespace,
-            "data": _serialize_k8s_resource(cluster["id"], resource),
+            "data": data,
+            "yaml": yaml_text,
         }
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("[k8s] resource_detail failed kind=%s namespace=%s name=%s error=%s", kind, namespace, name, exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
+
+
+# ── YAML 编辑 + scale (借鉴 jay-codemine/k8s_operation) ──────────────────────
+
+def _replace_k8s_resource(cluster_id: str | None, kind: str, namespace: str, name: str, body: dict):
+    """用新 dict 全量替换资源 (PUT 语义), 按 kind 分派对应 SDK 方法。"""
+    normalized_kind = _normalize_resource_kind(kind)
+    v1, apps = _get_client(cluster_id)
+    batch = _get_batch_client(cluster_id)
+
+    if normalized_kind == "pod":
+        return v1.replace_namespaced_pod(name=name, namespace=namespace, body=body)
+    if normalized_kind == "deployment":
+        return apps.replace_namespaced_deployment(name=name, namespace=namespace, body=body)
+    if normalized_kind == "daemonset":
+        return apps.replace_namespaced_daemon_set(name=name, namespace=namespace, body=body)
+    if normalized_kind == "statefulset":
+        return apps.replace_namespaced_stateful_set(name=name, namespace=namespace, body=body)
+    if normalized_kind == "job":
+        return batch.replace_namespaced_job(name=name, namespace=namespace, body=body)
+    if normalized_kind == "cronjob":
+        return batch.replace_namespaced_cron_job(name=name, namespace=namespace, body=body)
+    if normalized_kind == "service":
+        return v1.replace_namespaced_service(name=name, namespace=namespace, body=body)
+    if normalized_kind == "node":
+        return v1.replace_node(name=name, body=body)
+    raise HTTPException(status_code=400, detail=f"不支持的资源类型: {kind}")
+
+
+class K8sYamlPayload(BaseModel):
+    yaml_text: str
+
+
+@router.put("/resource-yaml")
+async def update_resource_yaml(
+    body: K8sYamlPayload,
+    kind: str = Query(..., description="资源类型"),
+    name: str = Query(..., description="资源名称"),
+    namespace: str = Query("", description="命名空间"),
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(require_admin),
+):
+    """以 YAML 文本全量替换 (replace) 一个 K8s 资源。校验 metadata.name/namespace 一致。"""
+    import yaml as _yaml
+
+    text = (body.yaml_text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="YAML 文本不能为空")
+    try:
+        parsed = _yaml.safe_load(text)
+    except _yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"YAML 解析失败: {exc}")
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="YAML 顶层必须是对象")
+
+    meta = parsed.get("metadata") or {}
+    if meta.get("name") and meta.get("name") != name:
+        raise HTTPException(
+            status_code=400,
+            detail=f"metadata.name={meta.get('name')} 与 URL name={name} 不一致 (禁止改名)",
+        )
+    if namespace and meta.get("namespace") and meta.get("namespace") != namespace:
+        raise HTTPException(
+            status_code=400,
+            detail=f"metadata.namespace={meta.get('namespace')} 与 URL namespace={namespace} 不一致",
+        )
+
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        updated = _replace_k8s_resource(cluster["id"], kind, namespace, name, parsed)
+        return {
+            "ok": True,
+            "kind": _normalize_resource_kind(kind),
+            "name": name,
+            "namespace": namespace,
+            "data": _serialize_k8s_resource(cluster["id"], updated),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # K8s API 错误通常含 reason / 详细信息 (ApiException.body)
+        detail = getattr(exc, "body", None) or str(exc)
+        logger.warning("[k8s] update_resource_yaml failed kind=%s ns=%s name=%s: %s", kind, namespace, name, detail)
+        raise HTTPException(status_code=400, detail=f"应用 YAML 失败: {detail}")
+
+
+class K8sScalePayload(BaseModel):
+    replicas: int
+
+
+@router.post("/resource-scale")
+async def scale_resource(
+    body: K8sScalePayload,
+    kind: str = Query(..., description="资源类型: deployment / statefulset"),
+    name: str = Query(..., description="资源名称"),
+    namespace: str = Query(..., description="命名空间"),
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(require_admin),
+):
+    """扩缩容 Deployment / StatefulSet (DaemonSet 不支持 scale)。"""
+    if body.replicas < 0 or body.replicas > 1000:
+        raise HTTPException(status_code=400, detail="replicas 必须在 [0, 1000] 范围")
+    normalized = _normalize_resource_kind(kind)
+    if normalized not in {"deployment", "statefulset"}:
+        raise HTTPException(status_code=400, detail=f"scale 不支持资源类型: {kind}")
+
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        _, apps = _get_client(cluster["id"])
+        # 用 patch 改 spec.replicas (比 replace 安全, 不需要传整个对象)
+        patch_body = {"spec": {"replicas": body.replicas}}
+        if normalized == "deployment":
+            apps.patch_namespaced_deployment_scale(name=name, namespace=namespace, body=patch_body)
+        else:
+            apps.patch_namespaced_stateful_set_scale(name=name, namespace=namespace, body=patch_body)
+        return {"ok": True, "kind": normalized, "name": name, "namespace": namespace, "replicas": body.replicas}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = getattr(exc, "body", None) or str(exc)
+        logger.warning("[k8s] scale_resource failed kind=%s ns=%s name=%s replicas=%s: %s", kind, namespace, name, body.replicas, detail)
+        raise HTTPException(status_code=400, detail=f"扩缩容失败: {detail}")
 
 
 @router.get("/resource-pods")
