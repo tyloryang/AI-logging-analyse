@@ -305,7 +305,7 @@
               <tbody>
                 <tr
                   v-for="(log, i) in filteredLogs" :key="i"
-                  class="log-row" :class="logRowClass(log.line)"
+                  class="log-row" :class="[logRowClass(log.line), { selected: isSelectedLog(log) }]"
                   @click="openDetail(log)"
                 >
                   <td class="col-ts">{{ log.timestamp }}</td>
@@ -393,19 +393,22 @@
               </div>
               <div class="drawer-row drawer-row-full">
                 <div class="drawer-section-header">
-                  <span class="drawer-section-title">上下文</span>
+                  <span class="drawer-section-title">
+                    上下文
+                    <span
+                      v-if="loadingDetailContext"
+                      class="spinner mini-inline"
+                      title="后台加载前后上下文中..."
+                    ></span>
+                  </span>
                   <div class="drawer-section-actions">
-                    <span v-if="detailContextLogs.length" class="drawer-section-meta">
+                    <span v-if="detailContextBeforeCount || detailContextAfterCount" class="drawer-section-meta">
                       前 {{ detailContextBeforeCount }} / 后 {{ detailContextAfterCount }}
                     </span>
                     <button class="btn btn-outline btn-xs" @click="loadLogContext(detailLog, { reset: true })">刷新</button>
                   </div>
                 </div>
-                <div v-if="loadingDetailContext" class="drawer-context-state">
-                  <span class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-                  正在加载上下文...
-                </div>
-                <div v-else-if="detailContextError" class="drawer-context-state drawer-context-state-error">
+                <div v-if="detailContextError" class="drawer-context-state drawer-context-state-error">
                   {{ detailContextError }}
                 </div>
                 <div
@@ -943,6 +946,25 @@ function logRowClass(line) {
   return ''
 }
 
+function isSameLog(a, b) {
+  if (!a || !b) return false
+  const aTs = a.timestamp_ns != null ? String(a.timestamp_ns) : ''
+  const bTs = b.timestamp_ns != null ? String(b.timestamp_ns) : ''
+  if (aTs && bTs) return aTs === bTs && (a.line || '') === (b.line || '')
+  return a === b
+}
+
+function isSelectedLog(log) {
+  return isSameLog(log, detailLog.value)
+}
+
+function scrollContextAnchorIntoView() {
+  const anchor = contextScrollWrap.value?.querySelector('.drawer-context-item.active')
+  if (!anchor) return false
+  anchor.scrollIntoView({ block: 'center', behavior: 'auto' })
+  return true
+}
+
 const filteredLogs = computed(() => {
   let list = logs.value
   // 前端 incidentOnly 过滤（已从后端拿全量，在前端二次过滤）
@@ -1042,11 +1064,14 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
   if (direction === 'before') loadingContextBefore.value = true
   if (direction === 'after')  loadingContextAfter.value = true
   if (!direction) {
-    detailContextLogs.value = []
-    detailContextAnchorIndex.value = -1
+    // 乐观渲染：立即把 detailLog 放进 list 作为锚点，让用户秒看到自己点的那条
+    // 不显示"正在加载上下文..."大块文字，后台异步补全前后日志后 merge
+    detailContextLogs.value = log ? [{ ...log }] : []
+    detailContextAnchorIndex.value = log ? 0 : -1
     detailContextAnchorFound.value = true
     detailContextBeforeCount.value = 0
     detailContextAfterCount.value = 0
+    contextScrollPending = null
   }
   detailContextError.value = ''
 
@@ -1139,6 +1164,7 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
 
     // 初始加载或刷新：自动滚到锚点居中
     if (!direction && detailContextAnchorIndex.value >= 0) {
+      contextScrollPending = 'anchor'
       await nextTick()
       // 直接在 scroll 容器内查 .active 行，比函数式 ref 可靠
       // (setup script 模板里 ref 自动 unwrap，:ref="el => myRef = el" 写法不会回写)
@@ -1150,6 +1176,9 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
     if (requestId !== detailContextRequestId || detailLog.value !== log) return
     if (!direction) detailContextError.value = normalizeRequestError(error)
   } finally {
+    const shouldScrollAnchor = requestId === detailContextRequestId &&
+                               !direction &&
+                               contextScrollPending === 'anchor'
     if (requestId === detailContextRequestId) {
       if (!direction) loadingDetailContext.value = false
       if (direction === 'before') loadingContextBefore.value = false
@@ -1157,6 +1186,13 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
     }
     if (detailContextAbort === controller) {
       detailContextAbort = null
+    }
+    if (shouldScrollAnchor) {
+      await nextTick()
+      if (requestId === detailContextRequestId && detailLog.value === log) {
+        scrollContextAnchorIntoView()
+        contextScrollPending = null
+      }
     }
   }
 }
@@ -2134,6 +2170,27 @@ onBeforeUnmount(() => {
 .col-msg { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-error .col-msg { color: #fca5a5; }
 .row-warn  .col-msg { color: #fcd34d; }
+.log-row.selected,
+.log-row.selected:hover {
+  background: rgba(250,204,21,.18);
+}
+.log-row.selected td {
+  background: rgba(250,204,21,.16);
+  border-top: 1px solid rgba(250,204,21,.75);
+  border-bottom: 1px solid rgba(250,204,21,.75);
+}
+.log-row.selected td:first-child {
+  box-shadow: inset 4px 0 0 #facc15;
+}
+.log-row.selected .col-ts,
+.log-row.selected .col-svc,
+.log-row.selected .col-group {
+  color: #fde68a;
+}
+.log-row.selected .col-msg {
+  color: #fff7ed;
+  font-weight: 600;
+}
 
 /* 级别徽章 */
 .lvl-badge {
@@ -2272,6 +2329,17 @@ onBeforeUnmount(() => {
 }
 .drawer-section-title {
   font-size: 12px; font-weight: 600; color: var(--text-primary);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+/* 标题旁的小内联 spinner：弱化加载感知 */
+.spinner.mini-inline {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+  border-color: var(--text-muted);
+  border-top-color: transparent;
+  opacity: .65;
+  vertical-align: middle;
 }
 .drawer-section-actions {
   display: flex; align-items: center; gap: 8px;
