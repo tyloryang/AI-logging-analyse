@@ -68,7 +68,20 @@
             <span class="ai-intent-summary">{{ aiCmd.intent.summary }}</span>
             <span v-if="aiCmd.intent.danger" class="ai-danger-tag">⚠ 高危</span>
           </div>
-          <div v-if="aiCmd.intent.action !== 'unknown'" class="ai-intent-body">
+          <!-- unknown: 给出指令模板示例 -->
+          <div v-if="aiCmd.intent.action === 'unknown'" class="ai-intent-body">
+            <div v-if="aiCmd.intent.hint" class="ai-unknown-hint">{{ aiCmd.intent.hint }}</div>
+            <div class="ai-unknown-examples">
+              <div class="ai-unknown-title">支持的指令模板 (点击填入):</div>
+              <div class="ai-unknown-chips">
+                <button v-for="ex in (aiCmd.intent.examples || [])" :key="ex" class="ai-example-chip"
+                  @click="aiCmd.text = ex; aiCmd.intent = null; parseAICmd()">
+                  {{ ex }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div v-else class="ai-intent-body">
             <div class="ai-intent-row" v-if="aiCmd.intent.kind">
               <span class="ai-field-label">资源</span>
               <span class="mono">{{ aiCmd.intent.kind }} {{ aiCmd.intent.namespace ? aiCmd.intent.namespace + '/' : '' }}{{ aiCmd.intent.name }}</span>
@@ -113,6 +126,8 @@
           </div>
           <div v-if="aiCmd.error" class="modal-tip modal-tip-error" style="margin-top:8px">{{ aiCmd.error }}</div>
           <div v-if="aiCmd.success" class="modal-tip" style="margin-top:8px;color:#3fb950">✓ {{ aiCmd.success }}</div>
+          <!-- inspect 巡检报告 -->
+          <div v-if="aiCmd.inspectReport" class="ai-inspect-report" v-html="aiCmd.inspectReportHtml"></div>
         </div>
       </transition>
     </div>
@@ -1278,6 +1293,9 @@ const aiCmd = reactive({
   intent: null, error: '', success: '',
   // 重名替换状态
   alreadyExists: null,   // { kind, name, namespace, message }
+  // 巡检报告
+  inspectReport: '',
+  inspectReportHtml: '',
   exampleIdx: 0,
   examples: [
     '部署 deployment nginx',
@@ -1705,6 +1723,26 @@ function clearAICmd() {
   aiCmd.error = ''
   aiCmd.success = ''
   aiCmd.alreadyExists = null
+  aiCmd.inspectReport = ''
+  aiCmd.inspectReportHtml = ''
+}
+
+// 极简 markdown 渲染 (仅支持 ## 标题 / **粗体** / - 列表 / `代码`)
+function renderInspectMd(md) {
+  if (!md) return ''
+  // 转义 HTML
+  let s = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // ## 标题
+  s = s.replace(/^## (.+)$/gm, '<h3 class="ins-h">$1</h3>')
+  // **bold**
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  // `code`
+  s = s.replace(/`([^`]+?)`/g, '<code class="ins-code">$1</code>')
+  // - 缩进列表项
+  s = s.replace(/^  - (.+)$/gm, '<div class="ins-li">• $1</div>')
+  // 换行 → <br>
+  s = s.replace(/\n/g, '<br>')
+  return s
 }
 
 // 把后端的 K8s 错误 detail 解析成精简文本
@@ -1749,13 +1787,21 @@ async function executeAICmd(opts = {}) {
   aiCmd.executing = true
   aiCmd.error = ''
   aiCmd.alreadyExists = null
+  aiCmd.inspectReport = ''
+  aiCmd.inspectReportHtml = ''
   try {
-    await api.k8sAiExecute(activeClusterId.value, {
+    const r = await api.k8sAiExecute(activeClusterId.value, {
       action: i.action, kind: i.kind, name: i.name,
       namespace: i.namespace || 'default',
       replicas: i.replicas, image: i.image,
       force,
     })
+    // inspect 返回 markdown 报告, 不刷新列表也不自动关
+    if (i.action === 'inspect' && r?.report) {
+      aiCmd.inspectReport = r.report
+      aiCmd.inspectReportHtml = renderInspectMd(r.report)
+      return
+    }
     aiCmd.success = `${i.summary} 已下发到集群`
     for (const key of Array.from(_resourceCache.keys())) {
       if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
@@ -3833,6 +3879,73 @@ onBeforeUnmount(() => { _destroyExec() })
 .ai-already-exists-actions {
   display: flex; justify-content: flex-end; gap: 8px;
 }
+
+/* unknown 提示 + 示例 chip */
+.ai-unknown-hint {
+  font-size: 12px; color: var(--text-muted);
+  padding: 4px 0 8px;
+}
+.ai-unknown-examples {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+.ai-unknown-title {
+  font-size: 11px; color: var(--text-muted);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.ai-unknown-chips {
+  display: flex; flex-wrap: wrap; gap: 5px;
+}
+.ai-example-chip {
+  padding: 4px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all .12s;
+}
+.ai-example-chip:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 巡检报告 */
+.ai-inspect-report {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.ai-inspect-report .ins-h {
+  font-size: 14px; font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+}
+.ai-inspect-report .ins-li {
+  margin-left: 12px;
+  color: var(--text-muted);
+}
+.ai-inspect-report .ins-code {
+  padding: 1px 5px;
+  background: var(--bg-input);
+  border-radius: 3px;
+  font-family: monospace; font-size: 11px;
+  color: var(--accent);
+}
+.ai-inspect-report strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.badge-inspect { background: rgba(99,102,241,.18); color: #818cf8; }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {
   display: grid;

@@ -1925,7 +1925,28 @@ def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
                 "summary": f"列出 {kind}" + (f" (namespace={ns})" if ns else ""),
             }
 
-    return {"action": "unknown", "summary": f"无法识别指令: {raw}", "danger": False}
+    # ── inspect (巡检 / 健康检查 / 集群体检) ──
+    if (_re_k8sai.search(r"巡检|体检|健康|检查|诊断", raw) or
+        _re_k8sai.search(r"\b(inspect|check|health|diagnose|status)\b", raw, _re_k8sai.IGNORECASE)):
+        return {
+            "action": "inspect", "kind": "cluster", "namespace": ns, "danger": False,
+            "summary": "巡检集群健康 (节点 / Pod / 异常 events / 工作负载 Ready)",
+        }
+
+    return {
+        "action": "unknown", "danger": False,
+        "summary": f"无法识别: {raw}",
+        "hint": "当前轻量解析器仅识别确定性指令模式 (不是完整 LLM Function Calling).",
+        "examples": [
+            "部署 deployment nginx 镜像 nginx:1.25 3 副本",
+            "扩容 nginx 到 5 副本",
+            "重启 deployment web",
+            "删除 pod foo",
+            "更新 deployment web 镜像 nginx:1.25",
+            "列出 deployments",
+            "巡检集群",
+        ],
+    }
 
 
 def _extract_resource_name(raw: str, kind: str, exclude_words: set[str] | None = None) -> str | None:
@@ -1962,6 +1983,119 @@ async def k8s_ai_parse(body: K8sAIParsePayload, cluster_id: str = Query("", desc
     """
     intent = _ai_parse_intent(body.text, default_namespace=body.namespace)
     return intent
+
+
+def _run_cluster_inspect(cluster_id: str) -> dict:
+    """集群健康巡检: 节点 / Pod / 工作负载 / 异常 events 汇总。
+    返回 markdown 报告 + 关键指标 dict。
+    """
+    v1, apps = _get_client(cluster_id)
+    findings: list[str] = []
+    metrics: dict = {}
+
+    # 1. 节点
+    try:
+        nodes = v1.list_node().items
+        ready_count = 0
+        not_ready: list[str] = []
+        for n in nodes:
+            conds = getattr(n.status, "conditions", None) or []
+            is_ready = any(c.type == "Ready" and c.status == "True" for c in conds)
+            if is_ready:
+                ready_count += 1
+            else:
+                not_ready.append(n.metadata.name)
+        metrics["nodes"] = {"total": len(nodes), "ready": ready_count, "not_ready": not_ready}
+        findings.append(f"**节点**: {ready_count}/{len(nodes)} Ready" + (f", 异常: {', '.join(not_ready)}" if not_ready else ""))
+    except Exception as exc:
+        findings.append(f"**节点**: 查询失败 ({exc})")
+        metrics["nodes"] = {"error": str(exc)}
+
+    # 2. Pod 统计 + 频繁重启
+    try:
+        pods = v1.list_pod_for_all_namespaces().items
+        phase_count: dict[str, int] = {}
+        high_restart_pods: list[dict] = []
+        for p in pods:
+            ph = p.status.phase or "Unknown"
+            phase_count[ph] = phase_count.get(ph, 0) + 1
+            total_restart = sum((cs.restart_count or 0) for cs in (p.status.container_statuses or []))
+            if total_restart >= 5:
+                high_restart_pods.append({
+                    "namespace": p.metadata.namespace,
+                    "name": p.metadata.name,
+                    "restarts": total_restart,
+                })
+        high_restart_pods.sort(key=lambda x: x["restarts"], reverse=True)
+        metrics["pods"] = {
+            "total": len(pods),
+            "phase": phase_count,
+            "high_restart": high_restart_pods[:10],
+        }
+        findings.append(
+            f"**Pod**: 总 {len(pods)} | " +
+            " | ".join(f"{k} {v}" for k, v in sorted(phase_count.items()))
+        )
+        if high_restart_pods:
+            top = high_restart_pods[:5]
+            findings.append(
+                "**频繁重启 (≥5)**: " +
+                "; ".join(f"{p['namespace']}/{p['name']} ×{p['restarts']}" for p in top) +
+                (f" (还有 {len(high_restart_pods) - 5} 个未显示)" if len(high_restart_pods) > 5 else "")
+            )
+    except Exception as exc:
+        findings.append(f"**Pod**: 查询失败 ({exc})")
+        metrics["pods"] = {"error": str(exc)}
+
+    # 3. Deployment / StatefulSet Ready 比例
+    try:
+        deps = apps.list_deployment_for_all_namespaces().items
+        not_full: list[str] = []
+        for d in deps:
+            spec_replicas = (d.spec.replicas if d.spec.replicas is not None else 0)
+            ready_replicas = (d.status.ready_replicas or 0)
+            if ready_replicas < spec_replicas:
+                not_full.append(f"{d.metadata.namespace}/{d.metadata.name} ({ready_replicas}/{spec_replicas})")
+        metrics["deployments"] = {"total": len(deps), "not_full": not_full}
+        msg = f"**Deployment**: 总 {len(deps)}"
+        if not_full:
+            msg += f", 未就绪 {len(not_full)}: " + "; ".join(not_full[:5])
+            if len(not_full) > 5: msg += f" (+{len(not_full) - 5})"
+        findings.append(msg)
+    except Exception as exc:
+        findings.append(f"**Deployment**: 查询失败 ({exc})")
+        metrics["deployments"] = {"error": str(exc)}
+
+    # 4. 最近 Warning events (跨 namespace, 限 10 条)
+    try:
+        events = v1.list_event_for_all_namespaces(field_selector="type=Warning", limit=50).items
+        warnings: list[dict] = []
+        for ev in events:
+            ts = ev.last_timestamp or ev.event_time or ev.first_timestamp
+            warnings.append({
+                "ns": ev.metadata.namespace,
+                "involved": f"{ev.involved_object.kind}/{ev.involved_object.name}" if ev.involved_object else "?",
+                "reason": ev.reason or "",
+                "message": (ev.message or "").strip().split("\n")[0][:200],
+                "count": ev.count or 1,
+                "ts": ts.isoformat() if ts else "",
+            })
+        warnings.sort(key=lambda x: x["ts"], reverse=True)
+        metrics["warning_events"] = warnings[:10]
+        if warnings:
+            findings.append(f"**最近 Warning Events**: 共 {len(warnings)}, 最新 5 条:")
+            for w in warnings[:5]:
+                findings.append(f"  - `{w['ns']}/{w['involved']}` **{w['reason']}** ×{w['count']}: {w['message']}")
+        else:
+            findings.append("**最近 Warning Events**: 无")
+    except Exception as exc:
+        findings.append(f"**Events**: 查询失败 ({exc})")
+        metrics["warning_events"] = {"error": str(exc)}
+
+    report_md = "## 🔍 集群巡检报告\n\n" + "\n\n".join(findings)
+    return {
+        "ok": True, "action": "inspect", "report": report_md, "metrics": metrics,
+    }
 
 
 def _generate_k8s_yaml_template(kind: str, name: str, namespace: str, image: str | None, replicas: int | None) -> str:
@@ -2055,6 +2189,8 @@ async def k8s_ai_execute(body: K8sAIExecPayload, cluster_id: str = Query("", des
     try:
         if body.action == "list":
             return {"ok": True, "action": "list", "hint": f"跳转 UI 查看 {body.kind} 列表即可"}
+        elif body.action == "inspect":
+            return _run_cluster_inspect(cid)
         elif body.action == "create":
             import yaml as _yaml
             try:
