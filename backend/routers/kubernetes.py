@@ -1888,13 +1888,33 @@ def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
             }
 
     # ── update image ──
-    img_match = _re_k8sai.search(r"(?:镜像|image)[^\w]*([\w\-./:@]+:[\w\-./@]+)", raw, _re_k8sai.IGNORECASE)
+    # 镜像 URL 模式: 字母开头 + (字母数字 / 横线 / 下划线 / 点 / 斜杠)* + 冒号 + 标签字符
+    # 覆盖: nginx:latest / nginx:1.25-alpine / swr.cn-north-4.com/ddn-k8s/docker.io/redash/nginx:latest
+    _img_re = r"([a-zA-Z][a-zA-Z0-9_\-./]*:[a-zA-Z0-9_\-.@]+)"
+    # 优先匹配 "镜像/image" 紧跟的 URL
+    img_match = _re_k8sai.search(rf"(?:镜像|image)[^\w]*{_img_re}", raw, _re_k8sai.IGNORECASE)
+    if not img_match:
+        # 兜底: 含动作词 (改/换/更新/update/change/set) + 文本里任意 xxx:yyy 形式
+        has_img_action = (
+            _re_k8sai.search(r"改为|改成|换为|换成|改|换|更新|修改|替换", raw) or
+            _re_k8sai.search(r"\b(update|change|set|edit)\b", raw, _re_k8sai.IGNORECASE)
+        )
+        if has_img_action:
+            img_match = _re_k8sai.search(_img_re, raw)
     if img_match and kind in {"deployment", "statefulset", "daemonset"}:
-        name = _extract_resource_name(raw, kind, exclude_words={"镜像","image","更新","update"})
+        image = img_match.group(1)
+        # 关键: 只在镜像 URL 之前的文本里找 name, 否则 "deployment的nginx 改为 redash/nginx:latest"
+        # 会把 nginx 当成镜像内 token 排除。镜像前的文本不含镜像 URL, 无歧义。
+        img_idx = raw.find(image)
+        search_zone = raw[:img_idx] if img_idx > 0 else raw
+        name = _extract_resource_name(
+            search_zone, kind,
+            exclude_words={"镜像","image","更新","update","change","set","改","换"},
+        )
         return {
             "action": "update_image", "kind": kind, "name": name, "namespace": ns,
-            "image": img_match.group(1), "danger": True,
-            "summary": f"更新 {kind} {ns or '?'}/{name or '?'} 镜像 → {img_match.group(1)}",
+            "image": image, "danger": True,
+            "summary": f"更新 {kind} {ns or '?'}/{name or '?'} 镜像 → {image}",
         }
 
     # ── list / show / 查 ──
