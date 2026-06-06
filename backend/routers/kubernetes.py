@@ -1468,6 +1468,124 @@ async def scale_resource(
         raise HTTPException(status_code=400, detail=f"扩缩容失败: {detail}")
 
 
+# ── 镜像点击编辑 (Pri 3 借鉴 jay-codemine) ──────────────────────────────────
+
+class K8sImageContainer(BaseModel):
+    name: str
+    image: str
+
+
+class K8sImageUpdatePayload(BaseModel):
+    containers: list[K8sImageContainer]
+
+
+@router.post("/resource-image")
+async def update_resource_image(
+    body: K8sImageUpdatePayload,
+    kind: str = Query(..., description="资源类型: deployment/statefulset/daemonset/cronjob"),
+    name: str = Query(..., description="资源名称"),
+    namespace: str = Query(..., description="命名空间"),
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(require_admin),
+):
+    """更新工作负载镜像 (触发 rolling update)。
+    用 strategic merge patch 改 spec.template.spec.containers[*].image。
+    CronJob 改 spec.jobTemplate.spec.template.spec.containers (路径不同)。
+    """
+    normalized = _normalize_resource_kind(kind)
+    if normalized not in {"deployment", "statefulset", "daemonset", "cronjob"}:
+        raise HTTPException(status_code=400, detail=f"不支持的镜像更新资源类型: {kind}")
+    if not body.containers:
+        raise HTTPException(status_code=400, detail="containers 不能为空")
+
+    containers_patch = [{"name": c.name, "image": c.image} for c in body.containers]
+
+    if normalized == "cronjob":
+        patch_body = {
+            "spec": {"jobTemplate": {"spec": {"template": {"spec": {"containers": containers_patch}}}}}
+        }
+    else:
+        patch_body = {
+            "spec": {"template": {"spec": {"containers": containers_patch}}}
+        }
+
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        _, apps = _get_client(cluster["id"])
+        batch = _get_batch_client(cluster["id"])
+        if normalized == "deployment":
+            apps.patch_namespaced_deployment(name=name, namespace=namespace, body=patch_body)
+        elif normalized == "statefulset":
+            apps.patch_namespaced_stateful_set(name=name, namespace=namespace, body=patch_body)
+        elif normalized == "daemonset":
+            apps.patch_namespaced_daemon_set(name=name, namespace=namespace, body=patch_body)
+        else:   # cronjob
+            batch.patch_namespaced_cron_job(name=name, namespace=namespace, body=patch_body)
+        return {
+            "ok": True, "kind": normalized, "name": name, "namespace": namespace,
+            "containers": containers_patch,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = getattr(exc, "body", None) or str(exc)
+        logger.warning("[k8s] update_resource_image failed kind=%s ns=%s name=%s: %s", kind, namespace, name, detail)
+        raise HTTPException(status_code=400, detail=f"镜像更新失败: {detail}")
+
+
+# ── Events 关联 ─────────────────────────────────────────────────────────────
+
+@router.get("/resource-events")
+async def resource_events(
+    kind: str = Query(..., description="资源类型"),
+    name: str = Query(..., description="资源名称"),
+    namespace: str = Query("", description="命名空间"),
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
+):
+    """拿对应资源的 K8s events (按时间倒序)。
+    用 field_selector 过滤 involvedObject.name + involvedObject.kind。
+    """
+    normalized = _normalize_resource_kind(kind)
+    # 把单数 kind 映射回 K8s 资源 kind (首字母大写驼峰)
+    KIND_PASCAL = {
+        "pod": "Pod", "deployment": "Deployment", "daemonset": "DaemonSet",
+        "statefulset": "StatefulSet", "job": "Job", "cronjob": "CronJob",
+        "service": "Service", "node": "Node",
+    }
+    involved_kind = KIND_PASCAL.get(normalized, normalized)
+
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        v1, _ = _get_client(cluster["id"])
+        selector = f"involvedObject.name={name},involvedObject.kind={involved_kind}"
+        if namespace:
+            events = v1.list_namespaced_event(namespace=namespace, field_selector=selector, limit=200)
+        else:
+            events = v1.list_event_for_all_namespaces(field_selector=selector, limit=200)
+
+        items = []
+        for ev in events.items:
+            ts = ev.last_timestamp or ev.event_time or ev.first_timestamp
+            items.append({
+                "type":     ev.type or "Normal",
+                "reason":   ev.reason or "",
+                "message":  ev.message or "",
+                "count":    ev.count or 1,
+                "source":   ev.source.component if ev.source else "",
+                "first_ts": ev.first_timestamp.isoformat() if ev.first_timestamp else "",
+                "last_ts":  ts.isoformat() if ts else "",
+            })
+        items.sort(key=lambda x: x["last_ts"], reverse=True)
+        return {"kind": normalized, "name": name, "namespace": namespace, "items": items, "total": len(items)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = getattr(exc, "body", None) or str(exc)
+        logger.warning("[k8s] resource_events failed kind=%s ns=%s name=%s: %s", kind, namespace, name, detail)
+        raise HTTPException(status_code=502, detail=f"events 查询失败: {detail}")
+
+
 # ── 批量操作 (借鉴 jay-codemine/k8s_operation 浮动操作条) ────────────────────
 
 def _delete_k8s_resource(cluster_id: str | None, kind: str, namespace: str, name: str):

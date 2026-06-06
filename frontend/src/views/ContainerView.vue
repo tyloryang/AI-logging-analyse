@@ -390,7 +390,10 @@
                     <span v-if="scalingKey === scaleKey('deployment', deployment)" class="scale-spinner spinner"></span>
                   </span>
                 </td>
-                <td class="mono small">{{ deployment.images.join(', ') }}</td>
+                <td class="mono small image-cell" @click="openImageEdit('deployment', deployment)" title="点击编辑镜像">
+                  {{ deployment.images.join(', ') }}
+                  <span class="image-edit-hint">✎</span>
+                </td>
                 <td class="muted mono small" :title="formatRelative(deployment.age)">{{ formatDateTime(deployment.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
@@ -428,7 +431,10 @@
                 <td>{{ daemonSet.ready }}/{{ daemonSet.desired }}</td>
                 <td>{{ daemonSet.current }}/{{ daemonSet.updated }}</td>
                 <td>{{ daemonSet.available }}</td>
-                <td class="mono small">{{ daemonSet.images.join(', ') }}</td>
+                <td class="mono small image-cell" @click="openImageEdit('daemonset', daemonSet)" title="点击编辑镜像">
+                  {{ daemonSet.images.join(', ') }}
+                  <span class="image-edit-hint">✎</span>
+                </td>
                 <td class="muted mono small" :title="formatRelative(daemonSet.age)">{{ formatDateTime(daemonSet.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
@@ -473,7 +479,10 @@
                 </td>
                 <td>{{ statefulSet.current }}</td>
                 <td>{{ statefulSet.updated }}</td>
-                <td class="mono small">{{ statefulSet.images.join(', ') }}</td>
+                <td class="mono small image-cell" @click="openImageEdit('statefulset', statefulSet)" title="点击编辑镜像">
+                  {{ statefulSet.images.join(', ') }}
+                  <span class="image-edit-hint">✎</span>
+                </td>
                 <td class="muted mono small" :title="formatRelative(statefulSet.age)">{{ formatDateTime(statefulSet.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
@@ -797,6 +806,9 @@
           <div class="detail-view-tabs">
             <button :class="['detail-tab', { active: detailView === 'json' }]" @click="switchDetailView('json')" type="button">JSON</button>
             <button :class="['detail-tab', { active: detailView === 'yaml' }]" @click="switchDetailView('yaml')" type="button">YAML</button>
+            <button :class="['detail-tab', { active: detailView === 'events' }]" @click="switchDetailView('events')" type="button">
+              Events <span v-if="detailEvents.length" class="event-tab-count">{{ detailEvents.length }}</span>
+            </button>
           </div>
         </div>
         <div class="modal-body">
@@ -816,13 +828,34 @@
             </div>
             <pre v-else-if="detailView === 'json'" class="json-view">{{ detailText }}</pre>
             <textarea
-              v-else
+              v-else-if="detailView === 'yaml'"
               v-model="yamlBuffer"
               class="yaml-editor"
               :readonly="!yamlEditing"
               spellcheck="false"
               @input="onYamlInput"
             ></textarea>
+            <!-- Events tab -->
+            <div v-else class="events-panel">
+              <div v-if="eventsLoading" class="loading-row compact">
+                <span class="spinner"></span>正在加载 events...
+              </div>
+              <div v-else-if="!detailEvents.length" class="events-empty">
+                此资源近期无 K8s events
+              </div>
+              <div v-else class="events-list">
+                <div v-for="(ev, i) in detailEvents" :key="i" class="event-row" :class="'event-' + ev.type.toLowerCase()">
+                  <div class="event-meta">
+                    <span class="event-type-badge" :class="'event-type-' + ev.type.toLowerCase()">{{ ev.type }}</span>
+                    <span class="event-reason">{{ ev.reason }}</span>
+                    <span v-if="ev.count > 1" class="event-count">×{{ ev.count }}</span>
+                    <span class="event-source">{{ ev.source }}</span>
+                    <span class="event-ts" :title="ev.first_ts ? `首次: ${ev.first_ts}` : ''">{{ formatRelative(ev.last_ts) || ev.last_ts }}</span>
+                  </div>
+                  <div class="event-message">{{ ev.message }}</div>
+                </div>
+              </div>
+            </div>
           </div>
           <div v-if="yamlApplyError" class="modal-tip modal-tip-error" style="margin-top:8px;white-space:pre-wrap">{{ yamlApplyError }}</div>
         </div>
@@ -957,6 +990,33 @@
       </div>
     </transition>
 
+    <!-- 镜像编辑模态 -->
+    <div v-if="imageEditModal.open" class="modal-mask" @click.self="closeImageEdit">
+      <div class="modal-card image-edit-card">
+        <div class="modal-title">
+          ✎ 编辑镜像
+          <span class="image-edit-target">{{ imageEditModal.kind }} · {{ imageEditModal.namespace }}/{{ imageEditModal.name }}</span>
+        </div>
+        <div class="modal-body">
+          <div class="image-edit-list">
+            <div v-for="c in imageEditModal.containers" :key="c.name" class="image-edit-row">
+              <span class="image-edit-cname">{{ c.name }}</span>
+              <input v-model="c.image" class="form-input image-edit-input" placeholder="nginx:1.25-alpine" />
+              <button v-if="c.image !== c.original" class="btn-xs btn-ghost" @click="c.image = c.original" title="还原">↻</button>
+            </div>
+          </div>
+          <div v-if="imageEditModal.error" class="modal-tip modal-tip-error" style="margin-top:12px;white-space:pre-wrap">{{ imageEditModal.error }}</div>
+          <div v-if="imageEditModal.success" class="modal-tip" style="margin-top:12px;color:#3fb950">✓ 已 patch, 触发 rolling update, 稍后刷新</div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-ghost" @click="closeImageEdit">取消</button>
+          <button class="btn-primary-sm" @click="applyImageEdit" :disabled="!imageEditDirty || imageEditModal.applying">
+            {{ imageEditModal.applying ? '应用中...' : '✓ 应用并 rolling update' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 批量操作结果模态 -->
     <div v-if="batchResult" class="modal-mask" @click.self="batchResult = null">
       <div class="modal-card batch-result-card">
@@ -1063,13 +1123,22 @@ const detailLoading = ref(false)
 const detailError = ref('')
 const detailData = ref(null)
 // 详情视图 + YAML 编辑状态
-const detailView = ref('json')        // 'json' | 'yaml'
+const detailView = ref('json')        // 'json' | 'yaml' | 'events'
 const yamlBuffer = ref('')            // textarea 双向绑定
 const yamlOriginal = ref('')          // 加载后的原始 yaml（撤销用）
 const yamlEditing = ref(false)
 const yamlApplying = ref(false)
 const yamlApplyError = ref('')
 const yamlApplySuccess = ref(false)
+// Events tab
+const detailEvents = ref([])
+const eventsLoading = ref(false)
+// 镜像编辑弹窗
+const imageEditModal = reactive({
+  open: false, kind: '', name: '', namespace: '',
+  containers: [],   // [{ name, image, original }]
+  applying: false, error: '', success: false,
+})
 const detailMeta = reactive({
   kind: '',
   name: '',
@@ -1372,6 +1441,8 @@ function resetDetailState() {
   yamlApplying.value = false
   yamlApplyError.value = ''
   yamlApplySuccess.value = false
+  detailEvents.value = []
+  eventsLoading.value = false
   Object.assign(detailMeta, { kind: '', name: '', namespace: '' })
 }
 
@@ -1391,6 +1462,81 @@ function switchDetailView(view) {
   }
   detailView.value = view
   yamlApplySuccess.value = false
+  if (view === 'events' && !detailEvents.value.length && !eventsLoading.value) {
+    loadDetailEvents()
+  }
+}
+
+async function loadDetailEvents() {
+  if (!detailMeta.kind || !detailMeta.name) return
+  eventsLoading.value = true
+  try {
+    const r = await api.k8sResourceEvents(activeClusterId.value, detailMeta.kind, detailMeta.name, detailMeta.namespace)
+    detailEvents.value = r?.items || []
+  } catch (e) {
+    detailEvents.value = []
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+// ── 镜像点击编辑 ─────────────────────────────────────────────────────────────
+const imageEditableKinds = new Set(['deployment', 'statefulset', 'daemonset', 'cronjob'])
+
+function openImageEdit(kind, row) {
+  const normalized = (kind || '').toLowerCase()
+  if (!imageEditableKinds.has(normalized)) return
+  const images = Array.isArray(row?.images) ? row.images : []
+  const containerNames = Array.isArray(row?.container_names) ? row.container_names : []
+  // 拼装 containers: 若后端没返回 container_names, 用 image 前缀 / images 数组兜底
+  const containers = images.map((img, i) => ({
+    name: containerNames[i] || `c${i + 1}`,
+    image: img,
+    original: img,
+  }))
+  if (!containers.length) {
+    alert('未识别到容器列表, 请用 YAML 编辑')
+    return
+  }
+  Object.assign(imageEditModal, {
+    open: true, kind: normalized, name: row?.name || '', namespace: row?.namespace || '',
+    containers, applying: false, error: '', success: false,
+  })
+}
+
+function closeImageEdit() {
+  imageEditModal.open = false
+  imageEditModal.containers = []
+  imageEditModal.error = ''
+  imageEditModal.success = false
+}
+
+const imageEditDirty = computed(() =>
+  imageEditModal.containers.some(c => c.image !== c.original)
+)
+
+async function applyImageEdit() {
+  if (!imageEditDirty.value) return
+  const changed = imageEditModal.containers.filter(c => c.image !== c.original)
+  if (!confirm(`更新 ${imageEditModal.kind}/${imageEditModal.name} 的 ${changed.length} 个镜像? 将触发 rolling update.`)) return
+  imageEditModal.applying = true
+  imageEditModal.error = ''
+  try {
+    await api.k8sUpdateResourceImage(
+      activeClusterId.value, imageEditModal.kind, imageEditModal.name, imageEditModal.namespace,
+      imageEditModal.containers.map(c => ({ name: c.name, image: c.image })),
+    )
+    imageEditModal.success = true
+    // 清缓存 + 静默刷新
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+    }
+    setTimeout(() => { refreshAll(); closeImageEdit() }, 800)
+  } catch (e) {
+    imageEditModal.error = e?.response?.data?.detail || e?.message || String(e)
+  } finally {
+    imageEditModal.applying = false
+  }
 }
 
 function startYamlEdit() {
@@ -3118,6 +3264,84 @@ onBeforeUnmount(() => { _destroyExec() })
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   cursor: help;
 }
+
+/* Events tab */
+.events-panel { padding: 12px 16px; min-height: 280px; }
+.events-empty { color: var(--text-muted); font-size: 12px; padding: 32px 0; text-align: center; }
+.events-list { display: flex; flex-direction: column; gap: 8px; }
+.event-row {
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 12px;
+  border-left: 3px solid var(--border);
+}
+.event-row.event-warning { border-left-color: var(--warning, #d29922); background: rgba(210,153,34,.04); }
+.event-row.event-normal  { border-left-color: rgba(63,185,80,.3); }
+.event-meta {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+.event-type-badge {
+  padding: 1px 6px; border-radius: 3px; font-weight: 700;
+  text-transform: uppercase; font-size: 10px;
+}
+.event-type-normal  { background: rgba(63,185,80,.18); color: #3fb950; }
+.event-type-warning { background: rgba(210,153,34,.18); color: var(--warning, #d29922); }
+.event-reason { font-weight: 600; color: var(--text-primary); }
+.event-count {
+  padding: 1px 5px; background: var(--bg-input);
+  border-radius: 4px; color: var(--text-muted);
+}
+.event-source { color: var(--text-muted); }
+.event-ts { margin-left: auto; color: var(--text-muted); font-family: monospace; }
+.event-message {
+  font-family: monospace; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+}
+.event-tab-count {
+  margin-left: 4px; padding: 0 5px;
+  background: rgba(56,139,253,.15); color: var(--accent);
+  border-radius: 8px; font-size: 10px; font-weight: 700;
+}
+
+/* 镜像编辑列 */
+.image-cell {
+  cursor: pointer;
+  position: relative;
+  transition: background .12s;
+}
+.image-cell:hover {
+  background: rgba(56,139,253,.06);
+}
+.image-cell:hover .image-edit-hint { opacity: 1; }
+.image-edit-hint {
+  margin-left: 6px;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity .12s;
+  font-size: 11px;
+}
+
+.image-edit-card { width: min(680px, calc(100vw - 40px)); }
+.image-edit-target {
+  font-family: monospace; font-size: 12px;
+  color: var(--text-muted); font-weight: 400; margin-left: 6px;
+}
+.image-edit-list { display: flex; flex-direction: column; gap: 10px; }
+.image-edit-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 32px;
+  gap: 10px; align-items: center;
+}
+.image-edit-cname {
+  font-family: monospace; font-size: 12px;
+  color: var(--accent); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.image-edit-input { font-family: monospace; font-size: 12px; }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {
   display: grid;
