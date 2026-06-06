@@ -46,13 +46,27 @@
       {{ clusterTestMsg }}
     </div>
 
-    <!-- AI 自然语言命令栏 (Round 3) -->
-    <div v-if="activeClusterId" class="ai-cmd-bar" :class="{ open: aiCmd.open || aiCmd.intent }">
-      <div class="ai-cmd-input-wrap">
-        <span class="ai-cmd-icon" @click="aiCmd.open = !aiCmd.open" title="点击展开/收起 AI 命令栏">🤖</span>
+    <!-- AI 自然语言命令栏: 可整体折叠 -->
+    <div v-if="activeClusterId" class="ai-cmd-bar" :class="{ open: aiCmd.expanded, 'has-pending': aiCmd.pendingActions.length }">
+      <!-- 折叠态: 紧凑头, 显示徽章 + 展开按钮 -->
+      <div v-if="!aiCmd.expanded" class="ai-cmd-collapsed" @click="aiCmd.expanded = true">
+        <span class="ai-cmd-icon">🤖</span>
+        <span class="ai-cmd-collapsed-title">AI 助手</span>
+        <span class="ai-cmd-mode-mini">{{ aiCmd.smart ? '🧠 智能' : '⚡ 正则' }}</span>
+        <span v-if="aiCmd.pendingActions.length" class="ai-cmd-badge danger">
+          ⚠️ {{ aiCmd.pendingActions.length }} 待审批
+        </span>
+        <span v-if="aiCmd.chatHistory.length" class="ai-cmd-badge">
+          💬 {{ aiCmd.chatHistory.length }} 条对话
+        </span>
+        <span v-if="aiCmd.intent" class="ai-cmd-badge">📝 1 个意图</span>
+        <span class="ai-cmd-collapsed-hint">点击展开 ▾</span>
+      </div>
+      <!-- 展开态: 完整输入栏 -->
+      <div v-else class="ai-cmd-input-wrap">
+        <span class="ai-cmd-icon" @click="aiCmd.expanded = false" title="点击折叠 AI 命令栏">🤖</span>
         <input v-model="aiCmd.text" class="ai-cmd-input"
           :placeholder="aiCmd.smart ? '智能模式: 自由对话, Claude 自主调用工具...' : aiCmd.examples[aiCmd.exampleIdx]"
-          @focus="aiCmd.open = true"
           @keyup.enter="aiCmd.smart ? runSmartChat() : parseAICmd()"
           :disabled="aiCmd.parsing || aiCmd.executing || aiCmd.chatting" />
         <button class="ai-mode-toggle" :class="{ active: aiCmd.smart }" @click="aiCmd.smart = !aiCmd.smart"
@@ -64,14 +78,19 @@
           {{ aiCmd.smart ? (aiCmd.chatting ? '思考中...' : '提问') : (aiCmd.parsing ? '解析中...' : '解析') }}
         </button>
         <button v-if="aiCmd.intent || aiCmd.chatHistory.length" class="btn-ghost btn-xs" @click="clearAICmd">清空</button>
+        <button class="btn-ghost btn-xs" @click="aiCmd.expanded = false" title="折叠">▴</button>
       </div>
-      <!-- 智能模式: 写工具待审批卡片 -->
+      <!-- 智能模式: 写工具待审批卡片 (折叠态也显示, 因为是高危必须看到) -->
       <transition name="ai-intent-fade">
-        <div v-if="aiCmd.pendingActions.length" class="ai-pending-actions">
+        <div v-if="aiCmd.pendingActions.length && aiCmd.expanded" class="ai-pending-actions">
           <div class="pending-header">
             ⚠️ {{ aiCmd.pendingActions.length }} 个增删改操作待你审批
+            <button class="btn-ghost btn-xs" @click="aiCmd.pendingCollapsed = !aiCmd.pendingCollapsed" style="margin-left:auto">
+              {{ aiCmd.pendingCollapsed ? '展开 ▾' : '折叠 ▴' }}
+            </button>
             <button class="btn-ghost btn-xs" :disabled="aiCmd.pendingApproving" @click="rejectAllPending">全部拒绝</button>
           </div>
+          <template v-if="!aiCmd.pendingCollapsed">
           <div v-for="(a, i) in aiCmd.pendingActions" :key="i" class="pending-action-card">
             <div class="pending-tool-row">
               <span class="pending-badge" :class="'pending-' + a.name">{{ pendingActionLabel(a.name) }}</span>
@@ -90,12 +109,21 @@
               </button>
             </div>
           </div>
+          </template>
         </div>
       </transition>
 
-      <!-- 智能模式: 对话历史 -->
+      <!-- 智能模式: 对话历史 (可折叠) -->
       <transition name="ai-intent-fade">
-        <div v-if="aiCmd.smart && aiCmd.chatHistory.length" class="ai-chat-history">
+        <div v-if="aiCmd.smart && aiCmd.chatHistory.length && aiCmd.expanded" class="ai-chat-history-wrap">
+          <div class="ai-chat-header">
+            <span class="ai-chat-title">💬 对话历史 ({{ aiCmd.chatHistory.length }})</span>
+            <button class="btn-ghost btn-xs" @click="aiCmd.chatCollapsed = !aiCmd.chatCollapsed">
+              {{ aiCmd.chatCollapsed ? '展开 ▾' : '折叠 ▴' }}
+            </button>
+            <button class="btn-ghost btn-xs" @click="aiCmd.chatHistory = []">清空</button>
+          </div>
+          <div v-if="!aiCmd.chatCollapsed" class="ai-chat-history">
           <div v-for="(turn, i) in aiCmd.chatHistory" :key="i" class="ai-turn" :class="'turn-' + turn.role">
             <div v-if="turn.role === 'user'" class="ai-turn-bubble user-bubble">
               <span class="turn-icon">👤</span>{{ turn.content }}
@@ -119,11 +147,12 @@
           <div v-if="aiCmd.chatting" class="ai-thinking">
             <span class="spinner" style="width:12px;height:12px"></span> Claude 思考中...
           </div>
+          </div>
         </div>
       </transition>
       <!-- 意图卡片 -->
       <transition name="ai-intent-fade">
-        <div v-if="aiCmd.intent" class="ai-intent-card" :class="{ danger: aiCmd.intent.danger, unknown: aiCmd.intent.action === 'unknown' }">
+        <div v-if="aiCmd.intent && aiCmd.expanded" class="ai-intent-card" :class="{ danger: aiCmd.intent.danger, unknown: aiCmd.intent.action === 'unknown' }">
           <div class="ai-intent-head">
             <span class="ai-intent-action-badge" :class="'badge-' + aiCmd.intent.action">{{ aiCmd.intent.action }}</span>
             <span class="ai-intent-summary">{{ aiCmd.intent.summary }}</span>
@@ -1350,7 +1379,8 @@ const createModal = reactive({
 })
 // AI 自然语言命令栏
 const aiCmd = reactive({
-  open: false, text: '', parsing: false, executing: false,
+  open: false, expanded: false, text: '', parsing: false, executing: false,
+  chatCollapsed: false, pendingCollapsed: false,   // 各子区域独立折叠
   intent: null, error: '', success: '',
   // 重名替换状态
   alreadyExists: null,   // { kind, name, namespace, message }
@@ -1769,6 +1799,7 @@ const imageEditDirty = computed(() =>
 // ── AI 自然语言命令 (Round 3) ───────────────────────────────────────────────
 async function parseAICmd() {
   if (!aiCmd.text.trim()) return
+  aiCmd.expanded = true   // 操作时自动展开
   aiCmd.parsing = true
   aiCmd.intent = null
   aiCmd.error = ''
@@ -1795,6 +1826,10 @@ function clearAICmd() {
   aiCmd.chatHistory = []
   aiCmd.pendingActions = []
   aiCmd.pendingApproving = null
+  // 没有任何内容时回到折叠态; 否则保持展开让用户继续看
+  if (!aiCmd.text && !aiCmd.intent && !aiCmd.chatHistory.length && !aiCmd.pendingActions.length) {
+    aiCmd.expanded = false
+  }
 }
 
 // 待审批操作的友好标签
@@ -1857,6 +1892,7 @@ async function rejectAllPending() {
 async function runSmartChat() {
   const msg = aiCmd.text.trim()
   if (!msg) return
+  aiCmd.expanded = true   // 操作时自动展开
   aiCmd.chatting = true
   aiCmd.chatHistory.push({ role: 'user', content: msg })
   aiCmd.text = ''
@@ -3949,17 +3985,79 @@ onBeforeUnmount(() => { _destroyExec() })
 /* AI 自然语言命令栏 (Round 3) */
 .ai-cmd-bar {
   margin: 8px 20px 0;
-  padding: 8px 12px;
+  padding: 6px 12px;
   background: linear-gradient(135deg, rgba(99,102,241,.06), rgba(56,139,253,.04));
   border: 1px solid rgba(99,102,241,.18);
   border-radius: 10px;
   transition: all .2s;
 }
 .ai-cmd-bar.open {
+  padding: 10px 12px;
   background: linear-gradient(135deg, rgba(99,102,241,.1), rgba(56,139,253,.08));
   border-color: rgba(99,102,241,.4);
   box-shadow: 0 4px 16px rgba(99,102,241,.1);
 }
+.ai-cmd-bar.has-pending {
+  border-color: rgba(210,153,34,.55);
+  box-shadow: 0 2px 8px rgba(210,153,34,.18);
+}
+
+/* 折叠态紧凑头 */
+.ai-cmd-collapsed {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 0;
+  cursor: pointer;
+  user-select: none;
+}
+.ai-cmd-collapsed:hover { opacity: .9; }
+.ai-cmd-collapsed-title {
+  font-size: 13px; font-weight: 600;
+  color: var(--text-primary);
+}
+.ai-cmd-mode-mini {
+  font-size: 11px; font-weight: 600;
+  color: var(--text-muted);
+  padding: 2px 7px;
+  background: var(--bg-input);
+  border-radius: 4px;
+}
+.ai-cmd-badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px; font-weight: 600;
+  background: rgba(56,139,253,.15);
+  color: var(--accent);
+}
+.ai-cmd-badge.danger {
+  background: rgba(210,153,34,.18);
+  color: var(--warning, #d29922);
+  animation: ai-pending-pulse 1.5s ease-in-out infinite;
+}
+@keyframes ai-pending-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .6; }
+}
+.ai-cmd-collapsed-hint {
+  margin-left: auto;
+  font-size: 11px; color: var(--text-muted);
+}
+
+/* 对话历史外壳 (含 header + 折叠) */
+.ai-chat-history-wrap {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ai-chat-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.ai-chat-title { flex: 1; font-weight: 600; color: var(--text-primary); }
 .ai-cmd-input-wrap {
   display: flex; align-items: center; gap: 8px;
 }
