@@ -1987,6 +1987,28 @@ def _generate_k8s_yaml_template(kind: str, name: str, namespace: str, image: str
     raise HTTPException(status_code=400, detail=f"不支持模板生成: {kind}")
 
 
+def _parse_k8s_api_error(exc) -> dict:
+    """从 ApiException / FailToCreateError 提取 reason / message / code, 给前端友好显示。"""
+    import json as _json
+    body = getattr(exc, "body", None)
+    if isinstance(body, str):
+        try:
+            parsed = _json.loads(body)
+            return {
+                "reason":  parsed.get("reason", ""),
+                "message": parsed.get("message", str(exc)),
+                "code":    parsed.get("code", 0),
+                "details": parsed.get("details", {}),
+            }
+        except Exception:
+            return {"reason": "", "message": body, "code": 0, "details": {}}
+    # FailToCreateError: api_exceptions 是列表
+    api_excs = getattr(exc, "api_exceptions", None)
+    if api_excs:
+        return _parse_k8s_api_error(api_excs[0])
+    return {"reason": "", "message": str(exc), "code": 0, "details": {}}
+
+
 class K8sAIExecPayload(BaseModel):
     action: str
     kind: str = ""
@@ -1994,6 +2016,7 @@ class K8sAIExecPayload(BaseModel):
     namespace: str = ""
     replicas: int | None = None
     image: str | None = None
+    force: bool = False   # create 时 force=true: 已存在则先 delete 再 create
 
 
 @router.post("/ai/execute")
@@ -2022,15 +2045,80 @@ async def k8s_ai_execute(body: K8sAIExecPayload, cluster_id: str = Query("", des
             api_client = _get_api_client(cid)
             docs = [d for d in _yaml.safe_load_all(yaml_text) if isinstance(d, dict) and d]
             created = []
+            already_exists_items: list[dict] = []
             for doc in docs:
-                res_list = k8s_utils.create_from_dict(api_client, doc)
-                for res in (res_list if isinstance(res_list, list) else [res_list]):
-                    md = getattr(res, "metadata", None)
-                    created.append({
-                        "kind": getattr(res, "kind", None) or doc.get("kind"),
-                        "name": getattr(md, "name", None) if md else doc.get("metadata", {}).get("name"),
-                        "namespace": getattr(md, "namespace", None) if md else doc.get("metadata", {}).get("namespace"),
-                    })
+                doc_kind = doc.get("kind", "")
+                doc_md = doc.get("metadata", {})
+                doc_name = doc_md.get("name", "")
+                doc_ns = doc_md.get("namespace", "")
+                try:
+                    res_list = k8s_utils.create_from_dict(api_client, doc)
+                    for res in (res_list if isinstance(res_list, list) else [res_list]):
+                        md = getattr(res, "metadata", None)
+                        created.append({
+                            "kind": getattr(res, "kind", None) or doc_kind,
+                            "name": getattr(md, "name", None) if md else doc_name,
+                            "namespace": getattr(md, "namespace", None) if md else doc_ns,
+                        })
+                except Exception as create_exc:
+                    err = _parse_k8s_api_error(create_exc)
+                    if err.get("reason") == "AlreadyExists":
+                        if body.force:
+                            # 先 delete 旧资源, 等几秒等 finalizer, 再 create
+                            try:
+                                _delete_k8s_resource(cid, _normalize_resource_kind(doc_kind), doc_ns, doc_name)
+                            except Exception as del_exc:
+                                logger.warning("[k8s-ai] force-delete before create failed: %s", del_exc)
+                            # 简单轮询: 最多 8s 等资源消失
+                            import time as _time
+                            v1, apps = _get_client(cid)
+                            for _ in range(16):
+                                _time.sleep(0.5)
+                                try:
+                                    _read_k8s_resource(cid, _normalize_resource_kind(doc_kind), doc_ns, doc_name)
+                                except Exception:
+                                    break   # 读不到 = 已删除
+                            # 重试 create
+                            try:
+                                res_list = k8s_utils.create_from_dict(api_client, doc)
+                                for res in (res_list if isinstance(res_list, list) else [res_list]):
+                                    md = getattr(res, "metadata", None)
+                                    created.append({
+                                        "kind": getattr(res, "kind", None) or doc_kind,
+                                        "name": getattr(md, "name", None) if md else doc_name,
+                                        "namespace": getattr(md, "namespace", None) if md else doc_ns,
+                                    })
+                            except Exception as retry_exc:
+                                rerr = _parse_k8s_api_error(retry_exc)
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=f"替换失败 ({rerr.get('reason') or 'Error'}): {rerr.get('message') or '未知错误'}",
+                                )
+                        else:
+                            already_exists_items.append({
+                                "kind": doc_kind, "name": doc_name, "namespace": doc_ns,
+                            })
+                    else:
+                        # 其它错误 (Invalid / Forbidden / ...) 直接抛友好提示
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"创建失败 ({err.get('reason') or 'Error'}): {err.get('message') or '未知错误'}",
+                        )
+
+            # 没有强制覆盖且发现重名 → 返回结构化错误让前端弹"是否替换"
+            if already_exists_items and not body.force:
+                item = already_exists_items[0]
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "AlreadyExists",
+                        "message": f"{item['kind']} {item['namespace']}/{item['name']} 已存在",
+                        "kind": item["kind"],
+                        "name": item["name"],
+                        "namespace": item["namespace"],
+                        "can_force": True,
+                    },
+                )
             return {"ok": True, "action": "create", "created": created, "yaml": yaml_text}
         elif body.action == "scale":
             if body.replicas is None: raise HTTPException(status_code=400, detail="replicas 必填")

@@ -96,6 +96,21 @@
               {{ aiCmd.executing ? '执行中...' : (aiCmd.intent.danger ? '⚠ 我已确认, 执行' : '✓ 执行') }}
             </button>
           </div>
+          <!-- AlreadyExists: 提供替换选项 -->
+          <div v-if="aiCmd.alreadyExists" class="ai-already-exists">
+            <div class="ai-already-exists-msg">
+              ⚠ <strong>{{ aiCmd.alreadyExists.kind }} {{ aiCmd.alreadyExists.namespace }}/{{ aiCmd.alreadyExists.name }}</strong> 已存在
+            </div>
+            <div class="ai-already-exists-actions">
+              <button class="btn-ghost btn-xs" @click="clearAICmd">取消</button>
+              <button class="btn-ghost btn-xs" @click="aiCmd.alreadyExists = null; aiCmd.intent.name = (aiCmd.intent.name || 'nginx') + '-' + Math.random().toString(36).slice(2, 6)">
+                改名重试
+              </button>
+              <button class="btn-primary-sm danger" :disabled="aiCmd.executing" @click="executeAICmd({ force: true })">
+                ⚠ 替换 (先删除再创建)
+              </button>
+            </div>
+          </div>
           <div v-if="aiCmd.error" class="modal-tip modal-tip-error" style="margin-top:8px">{{ aiCmd.error }}</div>
           <div v-if="aiCmd.success" class="modal-tip" style="margin-top:8px;color:#3fb950">✓ {{ aiCmd.success }}</div>
         </div>
@@ -1261,6 +1276,8 @@ const createModal = reactive({
 const aiCmd = reactive({
   open: false, text: '', parsing: false, executing: false,
   intent: null, error: '', success: '',
+  // 重名替换状态
+  alreadyExists: null,   // { kind, name, namespace, message }
   exampleIdx: 0,
   examples: [
     '部署 deployment nginx',
@@ -1687,11 +1704,29 @@ function clearAICmd() {
   aiCmd.intent = null
   aiCmd.error = ''
   aiCmd.success = ''
+  aiCmd.alreadyExists = null
 }
 
-async function executeAICmd() {
+// 把后端的 K8s 错误 detail 解析成精简文本
+function formatAIError(e) {
+  const d = e?.response?.data?.detail
+  if (!d) return e?.message || String(e)
+  if (typeof d === 'string') {
+    // 旧版可能仍是字符串, 尝试取关键片段
+    if (d.length > 200) return d.slice(0, 200) + ' ...'
+    return d
+  }
+  if (typeof d === 'object') {
+    return `${d.reason || 'Error'}: ${d.message || ''}`.trim()
+  }
+  return String(d)
+}
+
+async function executeAICmd(opts = {}) {
   if (!aiCmd.intent) return
   const i = aiCmd.intent
+  const force = opts.force === true
+
   // 'list' 不需要执行, 跳转 tab
   if (i.action === 'list') {
     const tabMap = {
@@ -1704,26 +1739,37 @@ async function executeAICmd() {
     clearAICmd()
     return
   }
-  // 高危: 二次 confirm
-  if (i.danger) {
+  // 高危: 二次 confirm (force 模式自带 confirm 提示在按钮处)
+  if (i.danger && !force) {
     if (!confirm(`【高危】${i.summary}\n\n确认执行? 操作不可撤销.`)) return
+  }
+  if (force) {
+    if (!confirm(`【替换】将先删除已存在的 ${aiCmd.alreadyExists?.kind}/${aiCmd.alreadyExists?.name}, 再用 AI 生成的 YAML 创建.\n\n确认?`)) return
   }
   aiCmd.executing = true
   aiCmd.error = ''
+  aiCmd.alreadyExists = null
   try {
     await api.k8sAiExecute(activeClusterId.value, {
       action: i.action, kind: i.kind, name: i.name,
       namespace: i.namespace || 'default',
       replicas: i.replicas, image: i.image,
+      force,
     })
     aiCmd.success = `${i.summary} 已下发到集群`
-    // 清缓存 + 静默刷新
     for (const key of Array.from(_resourceCache.keys())) {
       if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
     }
     setTimeout(() => { refreshAll(); clearAICmd() }, 1500)
   } catch (e) {
-    aiCmd.error = '执行失败: ' + (e?.response?.data?.detail || e?.message || e)
+    const detail = e?.response?.data?.detail
+    // AlreadyExists 结构化错误 → 提供"替换"按钮
+    if (detail && typeof detail === 'object' && detail.reason === 'AlreadyExists' && detail.can_force) {
+      aiCmd.alreadyExists = detail
+      aiCmd.error = ''
+    } else {
+      aiCmd.error = formatAIError(e)
+    }
   } finally {
     aiCmd.executing = false
   }
@@ -3766,6 +3812,26 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 .ai-intent-fade-enter-from, .ai-intent-fade-leave-to {
   opacity: 0; transform: translateY(-6px);
+}
+
+/* AlreadyExists 替换提示 */
+.ai-already-exists {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(210,153,34,.08);
+  border: 1px solid rgba(210,153,34,.35);
+  border-radius: 6px;
+}
+.ai-already-exists-msg {
+  font-size: 12px;
+  color: var(--warning, #d29922);
+  margin-bottom: 8px;
+}
+.ai-already-exists-msg strong {
+  font-family: monospace; color: var(--text-primary);
+}
+.ai-already-exists-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
 }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {
