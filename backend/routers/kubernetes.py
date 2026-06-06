@@ -1762,6 +1762,227 @@ async def pod_logs(
         raise HTTPException(502, f"k8s 日志读取失败: {exc}")
 
 
+# ── Round 3: AI 自然语言 K8s 操作 (轻量意图解析 + 高危确认) ─────────────────
+
+import re as _re_k8sai
+
+# 数字/中文数字归一
+_CN_NUM = {"一":1, "二":2, "两":2, "三":3, "四":4, "五":5, "六":6, "七":7, "八":8, "九":9, "十":10}
+
+def _parse_int(s: str) -> int | None:
+    s = (s or "").strip()
+    if not s: return None
+    if s.isdigit(): return int(s)
+    if s in _CN_NUM: return _CN_NUM[s]
+    try: return int(s)
+    except Exception: return None
+
+# kind 别名归一 (用户自然语言可能用各种说法)
+_AI_KIND_ALIASES = {
+    "pod": "pod", "pods": "pod", "容器": "pod",
+    "deployment": "deployment", "deployments": "deployment", "deploy": "deployment", "部署": "deployment",
+    "statefulset": "statefulset", "statefulsets": "statefulset", "sts": "statefulset", "有状态": "statefulset",
+    "daemonset": "daemonset", "daemonsets": "daemonset", "ds": "daemonset", "守护进程": "daemonset",
+    "job": "job", "jobs": "job", "任务": "job",
+    "cronjob": "cronjob", "cronjobs": "cronjob", "定时任务": "cronjob",
+    "service": "service", "services": "service", "svc": "service", "服务": "service",
+    "node": "node", "nodes": "node", "节点": "node",
+}
+
+# 危险操作集
+_DANGER_ACTIONS = {"scale", "restart", "delete", "update_image"}
+
+
+def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
+    """从自然语言解析意图。返回:
+       { action, kind?, name?, namespace?, replicas?, image?, danger: bool, summary: str }
+       识别不出返回 { action: 'unknown', summary: ... }
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return {"action": "unknown", "summary": "请输入指令"}
+
+    lower = raw.lower()
+    ns = default_namespace or ""
+    # 提取 namespace: "在 X 命名空间" / "namespace X" / "ns=X"
+    ns_match = (
+        _re_k8sai.search(r"在\s*([\w\-]+)\s*命名空间", raw) or
+        _re_k8sai.search(r"namespace[:=\s]+([\w\-]+)", raw, _re_k8sai.IGNORECASE) or
+        _re_k8sai.search(r"\bns[:=\s]+([\w\-]+)", raw, _re_k8sai.IGNORECASE)
+    )
+    if ns_match:
+        ns = ns_match.group(1)
+
+    # 提取 kind
+    kind = None
+    for keyword, normalized in _AI_KIND_ALIASES.items():
+        if keyword in lower:
+            kind = normalized
+            break
+
+    # ── scale (扩容/缩容/扩到 N 副本) ──
+    scale_match = (
+        _re_k8sai.search(r"(?:扩容|缩容|扩|缩|scale)[^\d]{0,8}(\d+|[一二两三四五六七八九十])\s*副?本?", raw) or
+        _re_k8sai.search(r"replicas?\s*[:=]\s*(\d+)", raw, _re_k8sai.IGNORECASE) or
+        _re_k8sai.search(r"(?:到|至|=)\s*(\d+)\s*个?", raw)
+    )
+    if scale_match and kind in {"deployment", "statefulset"}:
+        replicas = _parse_int(scale_match.group(1))
+        name = _extract_resource_name(raw, kind, exclude_words={"扩容","缩容","scale"})
+        return {
+            "action": "scale", "kind": kind, "name": name, "namespace": ns,
+            "replicas": replicas, "danger": True,
+            "summary": f"扩缩容 {kind} {ns or '?'}/{name or '?'} 到 {replicas} 副本",
+        }
+
+    # ── delete ──
+    if _re_k8sai.search(r"删除|删掉|delete|remove", lower):
+        if kind:
+            name = _extract_resource_name(raw, kind, exclude_words={"删除","delete"})
+            return {
+                "action": "delete", "kind": kind, "name": name, "namespace": ns,
+                "danger": True,
+                "summary": f"删除 {kind} {ns or '?'}/{name or '?'} (不可恢复)",
+            }
+
+    # ── restart ──
+    if _re_k8sai.search(r"重启|restart|rollout", lower):
+        if kind in {"deployment", "statefulset", "daemonset", "pod"}:
+            name = _extract_resource_name(raw, kind, exclude_words={"重启","restart","rollout"})
+            return {
+                "action": "restart", "kind": kind, "name": name, "namespace": ns,
+                "danger": True,
+                "summary": f"重启 {kind} {ns or '?'}/{name or '?'} (触发滚动重启)",
+            }
+
+    # ── update image ──
+    img_match = _re_k8sai.search(r"(?:镜像|image)[^\w]*([\w\-./:@]+:[\w\-./@]+)", raw, _re_k8sai.IGNORECASE)
+    if img_match and kind in {"deployment", "statefulset", "daemonset"}:
+        name = _extract_resource_name(raw, kind, exclude_words={"镜像","image","更新","update"})
+        return {
+            "action": "update_image", "kind": kind, "name": name, "namespace": ns,
+            "image": img_match.group(1), "danger": True,
+            "summary": f"更新 {kind} {ns or '?'}/{name or '?'} 镜像 → {img_match.group(1)}",
+        }
+
+    # ── list / show / 查 ──
+    if _re_k8sai.search(r"列出|查看|查询|显示|有哪些|多少|list|show|get", lower):
+        if kind:
+            return {
+                "action": "list", "kind": kind, "namespace": ns, "danger": False,
+                "summary": f"列出 {kind}" + (f" (namespace={ns})" if ns else ""),
+            }
+
+    return {"action": "unknown", "summary": f"无法识别指令: {raw}", "danger": False}
+
+
+def _extract_resource_name(raw: str, kind: str, exclude_words: set[str] | None = None) -> str | None:
+    """从文本中提取资源名 (启发式: 找 kind 后/前的 token)。"""
+    exclude_words = exclude_words or set()
+    exclude_words.add(kind)
+    # 优先匹配 kind 后第一个 token: "deployment nginx" / "扩容 nginx 到"
+    m = _re_k8sai.search(rf"\b{kind}\b\s+([\w\-]+)", raw, _re_k8sai.IGNORECASE)
+    if m:
+        return m.group(1)
+    # 反向: token 后跟 kind
+    m = _re_k8sai.search(rf"([\w\-]+)\s+\b{kind}\b", raw, _re_k8sai.IGNORECASE)
+    if m and m.group(1).lower() not in exclude_words:
+        return m.group(1)
+    # 兜底: 找所有看起来像资源名的 token (字母数字横线, 长度>=2)
+    tokens = _re_k8sai.findall(r"\b([a-z][\w\-]{2,})\b", raw)
+    for t in tokens:
+        if t.lower() not in exclude_words and t.lower() != kind:
+            return t
+    return None
+
+
+class K8sAIParsePayload(BaseModel):
+    text: str
+    namespace: str = ""
+
+
+@router.post("/ai/parse")
+async def k8s_ai_parse(body: K8sAIParsePayload, cluster_id: str = Query("", description="集群 ID"), user: User = Depends(current_user)):
+    """解析自然语言成 K8s 意图 (不执行, 不需要管理员权限)。
+    高危意图前端要弹 confirm 让用户复核。
+    """
+    intent = _ai_parse_intent(body.text, default_namespace=body.namespace)
+    return intent
+
+
+class K8sAIExecPayload(BaseModel):
+    action: str
+    kind: str = ""
+    name: str = ""
+    namespace: str = ""
+    replicas: int | None = None
+    image: str | None = None
+
+
+@router.post("/ai/execute")
+async def k8s_ai_execute(body: K8sAIExecPayload, cluster_id: str = Query("", description="集群 ID"), user: User = Depends(require_admin)):
+    """执行已确认的 AI 解析意图。高危操作需要 admin 权限 + 前端 confirm。
+    复用现有 scale/restart/delete/update_image 实现。"""
+    if not body.action:
+        raise HTTPException(status_code=400, detail="action 必填")
+    if not body.kind and body.action != "list":
+        raise HTTPException(status_code=400, detail="kind 必填")
+    if not body.name and body.action != "list":
+        raise HTTPException(status_code=400, detail="name 必填")
+
+    cluster = _resolve_cluster_for_user(user, cluster_id or None)
+    cid = cluster["id"]
+    try:
+        if body.action == "list":
+            return {"ok": True, "action": "list", "hint": f"跳转 UI 查看 {body.kind} 列表即可"}
+        elif body.action == "scale":
+            if body.replicas is None: raise HTTPException(status_code=400, detail="replicas 必填")
+            patch_body = {"spec": {"replicas": body.replicas}}
+            _, apps = _get_client(cid)
+            if body.kind == "deployment":
+                apps.patch_namespaced_deployment_scale(name=body.name, namespace=body.namespace, body=patch_body)
+            elif body.kind == "statefulset":
+                apps.patch_namespaced_stateful_set_scale(name=body.name, namespace=body.namespace, body=patch_body)
+            else:
+                raise HTTPException(status_code=400, detail=f"scale 不支持 {body.kind}")
+            return {"ok": True, "action": "scale", "replicas": body.replicas}
+        elif body.action == "restart":
+            _restart_workload(cid, body.kind, body.namespace, body.name)
+            return {"ok": True, "action": "restart"}
+        elif body.action == "delete":
+            _delete_k8s_resource(cid, body.kind, body.namespace, body.name)
+            return {"ok": True, "action": "delete"}
+        elif body.action == "update_image":
+            if not body.image: raise HTTPException(status_code=400, detail="image 必填")
+            # 用 K8s SDK 拿当前 containers 列表, 把第一个容器换成新镜像
+            resource = _read_k8s_resource(cid, body.kind, body.namespace, body.name)
+            api_client = _get_api_client(cid)
+            data = _trim_k8s_detail(api_client.sanitize_for_serialization(resource))
+            template = (data.get("spec", {}).get("template", {}) if body.kind != "cronjob"
+                        else data.get("spec", {}).get("jobTemplate", {}).get("spec", {}).get("template", {}))
+            containers = (template.get("spec", {}).get("containers") or [])
+            if not containers:
+                raise HTTPException(status_code=400, detail="未找到容器列表")
+            patch_containers = [{"name": containers[0]["name"], "image": body.image}]
+            patch_body = {"spec": {"template": {"spec": {"containers": patch_containers}}}}
+            _, apps = _get_client(cid)
+            if body.kind == "deployment":
+                apps.patch_namespaced_deployment(name=body.name, namespace=body.namespace, body=patch_body)
+            elif body.kind == "statefulset":
+                apps.patch_namespaced_stateful_set(name=body.name, namespace=body.namespace, body=patch_body)
+            else:
+                apps.patch_namespaced_daemon_set(name=body.name, namespace=body.namespace, body=patch_body)
+            return {"ok": True, "action": "update_image", "image": body.image}
+        else:
+            raise HTTPException(status_code=400, detail=f"未知 action: {body.action}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = getattr(exc, "body", None) or str(exc)
+        logger.warning("[k8s-ai] execute failed action=%s: %s", body.action, detail)
+        raise HTTPException(status_code=400, detail=f"执行失败: {detail}")
+
+
 # ── Round 2: Pod 日志 SSE 流 ─────────────────────────────────────────────────
 
 @router.get("/pod-logs-stream")

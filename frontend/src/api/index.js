@@ -209,6 +209,10 @@ export const api = {
   },
   k8sCreateResource: (clusterId, yamlText) =>
     http.post('/k8s/resource-create', { yaml_text: yamlText }, { params: clusterId ? { cluster_id: clusterId } : {} }),
+  k8sAiParse: (clusterId, text, namespace = '') =>
+    http.post('/k8s/ai/parse', { text, namespace }, { params: clusterId ? { cluster_id: clusterId } : {} }),
+  k8sAiExecute: (clusterId, intent) =>
+    http.post('/k8s/ai/execute', intent, { params: clusterId ? { cluster_id: clusterId } : {} }),
   k8sPodLogs:       (clusterId, namespace, podName, container = '', tailLines = 200) => http.get('/k8s/pod-logs', { params: { ...(clusterId ? { cluster_id: clusterId } : {}), namespace, pod_name: podName, container, tail_lines: tailLines } }),
   // Ansible 任务中心
   ansibleTasks:     ()           => http.get('/ansible/tasks'),

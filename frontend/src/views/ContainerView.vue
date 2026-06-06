@@ -46,6 +46,62 @@
       {{ clusterTestMsg }}
     </div>
 
+    <!-- AI 自然语言命令栏 (Round 3) -->
+    <div v-if="activeClusterId" class="ai-cmd-bar" :class="{ open: aiCmd.open || aiCmd.intent }">
+      <div class="ai-cmd-input-wrap">
+        <span class="ai-cmd-icon" @click="aiCmd.open = !aiCmd.open" title="点击展开/收起 AI 命令栏">🤖</span>
+        <input v-model="aiCmd.text" class="ai-cmd-input"
+          :placeholder="aiCmd.examples[aiCmd.exampleIdx]"
+          @focus="aiCmd.open = true"
+          @keyup.enter="parseAICmd"
+          :disabled="aiCmd.parsing || aiCmd.executing" />
+        <button class="btn-ghost btn-xs" :disabled="!aiCmd.text.trim() || aiCmd.parsing" @click="parseAICmd">
+          {{ aiCmd.parsing ? '解析中...' : '解析' }}
+        </button>
+        <button v-if="aiCmd.intent" class="btn-ghost btn-xs" @click="clearAICmd">清空</button>
+      </div>
+      <!-- 意图卡片 -->
+      <transition name="ai-intent-fade">
+        <div v-if="aiCmd.intent" class="ai-intent-card" :class="{ danger: aiCmd.intent.danger, unknown: aiCmd.intent.action === 'unknown' }">
+          <div class="ai-intent-head">
+            <span class="ai-intent-action-badge" :class="'badge-' + aiCmd.intent.action">{{ aiCmd.intent.action }}</span>
+            <span class="ai-intent-summary">{{ aiCmd.intent.summary }}</span>
+            <span v-if="aiCmd.intent.danger" class="ai-danger-tag">⚠ 高危</span>
+          </div>
+          <div v-if="aiCmd.intent.action !== 'unknown'" class="ai-intent-body">
+            <div class="ai-intent-row" v-if="aiCmd.intent.kind">
+              <span class="ai-field-label">资源</span>
+              <span class="mono">{{ aiCmd.intent.kind }} {{ aiCmd.intent.namespace ? aiCmd.intent.namespace + '/' : '' }}{{ aiCmd.intent.name }}</span>
+            </div>
+            <div class="ai-intent-row" v-if="aiCmd.intent.replicas != null">
+              <span class="ai-field-label">副本数</span>
+              <input type="number" v-model.number="aiCmd.intent.replicas" min="0" max="1000" class="ai-intent-input" />
+            </div>
+            <div class="ai-intent-row" v-if="aiCmd.intent.image">
+              <span class="ai-field-label">镜像</span>
+              <input v-model="aiCmd.intent.image" class="ai-intent-input" />
+            </div>
+            <div class="ai-intent-row" v-if="!aiCmd.intent.namespace && aiCmd.intent.kind !== 'node'">
+              <span class="ai-field-label">命名空间</span>
+              <input v-model="aiCmd.intent.namespace" class="ai-intent-input" placeholder="default" />
+            </div>
+          </div>
+          <div class="ai-intent-actions">
+            <button class="btn-ghost btn-xs" @click="clearAICmd">取消</button>
+            <button v-if="aiCmd.intent.action !== 'unknown'"
+              class="btn-primary-sm"
+              :class="{ danger: aiCmd.intent.danger }"
+              :disabled="aiCmd.executing || !aiCmd.intent.name && aiCmd.intent.action !== 'list'"
+              @click="executeAICmd">
+              {{ aiCmd.executing ? '执行中...' : (aiCmd.intent.danger ? '⚠ 我已确认, 执行' : '✓ 执行') }}
+            </button>
+          </div>
+          <div v-if="aiCmd.error" class="modal-tip modal-tip-error" style="margin-top:8px">{{ aiCmd.error }}</div>
+          <div v-if="aiCmd.success" class="modal-tip" style="margin-top:8px;color:#3fb950">✓ {{ aiCmd.success }}</div>
+        </div>
+      </transition>
+    </div>
+
     <div v-if="!clusters.length" class="empty-state">
       <div class="empty-card">
         <div class="empty-title">还没有 Kubernetes 集群</div>
@@ -1201,6 +1257,31 @@ const imageEditModal = reactive({
 const createModal = reactive({
   open: false, yaml: '', applying: false, error: '', result: null,
 })
+// AI 自然语言命令栏
+const aiCmd = reactive({
+  open: false, text: '', parsing: false, executing: false,
+  intent: null, error: '', success: '',
+  exampleIdx: 0,
+  examples: [
+    '扩容 nginx 到 5 副本',
+    '重启 deployment nginx',
+    '删除 pod foo (在 default 命名空间)',
+    '更新 deployment web 镜像为 nginx:1.25',
+    '列出所有 deployments',
+  ],
+})
+// 占位文字轮播 (每 4s 换一个示例)
+let _aiCmdRotateTimer = null
+onMounted(() => {
+  _aiCmdRotateTimer = setInterval(() => {
+    if (!aiCmd.text && !aiCmd.intent) {
+      aiCmd.exampleIdx = (aiCmd.exampleIdx + 1) % aiCmd.examples.length
+    }
+  }, 4000)
+})
+onBeforeUnmount(() => {
+  if (_aiCmdRotateTimer) { clearInterval(_aiCmdRotateTimer); _aiCmdRotateTimer = null }
+})
 const detailMeta = reactive({
   kind: '',
   name: '',
@@ -1580,6 +1661,71 @@ function closeImageEdit() {
 const imageEditDirty = computed(() =>
   imageEditModal.containers.some(c => c.image !== c.original)
 )
+
+// ── AI 自然语言命令 (Round 3) ───────────────────────────────────────────────
+async function parseAICmd() {
+  if (!aiCmd.text.trim()) return
+  aiCmd.parsing = true
+  aiCmd.intent = null
+  aiCmd.error = ''
+  aiCmd.success = ''
+  try {
+    const ns = activeNs.value || ''
+    const r = await api.k8sAiParse(activeClusterId.value, aiCmd.text, ns)
+    aiCmd.intent = r
+  } catch (e) {
+    aiCmd.error = '解析失败: ' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    aiCmd.parsing = false
+  }
+}
+
+function clearAICmd() {
+  aiCmd.text = ''
+  aiCmd.intent = null
+  aiCmd.error = ''
+  aiCmd.success = ''
+}
+
+async function executeAICmd() {
+  if (!aiCmd.intent) return
+  const i = aiCmd.intent
+  // 'list' 不需要执行, 跳转 tab
+  if (i.action === 'list') {
+    const tabMap = {
+      pod: 'pods', deployment: 'deployments', daemonset: 'daemonSets',
+      statefulset: 'statefulSets', job: 'jobs', cronjob: 'cronJobs',
+      service: 'services', node: 'nodes',
+    }
+    activeTab.value = tabMap[i.kind] || activeTab.value
+    if (i.namespace) activeNs.value = i.namespace
+    clearAICmd()
+    return
+  }
+  // 高危: 二次 confirm
+  if (i.danger) {
+    if (!confirm(`【高危】${i.summary}\n\n确认执行? 操作不可撤销.`)) return
+  }
+  aiCmd.executing = true
+  aiCmd.error = ''
+  try {
+    await api.k8sAiExecute(activeClusterId.value, {
+      action: i.action, kind: i.kind, name: i.name,
+      namespace: i.namespace || 'default',
+      replicas: i.replicas, image: i.image,
+    })
+    aiCmd.success = `${i.summary} 已下发到集群`
+    // 清缓存 + 静默刷新
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+    }
+    setTimeout(() => { refreshAll(); clearAICmd() }, 1500)
+  } catch (e) {
+    aiCmd.error = '执行失败: ' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    aiCmd.executing = false
+  }
+}
 
 // ── 资源创建 (YAML) ──────────────────────────────────────────────────────────
 function openCreateResource() {
@@ -3519,6 +3665,104 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 
 .create-result .batch-result-summary { display: flex; gap: 6px; }
+
+/* AI 自然语言命令栏 (Round 3) */
+.ai-cmd-bar {
+  margin: 8px 20px 0;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, rgba(99,102,241,.06), rgba(56,139,253,.04));
+  border: 1px solid rgba(99,102,241,.18);
+  border-radius: 10px;
+  transition: all .2s;
+}
+.ai-cmd-bar.open {
+  background: linear-gradient(135deg, rgba(99,102,241,.1), rgba(56,139,253,.08));
+  border-color: rgba(99,102,241,.4);
+  box-shadow: 0 4px 16px rgba(99,102,241,.1);
+}
+.ai-cmd-input-wrap {
+  display: flex; align-items: center; gap: 8px;
+}
+.ai-cmd-icon {
+  font-size: 18px; cursor: pointer; user-select: none;
+  transition: transform .2s;
+}
+.ai-cmd-icon:hover { transform: scale(1.15) rotate(-5deg); }
+.ai-cmd-input {
+  flex: 1;
+  padding: 7px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+.ai-cmd-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56,139,253,.15); }
+.ai-cmd-input::placeholder { color: var(--text-muted); font-style: italic; }
+
+/* 意图卡片 */
+.ai-intent-card {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.ai-intent-card.danger { border-color: var(--warning, #d29922); background: rgba(210,153,34,.05); }
+.ai-intent-card.unknown { border-color: var(--text-muted); background: var(--bg-surface); }
+.ai-intent-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ai-intent-action-badge {
+  padding: 2px 8px; border-radius: 4px;
+  background: var(--accent-dim); color: var(--accent);
+  font-weight: 700; font-size: 10px; text-transform: uppercase;
+  font-family: monospace;
+}
+.badge-delete { background: rgba(248,81,73,.18); color: var(--error, #f85149); }
+.badge-restart { background: rgba(56,139,253,.18); color: var(--accent); }
+.badge-scale { background: rgba(63,185,80,.18); color: #3fb950; }
+.badge-update_image { background: rgba(163,113,247,.18); color: #a371f7; }
+.badge-unknown { background: var(--bg-input); color: var(--text-muted); }
+.ai-intent-summary { font-weight: 500; color: var(--text-primary); flex: 1; }
+.ai-danger-tag {
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(210,153,34,.18); color: var(--warning, #d29922);
+  font-weight: 700; font-size: 10px;
+}
+.ai-intent-body {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 0 10px;
+}
+.ai-intent-row { display: flex; align-items: center; gap: 10px; }
+.ai-field-label { width: 60px; color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+.ai-intent-input {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: monospace;
+  outline: none;
+}
+.ai-intent-input:focus { border-color: var(--accent); }
+.ai-intent-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.btn-primary-sm.danger {
+  background: var(--warning, #d29922);
+  border-color: var(--warning, #d29922);
+}
+
+.ai-intent-fade-enter-active, .ai-intent-fade-leave-active {
+  transition: opacity .18s, transform .18s;
+}
+.ai-intent-fade-enter-from, .ai-intent-fade-leave-to {
+  opacity: 0; transform: translateY(-6px);
+}
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {
   display: grid;
