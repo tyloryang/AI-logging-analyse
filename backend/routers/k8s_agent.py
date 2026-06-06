@@ -275,13 +275,59 @@ class K8sAgentChatPayload(BaseModel):
 # ── LLM provider 抽象 (复用 ai_analyzer 的 AI_PROVIDER/AI_MODEL/AI_BASE_URL/AI_API_KEY) ────
 
 def _get_llm_config() -> dict:
-    """从 env 拿 LLM 配置. 复用项目标准变量, 不再硬编码 ANTHROPIC_API_KEY。
+    """从「智能体配置」(系统设置 → AI Agent → 模型) 拿激活模型配置.
 
-    支持的 AI_PROVIDER:
-      - anthropic (默认): ANTHROPIC_API_KEY + AI_MODEL
-      - openai 兼容: AI_BASE_URL + AI_API_KEY + AI_MODEL
-        (本地 Qwen / 通义千问 / DeepSeek / OpenRouter / Ollama 等)
+    优先级:
+    1. agent_config.json 里 active=True 的模型 (系统设置页可改)
+    2. fallback: env (AI_PROVIDER / AI_MODEL / ...) — 兼容老配置
+
+    管理 UI: /aiops/config (前端) → /api/agent-config/models (后端)
     """
+    # 先尝试从系统模型设置读
+    try:
+        from routers.agent_config import _load as _load_agent_config, _get_active_model, _normalize_model_record
+        cfg = _load_agent_config()
+        active = _get_active_model(cfg)
+        if active:
+            normalized, _ = _normalize_model_record(active)
+            provider = (normalized.get("runtime_provider") or "").strip().lower()
+            model = (normalized.get("runtime_model") or normalized.get("name") or "").strip()
+            api_key = (normalized.get("api_key") or "").strip()
+            base_url = (normalized.get("base_url") or "").strip()
+
+            if provider == "anthropic":
+                if not api_key:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"系统设置的激活模型「{normalized.get('name', '?')}」缺少 API key. 请到 /aiops/config 补填.",
+                    )
+                if not model:
+                    raise HTTPException(status_code=500, detail=f"激活模型「{normalized.get('name', '?')}」缺少 runtime_model")
+                return {"provider": "anthropic", "api_key": api_key, "model": model, "source": "agent_config"}
+
+            if provider in {"openai", "local", "ollama", "vllm", "oneapi", "qwen", "deepseek", "gemini", "gpt"}:
+                if not base_url:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"系统设置的激活模型「{normalized.get('name', '?')}」缺少 base_url. 请到 /aiops/config 补填.",
+                    )
+                if not model:
+                    raise HTTPException(status_code=500, detail=f"激活模型「{normalized.get('name', '?')}」缺少 runtime_model")
+                return {
+                    "provider": "openai",
+                    "base_url": base_url,
+                    "api_key": api_key or "EMPTY",
+                    "model": model,
+                    "source": "agent_config",
+                }
+            # provider 不认识 → 落到 env fallback
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # agent_config 出问题不阻塞, 尝试 env 兜底
+        logger.warning("[k8s-agent] 读取 agent_config 失败, 尝试 env fallback: %s", exc)
+
+    # Fallback: 环境变量 (兼容老配置 / Docker compose 注入)
     provider = (os.getenv("AI_PROVIDER", "") or "").strip().lower()
     model = (os.getenv("AI_MODEL", "") or "").strip()
 
@@ -289,43 +335,28 @@ def _get_llm_config() -> dict:
         raise HTTPException(
             status_code=500,
             detail=(
-                "未配置 AI_PROVIDER, 智能模式不可用. "
-                "请在 backend/.env 设置 AI_PROVIDER=anthropic 或 openai, "
-                "并配套设置 AI_MODEL + 对应 API key/base_url"
+                "智能模式不可用: 未配置激活模型. "
+                "请到 系统设置 → AIOps → 智能配置 (/aiops/config) 添加并激活一个模型, "
+                "或在 backend/.env 设置 AI_PROVIDER + AI_MODEL"
             ),
         )
 
     if provider == "anthropic":
         api_key = (os.getenv("ANTHROPIC_API_KEY", "") or "").strip()
         if not api_key:
-            raise HTTPException(
-                status_code=500,
-                detail="AI_PROVIDER=anthropic 时必须设置 ANTHROPIC_API_KEY",
-            )
-        return {
-            "provider": "anthropic",
-            "api_key": api_key,
-            "model": model or "claude-opus-4-7",
-        }
+            raise HTTPException(status_code=500, detail="AI_PROVIDER=anthropic 时必须设置 ANTHROPIC_API_KEY")
+        return {"provider": "anthropic", "api_key": api_key, "model": model or "claude-opus-4-7", "source": "env"}
 
     if provider == "openai":
         base_url = (os.getenv("AI_BASE_URL", "") or "").strip()
-        api_key = (os.getenv("AI_API_KEY", "") or "EMPTY").strip()   # 本地模型可无 key
+        api_key = (os.getenv("AI_API_KEY", "") or "EMPTY").strip()
         if not base_url:
-            raise HTTPException(
-                status_code=500,
-                detail="AI_PROVIDER=openai 时必须设置 AI_BASE_URL (本地或远程的 OpenAI 兼容端点)",
-            )
+            raise HTTPException(status_code=500, detail="AI_PROVIDER=openai 时必须设置 AI_BASE_URL")
         if not model:
             raise HTTPException(status_code=500, detail="AI_PROVIDER=openai 时必须设置 AI_MODEL")
-        return {
-            "provider": "openai",
-            "base_url": base_url,
-            "api_key": api_key or "EMPTY",
-            "model": model,
-        }
+        return {"provider": "openai", "base_url": base_url, "api_key": api_key or "EMPTY", "model": model, "source": "env"}
 
-    raise HTTPException(status_code=500, detail=f"暂不支持的 AI_PROVIDER: {provider} (仅支持 anthropic / openai)")
+    raise HTTPException(status_code=500, detail=f"暂不支持的 AI_PROVIDER: {provider} (仅支持 anthropic / openai 兼容)")
 
 
 def _tools_for_openai() -> list[dict]:
@@ -522,6 +553,7 @@ async def k8s_ai_chat(body: K8sAgentChatPayload, user: User = Depends(require_ad
         "pending_actions": pending_actions,
         "provider": cfg["provider"],
         "model": cfg["model"],
+        "config_source": cfg.get("source", "env"),   # 'agent_config' | 'env'
     }
 
 

@@ -111,7 +111,10 @@
               </div>
               <div class="tool-result">{{ turn.result }}</div>
             </div>
-            <div v-else-if="turn.role === 'warn'" class="ai-warn-bubble">⚠ {{ turn.content }}</div>
+            <div v-else-if="turn.role === 'warn'" class="ai-warn-bubble">
+              ⚠ {{ turn.content }}
+              <router-link v-if="turn.action" :to="turn.action.route" class="warn-action-link">{{ turn.action.label }} →</router-link>
+            </div>
           </div>
           <div v-if="aiCmd.chatting" class="ai-thinking">
             <span class="spinner" style="width:12px;height:12px"></span> Claude 思考中...
@@ -1889,11 +1892,18 @@ async function runSmartChat() {
     }
   } catch (e) {
     const detail = e?.response?.data?.detail || e?.message || String(e)
-    // 配置缺失类错误: 给具体配置示例
-    if (detail.includes('AI_PROVIDER') || detail.includes('ANTHROPIC_API_KEY') || detail.includes('AI_BASE_URL') || detail.includes('AI_MODEL')) {
+    // 配置缺失类错误: 引导用户去系统设置页
+    const isConfigError = (
+      detail.includes('激活模型') || detail.includes('AI_PROVIDER') ||
+      detail.includes('AI_MODEL') || detail.includes('API key') ||
+      detail.includes('api_key') || detail.includes('base_url') ||
+      detail.includes('未配置') || detail.includes('/aiops/config')
+    )
+    if (isConfigError) {
       aiCmd.chatHistory.push({
         role: 'warn',
-        content: `调用失败: ${detail}\n\n配置示例 (backend/.env):\n\n# Anthropic Claude\nAI_PROVIDER=anthropic\nANTHROPIC_API_KEY=sk-ant-xxx\nAI_MODEL=claude-opus-4-7\n\n# 或 OpenAI 兼容 (本地 Qwen / DeepSeek / OpenRouter / Ollama)\nAI_PROVIDER=openai\nAI_BASE_URL=http://192.168.x.x:8000/v1\nAI_API_KEY=sk-xxx\nAI_MODEL=qwen2.5-72b-instruct`,
+        content: `调用失败: ${detail}\n\n➡ 推荐: 到「系统设置 → AIOps → 智能配置」(/aiops/config) 添加并激活模型\n   该页同时管理 AI 分析 / Agent 对话 / 智能模式使用的模型, 一处修改全局生效.`,
+        action: { label: '去配置', route: '/aiops/config' },
       })
     } else {
       aiCmd.chatHistory.push({ role: 'warn', content: '调用失败: ' + detail })
@@ -4219,6 +4229,19 @@ onBeforeUnmount(() => { _destroyExec() })
   font-family: monospace;
   line-height: 1.6;
 }
+.warn-action-link {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 10px;
+  background: var(--accent);
+  color: white !important;
+  border-radius: 4px;
+  font-family: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  font-size: 11px;
+}
+.warn-action-link:hover { filter: brightness(1.1); }
 
 .ai-thinking {
   display: flex; align-items: center; gap: 8px;
