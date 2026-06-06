@@ -1762,6 +1762,151 @@ async def pod_logs(
         raise HTTPException(502, f"k8s 日志读取失败: {exc}")
 
 
+# ── Round 2: Pod 日志 SSE 流 ─────────────────────────────────────────────────
+
+@router.get("/pod-logs-stream")
+async def pod_logs_stream(
+    namespace: str = Query(..., description="命名空间"),
+    pod_name: str = Query(..., description="Pod 名称"),
+    cluster_id: str = Query("", description="集群 ID"),
+    container: str = Query("", description="容器名称"),
+    tail_lines: int = Query(100, description="启动尾部行数"),
+    user: User = Depends(current_user),
+):
+    """实时 Pod 日志 SSE 流。K8s SDK 用 follow=True 阻塞返回 generator,
+    放线程池避免阻塞 asyncio 事件循环。前端用 EventSource 消费。
+    """
+    import threading
+    from fastapi.responses import StreamingResponse
+
+    cluster = _resolve_cluster_for_user(user, cluster_id or None)
+    cid = cluster["id"]
+    value = max(10, min(int(tail_lines or 100), 1000))
+
+    async def _gen():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=512)
+        stop_event = asyncio.Event()
+
+        def _reader():
+            try:
+                v1, _ = _get_client(cid)
+                w = v1.read_namespaced_pod_log(
+                    name=pod_name, namespace=namespace,
+                    container=(container or None),
+                    tail_lines=value, follow=True, _preload_content=False,
+                    timestamps=True,
+                )
+                for line_bytes in w.stream(amt=None, decode_content=True):
+                    if stop_event.is_set():
+                        break
+                    try:
+                        text = line_bytes.decode("utf-8", errors="replace") if isinstance(line_bytes, (bytes, bytearray)) else str(line_bytes)
+                    except Exception:
+                        text = str(line_bytes)
+                    # 投递到 asyncio.Queue (线程安全 via loop.call_soon_threadsafe)
+                    try:
+                        loop.call_soon_threadsafe(queue.put_nowait, text)
+                    except Exception:
+                        break
+            except Exception as exc:
+                err = f"[stream error] {exc}"
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, err)
+                except Exception:
+                    pass
+            finally:
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)   # 终止标志
+                except Exception:
+                    pass
+
+        # 启动读线程
+        threading.Thread(target=_reader, name=f"k8s-log-stream-{pod_name}", daemon=True).start()
+
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    # heartbeat 避免代理超时断开
+                    yield ": keep-alive\n\n"
+                    continue
+                if msg is None:
+                    yield "event: end\ndata: stream closed\n\n"
+                    break
+                # SSE 帧: 每行 data: 前缀
+                for line in str(msg).rstrip("\n").split("\n"):
+                    yield f"data: {line}\n"
+                yield "\n"
+        finally:
+            stop_event.set()
+
+    return StreamingResponse(_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Round 2: 资源创建 (YAML / 多资源) ────────────────────────────────────────
+
+class K8sCreatePayload(BaseModel):
+    yaml_text: str
+
+
+@router.post("/resource-create")
+async def create_resource(
+    body: K8sCreatePayload,
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(require_admin),
+):
+    """从 YAML 文本创建一个或多个资源 (--- 分隔多文档)。
+    用 kubernetes.utils.create_from_dict 自动按 kind 分派 SDK API。
+    """
+    import yaml as _yaml
+    try:
+        from kubernetes import utils as k8s_utils
+    except ImportError:
+        raise HTTPException(status_code=500, detail="kubernetes.utils 不可用")
+
+    text = (body.yaml_text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="YAML 不能为空")
+    try:
+        docs = list(_yaml.safe_load_all(text))
+    except _yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"YAML 解析失败: {exc}")
+    docs = [d for d in docs if isinstance(d, dict) and d]
+    if not docs:
+        raise HTTPException(status_code=400, detail="YAML 不含任何有效资源")
+
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        api_client = _get_api_client(cluster["id"])
+        created = []
+        errors = []
+        for doc in docs:
+            try:
+                # create_from_dict 返回创建的 K8s 资源列表 (通常 1 个)
+                res_list = k8s_utils.create_from_dict(api_client, doc)
+                for res in (res_list if isinstance(res_list, list) else [res_list]):
+                    kind = getattr(res, "kind", None) or doc.get("kind") or ""
+                    md = getattr(res, "metadata", None)
+                    created.append({
+                        "kind": kind,
+                        "name": getattr(md, "name", None) if md else doc.get("metadata", {}).get("name"),
+                        "namespace": getattr(md, "namespace", None) if md else doc.get("metadata", {}).get("namespace"),
+                    })
+            except k8s_utils.FailToCreateError as exc:
+                errors.append({"kind": doc.get("kind", ""), "name": doc.get("metadata", {}).get("name", ""), "error": str(exc)})
+            except Exception as exc:
+                errors.append({"kind": doc.get("kind", ""), "name": doc.get("metadata", {}).get("name", ""), "error": getattr(exc, "body", None) or str(exc)})
+        return {"created": created, "errors": errors, "total": len(docs)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = getattr(exc, "body", None) or str(exc)
+        logger.warning("[k8s] resource_create failed: %s", detail)
+        raise HTTPException(status_code=400, detail=f"创建失败: {detail}")
+
+
 # ── Namespaces ────────────────────────────────────────────────────────────────
 
 @router.get("/namespaces")

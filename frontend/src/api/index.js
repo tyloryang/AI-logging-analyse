@@ -200,6 +200,15 @@ export const api = {
   k8sResourceEvents: (clusterId, kind, name, namespace = '') =>
     http.get('/k8s/resource-events',
       { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
+  // SSE 日志流 URL (用 EventSource 消费, 不走 axios)
+  k8sPodLogsStreamUrl: (clusterId, podName, namespace, container, tailLines = 100) => {
+    const params = new URLSearchParams({ namespace, pod_name: podName, tail_lines: String(tailLines) })
+    if (clusterId) params.set('cluster_id', clusterId)
+    if (container) params.set('container', container)
+    return `/api/k8s/pod-logs-stream?${params}`
+  },
+  k8sCreateResource: (clusterId, yamlText) =>
+    http.post('/k8s/resource-create', { yaml_text: yamlText }, { params: clusterId ? { cluster_id: clusterId } : {} }),
   k8sPodLogs:       (clusterId, namespace, podName, container = '', tailLines = 200) => http.get('/k8s/pod-logs', { params: { ...(clusterId ? { cluster_id: clusterId } : {}), namespace, pod_name: podName, container, tail_lines: tailLines } }),
   // Ansible 任务中心
   ansibleTasks:     ()           => http.get('/ansible/tasks'),

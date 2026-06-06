@@ -28,6 +28,9 @@
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="openEditCluster">编辑</button>
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="testActiveCluster">测试</button>
         <button v-if="canManageClusters" class="btn-ghost danger" :disabled="!activeCluster" @click="removeCluster">删除</button>
+        <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeClusterId" @click="openCreateResource" title="从 YAML 创建资源">
+          + 新建
+        </button>
         <button class="btn-refresh" @click="refreshAll" :disabled="loading || !activeClusterId" title="跳过缓存强制重拉">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <polyline points="23 4 23 10 17 10" />
@@ -920,14 +923,21 @@
             <button class="btn-ghost refresh-log-btn" :disabled="!selectedLogPod || logLoading" @click="loadSelectedPodLogs">
               刷新日志
             </button>
+            <button class="btn-ghost refresh-log-btn"
+              :class="{ 'btn-follow-active': logFollowing }"
+              :disabled="!selectedLogPod"
+              @click="toggleLogFollow"
+              :title="logFollowing ? '停止实时跟随' : '开始实时跟随 (SSE)'">
+              {{ logFollowing ? '⏸ 停止' : '▶ 实时' }}
+            </button>
           </div>
           <div v-if="logError" class="modal-tip modal-tip-error">{{ logError }}</div>
           <div class="code-panel">
-            <div v-if="logLoading" class="loading-row compact">
+            <div v-if="logLoading && !logFollowing" class="loading-row compact">
               <span class="spinner"></span>
               正在加载日志...
             </div>
-            <pre v-else class="log-view">{{ logText || '暂无日志输出' }}</pre>
+            <pre v-else ref="logViewEl" class="log-view">{{ logText || '暂无日志输出' }}<span v-if="logFollowing" class="log-cursor">▌</span></pre>
           </div>
         </div>
         <div class="modal-actions">
@@ -989,6 +999,54 @@
         </div>
       </div>
     </transition>
+
+    <!-- 资源创建模态 (YAML 多文档) -->
+    <div v-if="createModal.open" class="modal-mask" @click.self="closeCreateResource">
+      <div class="modal-card detail-modal-card">
+        <div class="modal-title">+ 从 YAML 创建资源</div>
+        <div class="modal-body">
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">
+            支持单/多资源 (用 <code>---</code> 分隔多个文档)。kubectl apply 同款行为。
+          </p>
+          <div class="code-panel" style="min-height:380px">
+            <textarea v-model="createModal.yaml" class="yaml-editor"
+              spellcheck="false" placeholder="apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-config
+  namespace: default
+data:
+  key: value"></textarea>
+          </div>
+          <div v-if="createModal.error" class="modal-tip modal-tip-error" style="margin-top:12px;white-space:pre-wrap">{{ createModal.error }}</div>
+          <div v-if="createModal.result" class="create-result" style="margin-top:12px">
+            <div class="batch-result-summary">
+              <span class="batch-stat success">✓ {{ createModal.result.created.length }}</span>
+              <span v-if="createModal.result.errors.length" class="batch-stat failed">✗ {{ createModal.result.errors.length }}</span>
+              <span class="batch-stat total">共 {{ createModal.result.total }}</span>
+            </div>
+            <div class="batch-result-list" style="margin-top:8px;max-height:160px">
+              <div v-for="(r, i) in createModal.result.created" :key="'ok'+i" class="batch-result-row ok">
+                <span class="batch-result-icon">✓</span>
+                <span class="batch-result-name"><span class="ns-tag">{{ r.namespace || '-' }}</span><span class="mono">{{ r.kind }}/{{ r.name }}</span></span>
+                <span></span>
+              </div>
+              <div v-for="(r, i) in createModal.result.errors" :key="'er'+i" class="batch-result-row err">
+                <span class="batch-result-icon">✗</span>
+                <span class="batch-result-name"><span class="mono">{{ r.kind }}/{{ r.name }}</span></span>
+                <span class="batch-result-err" :title="r.error">{{ r.error.split('\n')[0].slice(0, 120) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-ghost" @click="closeCreateResource">关闭</button>
+          <button class="btn-primary-sm" :disabled="createModal.applying || !createModal.yaml.trim()" @click="applyCreateResource">
+            {{ createModal.applying ? '应用中...' : '✓ 创建' }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- 镜像编辑模态 -->
     <div v-if="imageEditModal.open" class="modal-mask" @click.self="closeImageEdit">
@@ -1139,6 +1197,10 @@ const imageEditModal = reactive({
   containers: [],   // [{ name, image, original }]
   applying: false, error: '', success: false,
 })
+// 资源创建弹窗
+const createModal = reactive({
+  open: false, yaml: '', applying: false, error: '', result: null,
+})
 const detailMeta = reactive({
   kind: '',
   name: '',
@@ -1148,6 +1210,10 @@ const showLogModal = ref(false)
 const logLoading = ref(false)
 const logError = ref('')
 const logText = ref('')
+const logFollowing = ref(false)
+const logViewEl = ref(null)
+let _logEventSource = null
+const MAX_LOG_BUFFER = 100_000  // 防内存爆炸: 单 pod 最多保留 10W 字符
 const logTailLines = ref(200)
 const logPods = ref([])
 const selectedLogPod = ref('')
@@ -1515,6 +1581,48 @@ const imageEditDirty = computed(() =>
   imageEditModal.containers.some(c => c.image !== c.original)
 )
 
+// ── 资源创建 (YAML) ──────────────────────────────────────────────────────────
+function openCreateResource() {
+  Object.assign(createModal, {
+    open: true,
+    yaml: 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: example\n  namespace: default\ndata:\n  key: value\n',
+    applying: false, error: '', result: null,
+  })
+}
+
+function closeCreateResource() {
+  createModal.open = false
+  createModal.result = null
+}
+
+async function applyCreateResource() {
+  if (!createModal.yaml.trim()) return
+  createModal.applying = true
+  createModal.error = ''
+  createModal.result = null
+  try {
+    const r = await api.k8sCreateResource(activeClusterId.value, createModal.yaml)
+    createModal.result = r
+    if (!r.errors?.length) {
+      // 全部成功: 清缓存 + 静默刷新 + 1.5s 自动关
+      for (const key of Array.from(_resourceCache.keys())) {
+        if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+      }
+      setTimeout(() => { refreshAll(); closeCreateResource() }, 1500)
+    } else {
+      // 有失败: 显示结果但不自动关, 用户决定下一步
+      for (const key of Array.from(_resourceCache.keys())) {
+        if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+      }
+      setTimeout(() => refreshAll(), 800)
+    }
+  } catch (e) {
+    createModal.error = e?.response?.data?.detail || e?.message || String(e)
+  } finally {
+    createModal.applying = false
+  }
+}
+
 async function applyImageEdit() {
   if (!imageEditDirty.value) return
   const changed = imageEditModal.containers.filter(c => c.image !== c.original)
@@ -1746,6 +1854,7 @@ async function applyYamlEdit() {
 }
 
 function resetLogState() {
+  stopLogFollow()
   logLoading.value = false
   logError.value = ''
   logText.value = ''
@@ -1984,6 +2093,54 @@ function toCST(raw) {
   )
 }
 
+// ── Pod 日志实时流 (EventSource) ────────────────────────────────────────────
+function stopLogFollow() {
+  if (_logEventSource) {
+    try { _logEventSource.close() } catch {}
+    _logEventSource = null
+  }
+  logFollowing.value = false
+}
+
+function startLogFollow() {
+  if (!selectedLogPod.value) return
+  stopLogFollow()
+  const url = api.k8sPodLogsStreamUrl(
+    activeClusterId.value, selectedLogPod.value, logMeta.namespace,
+    selectedLogContainer.value, logTailLines.value || 100,
+  )
+  const es = new EventSource(url, { withCredentials: true })
+  _logEventSource = es
+  logFollowing.value = true
+  logError.value = ''
+  logText.value = ''   // follow 模式从空开始 (tail_lines 由后端给出)
+  es.onmessage = (ev) => {
+    if (ev.data === undefined || ev.data === null) return
+    // 追加到 logText, 超阈值时丢前面
+    let next = logText.value + ev.data + '\n'
+    if (next.length > MAX_LOG_BUFFER) {
+      next = '... [前面日志已截断] ...\n' + next.slice(next.length - MAX_LOG_BUFFER)
+    }
+    logText.value = next
+    nextTick(() => {
+      const el = logViewEl.value
+      if (el) el.scrollTop = el.scrollHeight
+    })
+  }
+  es.addEventListener('end', () => {
+    stopLogFollow()
+  })
+  es.onerror = () => {
+    // 不显式 close, 让浏览器自动重连
+    if (!logText.value) logError.value = 'SSE 连接失败, 请检查 Pod 是否还在 Running'
+  }
+}
+
+function toggleLogFollow() {
+  if (logFollowing.value) stopLogFollow()
+  else startLogFollow()
+}
+
 async function loadSelectedPodLogs() {
   if (!activeClusterId.value || !selectedLogPod.value || !logMeta.namespace) return
   logTailLines.value = clampTailLines(logTailLines.value)
@@ -2008,11 +2165,13 @@ async function loadSelectedPodLogs() {
 }
 
 async function handleLogPodChange() {
+  stopLogFollow()
   selectedLogContainer.value = pickDefaultContainer(selectedLogPodData.value)
   await loadSelectedPodLogs()
 }
 
 async function handleLogContainerChange() {
+  stopLogFollow()
   await loadSelectedPodLogs()
 }
 
@@ -3342,6 +3501,24 @@ onBeforeUnmount(() => { _destroyExec() })
   overflow: hidden; text-overflow: ellipsis;
 }
 .image-edit-input { font-family: monospace; font-size: 12px; }
+
+/* 日志 follow 按钮 + 光标 */
+.btn-follow-active {
+  background: rgba(63,185,80,.15) !important;
+  border-color: rgba(63,185,80,.4) !important;
+  color: #3fb950 !important;
+}
+.log-cursor {
+  display: inline-block;
+  animation: log-cursor-blink 1s steps(2) infinite;
+  color: #3fb950;
+  font-weight: 700;
+}
+@keyframes log-cursor-blink {
+  to { opacity: 0 }
+}
+
+.create-result .batch-result-summary { display: flex; gap: 6px; }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {
   display: grid;
