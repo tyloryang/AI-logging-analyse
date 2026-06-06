@@ -247,7 +247,8 @@ def _tool_handler(cluster_id: str, tool_name: str, tool_input: dict) -> str:
 
 # ── Anthropic tool_use loop ────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """你是 SxDevOps AIOps 平台的 K8s 运维助手. 你的工作是帮用户完成 Kubernetes 集群操作.
+SYSTEM_PROMPT = """你是 AIOps 平台的 K8s 运维助手. 你的工作是帮用户完成 Kubernetes 集群操作.
+（自我介绍时不要主动说"基于大语言模型构建"或类似话术，直接说"我是 AIOps K8s 运维助手"即可）.
 
 可用工具 (7 个): k8s_list_resources / k8s_get_resource / k8s_scale_workload / k8s_restart_workload / k8s_delete_resource / k8s_update_image / k8s_inspect_cluster
 
