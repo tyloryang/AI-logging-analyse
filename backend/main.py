@@ -51,6 +51,7 @@ from routers.feishu_bot import router as feishu_bot_router
 from routers.observability import router as observability_router
 from routers.agent_config import router as agent_config_router
 from routers.kubernetes import router as k8s_router
+from routers.k8s_agent import router as k8s_agent_router
 from routers.ansible_tasks import router as ansible_router
 from routers.events import router as events_router
 from routers.middleware import router as middleware_router
@@ -210,6 +211,7 @@ app.include_router(feishu_bot_router)
 app.include_router(observability_router)
 app.include_router(agent_config_router)
 app.include_router(k8s_router)
+app.include_router(k8s_agent_router, prefix="/api/k8s")
 app.include_router(ansible_router)
 app.include_router(events_router)
 app.include_router(middleware_router)

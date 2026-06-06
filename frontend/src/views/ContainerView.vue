@@ -51,15 +51,45 @@
       <div class="ai-cmd-input-wrap">
         <span class="ai-cmd-icon" @click="aiCmd.open = !aiCmd.open" title="点击展开/收起 AI 命令栏">🤖</span>
         <input v-model="aiCmd.text" class="ai-cmd-input"
-          :placeholder="aiCmd.examples[aiCmd.exampleIdx]"
+          :placeholder="aiCmd.smart ? '智能模式: 自由对话, Claude 自主调用工具...' : aiCmd.examples[aiCmd.exampleIdx]"
           @focus="aiCmd.open = true"
-          @keyup.enter="parseAICmd"
-          :disabled="aiCmd.parsing || aiCmd.executing" />
-        <button class="btn-ghost btn-xs" :disabled="!aiCmd.text.trim() || aiCmd.parsing" @click="parseAICmd">
-          {{ aiCmd.parsing ? '解析中...' : '解析' }}
+          @keyup.enter="aiCmd.smart ? runSmartChat() : parseAICmd()"
+          :disabled="aiCmd.parsing || aiCmd.executing || aiCmd.chatting" />
+        <button class="ai-mode-toggle" :class="{ active: aiCmd.smart }" @click="aiCmd.smart = !aiCmd.smart"
+          :title="aiCmd.smart ? '智能模式 (LLM 工具调用) — 点击切回正则模式' : '正则模式 (确定性指令) — 点击切到智能模式 (LLM)'">
+          {{ aiCmd.smart ? '🧠 智能' : '⚡ 正则' }}
         </button>
-        <button v-if="aiCmd.intent" class="btn-ghost btn-xs" @click="clearAICmd">清空</button>
+        <button class="btn-ghost btn-xs" :disabled="!aiCmd.text.trim() || aiCmd.parsing || aiCmd.chatting"
+          @click="aiCmd.smart ? runSmartChat() : parseAICmd()">
+          {{ aiCmd.smart ? (aiCmd.chatting ? '思考中...' : '提问') : (aiCmd.parsing ? '解析中...' : '解析') }}
+        </button>
+        <button v-if="aiCmd.intent || aiCmd.chatHistory.length" class="btn-ghost btn-xs" @click="clearAICmd">清空</button>
       </div>
+      <!-- 智能模式: 对话历史 -->
+      <transition name="ai-intent-fade">
+        <div v-if="aiCmd.smart && aiCmd.chatHistory.length" class="ai-chat-history">
+          <div v-for="(turn, i) in aiCmd.chatHistory" :key="i" class="ai-turn" :class="'turn-' + turn.role">
+            <div v-if="turn.role === 'user'" class="ai-turn-bubble user-bubble">
+              <span class="turn-icon">👤</span>{{ turn.content }}
+            </div>
+            <div v-else-if="turn.role === 'assistant'" class="ai-turn-bubble assistant-bubble">
+              <span class="turn-icon">🧠</span>
+              <span v-html="renderInspectMd(turn.content)"></span>
+            </div>
+            <div v-else-if="turn.role === 'tool'" class="ai-tool-step" :class="{ failed: turn.failed }">
+              <div class="tool-head">
+                <span class="tool-name-badge">⚙ {{ turn.name }}</span>
+                <span class="tool-input-preview">{{ JSON.stringify(turn.input) }}</span>
+              </div>
+              <div class="tool-result">{{ turn.result }}</div>
+            </div>
+            <div v-else-if="turn.role === 'warn'" class="ai-warn-bubble">⚠ {{ turn.content }}</div>
+          </div>
+          <div v-if="aiCmd.chatting" class="ai-thinking">
+            <span class="spinner" style="width:12px;height:12px"></span> Claude 思考中...
+          </div>
+        </div>
+      </transition>
       <!-- 意图卡片 -->
       <transition name="ai-intent-fade">
         <div v-if="aiCmd.intent" class="ai-intent-card" :class="{ danger: aiCmd.intent.danger, unknown: aiCmd.intent.action === 'unknown' }">
@@ -1296,6 +1326,10 @@ const aiCmd = reactive({
   // 巡检报告
   inspectReport: '',
   inspectReportHtml: '',
+  // 智能模式 (Phase 1: Claude tool_use)
+  smart: false,
+  chatting: false,
+  chatHistory: [],   // [{ role: 'user'|'assistant'|'tool'|'warn', content?, name?, input?, result?, failed? }]
   exampleIdx: 0,
   examples: [
     '部署 deployment nginx',
@@ -1725,6 +1759,42 @@ function clearAICmd() {
   aiCmd.alreadyExists = null
   aiCmd.inspectReport = ''
   aiCmd.inspectReportHtml = ''
+  aiCmd.chatHistory = []
+}
+
+// 智能模式: Claude tool_use
+async function runSmartChat() {
+  const msg = aiCmd.text.trim()
+  if (!msg) return
+  aiCmd.chatting = true
+  aiCmd.chatHistory.push({ role: 'user', content: msg })
+  aiCmd.text = ''
+  try {
+    const r = await api.k8sAiChat(activeClusterId.value, msg, activeNs.value || '')
+    // 把后端 history 拆成对话气泡
+    for (const item of (r.history || [])) {
+      if (item.type === 'assistant_text') {
+        aiCmd.chatHistory.push({ role: 'assistant', content: item.content })
+      } else if (item.type === 'tool_use') {
+        const failed = (item.result || '').startsWith('✗')
+        aiCmd.chatHistory.push({ role: 'tool', name: item.name, input: item.input, result: item.result, failed })
+      } else if (item.type === 'warning') {
+        aiCmd.chatHistory.push({ role: 'warn', content: item.content })
+      }
+    }
+    // 操作可能改变了集群状态, 静默刷新
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+    }
+    setTimeout(() => refreshAll(), 800)
+  } catch (e) {
+    aiCmd.chatHistory.push({
+      role: 'warn',
+      content: '调用失败: ' + (e?.response?.data?.detail || e?.message || e),
+    })
+  } finally {
+    aiCmd.chatting = false
+  }
 }
 
 // 极简 markdown 渲染 (仅支持 ## 标题 / **粗体** / - 列表 / `代码`)
@@ -3946,6 +4016,108 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 
 .badge-inspect { background: rgba(99,102,241,.18); color: #818cf8; }
+
+/* 智能模式 toggle */
+.ai-mode-toggle {
+  padding: 4px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px; font-weight: 600;
+  cursor: pointer; user-select: none;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.ai-mode-toggle:hover { color: var(--text-primary); }
+.ai-mode-toggle.active {
+  background: linear-gradient(135deg, rgba(163,113,247,.18), rgba(99,102,241,.18));
+  border-color: rgba(163,113,247,.5);
+  color: #a371f7;
+}
+
+/* 智能模式对话历史 */
+.ai-chat-history {
+  margin-top: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 60vh; overflow-y: auto;
+  padding-right: 4px;
+}
+.ai-turn { display: flex; }
+.ai-turn-bubble {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  max-width: 88%;
+  line-height: 1.65;
+  word-break: break-word;
+}
+.user-bubble {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  margin-left: auto;
+  border-bottom-right-radius: 3px;
+}
+.assistant-bubble {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-bottom-left-radius: 3px;
+}
+.turn-icon { margin-right: 6px; }
+
+.ai-tool-step {
+  padding: 7px 10px;
+  background: rgba(56,139,253,.05);
+  border: 1px solid rgba(56,139,253,.25);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  font-size: 11px;
+  margin: 2px 0 2px 28px;
+}
+.ai-tool-step.failed {
+  background: rgba(248,81,73,.05);
+  border-color: rgba(248,81,73,.3);
+  border-left-color: var(--error, #f85149);
+}
+.tool-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+}
+.tool-name-badge {
+  font-family: monospace; font-weight: 700;
+  color: var(--accent);
+}
+.ai-tool-step.failed .tool-name-badge { color: var(--error, #f85149); }
+.tool-input-preview {
+  font-family: monospace; color: var(--text-muted);
+  font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-result {
+  font-family: monospace; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--bg-input);
+  padding: 6px 8px; border-radius: 4px;
+  max-height: 180px; overflow-y: auto;
+}
+
+.ai-warn-bubble {
+  padding: 6px 10px;
+  background: rgba(210,153,34,.1);
+  border: 1px solid rgba(210,153,34,.35);
+  color: var(--warning, #d29922);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.ai-thinking {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: italic;
+}
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {
   display: grid;
