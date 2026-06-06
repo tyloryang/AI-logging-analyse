@@ -216,6 +216,9 @@ export const api = {
   // Phase 1 智能模式 (Claude tool_use, 同步返回)
   k8sAiChat: (clusterId, message, namespace = '') =>
     http.post('/k8s/ai-chat', { message, cluster_id: clusterId, namespace }, { timeout: 90_000 }),
+  // 写工具二次审批 (用户在 UI 上对单个 pending action 拍板)
+  k8sAiChatApprove: (pendingAction, approve) =>
+    http.post('/k8s/ai-chat/approve', { pending_action: pendingAction, approve }, { timeout: 60_000 }),
   k8sPodLogs:       (clusterId, namespace, podName, container = '', tailLines = 200) => http.get('/k8s/pod-logs', { params: { ...(clusterId ? { cluster_id: clusterId } : {}), namespace, pod_name: podName, container, tail_lines: tailLines } }),
   // Ansible 任务中心
   ansibleTasks:     ()           => http.get('/ansible/tasks'),

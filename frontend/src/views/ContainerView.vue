@@ -65,6 +65,34 @@
         </button>
         <button v-if="aiCmd.intent || aiCmd.chatHistory.length" class="btn-ghost btn-xs" @click="clearAICmd">清空</button>
       </div>
+      <!-- 智能模式: 写工具待审批卡片 -->
+      <transition name="ai-intent-fade">
+        <div v-if="aiCmd.pendingActions.length" class="ai-pending-actions">
+          <div class="pending-header">
+            ⚠️ {{ aiCmd.pendingActions.length }} 个增删改操作待你审批
+            <button class="btn-ghost btn-xs" :disabled="aiCmd.pendingApproving" @click="rejectAllPending">全部拒绝</button>
+          </div>
+          <div v-for="(a, i) in aiCmd.pendingActions" :key="i" class="pending-action-card">
+            <div class="pending-tool-row">
+              <span class="pending-badge" :class="'pending-' + a.name">{{ pendingActionLabel(a.name) }}</span>
+              <span class="pending-tool-name">⚙ {{ a.name }}</span>
+            </div>
+            <div class="pending-input-block">
+              <div v-for="(v, k) in a.input" :key="k" class="pending-input-row">
+                <span class="pending-k">{{ k }}</span>
+                <span class="pending-v mono">{{ v }}</span>
+              </div>
+            </div>
+            <div class="pending-btn-row">
+              <button class="btn-ghost btn-xs" :disabled="aiCmd.pendingApproving" @click="approvePendingAction(a, false)">拒绝</button>
+              <button class="btn-primary-sm danger" :disabled="aiCmd.pendingApproving" @click="approvePendingAction(a, true)">
+                {{ aiCmd.pendingApproving === a ? '执行中...' : '⚠ 我已审核, 执行' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </transition>
+
       <!-- 智能模式: 对话历史 -->
       <transition name="ai-intent-fade">
         <div v-if="aiCmd.smart && aiCmd.chatHistory.length" class="ai-chat-history">
@@ -1330,6 +1358,8 @@ const aiCmd = reactive({
   smart: false,
   chatting: false,
   chatHistory: [],   // [{ role: 'user'|'assistant'|'tool'|'warn', content?, name?, input?, result?, failed? }]
+  pendingActions: [],   // 写工具待审批: [{ name, input, cluster_id, tool_use_id }]
+  pendingApproving: null,   // 正在审批的 action (用作 disabled / spinner)
   exampleIdx: 0,
   examples: [
     '部署 deployment nginx',
@@ -1760,6 +1790,64 @@ function clearAICmd() {
   aiCmd.inspectReport = ''
   aiCmd.inspectReportHtml = ''
   aiCmd.chatHistory = []
+  aiCmd.pendingActions = []
+  aiCmd.pendingApproving = null
+}
+
+// 待审批操作的友好标签
+const PENDING_LABELS = {
+  k8s_scale_workload: '扩缩容',
+  k8s_restart_workload: '重启',
+  k8s_delete_resource: '⚠ 删除',
+  k8s_update_image: '更新镜像',
+}
+function pendingActionLabel(toolName) {
+  return PENDING_LABELS[toolName] || toolName
+}
+
+async function approvePendingAction(action, approve) {
+  if (approve) {
+    const verb = pendingActionLabel(action.name)
+    if (!confirm(`【二次审核】${verb}\n\n参数:\n${JSON.stringify(action.input, null, 2)}\n\n确认下发到集群?`)) return
+  }
+  aiCmd.pendingApproving = action
+  try {
+    const r = await api.k8sAiChatApprove(action, approve)
+    aiCmd.chatHistory.push({
+      role: 'tool',
+      name: action.name,
+      input: action.input,
+      result: r.result || (approve ? '执行完成' : '已拒绝'),
+      failed: approve && r.ok === false,
+    })
+    if (approve && r.ok !== false) {
+      for (const key of Array.from(_resourceCache.keys())) {
+        if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+      }
+      setTimeout(() => refreshAll(), 600)
+    }
+  } catch (e) {
+    aiCmd.chatHistory.push({
+      role: 'warn',
+      content: `审批端点失败: ${e?.response?.data?.detail || e?.message || e}`,
+    })
+  } finally {
+    // 不论成败都从 pending 列表移除
+    aiCmd.pendingActions = aiCmd.pendingActions.filter(a => a !== action)
+    aiCmd.pendingApproving = null
+  }
+}
+
+async function rejectAllPending() {
+  if (!confirm(`拒绝全部 ${aiCmd.pendingActions.length} 项待审批操作?`)) return
+  const items = [...aiCmd.pendingActions]
+  for (const a of items) {
+    aiCmd.chatHistory.push({
+      role: 'warn',
+      content: `用户拒绝: ${pendingActionLabel(a.name)} ${JSON.stringify(a.input)}`,
+    })
+  }
+  aiCmd.pendingActions = []
 }
 
 // 智能模式: Claude tool_use
@@ -1778,15 +1866,27 @@ async function runSmartChat() {
       } else if (item.type === 'tool_use') {
         const failed = (item.result || '').startsWith('✗')
         aiCmd.chatHistory.push({ role: 'tool', name: item.name, input: item.input, result: item.result, failed })
+      } else if (item.type === 'pending_action') {
+        // 写工具占位: 在对话流里也显示一行提示
+        aiCmd.chatHistory.push({
+          role: 'warn',
+          content: `📋 ${pendingActionLabel(item.name)} 已提交待审批 (请看下方卡片)`,
+        })
       } else if (item.type === 'warning') {
         aiCmd.chatHistory.push({ role: 'warn', content: item.content })
       }
     }
-    // 操作可能改变了集群状态, 静默刷新
+    // 收集待审批的写操作
+    if (r.pending_actions?.length) {
+      aiCmd.pendingActions = [...aiCmd.pendingActions, ...r.pending_actions]
+    }
+    // 只读操作可能没改变集群状态, 但不影响刷新
     for (const key of Array.from(_resourceCache.keys())) {
       if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
     }
-    setTimeout(() => refreshAll(), 800)
+    if (!r.pending_actions?.length) {
+      setTimeout(() => refreshAll(), 800)
+    }
   } catch (e) {
     aiCmd.chatHistory.push({
       role: 'warn',
@@ -4117,6 +4217,74 @@ onBeforeUnmount(() => { _destroyExec() })
   color: var(--text-muted);
   font-size: 11px;
   font-style: italic;
+}
+
+/* 写工具二次审批卡片 */
+.ai-pending-actions {
+  margin-top: 12px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(210,153,34,.08), rgba(248,81,73,.06));
+  border: 2px solid rgba(210,153,34,.45);
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(210,153,34,.12);
+}
+.pending-header {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; font-weight: 700;
+  color: var(--warning, #d29922);
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(210,153,34,.2);
+}
+.pending-header .btn-ghost { margin-left: auto; color: var(--text-muted); }
+.pending-action-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(248,81,73,.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.pending-action-card:last-child { margin-bottom: 0; }
+.pending-tool-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px;
+}
+.pending-badge {
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 11px; font-weight: 700;
+  background: rgba(248,81,73,.18);
+  color: var(--error, #f85149);
+}
+.pending-k8s_scale_workload { background: rgba(63,185,80,.18); color: #3fb950; }
+.pending-k8s_restart_workload { background: rgba(56,139,253,.18); color: var(--accent); }
+.pending-k8s_update_image { background: rgba(163,113,247,.18); color: #a371f7; }
+.pending-tool-name {
+  font-family: monospace; font-size: 12px;
+  color: var(--text-secondary);
+}
+.pending-input-block {
+  background: var(--bg-input);
+  border-radius: 5px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  font-size: 11px;
+}
+.pending-input-row {
+  display: flex; gap: 10px;
+  padding: 2px 0;
+}
+.pending-k {
+  color: var(--text-muted);
+  min-width: 80px;
+  font-family: monospace;
+}
+.pending-v {
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.pending-btn-row {
+  display: flex; justify-content: flex-end; gap: 8px;
 }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {
