@@ -1263,6 +1263,8 @@ const aiCmd = reactive({
   intent: null, error: '', success: '',
   exampleIdx: 0,
   examples: [
+    '部署 deployment nginx',
+    '创建 deployment web 镜像 nginx:1.25 3 副本',
     '扩容 nginx 到 5 副本',
     '重启 deployment nginx',
     '删除 pod foo (在 default 命名空间)',
@@ -3726,6 +3728,8 @@ onBeforeUnmount(() => { _destroyExec() })
 .badge-restart { background: rgba(56,139,253,.18); color: var(--accent); }
 .badge-scale { background: rgba(63,185,80,.18); color: #3fb950; }
 .badge-update_image { background: rgba(163,113,247,.18); color: #a371f7; }
+.badge-create { background: rgba(63,185,80,.22); color: #3fb950; font-weight: 700; }
+.badge-list { background: var(--accent-dim); color: var(--accent); }
 .badge-unknown { background: var(--bg-input); color: var(--text-muted); }
 .ai-intent-summary { font-weight: 500; color: var(--text-primary); flex: 1; }
 .ai-danger-tag {

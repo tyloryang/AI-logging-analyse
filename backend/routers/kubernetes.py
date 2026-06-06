@@ -1813,12 +1813,42 @@ def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
     if ns_match:
         ns = ns_match.group(1)
 
-    # 提取 kind
+    # 提取 kind (按 key 长度倒序匹配, 避免 "deploy" 错过 "deployment")
     kind = None
-    for keyword, normalized in _AI_KIND_ALIASES.items():
+    for keyword in sorted(_AI_KIND_ALIASES.keys(), key=len, reverse=True):
         if keyword in lower:
-            kind = normalized
+            kind = _AI_KIND_ALIASES[keyword]
             break
+
+    # ── create / deploy / 部署 ── (优先级最高: 含 "部署/创建/新建/deploy/create")
+    # 注意: 英文 deploy/create 必须加 \b 边界, 否则 "deployments" 会被误匹配 deploy
+    create_hit = (
+        _re_k8sai.search(r"创建|新建|部署", raw) or
+        _re_k8sai.search(r"\b(deploy|create)\b", raw, _re_k8sai.IGNORECASE)
+    )
+    if create_hit:
+        if kind in {"deployment", "statefulset", "daemonset", "service"}:
+            name = _extract_resource_name(raw, kind, exclude_words={"创建","新建","部署","deploy","create","部"})
+            # 提取镜像 (image xxx:yyy / 镜像 xxx:yyy)
+            img_match = _re_k8sai.search(r"(?:镜像|image)[^\w]*([\w\-./:@]+:[\w\-./@]+)", raw, _re_k8sai.IGNORECASE)
+            image = img_match.group(1) if img_match else None
+            # 提取副本数 (N 副本 / replicas=N)
+            rep_match = (
+                _re_k8sai.search(r"(\d+|[一二两三四五六七八九十])\s*副本", raw) or
+                _re_k8sai.search(r"replicas?\s*[:=]\s*(\d+)", raw, _re_k8sai.IGNORECASE)
+            )
+            replicas = _parse_int(rep_match.group(1)) if rep_match else None
+            summary_extra = []
+            if image: summary_extra.append(f"镜像={image}")
+            if replicas: summary_extra.append(f"副本={replicas}")
+            return {
+                "action": "create", "kind": kind,
+                "name": name or "nginx",   # 默认名兜底
+                "namespace": ns or "default",
+                "image": image, "replicas": replicas,
+                "danger": True,
+                "summary": f"创建 {kind} {ns or 'default'}/{name or 'nginx'}" + (" " + " ".join(summary_extra) if summary_extra else ""),
+            }
 
     # ── scale (扩容/缩容/扩到 N 副本) ──
     scale_match = (
@@ -1826,17 +1856,19 @@ def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
         _re_k8sai.search(r"replicas?\s*[:=]\s*(\d+)", raw, _re_k8sai.IGNORECASE) or
         _re_k8sai.search(r"(?:到|至|=)\s*(\d+)\s*个?", raw)
     )
-    if scale_match and kind in {"deployment", "statefulset"}:
+    if scale_match:
+        # 未显式提到 kind 时默认 deployment (最常见扩缩对象)
+        scale_kind = kind if kind in {"deployment", "statefulset"} else "deployment"
         replicas = _parse_int(scale_match.group(1))
-        name = _extract_resource_name(raw, kind, exclude_words={"扩容","缩容","scale"})
+        name = _extract_resource_name(raw, scale_kind, exclude_words={"扩容","缩容","scale"})
         return {
-            "action": "scale", "kind": kind, "name": name, "namespace": ns,
+            "action": "scale", "kind": scale_kind, "name": name, "namespace": ns,
             "replicas": replicas, "danger": True,
-            "summary": f"扩缩容 {kind} {ns or '?'}/{name or '?'} 到 {replicas} 副本",
+            "summary": f"扩缩容 {scale_kind} {ns or '?'}/{name or '?'} 到 {replicas} 副本",
         }
 
     # ── delete ──
-    if _re_k8sai.search(r"删除|删掉|delete|remove", lower):
+    if _re_k8sai.search(r"删除|删掉", raw) or _re_k8sai.search(r"\b(delete|remove)\b", raw, _re_k8sai.IGNORECASE):
         if kind:
             name = _extract_resource_name(raw, kind, exclude_words={"删除","delete"})
             return {
@@ -1846,7 +1878,7 @@ def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
             }
 
     # ── restart ──
-    if _re_k8sai.search(r"重启|restart|rollout", lower):
+    if _re_k8sai.search(r"重启", raw) or _re_k8sai.search(r"\b(restart|rollout)\b", raw, _re_k8sai.IGNORECASE):
         if kind in {"deployment", "statefulset", "daemonset", "pod"}:
             name = _extract_resource_name(raw, kind, exclude_words={"重启","restart","rollout"})
             return {
@@ -1866,7 +1898,7 @@ def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
         }
 
     # ── list / show / 查 ──
-    if _re_k8sai.search(r"列出|查看|查询|显示|有哪些|多少|list|show|get", lower):
+    if _re_k8sai.search(r"列出|查看|查询|显示|有哪些|多少", raw) or _re_k8sai.search(r"\b(list|show|get|ls)\b", raw, _re_k8sai.IGNORECASE):
         if kind:
             return {
                 "action": "list", "kind": kind, "namespace": ns, "danger": False,
@@ -1877,22 +1909,24 @@ def _ai_parse_intent(text: str, default_namespace: str = "") -> dict:
 
 
 def _extract_resource_name(raw: str, kind: str, exclude_words: set[str] | None = None) -> str | None:
-    """从文本中提取资源名 (启发式: 找 kind 后/前的 token)。"""
-    exclude_words = exclude_words or set()
-    exclude_words.add(kind)
-    # 优先匹配 kind 后第一个 token: "deployment nginx" / "扩容 nginx 到"
-    m = _re_k8sai.search(rf"\b{kind}\b\s+([\w\-]+)", raw, _re_k8sai.IGNORECASE)
-    if m:
-        return m.group(1)
-    # 反向: token 后跟 kind
-    m = _re_k8sai.search(rf"([\w\-]+)\s+\b{kind}\b", raw, _re_k8sai.IGNORECASE)
-    if m and m.group(1).lower() not in exclude_words:
-        return m.group(1)
-    # 兜底: 找所有看起来像资源名的 token (字母数字横线, 长度>=2)
-    tokens = _re_k8sai.findall(r"\b([a-z][\w\-]{2,})\b", raw)
-    for t in tokens:
-        if t.lower() not in exclude_words and t.lower() != kind:
-            return t
+    """从文本中提取资源名 (找所有 ASCII 字母开头的 token, 过滤掉 kind / 动作关键字)。
+
+    用 ASCII 字母开头明确限定 (K8s 资源名规范), 避免被中文 \\w 干扰。
+    支持中英文连写: "deployment部署nginx" 也能提取出 "nginx"。
+    """
+    exclude_words = {w.lower() for w in (exclude_words or set())}
+    exclude_words.add(kind.lower())
+    # K8s 资源名: 小写字母/数字/横线, 必须字母开头, 1-63 字符
+    ascii_tokens = _re_k8sai.findall(r"([a-zA-Z][a-zA-Z0-9\-]{0,62})", raw)
+    for t in ascii_tokens:
+        tl = t.lower()
+        if tl in exclude_words:
+            continue
+        # 过滤掉所有 kind 别名 (避免把 "deploy" 误当 name)
+        if tl in _AI_KIND_ALIASES:
+            continue
+        # 跳过纯数字开头 (不可能是 k8s name)
+        return t
     return None
 
 
@@ -1908,6 +1942,49 @@ async def k8s_ai_parse(body: K8sAIParsePayload, cluster_id: str = Query("", desc
     """
     intent = _ai_parse_intent(body.text, default_namespace=body.namespace)
     return intent
+
+
+def _generate_k8s_yaml_template(kind: str, name: str, namespace: str, image: str | None, replicas: int | None) -> str:
+    """生成 K8s 资源最小可用 YAML 模板 (deployment/statefulset/daemonset/service)。"""
+    image = (image or "").strip() or "nginx:latest"
+    rep = replicas if isinstance(replicas, int) and replicas > 0 else 1
+    name = (name or "").strip() or "ai-created"
+    ns = (namespace or "").strip() or "default"
+
+    if kind == "deployment":
+        return (
+            "apiVersion: apps/v1\nkind: Deployment\n"
+            f"metadata:\n  name: {name}\n  namespace: {ns}\n  labels:\n    app: {name}\n"
+            f"spec:\n  replicas: {rep}\n"
+            f"  selector:\n    matchLabels:\n      app: {name}\n"
+            f"  template:\n    metadata:\n      labels:\n        app: {name}\n"
+            f"    spec:\n      containers:\n      - name: {name}\n        image: {image}\n        ports:\n        - containerPort: 80\n"
+        )
+    if kind == "statefulset":
+        return (
+            "apiVersion: apps/v1\nkind: StatefulSet\n"
+            f"metadata:\n  name: {name}\n  namespace: {ns}\n"
+            f"spec:\n  serviceName: {name}\n  replicas: {rep}\n"
+            f"  selector:\n    matchLabels:\n      app: {name}\n"
+            f"  template:\n    metadata:\n      labels:\n        app: {name}\n"
+            f"    spec:\n      containers:\n      - name: {name}\n        image: {image}\n"
+        )
+    if kind == "daemonset":
+        return (
+            "apiVersion: apps/v1\nkind: DaemonSet\n"
+            f"metadata:\n  name: {name}\n  namespace: {ns}\n"
+            f"spec:\n  selector:\n    matchLabels:\n      app: {name}\n"
+            f"  template:\n    metadata:\n      labels:\n        app: {name}\n"
+            f"    spec:\n      containers:\n      - name: {name}\n        image: {image}\n"
+        )
+    if kind == "service":
+        return (
+            "apiVersion: v1\nkind: Service\n"
+            f"metadata:\n  name: {name}\n  namespace: {ns}\n"
+            f"spec:\n  selector:\n    app: {name}\n"
+            f"  ports:\n  - port: 80\n    targetPort: 80\n  type: ClusterIP\n"
+        )
+    raise HTTPException(status_code=400, detail=f"不支持模板生成: {kind}")
 
 
 class K8sAIExecPayload(BaseModel):
@@ -1935,6 +2012,26 @@ async def k8s_ai_execute(body: K8sAIExecPayload, cluster_id: str = Query("", des
     try:
         if body.action == "list":
             return {"ok": True, "action": "list", "hint": f"跳转 UI 查看 {body.kind} 列表即可"}
+        elif body.action == "create":
+            import yaml as _yaml
+            try:
+                from kubernetes import utils as k8s_utils
+            except ImportError:
+                raise HTTPException(status_code=500, detail="kubernetes.utils 不可用")
+            yaml_text = _generate_k8s_yaml_template(body.kind, body.name, body.namespace, body.image, body.replicas)
+            api_client = _get_api_client(cid)
+            docs = [d for d in _yaml.safe_load_all(yaml_text) if isinstance(d, dict) and d]
+            created = []
+            for doc in docs:
+                res_list = k8s_utils.create_from_dict(api_client, doc)
+                for res in (res_list if isinstance(res_list, list) else [res_list]):
+                    md = getattr(res, "metadata", None)
+                    created.append({
+                        "kind": getattr(res, "kind", None) or doc.get("kind"),
+                        "name": getattr(md, "name", None) if md else doc.get("metadata", {}).get("name"),
+                        "namespace": getattr(md, "namespace", None) if md else doc.get("metadata", {}).get("namespace"),
+                    })
+            return {"ok": True, "action": "create", "created": created, "yaml": yaml_text}
         elif body.action == "scale":
             if body.replicas is None: raise HTTPException(status_code=400, detail="replicas 必填")
             patch_body = {"spec": {"replicas": body.replicas}}
