@@ -272,79 +272,202 @@ class K8sAgentChatPayload(BaseModel):
     namespace: str = ""
 
 
+# ── LLM provider 抽象 (复用 ai_analyzer 的 AI_PROVIDER/AI_MODEL/AI_BASE_URL/AI_API_KEY) ────
+
+def _get_llm_config() -> dict:
+    """从 env 拿 LLM 配置. 复用项目标准变量, 不再硬编码 ANTHROPIC_API_KEY。
+
+    支持的 AI_PROVIDER:
+      - anthropic (默认): ANTHROPIC_API_KEY + AI_MODEL
+      - openai 兼容: AI_BASE_URL + AI_API_KEY + AI_MODEL
+        (本地 Qwen / 通义千问 / DeepSeek / OpenRouter / Ollama 等)
+    """
+    provider = (os.getenv("AI_PROVIDER", "") or "").strip().lower()
+    model = (os.getenv("AI_MODEL", "") or "").strip()
+
+    if not provider:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "未配置 AI_PROVIDER, 智能模式不可用. "
+                "请在 backend/.env 设置 AI_PROVIDER=anthropic 或 openai, "
+                "并配套设置 AI_MODEL + 对应 API key/base_url"
+            ),
+        )
+
+    if provider == "anthropic":
+        api_key = (os.getenv("ANTHROPIC_API_KEY", "") or "").strip()
+        if not api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="AI_PROVIDER=anthropic 时必须设置 ANTHROPIC_API_KEY",
+            )
+        return {
+            "provider": "anthropic",
+            "api_key": api_key,
+            "model": model or "claude-opus-4-7",
+        }
+
+    if provider == "openai":
+        base_url = (os.getenv("AI_BASE_URL", "") or "").strip()
+        api_key = (os.getenv("AI_API_KEY", "") or "EMPTY").strip()   # 本地模型可无 key
+        if not base_url:
+            raise HTTPException(
+                status_code=500,
+                detail="AI_PROVIDER=openai 时必须设置 AI_BASE_URL (本地或远程的 OpenAI 兼容端点)",
+            )
+        if not model:
+            raise HTTPException(status_code=500, detail="AI_PROVIDER=openai 时必须设置 AI_MODEL")
+        return {
+            "provider": "openai",
+            "base_url": base_url,
+            "api_key": api_key or "EMPTY",
+            "model": model,
+        }
+
+    raise HTTPException(status_code=500, detail=f"暂不支持的 AI_PROVIDER: {provider} (仅支持 anthropic / openai)")
+
+
+def _tools_for_openai() -> list[dict]:
+    """把 Anthropic 风格 (input_schema) 的 TOOLS 转成 OpenAI Function Calling 风格."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            },
+        }
+        for t in TOOLS
+    ]
+
+
+async def _call_anthropic(client, model: str, system: str, messages: list[dict]) -> dict:
+    """统一返回 { text, tool_calls: [{id, name, input}], stop_reason }."""
+    resp = await client.messages.create(
+        model=model, max_tokens=2048, system=system, tools=TOOLS, messages=messages,
+    )
+    text_parts: list[str] = []
+    tool_calls: list[dict] = []
+    assistant_content: list[dict] = []
+    for block in resp.content:
+        if block.type == "text":
+            text_parts.append(block.text)
+            assistant_content.append({"type": "text", "text": block.text})
+        elif block.type == "tool_use":
+            tool_calls.append({"id": block.id, "name": block.name, "input": block.input})
+            assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+    return {
+        "text": "\n".join(text_parts),
+        "tool_calls": tool_calls,
+        "stop_reason": resp.stop_reason,
+        "_assistant_content": assistant_content,   # Anthropic 续轮要回填这个
+    }
+
+
+async def _call_openai(client, model: str, system: str, messages: list[dict]) -> dict:
+    """OpenAI 兼容: 返回相同的 { text, tool_calls, stop_reason } 格式."""
+    import json as _json
+    # OpenAI messages 第一条是 system
+    oa_messages = [{"role": "system", "content": system}] + messages
+    resp = await client.chat.completions.create(
+        model=model, messages=oa_messages, tools=_tools_for_openai(),
+        tool_choice="auto", max_tokens=2048,
+    )
+    choice = resp.choices[0]
+    msg = choice.message
+    text = msg.content or ""
+    tool_calls: list[dict] = []
+    for tc in (msg.tool_calls or []):
+        try:
+            inp = _json.loads(tc.function.arguments) if tc.function.arguments else {}
+        except Exception:
+            inp = {}
+        tool_calls.append({"id": tc.id, "name": tc.function.name, "input": inp})
+    return {
+        "text": text,
+        "tool_calls": tool_calls,
+        "stop_reason": choice.finish_reason,   # 'tool_calls' / 'stop' / 'length'
+        "_oa_assistant": {
+            "role": "assistant",
+            "content": text,
+            "tool_calls": [
+                {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in (msg.tool_calls or [])
+            ],
+        },
+    }
+
+
 @router.post("/ai-chat")
 async def k8s_ai_chat(body: K8sAgentChatPayload, user: User = Depends(require_admin)):
-    """Phase 1: 一次性 tool_use loop, 最多 5 轮, 同步返回最终结果 + tool calls history。"""
+    """Phase 1: tool_use loop, max 5 轮, 同步返回. 支持 Anthropic 和 OpenAI 兼容 provider."""
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message 不能为空")
 
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="未配置 ANTHROPIC_API_KEY, 智能模式不可用")
+    cfg = _get_llm_config()   # 拿 provider 配置, 缺失抛 user-friendly 错
 
-    model = os.getenv("ANTHROPIC_MODEL") or os.getenv("AI_MODEL") or "claude-opus-4-7"
-
-    try:
-        import anthropic
-    except ImportError:
-        raise HTTPException(status_code=500, detail="anthropic SDK 未安装")
+    # 初始化 client
+    if cfg["provider"] == "anthropic":
+        try:
+            import anthropic
+        except ImportError:
+            raise HTTPException(status_code=500, detail="anthropic SDK 未安装")
+        client = anthropic.AsyncAnthropic(api_key=cfg["api_key"])
+    else:
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            raise HTTPException(status_code=500, detail="openai SDK 未安装")
+        client = AsyncOpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"])
 
     cluster = _resolve_cluster_for_user(user, body.cluster_id or None)
     cid = cluster["id"]
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-    messages: list[dict] = [{
-        "role": "user",
-        "content": (
-            f"[集群上下文: {cluster.get('name', cid)}, 默认 namespace={body.namespace or 'default'}]\n\n"
-            f"{body.message}"
-        ),
-    }]
+    initial_user_msg = (
+        f"[集群上下文: {cluster.get('name', cid)}, 默认 namespace={body.namespace or 'default'}]\n\n"
+        f"{body.message}"
+    )
+    messages: list[dict] = [{"role": "user", "content": initial_user_msg}]
 
-    history: list[dict] = []   # 记录每一步 (tool_call / tool_result)
+    history: list[dict] = []
     final_text = ""
-    pending_actions: list[dict] = []   # 收集待审批的写操作
+    pending_actions: list[dict] = []
     max_rounds = 5
 
     for _ in range(max_rounds):
         try:
-            resp = await client.messages.create(
-                model=model,
-                max_tokens=2048,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=messages,
-            )
+            if cfg["provider"] == "anthropic":
+                result = await _call_anthropic(client, cfg["model"], SYSTEM_PROMPT, messages)
+            else:
+                result = await _call_openai(client, cfg["model"], SYSTEM_PROMPT, messages)
+        except HTTPException:
+            raise
         except Exception as exc:
-            logger.error("[k8s-agent] anthropic call failed: %s", exc, exc_info=True)
-            raise HTTPException(status_code=502, detail=f"Claude 调用失败: {exc}")
+            logger.error("[k8s-agent] LLM call failed (provider=%s): %s", cfg["provider"], exc, exc_info=True)
+            raise HTTPException(status_code=502, detail=f"{cfg['provider']} 调用失败: {exc}")
 
-        # 收集 LLM 输出的所有 content block
-        assistant_content: list[dict] = []
-        tool_uses: list[dict] = []
-        text_parts: list[str] = []
-        for block in resp.content:
-            if block.type == "text":
-                text_parts.append(block.text)
-                assistant_content.append({"type": "text", "text": block.text})
-            elif block.type == "tool_use":
-                tool_uses.append({"id": block.id, "name": block.name, "input": block.input})
-                assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+        text = result["text"]
+        tool_calls = result["tool_calls"]
 
-        if text_parts:
-            history.append({"type": "assistant_text", "content": "\n".join(text_parts)})
-            final_text = "\n".join(text_parts)
+        if text:
+            history.append({"type": "assistant_text", "content": text})
+            final_text = text
 
-        # 没有 tool_use → 对话结束
-        if not tool_uses:
+        if not tool_calls:
             break
 
-        # 分流: 只读工具直接执行, 写工具收集为 pending (返回 placeholder 给 LLM)
-        messages.append({"role": "assistant", "content": assistant_content})
-        tool_results: list[dict] = []
-        for tu in tool_uses:
+        # 把 assistant 回复回填到 messages
+        if cfg["provider"] == "anthropic":
+            messages.append({"role": "assistant", "content": result["_assistant_content"]})
+        else:
+            messages.append(result["_oa_assistant"])
+
+        # 分流: 只读直接执行, 写收集 pending
+        tool_results_for_anthropic: list[dict] = []
+        for tu in tool_calls:
             if tu["name"] in MUTATION_TOOLS:
-                # 写工具: 不执行, 收集为 pending
                 pending = {
                     "tool_use_id": tu["id"],
                     "name": tu["name"],
@@ -358,36 +481,36 @@ async def k8s_ai_chat(body: K8sAgentChatPayload, user: User = Depends(require_ad
                 )
                 history.append({
                     "type": "pending_action",
-                    "name": tu["name"],
-                    "input": tu["input"],
-                    "result": placeholder,
+                    "name": tu["name"], "input": tu["input"], "result": placeholder,
                 })
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu["id"],
-                    "content": placeholder,
-                })
+                result_text = placeholder
             else:
-                # 只读工具: 直接执行
                 result_text = _tool_handler(cid, tu["name"], tu["input"])
                 history.append({
                     "type": "tool_use",
-                    "name": tu["name"],
-                    "input": tu["input"],
-                    "result": result_text,
+                    "name": tu["name"], "input": tu["input"], "result": result_text,
                 })
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu["id"],
-                    "content": result_text,
-                })
-        messages.append({"role": "user", "content": tool_results})
 
-        # 出现 pending 时一定中止 loop, 等用户审批
+            if cfg["provider"] == "anthropic":
+                tool_results_for_anthropic.append({
+                    "type": "tool_result", "tool_use_id": tu["id"], "content": result_text,
+                })
+            else:
+                # OpenAI: 每个 tool result 是一条独立 message
+                messages.append({
+                    "role": "tool", "tool_call_id": tu["id"], "content": result_text,
+                })
+
+        if cfg["provider"] == "anthropic":
+            messages.append({"role": "user", "content": tool_results_for_anthropic})
+
         if pending_actions:
             break
 
-        if resp.stop_reason != "tool_use":
+        # OpenAI: stop_reason='stop' 也退出; Anthropic: != 'tool_use' 退出
+        if cfg["provider"] == "anthropic" and result["stop_reason"] != "tool_use":
+            break
+        if cfg["provider"] == "openai" and result["stop_reason"] not in ("tool_calls", None):
             break
     else:
         history.append({"type": "warning", "content": f"已达 {max_rounds} 轮工具调用上限, 强制结束"})
@@ -396,8 +519,9 @@ async def k8s_ai_chat(body: K8sAgentChatPayload, user: User = Depends(require_ad
         "ok": True,
         "final_text": final_text,
         "history": history,
-        "pending_actions": pending_actions,   # 前端拿这个弹审批卡片
-        "model": model,
+        "pending_actions": pending_actions,
+        "provider": cfg["provider"],
+        "model": cfg["model"],
     }
 
 

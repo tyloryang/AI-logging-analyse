@@ -1888,10 +1888,16 @@ async function runSmartChat() {
       setTimeout(() => refreshAll(), 800)
     }
   } catch (e) {
-    aiCmd.chatHistory.push({
-      role: 'warn',
-      content: '调用失败: ' + (e?.response?.data?.detail || e?.message || e),
-    })
+    const detail = e?.response?.data?.detail || e?.message || String(e)
+    // 配置缺失类错误: 给具体配置示例
+    if (detail.includes('AI_PROVIDER') || detail.includes('ANTHROPIC_API_KEY') || detail.includes('AI_BASE_URL') || detail.includes('AI_MODEL')) {
+      aiCmd.chatHistory.push({
+        role: 'warn',
+        content: `调用失败: ${detail}\n\n配置示例 (backend/.env):\n\n# Anthropic Claude\nAI_PROVIDER=anthropic\nANTHROPIC_API_KEY=sk-ant-xxx\nAI_MODEL=claude-opus-4-7\n\n# 或 OpenAI 兼容 (本地 Qwen / DeepSeek / OpenRouter / Ollama)\nAI_PROVIDER=openai\nAI_BASE_URL=http://192.168.x.x:8000/v1\nAI_API_KEY=sk-xxx\nAI_MODEL=qwen2.5-72b-instruct`,
+      })
+    } else {
+      aiCmd.chatHistory.push({ role: 'warn', content: '调用失败: ' + detail })
+    }
   } finally {
     aiCmd.chatting = false
   }
@@ -4209,6 +4215,9 @@ onBeforeUnmount(() => { _destroyExec() })
   color: var(--warning, #d29922);
   border-radius: 6px;
   font-size: 11px;
+  white-space: pre-wrap;
+  font-family: monospace;
+  line-height: 1.6;
 }
 
 .ai-thinking {
