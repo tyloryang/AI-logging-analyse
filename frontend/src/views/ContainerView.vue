@@ -293,6 +293,13 @@
           <table class="k8s-table">
             <thead>
               <tr>
+                <th class="select-col">
+                  <input type="checkbox"
+                    :checked="allCurrentSelected"
+                    @change="toggleAllCurrent"
+                    :disabled="!sortedFilteredPods.length"
+                    title="全选 / 取消全选" />
+                </th>
                 <th>名称</th><th>命名空间</th><th>状态</th><th>节点</th><th>容器</th>
                 <th class="sortable-th" @click="togglePodRestartSort" :title="`点击切换排序 (当前: ${ {desc:'降序',asc:'升序',null:'默认'}[podRestartSortOrder] || '默认' })`">
                   重启
@@ -302,8 +309,14 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!sortedFilteredPods.length"><td colspan="8" class="empty">暂无数据</td></tr>
-              <tr v-for="pod in sortedFilteredPods" :key="pod.namespace + '/' + pod.name">
+              <tr v-if="!sortedFilteredPods.length"><td colspan="9" class="empty">暂无数据</td></tr>
+              <tr v-for="pod in sortedFilteredPods" :key="pod.namespace + '/' + pod.name"
+                  :class="{ 'row-selected': isRowSelected('pod', pod) }">
+                <td class="select-col">
+                  <input type="checkbox"
+                    :checked="isRowSelected('pod', pod)"
+                    @change="toggleRowSelected('pod', pod)" />
+                </td>
                 <td class="name-cell">{{ pod.name }}</td>
                 <td><span class="ns-tag">{{ pod.namespace }}</span></td>
                 <td><span class="status-dot" :class="pod.statusClass"></span>{{ pod.status }}</td>
@@ -351,12 +364,21 @@
           <table class="k8s-table">
             <thead>
               <tr>
+                <th class="select-col">
+                  <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
+                    :disabled="!filteredDeployments.length" title="全选 / 取消全选" />
+                </th>
                 <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredDeployments.length"><td colspan="7" class="empty">暂无数据</td></tr>
-              <tr v-for="deployment in filteredDeployments" :key="deployment.namespace + '/' + deployment.name">
+              <tr v-if="!filteredDeployments.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-for="deployment in filteredDeployments" :key="deployment.namespace + '/' + deployment.name"
+                  :class="{ 'row-selected': isRowSelected('deployment', deployment) }">
+                <td class="select-col">
+                  <input type="checkbox" :checked="isRowSelected('deployment', deployment)"
+                    @change="toggleRowSelected('deployment', deployment)" />
+                </td>
                 <td class="name-cell">{{ deployment.name }}</td>
                 <td><span class="ns-tag">{{ deployment.namespace }}</span></td>
                 <td><span class="status-dot" :class="deployment.statusClass"></span>{{ deployment.status }}</td>
@@ -385,12 +407,21 @@
           <table class="k8s-table">
             <thead>
               <tr>
+                <th class="select-col">
+                  <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
+                    :disabled="!filteredDaemonSets.length" title="全选 / 取消全选" />
+                </th>
                 <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>当前</th><th>可用</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredDaemonSets.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="daemonSet in filteredDaemonSets" :key="daemonSet.namespace + '/' + daemonSet.name">
+              <tr v-if="!filteredDaemonSets.length"><td colspan="10" class="empty">暂无数据</td></tr>
+              <tr v-for="daemonSet in filteredDaemonSets" :key="daemonSet.namespace + '/' + daemonSet.name"
+                  :class="{ 'row-selected': isRowSelected('daemonset', daemonSet) }">
+                <td class="select-col">
+                  <input type="checkbox" :checked="isRowSelected('daemonset', daemonSet)"
+                    @change="toggleRowSelected('daemonset', daemonSet)" />
+                </td>
                 <td class="name-cell">{{ daemonSet.name }}</td>
                 <td><span class="ns-tag">{{ daemonSet.namespace }}</span></td>
                 <td><span class="status-dot" :class="daemonSet.statusClass"></span>{{ daemonSet.status }}</td>
@@ -414,12 +445,21 @@
           <table class="k8s-table">
             <thead>
               <tr>
+                <th class="select-col">
+                  <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
+                    :disabled="!filteredStatefulSets.length" title="全选 / 取消全选" />
+                </th>
                 <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>当前</th><th>更新</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredStatefulSets.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="statefulSet in filteredStatefulSets" :key="statefulSet.namespace + '/' + statefulSet.name">
+              <tr v-if="!filteredStatefulSets.length"><td colspan="10" class="empty">暂无数据</td></tr>
+              <tr v-for="statefulSet in filteredStatefulSets" :key="statefulSet.namespace + '/' + statefulSet.name"
+                  :class="{ 'row-selected': isRowSelected('statefulset', statefulSet) }">
+                <td class="select-col">
+                  <input type="checkbox" :checked="isRowSelected('statefulset', statefulSet)"
+                    @change="toggleRowSelected('statefulset', statefulSet)" />
+                </td>
                 <td class="name-cell">{{ statefulSet.name }}</td>
                 <td><span class="ns-tag">{{ statefulSet.namespace }}</span></td>
                 <td><span class="status-dot" :class="statefulSet.statusClass"></span>{{ statefulSet.status }}</td>
@@ -450,12 +490,21 @@
           <table class="k8s-table">
             <thead>
               <tr>
+                <th class="select-col">
+                  <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
+                    :disabled="!filteredJobs.length" title="全选 / 取消全选" />
+                </th>
                 <th>名称</th><th>命名空间</th><th>状态</th><th>完成</th><th>并发</th><th>运行</th><th>失败</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredJobs.length"><td colspan="10" class="empty">暂无数据</td></tr>
-              <tr v-for="job in filteredJobs" :key="job.namespace + '/' + job.name">
+              <tr v-if="!filteredJobs.length"><td colspan="11" class="empty">暂无数据</td></tr>
+              <tr v-for="job in filteredJobs" :key="job.namespace + '/' + job.name"
+                  :class="{ 'row-selected': isRowSelected('job', job) }">
+                <td class="select-col">
+                  <input type="checkbox" :checked="isRowSelected('job', job)"
+                    @change="toggleRowSelected('job', job)" />
+                </td>
                 <td class="name-cell">{{ job.name }}</td>
                 <td><span class="ns-tag">{{ job.namespace }}</span></td>
                 <td><span class="status-dot" :class="job.statusClass"></span>{{ job.status }}</td>
@@ -480,12 +529,21 @@
           <table class="k8s-table">
             <thead>
               <tr>
+                <th class="select-col">
+                  <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
+                    :disabled="!filteredCronJobs.length" title="全选 / 取消全选" />
+                </th>
                 <th>名称</th><th>命名空间</th><th>状态</th><th>调度</th><th>挂起</th><th>活跃 Job</th><th>最近调度</th><th>最近成功</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredCronJobs.length"><td colspan="10" class="empty">暂无数据</td></tr>
-              <tr v-for="cronJob in filteredCronJobs" :key="cronJob.namespace + '/' + cronJob.name">
+              <tr v-if="!filteredCronJobs.length"><td colspan="11" class="empty">暂无数据</td></tr>
+              <tr v-for="cronJob in filteredCronJobs" :key="cronJob.namespace + '/' + cronJob.name"
+                  :class="{ 'row-selected': isRowSelected('cronjob', cronJob) }">
+                <td class="select-col">
+                  <input type="checkbox" :checked="isRowSelected('cronjob', cronJob)"
+                    @change="toggleRowSelected('cronjob', cronJob)" />
+                </td>
                 <td class="name-cell">{{ cronJob.name }}</td>
                 <td><span class="ns-tag">{{ cronJob.namespace }}</span></td>
                 <td><span class="status-dot" :class="cronJob.statusClass"></span>{{ cronJob.status }}</td>
@@ -510,12 +568,21 @@
           <table class="k8s-table">
             <thead>
               <tr>
+                <th class="select-col">
+                  <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
+                    :disabled="!filteredServices.length" title="全选 / 取消全选" />
+                </th>
                 <th>名称</th><th>命名空间</th><th>类型</th><th>ClusterIP</th><th>端口</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredServices.length"><td colspan="7" class="empty">暂无数据</td></tr>
-              <tr v-for="service in filteredServices" :key="service.namespace + '/' + service.name">
+              <tr v-if="!filteredServices.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-for="service in filteredServices" :key="service.namespace + '/' + service.name"
+                  :class="{ 'row-selected': isRowSelected('service', service) }">
+                <td class="select-col">
+                  <input type="checkbox" :checked="isRowSelected('service', service)"
+                    @change="toggleRowSelected('service', service)" />
+                </td>
                 <td class="name-cell">{{ service.name }}</td>
                 <td><span class="ns-tag">{{ service.namespace }}</span></td>
                 <td><span class="svc-type" :class="service.type.toLowerCase()">{{ service.type }}</span></td>
@@ -862,6 +929,60 @@
         <div class="exec-term-wrap" ref="execTermEl"
           @mousedown="_execTerm?.focus()"
           @click="_execTerm?.focus()">
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部浮动批量操作条（借鉴 jay-codemine/k8s_operation）-->
+    <transition name="batch-bar-slide">
+      <div v-if="currentSelectedKeys.length" class="batch-bar">
+        <div class="batch-bar-left">
+          <span class="batch-bar-count">已选 <strong>{{ currentSelectedKeys.length }}</strong> 个 {{ currentKind || '资源' }}</span>
+          <button class="btn-ghost btn-xs" @click="clearSelection">清空选择</button>
+        </div>
+        <div class="batch-bar-right">
+          <button v-if="canBatchRestart" class="batch-action-btn"
+            :disabled="batchRunning" @click="runBatchAction('restart')">
+            🔄 批量重启
+          </button>
+          <button v-if="canBatchDelete" class="batch-action-btn danger"
+            :disabled="batchRunning" @click="runBatchAction('delete')">
+            🗑 批量删除
+          </button>
+          <span v-if="!canBatchDelete && !canBatchRestart" class="batch-no-action">
+            该资源类型无可用批量操作
+          </span>
+          <span v-if="batchRunning" class="spinner" style="width:14px;height:14px"></span>
+        </div>
+      </div>
+    </transition>
+
+    <!-- 批量操作结果模态 -->
+    <div v-if="batchResult" class="modal-mask" @click.self="batchResult = null">
+      <div class="modal-card batch-result-card">
+        <div class="modal-title">
+          批量{{ batchResult.action === 'delete' ? '删除' : '重启' }}结果
+          <span class="batch-result-summary">
+            <span class="batch-stat success">✓ {{ batchResult.success }}</span>
+            <span v-if="batchResult.failed" class="batch-stat failed">✗ {{ batchResult.failed }}</span>
+            <span class="batch-stat total">共 {{ batchResult.total }}</span>
+          </span>
+        </div>
+        <div class="modal-body">
+          <div class="batch-result-list">
+            <div v-for="(r, i) in batchResult.results" :key="i"
+              class="batch-result-row" :class="r.ok ? 'ok' : 'err'">
+              <span class="batch-result-icon">{{ r.ok ? '✓' : '✗' }}</span>
+              <span class="batch-result-name">
+                <span class="ns-tag">{{ r.namespace }}</span>
+                <span class="mono">{{ r.name }}</span>
+              </span>
+              <span v-if="r.error" class="batch-result-err" :title="r.error">{{ r.error.split('\n')[0].slice(0, 120) }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-ghost" @click="batchResult = null">关闭</button>
         </div>
       </div>
     </div>
@@ -1286,6 +1407,126 @@ function cancelYamlEdit() {
 
 function onYamlInput() {
   yamlApplySuccess.value = false
+}
+
+// ── 批量选择 + 操作 (借鉴 jay-codemine/k8s_operation 浮动操作条) ─────────────
+// 各 tab 独立的选中集合: key 形如 "deployment:default/nginx"
+const selectedRows = ref(new Set())
+const batchRunning = ref(false)
+const batchResult  = ref(null)   // { action, total, success, failed, results: [] }
+
+function rowKey(kind, row) {
+  return `${kind}:${row?.namespace || ''}/${row?.name || ''}`
+}
+
+// 当前 tab 资源类型 → singular kind (用于 batch 请求)
+const TAB_TO_KIND = {
+  pods: 'pod',
+  deployments: 'deployment',
+  daemonSets: 'daemonset',
+  statefulSets: 'statefulset',
+  jobs: 'job',
+  cronJobs: 'cronjob',
+  services: 'service',
+  nodes: 'node',
+}
+// 当前 tab 对应过滤后的列表 (用于全选)
+const TAB_TO_LIST = {
+  pods: () => sortedFilteredPods.value,
+  deployments: () => filteredDeployments.value,
+  daemonSets: () => filteredDaemonSets.value,
+  statefulSets: () => filteredStatefulSets.value,
+  jobs: () => filteredJobs.value,
+  cronJobs: () => filteredCronJobs.value,
+  services: () => filteredServices.value,
+  nodes: () => filteredNodes.value,
+}
+
+const currentKind = computed(() => TAB_TO_KIND[activeTab.value] || '')
+const currentList = computed(() => (TAB_TO_LIST[activeTab.value]?.() || []))
+const currentSelectedKeys = computed(() => {
+  const prefix = `${currentKind.value}:`
+  return Array.from(selectedRows.value).filter(k => k.startsWith(prefix))
+})
+const allCurrentSelected = computed(() =>
+  currentList.value.length > 0 &&
+  currentList.value.every(row => selectedRows.value.has(rowKey(currentKind.value, row)))
+)
+
+function isRowSelected(kind, row) {
+  return selectedRows.value.has(rowKey(kind, row))
+}
+
+function toggleRowSelected(kind, row) {
+  const k = rowKey(kind, row)
+  const next = new Set(selectedRows.value)
+  next.has(k) ? next.delete(k) : next.add(k)
+  selectedRows.value = next
+}
+
+function toggleAllCurrent() {
+  const next = new Set(selectedRows.value)
+  if (allCurrentSelected.value) {
+    for (const row of currentList.value) next.delete(rowKey(currentKind.value, row))
+  } else {
+    for (const row of currentList.value) next.add(rowKey(currentKind.value, row))
+  }
+  selectedRows.value = next
+}
+
+function clearSelection() {
+  selectedRows.value = new Set()
+}
+
+// 切换 tab 时清掉非当前 tab 的选中, 防止跨 tab 混淆
+watch(activeTab, () => {
+  const prefix = `${currentKind.value}:`
+  const next = new Set()
+  for (const k of selectedRows.value) {
+    if (k.startsWith(prefix)) next.add(k)
+  }
+  selectedRows.value = next
+})
+
+const restartableKinds = new Set(['pod', 'deployment', 'statefulset', 'daemonset'])
+const canBatchRestart = computed(() => restartableKinds.has(currentKind.value))
+const deletableKinds  = new Set(['pod', 'deployment', 'daemonset', 'statefulset', 'job', 'cronjob', 'service'])
+const canBatchDelete  = computed(() => deletableKinds.has(currentKind.value))
+
+async function runBatchAction(action) {
+  const keys = currentSelectedKeys.value
+  if (!keys.length) return
+  const items = keys.map(k => {
+    const [, rest] = k.split(':', 2)   // 'deployment:default/nginx' → ['deployment','default/nginx']
+    const [ns, name] = rest.split('/', 2)
+    return { kind: currentKind.value, namespace: ns, name }
+  })
+  const verb = action === 'delete' ? '删除' : '重启'
+  if (!confirm(`确认 ${verb} 已选 ${items.length} 个 ${currentKind.value}? 不可撤销.`)) return
+
+  batchRunning.value = true
+  batchResult.value  = null
+  try {
+    const r = await api.k8sBatchOperate(activeClusterId.value, action, items)
+    batchResult.value = r
+    // 清缓存 + 静默刷新
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+    }
+    setTimeout(() => refreshAll(), 800)
+    // 删除全部成功 → 清掉对应选中
+    if (action === 'delete') {
+      const next = new Set(selectedRows.value)
+      for (const item of r.results || []) {
+        if (item.ok) next.delete(rowKey(currentKind.value, item))
+      }
+      selectedRows.value = next
+    }
+  } catch (e) {
+    alert(`批量${verb}失败: ` + (e?.response?.data?.detail || e?.message || e))
+  } finally {
+    batchRunning.value = false
+  }
 }
 
 // ── 行内副本数 ± 控制 (Deployment / StatefulSet) ───────────────────────────
@@ -2767,6 +3008,115 @@ onBeforeUnmount(() => { _destroyExec() })
   width: 11px; height: 11px;
   border-width: 1.5px;
   margin-left: 3px;
+}
+
+/* 表格 select 列 */
+.k8s-table th.select-col,
+.k8s-table td.select-col {
+  width: 36px;
+  text-align: center;
+  padding-left: 8px; padding-right: 4px;
+}
+.k8s-table tr.row-selected {
+  background: rgba(56,139,253,.06);
+}
+.k8s-table tr.row-selected td:not(.select-col) {
+  font-weight: 500;
+}
+
+/* 底部浮动批量操作条 */
+.batch-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex; align-items: center; gap: 18px;
+  padding: 10px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-accent);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.4),
+              0 0 0 3px rgba(56,139,253,.15);
+  min-width: 360px;
+  max-width: 90vw;
+}
+.batch-bar-left { display: flex; align-items: center; gap: 12px; }
+.batch-bar-right { display: flex; align-items: center; gap: 8px; }
+.batch-bar-count { font-size: 13px; color: var(--text-primary); }
+.batch-bar-count strong { color: var(--accent); font-size: 14px; margin: 0 2px; }
+.btn-xs { padding: 3px 10px; font-size: 11px; border-radius: 5px; }
+.batch-action-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px; font-weight: 500;
+  cursor: pointer;
+  transition: all .12s;
+}
+.batch-action-btn:hover:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.batch-action-btn.danger {
+  border-color: rgba(248,81,73,.4);
+  color: var(--error, #f85149);
+}
+.batch-action-btn.danger:hover:not(:disabled) {
+  background: rgba(248,81,73,.12);
+  border-color: var(--error, #f85149);
+}
+.batch-action-btn:disabled { opacity: .5; cursor: not-allowed; }
+.batch-no-action { font-size: 12px; color: var(--text-muted); font-style: italic; }
+
+.batch-bar-slide-enter-active, .batch-bar-slide-leave-active {
+  transition: transform .25s cubic-bezier(.22,1.61,.36,1), opacity .2s;
+}
+.batch-bar-slide-enter-from, .batch-bar-slide-leave-to {
+  transform: translateX(-50%) translateY(80px);
+  opacity: 0;
+}
+
+/* 批量结果模态 */
+.batch-result-card { width: min(640px, calc(100vw - 40px)); }
+.batch-result-summary {
+  display: inline-flex; gap: 6px;
+  font-size: 12px; font-weight: 500;
+}
+.batch-stat {
+  padding: 2px 8px; border-radius: 4px;
+  background: var(--bg-input);
+}
+.batch-stat.success { background: rgba(63,185,80,.15); color: #3fb950; }
+.batch-stat.failed  { background: rgba(248,81,73,.15); color: var(--error, #f85149); }
+.batch-stat.total   { color: var(--text-muted); }
+.batch-result-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 50vh; overflow-y: auto;
+}
+.batch-result-row {
+  display: grid;
+  grid-template-columns: 22px minmax(160px, 1fr) minmax(0, 2fr);
+  gap: 10px; align-items: center;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+.batch-result-row.ok  { background: rgba(63,185,80,.05); border-color: rgba(63,185,80,.2); }
+.batch-result-row.err { background: rgba(248,81,73,.05); border-color: rgba(248,81,73,.25); }
+.batch-result-icon { font-weight: 700; }
+.batch-result-row.ok  .batch-result-icon { color: #3fb950; }
+.batch-result-row.err .batch-result-icon { color: var(--error, #f85149); }
+.batch-result-name { display: flex; gap: 8px; align-items: center; }
+.batch-result-err {
+  color: var(--error, #f85149);
+  font-family: monospace; font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: help;
 }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {

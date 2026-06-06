@@ -189,6 +189,10 @@ export const api = {
     http.post('/k8s/resource-scale',
       { replicas },
       { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
+  k8sBatchOperate: (clusterId, action, items) =>
+    http.post('/k8s/resource-batch',
+      { action, items },
+      { params: clusterId ? { cluster_id: clusterId } : {} }),
   k8sPodLogs:       (clusterId, namespace, podName, container = '', tailLines = 200) => http.get('/k8s/pod-logs', { params: { ...(clusterId ? { cluster_id: clusterId } : {}), namespace, pod_name: podName, container, tail_lines: tailLines } }),
   // Ansible 任务中心
   ansibleTasks:     ()           => http.get('/ansible/tasks'),

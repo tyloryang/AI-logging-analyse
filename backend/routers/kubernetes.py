@@ -1468,6 +1468,126 @@ async def scale_resource(
         raise HTTPException(status_code=400, detail=f"扩缩容失败: {detail}")
 
 
+# ── 批量操作 (借鉴 jay-codemine/k8s_operation 浮动操作条) ────────────────────
+
+def _delete_k8s_resource(cluster_id: str | None, kind: str, namespace: str, name: str):
+    """按 kind 分派 delete (foreground 级联)。"""
+    from kubernetes import client as k8s_client
+    normalized = _normalize_resource_kind(kind)
+    v1, apps = _get_client(cluster_id)
+    batch = _get_batch_client(cluster_id)
+    opts = k8s_client.V1DeleteOptions(propagation_policy="Foreground")
+
+    if normalized == "pod":
+        return v1.delete_namespaced_pod(name=name, namespace=namespace, body=opts)
+    if normalized == "deployment":
+        return apps.delete_namespaced_deployment(name=name, namespace=namespace, body=opts)
+    if normalized == "daemonset":
+        return apps.delete_namespaced_daemon_set(name=name, namespace=namespace, body=opts)
+    if normalized == "statefulset":
+        return apps.delete_namespaced_stateful_set(name=name, namespace=namespace, body=opts)
+    if normalized == "job":
+        return batch.delete_namespaced_job(name=name, namespace=namespace, body=opts)
+    if normalized == "cronjob":
+        return batch.delete_namespaced_cron_job(name=name, namespace=namespace, body=opts)
+    if normalized == "service":
+        return v1.delete_namespaced_service(name=name, namespace=namespace, body=opts)
+    raise HTTPException(status_code=400, detail=f"不支持的资源类型删除: {kind}")
+
+
+def _restart_workload(cluster_id: str | None, kind: str, namespace: str, name: str):
+    """重启工作负载:
+    - Deployment / StatefulSet / DaemonSet: patch annotation
+      spec.template.metadata.annotations.kubectl.kubernetes.io/restartedAt
+      = ISO 时间, 触发滚动重启 (kubectl rollout restart 同款)
+    - Pod: delete (依赖 controller 重建)
+    - 其它资源不支持
+    """
+    from datetime import datetime, timezone
+    normalized = _normalize_resource_kind(kind)
+    if normalized == "pod":
+        return _delete_k8s_resource(cluster_id, "pod", namespace, name)
+
+    if normalized not in {"deployment", "statefulset", "daemonset"}:
+        raise HTTPException(status_code=400, detail=f"不支持重启资源类型: {kind}")
+
+    _, apps = _get_client(cluster_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    patch_body = {
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": now_iso,
+                    }
+                }
+            }
+        }
+    }
+    if normalized == "deployment":
+        return apps.patch_namespaced_deployment(name=name, namespace=namespace, body=patch_body)
+    if normalized == "statefulset":
+        return apps.patch_namespaced_stateful_set(name=name, namespace=namespace, body=patch_body)
+    if normalized == "daemonset":
+        return apps.patch_namespaced_daemon_set(name=name, namespace=namespace, body=patch_body)
+
+
+class K8sBatchItem(BaseModel):
+    kind: str
+    namespace: str = ""
+    name: str
+
+
+class K8sBatchPayload(BaseModel):
+    action: str   # 'delete' | 'restart'
+    items: list[K8sBatchItem]
+
+
+@router.post("/resource-batch")
+async def batch_operate(body: K8sBatchPayload, cluster_id: str = Query("", description="集群 ID"), user: User = Depends(require_admin)):
+    """批量执行 delete / restart, 并发处理, 返回 per-item 结果。"""
+    if body.action not in {"delete", "restart"}:
+        raise HTTPException(status_code=400, detail=f"不支持的批量操作: {body.action}")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="items 不能为空")
+    if len(body.items) > 200:
+        raise HTTPException(status_code=400, detail="单次批量上限 200 个资源")
+
+    cluster = _resolve_cluster_for_user(user, cluster_id or None)
+    cid = cluster["id"]
+    loop = asyncio.get_running_loop()
+
+    def _do_one(item: K8sBatchItem) -> dict:
+        try:
+            if body.action == "delete":
+                _delete_k8s_resource(cid, item.kind, item.namespace, item.name)
+            else:
+                _restart_workload(cid, item.kind, item.namespace, item.name)
+            return {"ok": True, "kind": item.kind, "namespace": item.namespace, "name": item.name}
+        except HTTPException as he:
+            return {"ok": False, "kind": item.kind, "namespace": item.namespace, "name": item.name, "error": str(he.detail)}
+        except Exception as exc:
+            detail = getattr(exc, "body", None) or str(exc)
+            return {"ok": False, "kind": item.kind, "namespace": item.namespace, "name": item.name, "error": str(detail)}
+
+    # 并发但限制并行度避免压垮 APIServer
+    sem = asyncio.Semaphore(8)
+    async def _bounded(item: K8sBatchItem) -> dict:
+        async with sem:
+            return await loop.run_in_executor(None, _do_one, item)
+
+    results = await asyncio.gather(*[_bounded(i) for i in body.items])
+    success = sum(1 for r in results if r.get("ok"))
+    failed = len(results) - success
+    return {
+        "action": body.action,
+        "total": len(results),
+        "success": success,
+        "failed": failed,
+        "results": results,
+    }
+
+
 @router.get("/resource-pods")
 async def resource_pods(
     kind: str = Query(..., description="资源类型"),
