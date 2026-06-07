@@ -538,7 +538,7 @@ def _resolve_cluster_for_user(user: User, cluster_id: str | None = None) -> dict
     if cluster_id:
         cluster = next((item for item in visible_clusters if item["id"] == cluster_id), None)
         if not cluster:
-            raise HTTPException(status_code=403, detail=f"鏃犳潈璁块棶 K8s 闆嗙兢 {cluster_id}")
+            raise HTTPException(status_code=403, detail=f"无权访问 K8s 集群 {cluster_id}")
         return cluster
 
     return next((item for item in visible_clusters if item.get("is_default")), visible_clusters[0])
