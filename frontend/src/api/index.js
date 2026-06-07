@@ -178,6 +178,7 @@ export const api = {
   k8sJobs:          (clusterId, ns)    => http.get('/k8s/jobs',        { params: { ...(clusterId ? { cluster_id: clusterId } : {}), ...(ns ? { namespace: ns } : {}) } }),
   k8sCronJobs:      (clusterId, ns)    => http.get('/k8s/cronjobs',    { params: { ...(clusterId ? { cluster_id: clusterId } : {}), ...(ns ? { namespace: ns } : {}) } }),
   k8sServices:      (clusterId, ns)    => http.get('/k8s/services',    { params: { ...(clusterId ? { cluster_id: clusterId } : {}), ...(ns ? { namespace: ns } : {}) } }),
+  k8sConfigMaps:    (clusterId, ns)    => http.get('/k8s/configmaps',  { params: { ...(clusterId ? { cluster_id: clusterId } : {}), ...(ns ? { namespace: ns } : {}) } }),
   k8sNamespaces:    (clusterId)        => http.get('/k8s/namespaces',  { params: clusterId ? { cluster_id: clusterId } : {} }),
   k8sResourceDetail:(clusterId, kind, name, namespace = '') => http.get('/k8s/resource-detail', { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
   k8sResourcePods:  (clusterId, kind, name, namespace = '') => http.get('/k8s/resource-pods',   { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),

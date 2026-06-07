@@ -97,9 +97,39 @@
               <span class="pending-tool-name">⚙ {{ a.name }}</span>
             </div>
             <div class="pending-input-block">
-              <div v-for="(v, k) in a.input" :key="k" class="pending-input-row">
+              <div v-for="(v, k) in filteredPendingInput(a)" :key="k" class="pending-input-row">
                 <span class="pending-k">{{ k }}</span>
-                <span class="pending-v mono">{{ v }}</span>
+                <span class="pending-v mono">{{ formatPendingInputValue(v) }}</span>
+              </div>
+            </div>
+            <!-- ConfigMap 写操作: 高亮 key 级 diff -->
+            <div v-if="a.preview && a.preview.type === 'configmap_diff'" class="pending-cm-diff">
+              <div class="diff-summary">
+                <span v-if="a.preview.added.length" class="diff-tag added">+ 新增 {{ a.preview.added.length }}</span>
+                <span v-if="a.preview.changed.length" class="diff-tag changed">~ 修改 {{ a.preview.changed.length }}</span>
+                <span v-if="a.preview.removed.length" class="diff-tag removed">− 删除 {{ a.preview.removed.length }}</span>
+                <span v-if="!a.preview.added.length && !a.preview.changed.length && !a.preview.removed.length" class="diff-tag noop">无变化</span>
+                <span class="diff-merge-mode" :title="a.preview.merge ? '局部更新, 保留其它 key' : '全量替换 (清空其它 key)'">
+                  {{ a.preview.merge ? 'merge' : 'replace' }}
+                </span>
+              </div>
+              <div v-for="k in a.preview.added" :key="'add-'+k" class="diff-row added">
+                <span class="diff-mark">+</span>
+                <span class="diff-key">{{ k }}</span>
+                <span class="diff-val mono">{{ truncateDiff(a.preview.after[k]) }}</span>
+              </div>
+              <div v-for="k in a.preview.changed" :key="'chg-'+k" class="diff-row changed">
+                <span class="diff-mark">~</span>
+                <span class="diff-key">{{ k }}</span>
+                <div class="diff-val-pair">
+                  <div class="diff-val mono diff-old">- {{ truncateDiff(a.preview.before[k]) }}</div>
+                  <div class="diff-val mono diff-new">+ {{ truncateDiff(a.preview.after[k]) }}</div>
+                </div>
+              </div>
+              <div v-for="k in a.preview.removed" :key="'del-'+k" class="diff-row removed">
+                <span class="diff-mark">−</span>
+                <span class="diff-key">{{ k }}</span>
+                <span class="diff-val mono">{{ truncateDiff(a.preview.before[k]) }}</span>
               </div>
             </div>
             <div class="pending-btn-row">
@@ -787,6 +817,45 @@
           </table>
         </div>
 
+        <div v-else-if="activeTab === 'configMaps'" class="table-wrap">
+          <table class="k8s-table">
+            <thead>
+              <tr>
+                <th class="select-col">
+                  <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
+                    :disabled="!filteredConfigMaps.length" title="全选 / 取消全选" />
+                </th>
+                <th>名称</th><th>命名空间</th><th>Key 数</th><th>大小</th><th>Keys 预览</th><th>创建时间</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!filteredConfigMaps.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-for="cm in filteredConfigMaps" :key="cm.namespace + '/' + cm.name"
+                  :class="{ 'row-selected': isRowSelected('configmap', cm) }">
+                <td class="select-col">
+                  <input type="checkbox" :checked="isRowSelected('configmap', cm)"
+                    @change="toggleRowSelected('configmap', cm)" />
+                </td>
+                <td class="name-cell">{{ cm.name }}</td>
+                <td><span class="ns-tag">{{ cm.namespace }}</span></td>
+                <td class="mono small">{{ cm.keyCount }}</td>
+                <td class="mono small">{{ formatBytes(cm.size) }}</td>
+                <td class="small">
+                  <span v-for="k in (cm.keys || []).slice(0, 5)" :key="k" class="cm-key-tag">{{ k }}</span>
+                  <span v-if="(cm.keys || []).length > 5" class="muted">+{{ cm.keys.length - 5 }}</span>
+                </td>
+                <td class="muted mono small" :title="formatRelative(cm.age)">{{ formatDateTime(cm.age) }}</td>
+                <td class="action-cell">
+                  <div class="action-group">
+                    <button class="action-btn" @click="openResourceDetail('configmap', cm)">详情</button>
+                    <button class="action-btn danger" @click="deleteSingleResource('configmap', cm)">删除</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <div v-else-if="activeTab === 'nodes'" class="table-wrap">
           <table class="k8s-table">
             <thead>
@@ -1314,6 +1383,7 @@ const TABS = [
   { id: 'jobs', label: 'Jobs' },
   { id: 'cronJobs', label: 'CronJobs' },
   { id: 'services', label: 'Services' },
+  { id: 'configMaps', label: 'ConfigMaps' },
   { id: 'nodes', label: 'Nodes' },
 ]
 const KIND_LABELS = {
@@ -1324,6 +1394,7 @@ const KIND_LABELS = {
   job: 'Job',
   cronjob: 'CronJob',
   service: 'Service',
+  configmap: 'ConfigMap',
   node: 'Node',
 }
 const LOGGABLE_KINDS = new Set(['pod', 'deployment', 'daemonset', 'statefulset', 'job', 'cronjob'])
@@ -1350,6 +1421,7 @@ const statefulSets = ref([])
 const jobs = ref([])
 const cronJobs = ref([])
 const services = ref([])
+const configMaps = ref([])
 const nodes = ref([])
 const searchKeyword = ref('')
 const showDetailModal = ref(false)
@@ -1402,6 +1474,11 @@ const aiCmd = reactive({
     '删除 pod foo (在 default 命名空间)',
     '更新 deployment web 镜像为 nginx:1.25',
     '列出所有 deployments',
+    '🧠 看 pod nginx-xxx 的日志 (智能模式)',
+    '🧠 nginx CrashLoopBackOff,帮我查上次崩溃的日志',
+    '🧠 看 configmap app-config 里的 database.url',
+    '🧠 列出 default 下所有 configmap',
+    '🧠 把 app-config 里的 log.level 改成 debug (会让你审批)',
   ],
 })
 // 占位文字轮播 (每 4s 换一个示例)
@@ -1673,6 +1750,11 @@ const filteredServices = computed(() =>
     item.name, item.namespace, item.type, item.clusterIP, ...(item.ports || []),
   ]))
 )
+const filteredConfigMaps = computed(() =>
+  configMaps.value.filter((item) => matchesSearch([
+    item.name, item.namespace, ...(item.keys || []),
+  ]))
+)
 const filteredNodes = computed(() =>
   nodes.value.filter((item) => matchesSearch([
     item.name, item.status, item.roles, item.version, item.os,
@@ -1838,9 +1920,29 @@ const PENDING_LABELS = {
   k8s_restart_workload: '重启',
   k8s_delete_resource: '⚠ 删除',
   k8s_update_image: '更新镜像',
+  k8s_update_configmap: '更新配置',
 }
 function pendingActionLabel(toolName) {
   return PENDING_LABELS[toolName] || toolName
+}
+
+// pending-input-row 展示: 把 update_configmap 的 data 字段隐藏 (diff 已经显示了, 重复又长又乱)
+function filteredPendingInput(action) {
+  const inp = { ...(action.input || {}) }
+  if (action.name === 'k8s_update_configmap') {
+    delete inp.data
+  }
+  return inp
+}
+function formatPendingInputValue(v) {
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+function truncateDiff(s) {
+  const v = s === null || s === undefined ? '' : String(s)
+  if (v.length <= 200) return v
+  return v.slice(0, 200) + '… (+' + (v.length - 200) + ' 字符)'
 }
 
 async function approvePendingAction(action, approve) {
@@ -2144,6 +2246,7 @@ const TAB_TO_KIND = {
   jobs: 'job',
   cronJobs: 'cronjob',
   services: 'service',
+  configMaps: 'configmap',
   nodes: 'node',
 }
 // 当前 tab 对应过滤后的列表 (用于全选)
@@ -2155,6 +2258,7 @@ const TAB_TO_LIST = {
   jobs: () => filteredJobs.value,
   cronJobs: () => filteredCronJobs.value,
   services: () => filteredServices.value,
+  configMaps: () => filteredConfigMaps.value,
   nodes: () => filteredNodes.value,
 }
 
@@ -2371,9 +2475,36 @@ function tabCount(id) {
     jobs: filteredJobs.value.length,
     cronJobs: filteredCronJobs.value.length,
     services: filteredServices.value.length,
+    configMaps: filteredConfigMaps.value.length,
     nodes: filteredNodes.value.length,
   }
   return mapping[id] ?? 0
+}
+
+function formatBytes(n) {
+  const x = Number(n) || 0
+  if (x < 1024) return x + ' B'
+  if (x < 1024 * 1024) return (x / 1024).toFixed(1) + ' KB'
+  return (x / (1024 * 1024)).toFixed(2) + ' MB'
+}
+
+// 单行删除（复用批量 API, items 长度=1）
+async function deleteSingleResource(kind, row) {
+  if (!activeClusterId.value) return
+  const label = KIND_LABELS[kind] || kind
+  if (!confirm(`确认删除 ${label} ${row.namespace}/${row.name}? 不可撤销.`)) return
+  try {
+    await api.k8sBatchOperate(activeClusterId.value, 'delete', [
+      { kind, namespace: row.namespace, name: row.name },
+    ])
+    // 清缓存 + 刷新
+    for (const key of Array.from(_resourceCache.keys())) {
+      if (key.startsWith(`${activeClusterId.value}|`)) _resourceCache.delete(key)
+    }
+    setTimeout(() => refreshAll(), 500)
+  } catch (e) {
+    alert('删除失败: ' + (e?.response?.data?.detail || e?.message || e))
+  }
 }
 
 async function loadClusters() {
@@ -2404,6 +2535,7 @@ function _applyCachedPayload(payload) {
   jobs.value         = payload.jobs
   cronJobs.value     = payload.cronJobs
   services.value     = payload.services
+  configMaps.value   = payload.configMaps || []
   nodes.value        = payload.nodes
   lastFetchedAt.value = payload.lastFetchedAt
 }
@@ -2434,7 +2566,7 @@ async function fetchAll(opts) {
   error.value = ''
   try {
     const nsArg = ns || undefined
-    const [sum, nsList, podList, depList, daemonSetList, statefulSetList, jobList, cronJobList, svcList, nodeList] = await Promise.all([
+    const [sum, nsList, podList, depList, daemonSetList, statefulSetList, jobList, cronJobList, svcList, cmList, nodeList] = await Promise.all([
       api.k8sSummary(clusterId).catch(() => null),
       api.k8sNamespaces(clusterId).catch(() => []),
       api.k8sPods(clusterId, nsArg).catch(() => []),
@@ -2444,6 +2576,7 @@ async function fetchAll(opts) {
       api.k8sJobs(clusterId, nsArg).catch(() => []),
       api.k8sCronJobs(clusterId, nsArg).catch(() => []),
       api.k8sServices(clusterId, nsArg).catch(() => []),
+      api.k8sConfigMaps(clusterId, nsArg).catch(() => []),
       api.k8sNodes(clusterId).catch(() => []),
     ])
     const payload = {
@@ -2456,6 +2589,7 @@ async function fetchAll(opts) {
       jobs: jobList,
       cronJobs: cronJobList,
       services: svcList,
+      configMaps: cmList,
       nodes: nodeList,
       lastFetchedAt: Date.now(),
     }
@@ -4415,6 +4549,76 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 .pending-btn-row {
   display: flex; justify-content: flex-end; gap: 8px;
+}
+
+/* ConfigMap 更新审批: key 级 diff 高亮 */
+.pending-cm-diff {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-family: monospace;
+}
+[data-theme="light"] .pending-cm-diff {
+  background: rgba(0, 0, 0, 0.04);
+}
+.diff-summary {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  margin-bottom: 8px; padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border-color);
+}
+.diff-tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+}
+.diff-tag.added   { background: rgba(46, 160,  67, .18); color: #3fb950; }
+.diff-tag.changed { background: rgba(210, 153, 34, .18); color: #d29922; }
+.diff-tag.removed { background: rgba(248,  81, 73, .18); color: #f85149; }
+.diff-tag.noop    { background: rgba(139, 148, 158, .18); color: #8b949e; }
+.diff-merge-mode {
+  margin-left: auto;
+  font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  background: rgba(88, 166, 255, .15); color: #58a6ff;
+}
+.diff-row {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 4px 6px; margin: 2px 0; border-radius: 4px;
+}
+.diff-row.added   { background: rgba(46, 160,  67, .10); border-left: 3px solid #3fb950; }
+.diff-row.changed { background: rgba(210, 153, 34, .10); border-left: 3px solid #d29922; }
+.diff-row.removed { background: rgba(248,  81, 73, .10); border-left: 3px solid #f85149; }
+.diff-mark {
+  font-weight: 700; min-width: 12px; text-align: center;
+}
+.diff-row.added .diff-mark   { color: #3fb950; }
+.diff-row.changed .diff-mark { color: #d29922; }
+.diff-row.removed .diff-mark { color: #f85149; }
+.diff-key {
+  color: var(--text-primary); min-width: 100px;
+  font-weight: 600;
+}
+.diff-val {
+  flex: 1; color: var(--text-secondary);
+  word-break: break-all; white-space: pre-wrap;
+}
+.diff-val-pair { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.diff-val.diff-old {
+  color: #f85149; text-decoration: line-through;
+  opacity: 0.85;
+}
+.diff-val.diff-new { color: #3fb950; }
+.diff-row.removed .diff-val {
+  color: #f85149; text-decoration: line-through; opacity: 0.85;
+}
+.diff-row.added .diff-val { color: #3fb950; }
+
+/* ConfigMap 列表 key 预览 tag */
+.cm-key-tag {
+  display: inline-block;
+  font-size: 10px; padding: 1px 6px; margin: 0 3px 2px 0;
+  background: rgba(88, 166, 255, .12); color: #58a6ff;
+  border-radius: 3px; font-family: monospace;
 }
 .loading-row.compact { padding: 40px 20px; }
 .log-toolbar {

@@ -706,6 +706,8 @@ def _normalize_resource_kind(kind: str) -> str:
         "cronjobs": "cronjob",
         "services": "service",
         "nodes": "node",
+        "configmaps": "configmap",
+        "cm": "configmap",   # kubectl 缩写
     }
     return aliases.get(value, value)
 
@@ -783,6 +785,8 @@ def _read_k8s_resource(cluster_id: str | None, kind: str, namespace: str, name: 
         return batch.read_namespaced_cron_job(name=name, namespace=namespace)
     if normalized_kind == "service":
         return v1.read_namespaced_service(name=name, namespace=namespace)
+    if normalized_kind == "configmap":
+        return v1.read_namespaced_config_map(name=name, namespace=namespace)
     if normalized_kind == "node":
         return v1.read_node(name=name)
     raise HTTPException(status_code=400, detail=f"不支持的资源类型: {kind}")
@@ -1368,6 +1372,8 @@ def _replace_k8s_resource(cluster_id: str | None, kind: str, namespace: str, nam
         return batch.replace_namespaced_cron_job(name=name, namespace=namespace, body=body)
     if normalized_kind == "service":
         return v1.replace_namespaced_service(name=name, namespace=namespace, body=body)
+    if normalized_kind == "configmap":
+        return v1.replace_namespaced_config_map(name=name, namespace=namespace, body=body)
     if normalized_kind == "node":
         return v1.replace_node(name=name, body=body)
     raise HTTPException(status_code=400, detail=f"不支持的资源类型: {kind}")
@@ -1610,6 +1616,8 @@ def _delete_k8s_resource(cluster_id: str | None, kind: str, namespace: str, name
         return batch.delete_namespaced_cron_job(name=name, namespace=namespace, body=opts)
     if normalized == "service":
         return v1.delete_namespaced_service(name=name, namespace=namespace, body=opts)
+    if normalized == "configmap":
+        return v1.delete_namespaced_config_map(name=name, namespace=namespace, body=opts)
     raise HTTPException(status_code=400, detail=f"不支持的资源类型删除: {kind}")
 
 
@@ -2820,6 +2828,45 @@ async def list_services(
         return result
     except Exception as exc:
         logger.warning("[k8s] list_services failed: %s", exc)
+        raise HTTPException(502, f"k8s 连接失败: {exc}")
+
+
+# ── ConfigMaps ────────────────────────────────────────────────────────────────
+
+@router.get("/configmaps")
+async def list_configmaps(
+    namespace: str = Query("", description="命名空间，空=全部"),
+    cluster_id: str = Query("", description="集群 ID"),
+    user: User = Depends(current_user),
+):
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        v1, _ = _get_client(cluster["id"])
+        items = (
+            v1.list_config_map_for_all_namespaces().items
+            if not namespace
+            else v1.list_namespaced_config_map(namespace).items
+        )
+        result = []
+        for item in items:
+            data_keys = list((item.data or {}).keys()) + list((item.binary_data or {}).keys())
+            # 大小估算: data values 字符长度 + binary_data base64 长度
+            size = sum(len(v or "") for v in (item.data or {}).values()) + sum(
+                len(v or "") for v in (item.binary_data or {}).values()
+            )
+            result.append(
+                {
+                    "name": item.metadata.name,
+                    "namespace": item.metadata.namespace,
+                    "keys": data_keys,
+                    "keyCount": len(data_keys),
+                    "size": size,
+                    "age": _safe_age(item.metadata.creation_timestamp),
+                }
+            )
+        return result
+    except Exception as exc:
+        logger.warning("[k8s] list_configmaps failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
 
 

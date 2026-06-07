@@ -38,11 +38,11 @@ router = APIRouter()
 TOOLS: list[dict] = [
     {
         "name": "k8s_list_resources",
-        "description": "列出 K8s 资源 (Pod / Deployment / Service / Node 等). 用于查询集群中的资源.",
+        "description": "列出 K8s 资源 (Pod / Deployment / Service / ConfigMap / Node 等). 用于查询集群中的资源.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "description": "资源类型: pod/deployment/daemonset/statefulset/job/cronjob/service/node"},
+                "kind": {"type": "string", "description": "资源类型: pod/deployment/daemonset/statefulset/job/cronjob/service/configmap/node"},
                 "namespace": {"type": "string", "description": "命名空间, 留空查所有"},
             },
             "required": ["kind"],
@@ -120,6 +120,66 @@ TOOLS: list[dict] = [
         "description": "巡检集群健康: 节点 / Pod 状态 / 频繁重启 / Deployment 就绪 / Warning events.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "k8s_get_configmap_data",
+        "description": (
+            "查看 ConfigMap 的 data 内容 (key/value 键值对). "
+            "排查应用配置错误 / 验证配置项 / 找环境变量值时用. "
+            "比 k8s_get_resource 输出更精简, 只返回 data 部分."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "ConfigMap 名"},
+                "namespace": {"type": "string", "description": "命名空间"},
+                "key": {"type": "string", "description": "只看某个 key 的 value (可选), 留空返回所有 keys 的预览"},
+            },
+            "required": ["name", "namespace"],
+        },
+    },
+    {
+        "name": "k8s_get_pod_logs",
+        "description": (
+            "查看 Pod 容器日志. 排查 CrashLoopBackOff / Error / OOMKilled / 应用异常时首选. "
+            "如果 Pod 在 CrashLoopBackOff 或重启循环, 设 previous=true 看上次崩溃前的日志 (当前进程的日志可能还没写出来)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Pod 名"},
+                "namespace": {"type": "string", "description": "命名空间"},
+                "container": {"type": "string", "description": "容器名 (多容器 Pod 必填, 单容器可空)"},
+                "tail_lines": {"type": "integer", "description": "尾行数, 默认 100, 上限 500", "minimum": 1, "maximum": 500},
+                "previous": {"type": "boolean", "description": "true=取上次崩溃前的日志 (--previous), 默认 false"},
+            },
+            "required": ["name", "namespace"],
+        },
+    },
+    {
+        "name": "k8s_update_configmap",
+        "description": (
+            "更新 ConfigMap 的 data (键值对). 高危: 配置改动会影响所有挂载该 CM 的 Pod, "
+            "通常需要重启 Pod 才会真正生效. 平台会先呈现 key 级别的 diff 给用户审批, 用户批准后才实际下发. "
+            "默认 merge=true (局部更新, 保留其它 key); 只有用户明确说『清空 / 全量替换』才传 merge=false."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "ConfigMap 名"},
+                "namespace": {"type": "string", "description": "命名空间"},
+                "data": {
+                    "type": "object",
+                    "description": "要写入的 key→value 键值对. merge=true 时只覆盖这些 key, merge=false 时全量替换整个 data.",
+                    "additionalProperties": {"type": "string"},
+                },
+                "merge": {
+                    "type": "boolean",
+                    "description": "true=只覆盖传入的 keys 保留其它 (推荐, 默认 true); false=全量替换 data (危险)",
+                },
+            },
+            "required": ["name", "namespace", "data"],
+        },
+    },
 ]
 
 
@@ -129,12 +189,15 @@ MUTATION_TOOLS: set[str] = {
     "k8s_restart_workload",
     "k8s_delete_resource",
     "k8s_update_image",
+    "k8s_update_configmap",
 }
 # 只读工具 (可直接执行, 不影响集群状态)
 READONLY_TOOLS: set[str] = {
     "k8s_list_resources",
     "k8s_get_resource",
     "k8s_inspect_cluster",
+    "k8s_get_pod_logs",
+    "k8s_get_configmap_data",
 }
 
 
@@ -164,6 +227,12 @@ def _tool_handler(cluster_id: str, tool_name: str, tool_input: dict) -> str:
                 svcs = v1.list_service_for_all_namespaces().items if not ns else v1.list_namespaced_service(ns).items
                 return f"找到 {len(svcs)} 个 Service: " + "\n".join(
                     f"- {s.metadata.namespace}/{s.metadata.name} type={s.spec.type}" for s in svcs[:30]
+                )
+            if kind == "configmap":
+                cms = v1.list_config_map_for_all_namespaces().items if not ns else v1.list_namespaced_config_map(ns).items
+                return f"找到 {len(cms)} 个 ConfigMap (展示前 30): " + "\n".join(
+                    f"- {c.metadata.namespace}/{c.metadata.name} keys={len((c.data or {}))+len((c.binary_data or {}))}"
+                    for c in cms[:30]
                 )
             if kind == "node":
                 nodes = v1.list_node().items
@@ -236,6 +305,127 @@ def _tool_handler(cluster_id: str, tool_name: str, tool_input: dict) -> str:
             result = _run_cluster_inspect(cluster_id)
             return result.get("report", "巡检完成但报告为空")
 
+        if tool_name == "k8s_get_configmap_data":
+            name = (tool_input.get("name") or "").strip()
+            ns = (tool_input.get("namespace") or "").strip()
+            key = (tool_input.get("key") or "").strip()
+            if not name or not ns:
+                return "✗ 缺少必填参数 name / namespace"
+            v1, _ = _get_client(cluster_id)
+            try:
+                cm = v1.read_namespaced_config_map(name=name, namespace=ns)
+            except Exception as exc:
+                body = getattr(exc, "body", None) or str(exc)
+                return f"✗ 读取 ConfigMap 失败: {body}"
+            data = dict(cm.data or {})
+            bin_keys = list((cm.binary_data or {}).keys())
+            if key:
+                if key not in data:
+                    return f"✗ ConfigMap {ns}/{name} 中不存在 key={key}. 已有 keys: {list(data.keys()) + bin_keys}"
+                val = data.get(key, "")
+                MAX = 3500
+                if len(val) > MAX:
+                    val = val[: MAX - 60] + "\n...(已截断, 原始长度 " + str(len(data.get(key, ""))) + ")"
+                return f"ConfigMap {ns}/{name} key={key}:\n```\n{val}\n```"
+            # 概览: 列 keys + 每个 value 前 200 字符预览
+            if not data and not bin_keys:
+                return f"ConfigMap {ns}/{name} 是空的 (data / binary_data 都为空)"
+            lines = [f"ConfigMap {ns}/{name} 共 {len(data) + len(bin_keys)} 个 key:"]
+            for k, v in data.items():
+                preview = (v or "").replace("\n", " ⏎ ")
+                if len(preview) > 200:
+                    preview = preview[:200] + "..."
+                lines.append(f"- `{k}` ({len(v or '')} 字符): {preview}")
+            for k in bin_keys:
+                lines.append(f"- `{k}` (二进制, base64)")
+            lines.append("\n(如需看某个 key 完整内容, 用 key 参数再调一次本工具)")
+            return "\n".join(lines)
+
+        if tool_name == "k8s_update_configmap":
+            name = (tool_input.get("name") or "").strip()
+            ns = (tool_input.get("namespace") or "").strip()
+            new_data = dict(tool_input.get("data") or {})
+            merge = tool_input.get("merge", True)
+            if not name or not ns:
+                return "✗ 缺少必填参数 name / namespace"
+            if not isinstance(new_data, dict):
+                return "✗ data 必须是对象 (key→value)"
+            # 值必须可序列化为 string (ConfigMap data 是 map<string,string>)
+            for k, v in list(new_data.items()):
+                if not isinstance(v, str):
+                    new_data[k] = "" if v is None else str(v)
+
+            v1, _ = _get_client(cluster_id)
+            try:
+                cm = v1.read_namespaced_config_map(name=name, namespace=ns)
+            except Exception as exc:
+                body = getattr(exc, "body", None) or str(exc)
+                return f"✗ 读取 ConfigMap 失败 (无法更新): {body}"
+
+            before = dict(cm.data or {})
+            after = {**before, **new_data} if merge else dict(new_data)
+            # 计算 diff 用于回执消息
+            added = [k for k in after if k not in before]
+            removed = [k for k in before if k not in after]
+            changed = [k for k in after if k in before and before[k] != after[k]]
+            if not added and not removed and not changed:
+                return f"ConfigMap {ns}/{name} 无变化, 已跳过"
+
+            cm.data = after
+            try:
+                v1.replace_namespaced_config_map(name=name, namespace=ns, body=cm)
+            except Exception as exc:
+                body = getattr(exc, "body", None) or str(exc)
+                return f"✗ 更新 ConfigMap 失败: {body}"
+            return (
+                f"✓ ConfigMap {ns}/{name} 已更新: "
+                f"+{len(added)} ~{len(changed)} −{len(removed)} "
+                f"(用 merge={merge}). 提示: 挂载该 CM 的 Pod 可能需要重启才能加载新配置."
+            )
+
+        if tool_name == "k8s_get_pod_logs":
+            name = tool_input.get("name", "").strip()
+            ns = (tool_input.get("namespace") or "").strip()
+            container = (tool_input.get("container") or "").strip() or None
+            tail = int(tool_input.get("tail_lines") or 100)
+            tail = max(20, min(tail, 500))
+            previous = bool(tool_input.get("previous", False))
+            if not name or not ns:
+                return "✗ 缺少必填参数 name / namespace"
+            v1, _ = _get_client(cluster_id)
+            try:
+                logs = v1.read_namespaced_pod_log(
+                    name=name,
+                    namespace=ns,
+                    container=container,
+                    tail_lines=tail,
+                    timestamps=True,
+                    previous=previous,
+                )
+            except Exception as exc:
+                # 多容器 Pod 不指定 container 时 k8s API 会报错, 给一个友好提示
+                body = getattr(exc, "body", None) or str(exc)
+                if "a container name must be specified" in str(body) or "must be specified" in str(body):
+                    return (
+                        f"✗ Pod {ns}/{name} 是多容器 Pod, 请在 container 参数指定容器名后重试. "
+                        f"先用 k8s_get_resource 查 spec.containers[*].name."
+                    )
+                return f"✗ 读取日志失败: {body}"
+
+            logs = (logs or "").strip()
+            if not logs:
+                tip = "(空) 可能容器刚启动 / 没输出 stdout. 试试 previous=true 看上次崩溃前的日志."
+                return f"Pod {ns}/{name}{' [' + container + ']' if container else ''} {'previous ' if previous else ''}日志:\n{tip}"
+
+            # 截短: 头 + 尾, 中间省略, 比纯尾部对 LLM 更有用 (启动信息往往在头部)
+            MAX = 3500
+            if len(logs) > MAX:
+                head_len = MAX // 3
+                tail_len = MAX - head_len - 60
+                logs = logs[:head_len] + "\n...(中间已省略)...\n" + logs[-tail_len:]
+            header = f"Pod {ns}/{name}{' [' + container + ']' if container else ''} {'previous ' if previous else ''}最近 {tail} 行日志:"
+            return f"{header}\n```\n{logs}\n```"
+
         return f"未知工具: {tool_name}"
 
     except HTTPException as he:
@@ -250,18 +440,27 @@ def _tool_handler(cluster_id: str, tool_name: str, tool_input: dict) -> str:
 SYSTEM_PROMPT = """你是 AIOps 平台的 K8s 运维助手. 你的工作是帮用户完成 Kubernetes 集群操作.
 （自我介绍时不要主动说"基于大语言模型构建"或类似话术，直接说"我是 AIOps K8s 运维助手"即可）.
 
-可用工具 (7 个): k8s_list_resources / k8s_get_resource / k8s_scale_workload / k8s_restart_workload / k8s_delete_resource / k8s_update_image / k8s_inspect_cluster
+可用工具 (10 个):
+- 只读: k8s_list_resources / k8s_get_resource / k8s_get_pod_logs / k8s_get_configmap_data / k8s_inspect_cluster
+- 写 (需审批): k8s_scale_workload / k8s_restart_workload / k8s_delete_resource / k8s_update_image / k8s_update_configmap
 
 **重要安全边界**:
-- 只读工具 (list / get / inspect): 你可以直接调用, 平台立即返回结果.
+- 只读工具 (list / get / logs / configmap / inspect): 你可以直接调用, 平台立即返回结果.
 - 写工具 (scale / restart / delete / update_image): 平台**不会立即执行**, 而是收集为待审批操作, 等用户在 UI 上一对一确认后才真的下发到集群.
 - 你看到写工具返回 "[PENDING_APPROVAL] ..." 时, 这表示已经提交给用户审核, 不要重试也不要尝试绕过.
 - 用户拒绝某项操作后会有对应消息, 你应该尊重决定, 不要重复尝试同一操作.
 
+排障常用套路:
+- 用户说"Pod X 起不来 / CrashLoopBackOff / 一直重启 / 报错": 先 k8s_get_resource 查 status+events, 再 k8s_get_pod_logs 看应用日志; 如果当前进程没日志或刚启动, 加 previous=true 看上次崩溃前的日志.
+- 多容器 Pod 取日志前先用 k8s_get_resource 看 spec.containers[*].name, 然后在 container 参数指定.
+- 用户说"看 configmap / 查配置": 用 k8s_get_configmap_data 直接看 data 键值, 不要用 k8s_get_resource (后者返回的对象太大不利于 LLM 抓重点).
+- 用户说"改 configmap / 把 X 改成 Y / 修改配置": 用 k8s_update_configmap. 默认 merge=true 只覆盖你传入的 keys, 别的 key 不动 — 这是更安全的默认; 只有用户明确说"清空 / 全量替换 / 只留这些"才传 merge=false. 平台会自动给用户呈现 key 级 diff 让其审批, 你不用自己呈现 diff. 改完提醒用户: 挂载该 CM 的 Pod 可能需要重启才能加载新配置.
+- 用户说"集群有什么问题 / 巡检一下": 直接调 k8s_inspect_cluster.
+
 规则:
-1. 用户的自然语言指令可能模糊, 你需要先用只读工具 (list/get/inspect) 确认目标资源再生成写操作.
+1. 用户的自然语言指令可能模糊, 你需要先用只读工具 (list/get/logs/inspect) 确认目标资源再生成写操作.
 2. 默认 namespace 是 default, 用户没说就用 default.
-3. 给用户简洁的中文回复, 关键信息用 **粗体** 或 `代码` 突出.
+3. 给用户简洁的中文回复, 关键信息用 **粗体** 或 `代码` 突出. 日志内容直接转述关键错误行, 不要照搬整段.
 4. 一次回复里最多生成 3 个写操作待审批, 不要一口气提交一大批.
 5. 完成只读查询后用 1-2 句话总结发现, 再提议下一步写操作 (如果需要).
 """
@@ -506,6 +705,33 @@ async def k8s_ai_chat(body: K8sAgentChatPayload, user: User = Depends(require_ad
                     "input": tu["input"],
                     "cluster_id": cid,
                 }
+                # ConfigMap 更新: 预读 before, 计算 key 级 diff, 注入 preview 让前端高亮
+                if tu["name"] == "k8s_update_configmap":
+                    try:
+                        cm_name = (tu["input"].get("name") or "").strip()
+                        cm_ns = (tu["input"].get("namespace") or "").strip()
+                        if cm_name and cm_ns:
+                            v1, _ = _get_client(cid)
+                            cm_obj = v1.read_namespaced_config_map(name=cm_name, namespace=cm_ns)
+                            before = dict(cm_obj.data or {})
+                        else:
+                            before = {}
+                    except Exception as exc:
+                        # 读不到 (新建场景或权限不足) 不阻塞, 把 before 当空字典
+                        logger.info("[k8s-agent] read_configmap for diff preview failed: %s", exc)
+                        before = {}
+                    new_data = dict(tu["input"].get("data") or {})
+                    merge_flag = tu["input"].get("merge", True)
+                    after = {**before, **new_data} if merge_flag else dict(new_data)
+                    pending["preview"] = {
+                        "type": "configmap_diff",
+                        "before": before,
+                        "after": after,
+                        "merge": bool(merge_flag),
+                        "added":   [k for k in after if k not in before],
+                        "removed": [k for k in before if k not in after],
+                        "changed": [k for k in after if k in before and before[k] != after[k]],
+                    }
                 pending_actions.append(pending)
                 placeholder = (
                     f"[PENDING_APPROVAL] 此写操作 ({tu['name']}) 已提交用户审批, "
@@ -514,6 +740,7 @@ async def k8s_ai_chat(body: K8sAgentChatPayload, user: User = Depends(require_ad
                 history.append({
                     "type": "pending_action",
                     "name": tu["name"], "input": tu["input"], "result": placeholder,
+                    "preview": pending.get("preview"),
                 })
                 result_text = placeholder
             else:
