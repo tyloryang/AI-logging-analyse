@@ -3,13 +3,114 @@ import logging
 import os
 from typing import Literal
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, MessagesState, START, END
-from langgraph.prebuilt import ToolNode
 
+from .risk_registry import GuardDecision, risk_guard, risk_of
+from .tool_groups import tools_for_runtime
 from .tools import ALL_TOOLS
 
 logger = logging.getLogger(__name__)
+
+# 单条 ToolMessage content 截断上限（防止超长结果撑爆下一轮 prompt）
+_TOOL_RESULT_TRUNCATE = 10000
+
+
+def _build_guarded_tools_node(tools: list):
+    """构造一个带 RiskGuard 的 tools 节点替代 prebuilt ToolNode。
+
+    LangGraph 在 tools 节点拿到 last message 的 tool_calls，逐个跑：
+      1. 查 risk_registry 决定 EXECUTE / APPROVAL / DENY
+      2. EXECUTE 才真正调 tool.ainvoke；其它返回审批提示 ToolMessage 让 LLM 改变策略
+      3. 每次调用都打日志，便于审计
+
+    runtime_overrides 通过 RunnableConfig 注入；读取 confirm_mode / behaviors_auto。
+    """
+    tool_map = {getattr(t, "name", ""): t for t in tools}
+
+    async def guarded_tools_node(state: MessagesState, config: RunnableConfig | None = None):
+        last = state["messages"][-1]
+        tool_calls = getattr(last, "tool_calls", None) or []
+        if not tool_calls:
+            return {"messages": []}
+
+        configurable = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+        try:
+            from routers.agent_config import get_agent_runtime_context
+
+            runtime_ctx = get_agent_runtime_context()
+        except Exception as exc:
+            logger.warning("[guard] failed to read runtime ctx: %s", exc)
+            runtime_ctx = {"confirm_mode": "ask", "behaviors_auto": False}
+
+        confirm_mode = configurable.get("confirm_mode") or runtime_ctx.get("confirm_mode", "ask")
+        behaviors_auto = bool(configurable.get("behaviors_auto", runtime_ctx.get("behaviors_auto", False)))
+
+        out_messages: list = []
+        for call in tool_calls:
+            name = call.get("name") or ""
+            args = call.get("args") or {}
+            call_id = call.get("id") or ""
+
+            decision = risk_guard(
+                tool_name=name,
+                confirm_mode=confirm_mode,
+                behaviors_auto=behaviors_auto,
+            )
+
+            if decision is not GuardDecision.EXECUTE:
+                risk_label = risk_of(name).value
+                content = (
+                    f"⛔ RiskGuard 已拦截工具 `{name}`。\n"
+                    f"  风险等级: {risk_label}\n"
+                    f"  当前模式: confirm_mode={confirm_mode}, behaviors.auto={behaviors_auto}\n"
+                    f"  原因: 该工具需要人工审批后才能执行。\n"
+                    f"请在回复里告知用户：(1) 该操作涉及的具体影响；(2) 请用户在 UI 上点击审批或"
+                    f"明确回复'确认执行'；或 (3) 改用只读类工具进一步收集信息。"
+                )
+                out_messages.append(
+                    ToolMessage(content=content, tool_call_id=call_id, name=name)
+                )
+                logger.info("[guard] BLOCKED tool=%s decision=%s confirm_mode=%s auto=%s",
+                            name, decision.value, confirm_mode, behaviors_auto)
+                continue
+
+            tool = tool_map.get(name)
+            if tool is None:
+                out_messages.append(
+                    ToolMessage(
+                        content=f"❌ 未注册的工具: {name}（可能未加入 ALL_TOOLS）",
+                        tool_call_id=call_id,
+                        name=name,
+                    )
+                )
+                logger.warning("[guard] unknown tool %s", name)
+                continue
+
+            try:
+                result = await tool.ainvoke(args, config=config)
+                text = str(result)
+                if len(text) > _TOOL_RESULT_TRUNCATE:
+                    text = text[:_TOOL_RESULT_TRUNCATE] + f"\n...<截断，原长度 {len(str(result))}>"
+                out_messages.append(
+                    ToolMessage(content=text, tool_call_id=call_id, name=name)
+                )
+                logger.info("[guard] EXECUTED tool=%s args_keys=%s",
+                            name, sorted(args.keys()) if isinstance(args, dict) else "-")
+            except Exception as exc:
+                out_messages.append(
+                    ToolMessage(
+                        content=f"工具 {name} 执行异常：{exc}",
+                        tool_call_id=call_id,
+                        name=name,
+                    )
+                )
+                logger.exception("[guard] tool %s execution failed", name)
+
+        return {"messages": out_messages}
+
+    return guarded_tools_node
 
 REACT_GUIDELINES = (
     "【ReAct 工作方式】\n"
@@ -394,8 +495,24 @@ def build_graph(mode: str = "chat", checkpointer=None, runtime_overrides: dict |
     # 诊断类模式注入四层思考框架
     if mode in ("rca", "inspect", "chat"):
         system_prompt = FOUR_LAYER_THINKING + system_prompt
-    llm = _get_llm(runtime_overrides=runtime_overrides).bind_tools(ALL_TOOLS)
-    tool_node = ToolNode(ALL_TOOLS)
+
+    # 按当前 confirm_mode 裁剪模型可见工具：ask 模式下高风险工具直接不暴露给 LLM
+    try:
+        from routers.agent_config import get_agent_runtime_context
+
+        _ctx = get_agent_runtime_context()
+        confirm_mode_for_bind = (runtime_overrides or {}).get("confirm_mode") or _ctx.get("confirm_mode", "ask")
+    except Exception as exc:
+        logger.warning("[graph] runtime ctx unavailable, defaulting confirm_mode=ask: %s", exc)
+        confirm_mode_for_bind = "ask"
+    visible_tools = tools_for_runtime(ALL_TOOLS, confirm_mode=confirm_mode_for_bind)
+    logger.info(
+        "[graph] mode=%s confirm_mode=%s visible_tools=%d/%d",
+        mode, confirm_mode_for_bind, len(visible_tools), len(ALL_TOOLS),
+    )
+
+    llm = _get_llm(runtime_overrides=runtime_overrides).bind_tools(visible_tools)
+    tool_node = _build_guarded_tools_node(ALL_TOOLS)
 
     async def agent_node(state: MessagesState):
         messages = list(state["messages"])
