@@ -36,6 +36,8 @@ router = APIRouter(prefix="/api/agent-config", tags=["agent-config"])
 
 # 配置文件路径
 _CONFIG_FILE = Path("./data/agent_config.json")
+_ALLOWED_MCP_TYPES = {"http", "sse", "stdio", "streamable_http"}
+_ALLOWED_RISK_LEVELS = {"read", "write_low", "write_high", "destructive"}
 
 # ── 默认配置 ────────────────────────────────────────────────────────────────
 
@@ -59,19 +61,19 @@ _DEFAULT_CONFIG = {
         "confirm_mode": "ask",
     },
     "mcps": [
-        {"id": "1", "name": "Prometheus MCP", "type": "http",  "url": "http://localhost:9090/api", "enabled": True,  "ok": True},
-        {"id": "2", "name": "Redis MCP",       "type": "stdio", "url": "localhost:6379",            "enabled": True,  "ok": True},
-        {"id": "3", "name": "Nacos MCP",       "type": "http",  "url": "http://localhost:8848",     "enabled": False, "ok": False},
-        {"id": "4", "name": "MySQL MCP",       "type": "stdio", "url": "localhost:3306",            "enabled": True,  "ok": True},
-        {"id": "5", "name": "K8S MCP",         "type": "sse",   "url": "http://localhost:8002",     "enabled": False, "ok": False},
+        {"id": "1", "name": "Prometheus MCP", "type": "http",  "url": "http://localhost:9090/api", "enabled": True,  "ok": True,  "auto_callable": True,  "risk": "read"},
+        {"id": "2", "name": "Redis MCP",       "type": "stdio", "url": "localhost:6379",            "enabled": True,  "ok": True,  "auto_callable": True,  "risk": "write_low"},
+        {"id": "3", "name": "Nacos MCP",       "type": "http",  "url": "http://localhost:8848",     "enabled": False, "ok": False, "auto_callable": True,  "risk": "write_high"},
+        {"id": "4", "name": "MySQL MCP",       "type": "stdio", "url": "localhost:3306",            "enabled": True,  "ok": True,  "auto_callable": True,  "risk": "write_high"},
+        {"id": "5", "name": "K8S MCP",         "type": "sse",   "url": "http://localhost:8002",     "enabled": False, "ok": False, "auto_callable": False, "risk": "write_high"},
     ],
     "skills": [
-        {"id": "1", "icon": "🔍", "name": "主机巡检",          "desc": "自动巡检所有主机 CPU/内存/磁盘，生成异常报告",   "tags": ["Ansible", "Prometheus"], "enabled": True},
-        {"id": "2", "icon": "📋", "name": "Ansible Playbook", "desc": "在目标主机上执行 Ansible Playbook 自动化任务",  "tags": ["Ansible", "SSH"],        "enabled": True},
-        {"id": "3", "icon": "🚨", "name": "告警静默",          "desc": "对指定服务告警进行临时静默操作",                "tags": ["Alertmanager"],          "enabled": False},
-        {"id": "4", "icon": "📊", "name": "慢查询导出",        "desc": "导出 MySQL/Redis 慢查询日志并分析 Top 10",      "tags": ["MySQL", "Redis"],        "enabled": True},
-        {"id": "5", "icon": "🔄", "name": "服务重启",          "desc": "对 K8s Deployment 执行滚动重启",                "tags": ["Kubernetes"],            "enabled": False},
-        {"id": "6", "icon": "📦", "name": "日志打包",          "desc": "收集并打包指定时间段的服务日志",                "tags": ["Loki", "S3"],            "enabled": True},
+        {"id": "1", "icon": "🔍", "name": "主机巡检",          "desc": "自动巡检所有主机 CPU/内存/磁盘，生成异常报告",   "tags": ["Ansible", "Prometheus"], "enabled": True,  "tool_name": "inspect_all_hosts"},
+        {"id": "2", "icon": "📋", "name": "Ansible Playbook", "desc": "在目标主机上执行 Ansible Playbook 自动化任务",  "tags": ["Ansible", "SSH"],        "enabled": True,  "tool_name": ""},
+        {"id": "3", "icon": "🚨", "name": "告警静默",          "desc": "对指定服务告警进行临时静默操作",                "tags": ["Alertmanager"],          "enabled": False, "tool_name": ""},
+        {"id": "4", "icon": "📊", "name": "慢查询导出",        "desc": "导出 MySQL/Redis 慢查询日志并分析 Top 10",      "tags": ["MySQL", "Redis"],        "enabled": True,  "tool_name": ""},
+        {"id": "5", "icon": "🔄", "name": "服务重启",          "desc": "对 K8s Deployment 执行滚动重启",                "tags": ["Kubernetes"],            "enabled": False, "tool_name": ""},
+        {"id": "6", "icon": "📦", "name": "日志打包",          "desc": "收集并打包指定时间段的服务日志",                "tags": ["Loki", "S3"],            "enabled": True,  "tool_name": ""},
     ],
     "behaviors": [
         {"key": "rag",        "name": "主动检索增强",  "desc": "AI 将主动查询日志、指标等数据后再回答",                        "enabled": True},
@@ -400,6 +402,36 @@ def resolve_agent_model_overrides(
 
 # ── 配置读写辅助 ─────────────────────────────────────────────────────────────
 
+def _migrate_mcp_fields(mcps: list[dict]) -> bool:
+    """为旧的 MCP 条目补 auto_callable / risk 字段。返回是否有变更。"""
+    mutated = False
+    for m in mcps:
+        if not isinstance(m, dict):
+            continue
+        if "auto_callable" not in m:
+            # 旧的 K8S MCP 默认不让 LLM 自主调用，保持与代码硬编码逻辑一致
+            name_lower = str(m.get("name", "")).lower()
+            is_k8s = any(kw in name_lower for kw in ("k8s", "kubernetes", "kube"))
+            m["auto_callable"] = not is_k8s
+            mutated = True
+        if "risk" not in m or str(m.get("risk")).lower() not in _ALLOWED_RISK_LEVELS:
+            m["risk"] = "write_high"  # 从严默认
+            mutated = True
+    return mutated
+
+
+def _migrate_skill_fields(skills: list[dict]) -> bool:
+    """为旧的 Skill 条目补 tool_name 字段（默认空字符串）。"""
+    mutated = False
+    for s in skills:
+        if not isinstance(s, dict):
+            continue
+        if "tool_name" not in s:
+            s["tool_name"] = ""
+            mutated = True
+    return mutated
+
+
 def _load() -> dict:
     data = read_json_file(_CONFIG_FILE, default=None, ensure_parent=True)
     if isinstance(data, dict):
@@ -437,6 +469,10 @@ def _load() -> dict:
                     basic[key] = _deepcopy_json(value)
                     mutated = True
 
+            # 迁移：MCP 加 auto_callable + risk，Skill 加 tool_name
+            mutated = _migrate_mcp_fields(data.setdefault("mcps", [])) or mutated
+            mutated = _migrate_skill_fields(data.setdefault("skills", [])) or mutated
+
             mutated = _maybe_clear_legacy_seed_models(data) or mutated
             mutated = _ensure_models(data) or mutated
 
@@ -448,6 +484,37 @@ def _load() -> dict:
     default_cfg = _deepcopy_json(_DEFAULT_CONFIG)
     _ensure_models(default_cfg)
     return default_cfg
+
+
+# ── 行为开关 / agent 上下文导出（供编排层使用）────────────────────────────────
+
+def get_agent_runtime_context() -> dict:
+    """供 LangGraph 编排层调用：返回当前 behaviors + confirm_mode + 可调用 MCP 列表。
+
+    返回 dict 结构与 LangGraph RunnableConfig.configurable 兼容，可直接合并使用。
+    """
+    cfg = _load()
+    behaviors = {b["key"]: bool(b.get("enabled")) for b in cfg.get("behaviors", [])}
+    basic = cfg.get("basic", {}) or {}
+    auto_callable_mcps = [
+        m["name"] for m in cfg.get("mcps", [])
+        if m.get("enabled") and m.get("auto_callable", True)
+    ]
+    enabled_skill_tools = [
+        s["tool_name"] for s in cfg.get("skills", [])
+        if s.get("enabled") and str(s.get("tool_name", "")).strip()
+    ]
+    return {
+        "confirm_mode": basic.get("confirm_mode", "ask"),
+        "behaviors_auto": behaviors.get("auto", False),
+        "behaviors_rag": behaviors.get("rag", True),
+        "behaviors_trace": behaviors.get("trace", True),
+        "behaviors_alert": behaviors.get("alert", True),
+        "behaviors_report": behaviors.get("report", False),
+        "behaviors_show_trace": behaviors.get("show_trace", False),
+        "auto_callable_mcps": auto_callable_mcps,
+        "enabled_skill_tools": enabled_skill_tools,
+    }
 
 
 def _save(data: dict) -> None:
@@ -535,17 +602,21 @@ async def discover_workspace():
 # ══════════════════════════════════════════════════════════════════════════════
 
 class McpCreate(BaseModel):
-    name:    str
-    type:    str = "http"
-    url:     str
-    enabled: bool = True
+    name:          str
+    type:          str = "http"
+    url:           str
+    enabled:       bool = True
+    auto_callable: bool = True            # LLM 是否可自主调用
+    risk:          str  = "write_high"    # read | write_low | write_high | destructive
 
 
 class McpUpdate(BaseModel):
-    name:    Optional[str] = None
-    type:    Optional[str] = None
-    url:     Optional[str] = None
-    enabled: Optional[bool] = None
+    name:          Optional[str] = None
+    type:          Optional[str] = None
+    url:           Optional[str] = None
+    enabled:       Optional[bool] = None
+    auto_callable: Optional[bool] = None
+    risk:          Optional[str]  = None
 
 
 @router.get("/mcps")
@@ -554,14 +625,48 @@ async def list_mcps():
     return {"data": cfg.get("mcps", [])}
 
 
+def _mcp_transport_base_url(url: str) -> str:
+    normalized = str(url or "").strip().rstrip("/")
+    lower = normalized.lower()
+    for suffix in ("/mcp", "/sse"):
+        if lower.endswith(suffix):
+            return normalized[: -len(suffix)]
+    return normalized
+
+
+def _mcp_ping_candidates(mcp_type: str, url: str) -> list[str]:
+    normalized = str(url or "").strip().rstrip("/")
+    if not normalized:
+        return []
+
+    mcp_type = str(mcp_type or "http").strip().lower()
+    if mcp_type in {"sse", "streamable_http"}:
+        base_url = _mcp_transport_base_url(normalized)
+        endpoint = "/sse" if mcp_type == "sse" else "/mcp"
+        return list(dict.fromkeys([f"{base_url}/healthz", f"{base_url}{endpoint}", normalized]))
+
+    return [normalized]
+
+
 async def _ping_mcp(mcp_type: str, url: str) -> bool:
     """尝试连通 MCP，返回是否在线。"""
+    mcp_type = str(mcp_type or "http").strip().lower()
     if mcp_type == "stdio":
         return True  # stdio 无法远程探测，默认认为在线
+
+    candidates = _mcp_ping_candidates(mcp_type, url)
+    if not candidates:
+        return False
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(url)
-            return resp.status_code < 500
+            for candidate in candidates:
+                try:
+                    async with client.stream("GET", candidate) as resp:
+                        if resp.status_code < 500:
+                            return True
+                except Exception:
+                    continue
+            return False
     except Exception:
         return False
 
@@ -570,14 +675,28 @@ async def _ping_mcp(mcp_type: str, url: str) -> bool:
 async def add_mcp(body: McpCreate):
     cfg = _load()
     mcps = cfg.setdefault("mcps", [])
-    ok = await _ping_mcp(body.type, body.url)
+    mcp_type = str(body.type or "http").strip().lower()
+    if mcp_type not in _ALLOWED_MCP_TYPES:
+        raise HTTPException(status_code=400, detail="MCP 类型仅支持 http / sse / stdio / streamable_http")
+    name = str(body.name or "").strip()
+    url = str(body.url or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="MCP 名称不能为空")
+    if not url:
+        raise HTTPException(status_code=400, detail="MCP 地址不能为空")
+    risk = str(body.risk or "write_high").strip().lower()
+    if risk not in _ALLOWED_RISK_LEVELS:
+        raise HTTPException(status_code=400, detail=f"risk 必须是 {sorted(_ALLOWED_RISK_LEVELS)}")
+    ok = await _ping_mcp(mcp_type, url)
     new_mcp = {
-        "id":      str(uuid.uuid4())[:8],
-        "name":    body.name,
-        "type":    body.type,
-        "url":     body.url,
-        "enabled": body.enabled,
-        "ok":      ok,
+        "id":            str(uuid.uuid4())[:8],
+        "name":          name,
+        "type":          mcp_type,
+        "url":           url,
+        "enabled":       body.enabled,
+        "ok":            ok,
+        "auto_callable": bool(body.auto_callable),
+        "risk":          risk,
     }
     mcps.append(new_mcp)
     _save(cfg)
@@ -621,8 +740,8 @@ async def update_mcp(mcp_id: str, body: McpUpdate):
                 m["name"] = name
             if "type" in payload:
                 mcp_type = str(payload["type"]).strip().lower()
-                if mcp_type not in {"http", "sse", "stdio"}:
-                    raise HTTPException(status_code=400, detail="MCP 类型仅支持 http / sse / stdio")
+                if mcp_type not in _ALLOWED_MCP_TYPES:
+                    raise HTTPException(status_code=400, detail="MCP 类型仅支持 http / sse / stdio / streamable_http")
                 m["type"] = mcp_type
             if "url" in payload:
                 url = str(payload["url"]).strip()
@@ -631,6 +750,16 @@ async def update_mcp(mcp_id: str, body: McpUpdate):
                 m["url"] = url
             if "enabled" in payload:
                 m["enabled"] = bool(payload["enabled"])
+            if "auto_callable" in payload:
+                m["auto_callable"] = bool(payload["auto_callable"])
+            if "risk" in payload:
+                risk = str(payload["risk"]).strip().lower()
+                if risk not in _ALLOWED_RISK_LEVELS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"risk 必须是 {sorted(_ALLOWED_RISK_LEVELS)}",
+                    )
+                m["risk"] = risk
 
             if "type" in payload or "url" in payload:
                 m["ok"] = await _ping_mcp(m.get("type", "http"), m.get("url", ""))
@@ -644,7 +773,8 @@ async def update_mcp(mcp_id: str, body: McpUpdate):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SkillToggle(BaseModel):
-    enabled: bool
+    enabled:   Optional[bool] = None
+    tool_name: Optional[str]  = None
 
 
 @router.get("/skills")
@@ -656,9 +786,13 @@ async def list_skills():
 @router.put("/skills/{skill_id}")
 async def update_skill(skill_id: str, body: SkillToggle):
     cfg = _load()
+    payload = body.model_dump(exclude_none=True)
     for s in cfg.get("skills", []):
         if s["id"] == skill_id:
-            s["enabled"] = body.enabled
+            if "enabled" in payload:
+                s["enabled"] = bool(payload["enabled"])
+            if "tool_name" in payload:
+                s["tool_name"] = str(payload["tool_name"]).strip()
             _save(cfg)
             return s
     raise HTTPException(status_code=404, detail="Skill 不存在")
