@@ -6,25 +6,32 @@
         <span class="subtitle">多集群 Kubernetes 资源总览与 kubeconfig 管理</span>
       </div>
       <div class="header-right">
-        <input
-          v-model="searchKeyword"
-          class="search-input"
-          type="text"
-          placeholder="关键字搜索"
-          :disabled="!activeClusterId || loading"
-        />
-        <select v-model="activeNs" class="ns-select" :disabled="!activeClusterId || loading" @change="fetchAll()">
-          <option value="">全部命名空间</option>
-          <option v-for="ns in namespaces" :key="ns.name" :value="ns.name">{{ ns.name }}</option>
-        </select>
+        <div class="filter-group" :title="searchKeyword ? `搜索: ${searchKeyword}` : '资源关键字搜索'">
+          <span class="filter-icon">🔍</span>
+          <input
+            v-model="searchKeyword"
+            class="search-input"
+            type="text"
+            placeholder="搜索..."
+            :disabled="!activeClusterId || loading"
+          />
+        </div>
+        <div class="filter-group" title="命名空间过滤">
+          <span class="filter-icon">📂</span>
+          <select v-model="activeNs" class="ns-select" :disabled="!activeClusterId || loading" @change="fetchAll()">
+            <option value="">全部</option>
+            <option v-for="ns in namespaces" :key="ns.name" :value="ns.name">{{ ns.name }}</option>
+          </select>
+        </div>
+        <div class="filter-group" title="自动刷新档位">
+          <span class="filter-icon">🔄</span>
+          <select v-model="autoRefreshInterval" class="ns-select auto-refresh-select" :disabled="!activeClusterId">
+            <option v-for="opt in AUTO_REFRESH_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.short }}</option>
+          </select>
+        </div>
         <span v-if="lastFetchedAt" class="cache-stamp" :title="`数据缓存时间 ${new Date(lastFetchedAt).toLocaleString()}`">
           ⏱ {{ lastFetchedText }}
         </span>
-        <select v-model="autoRefreshInterval" class="ns-select auto-refresh-select" :disabled="!activeClusterId" title="自动刷新">
-          <option v-for="opt in AUTO_REFRESH_OPTIONS" :key="opt.value" :value="opt.value">
-            {{ opt.value === 'off' ? '自动刷新：关' : `自动 ${opt.label}` }}
-          </option>
-        </select>
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="openEditCluster">编辑</button>
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="testActiveCluster">测试</button>
         <button v-if="canManageClusters" class="btn-ghost danger" :disabled="!activeCluster" @click="removeCluster">删除</button>
@@ -1362,10 +1369,10 @@ defineOptions({ name: 'Containers' })
 const _resourceCache = new Map()
 const CACHE_TTL_MS = 30_000   // 30 秒内 hit cache 直接返回，超过自动 miss
 const AUTO_REFRESH_OPTIONS = [
-  { value: 'off', label: '关闭', sec: 0 },
-  { value: '30',  label: '30 秒', sec: 30 },
-  { value: '60',  label: '1 分钟', sec: 60 },
-  { value: '300', label: '5 分钟', sec: 300 },
+  { value: 'off', label: '关闭',  short: '关',  sec: 0 },
+  { value: '30',  label: '30 秒', short: '30s', sec: 30 },
+  { value: '60',  label: '1 分钟', short: '1m', sec: 60 },
+  { value: '300', label: '5 分钟', short: '5m', sec: 300 },
 ]
 import { api } from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
@@ -3298,7 +3305,6 @@ onBeforeUnmount(() => { _destroyExec() })
 .subtitle { font-size: 12px; color: var(--text-muted); }
 .header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
-.ns-select,
 .form-input,
 .form-textarea {
   background: var(--bg-card);
@@ -3308,13 +3314,44 @@ onBeforeUnmount(() => { _destroyExec() })
   font-size: 12px;
 }
 
-.search-input { padding: 6px 10px; min-width: 160px; width: 200px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text-primary); outline: none; }
-.search-input:focus { border-color: var(--accent); }
-.ns-select { padding: 6px 10px; cursor: pointer; min-width: 180px; }
-.auto-refresh-select { min-width: 130px; }
+.filter-group {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-input);
+  overflow: hidden;
+  transition: border-color .15s, box-shadow .15s;
+}
+.filter-group:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim, rgba(99, 102, 241, .15)); }
+.filter-group:has(input:disabled),
+.filter-group:has(select:disabled) { opacity: .55; }
+.filter-icon { padding: 0 6px 0 8px; font-size: 12px; color: var(--text-muted); user-select: none; pointer-events: none; }
+
+.search-input {
+  padding: 6px 10px 6px 2px;
+  width: 140px;
+  border: 0; outline: none; background: transparent;
+  color: var(--text-primary);
+  transition: width .2s ease;
+}
+.search-input:focus { width: 220px; }
+.ns-select {
+  padding: 6px 22px 6px 2px;
+  cursor: pointer; min-width: 100px; max-width: 160px;
+  border: 0; outline: none; background: transparent;
+  color: var(--text-primary);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+                    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 50%, calc(100% - 7px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+.auto-refresh-select { min-width: 56px; max-width: 72px; }
+
 .cache-stamp {
   display: inline-flex; align-items: center; gap: 4px;
-  padding: 5px 10px; border-radius: 6px;
+  padding: 5px 8px; border-radius: 6px;
   background: var(--bg-input); border: 1px solid var(--border);
   font-size: 11px; color: var(--text-muted); white-space: nowrap;
   user-select: none;
@@ -4654,7 +4691,12 @@ onBeforeUnmount(() => { _destroyExec() })
   .workspace-body { padding-left: 12px; padding-right: 12px; }
   .workspace-body { padding-top: 12px; padding-bottom: 12px; }
   .header-right { gap: 6px; }
-  .ns-select { min-width: 0; width: 100%; }
+  .filter-group { flex: 1; min-width: 0; }
+  .search-input { width: 100%; }
+  .search-input:focus { width: 100%; }
+  .ns-select { flex: 1; min-width: 0; max-width: none; }
+  .auto-refresh-select { flex: 0 0 auto; max-width: 72px; }
+  .cache-stamp { display: none; }
   .btn-refresh,
   .btn-ghost { flex: 1; }
   .cluster-meta { grid-template-columns: 1fr; }
