@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 import httpx
 from cachetools import TTLCache
 from fastapi import APIRouter
+from fastapi.responses import Response
 
+from observability.llm_metrics import metrics_response
 from skywalking_client import SKYWALKING_OAP_URL, check_connectivity as sw_check
 from state import LOKI_URL, PROMETHEUS_URL, analyzer, loki, prom
 
@@ -78,3 +80,13 @@ async def health():
         payload = await _build_health_payload()
         _health_cache["payload"] = payload
         return payload
+
+
+@router.get("/api/metrics")
+async def prometheus_metrics():
+    """Prometheus 抓取端点：暴露 aiops_llm_* 指标。
+
+    无 prometheus_client 时返回提示文本，Prom 抓取不报错只是没数据。
+    """
+    body, content_type = metrics_response()
+    return Response(content=body, media_type=content_type)

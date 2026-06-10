@@ -28,3 +28,10 @@ langchain-anthropic>=0.3.0
 langchain-openai>=0.2.0
 kubernetes>=29.0.0
 mcp[cli]>=1.0.0
+
+# 可观测性（未安装时 backend/observability/ 自动降级为 no-op）
+prometheus-client>=0.20.0
+# OTEL（可选；装上即启用 gen_ai.* span，未装时降级为结构化日志）
+# opentelemetry-api>=1.27.0
+# opentelemetry-sdk>=1.27.0
+# opentelemetry-exporter-otlp-proto-http>=1.27.0

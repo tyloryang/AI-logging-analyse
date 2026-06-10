@@ -1,8 +1,19 @@
-"""AI 分析器 - 支持 Anthropic Claude 和 OpenAI 兼容接口（Qwen3 等本地模型）"""
+"""AI 分析器 - 支持 Anthropic Claude 和 OpenAI 兼容接口（Qwen3 等本地模型）
+
+每一次发起 LLM 调用都通过 _observed_stream 包装：
+  - 入参 prompt 经脱敏后写入 OTEL gen_ai.prompt attribute
+  - 出参累计字符数 → Prometheus aiops_llm_tokens_total{kind=completion}（近似）
+  - 整体耗时 → aiops_llm_latency_seconds
+  - 异常 → aiops_llm_errors_total
+"""
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import AsyncIterator
+
+from observability.llm_metrics import observe_latency, record_error, record_tokens
+from observability.llm_tracing import llm_span
+from observability.redact import redact
 
 
 # ─────────────────────────────────────────
@@ -165,6 +176,43 @@ class AIAnalyzer:
         except Exception as e:
             return f"未配置 ({e})"
 
+    def _provider_kind(self) -> str:
+        return "anthropic" if isinstance(self.provider, AnthropicProvider) else "openai"
+
+    async def _observed_stream(
+        self,
+        prompt: str,
+        max_tokens: int,
+        op: str,
+    ) -> AsyncIterator[str]:
+        """所有对 self.provider.stream 的调用都应走这里。"""
+        import time as _time
+
+        provider_kind = self._provider_kind()
+        model = getattr(self.provider, "model", "")
+        started = _time.perf_counter()
+        completion_chars = 0
+        try:
+            async with llm_span(provider_kind, model, op) as ctx:
+                ctx["record_prompt"](prompt)
+                async for chunk in self.provider.stream(prompt, max_tokens=max_tokens):
+                    if chunk:
+                        completion_chars += len(chunk)
+                        ctx["record_completion_chars"](len(chunk))
+                    yield chunk
+        except Exception as exc:
+            record_error(provider_kind, model, type(exc).__name__)
+            raise
+        finally:
+            elapsed = _time.perf_counter() - started
+            observe_latency(provider_kind, model, op, elapsed)
+            # 字符→token 粗略换算（4:1），主流模型足够监控用
+            record_tokens(
+                provider_kind, model,
+                prompt_tokens=max(1, len(prompt) // 4),
+                completion_tokens=max(0, completion_chars // 4),
+            )
+
     async def analyze_logs_stream(
         self,
         logs: list[dict],
@@ -199,7 +247,7 @@ class AIAnalyzer:
 
 请用简洁专业的中文回答，重点突出关键问题，避免泛泛而谈。"""
 
-        async for chunk in self.provider.stream(prompt, max_tokens=2048):
+        async for chunk in self._observed_stream(prompt, max_tokens=2048, op="analyze_logs"):
             yield chunk
 
     @staticmethod
@@ -280,7 +328,7 @@ class AIAnalyzer:
     ) -> AsyncIterator[str]:
         """基于巡检结果生成 AI 总结（用于实时巡检流）"""
         prompt = self._build_inspect_prompt(inspect_results, summary, max_abnormal_hosts=12)
-        async for chunk in self.provider.stream(prompt, max_tokens=1400):
+        async for chunk in self._observed_stream(prompt, max_tokens=1400, op="inspect_summary"):
             yield chunk
 
     async def generate_daily_report(
@@ -331,7 +379,7 @@ class AIAnalyzer:
 
 语言简洁、专业，使用中文。"""
 
-        async for chunk in self.provider.stream(prompt, max_tokens=1500):
+        async for chunk in self._observed_stream(prompt, max_tokens=1500, op="daily_report"):
             yield chunk
 
     async def generate_host_inspect_report(
@@ -341,7 +389,7 @@ class AIAnalyzer:
     ) -> AsyncIterator[str]:
         """流式生成主机巡检日报 AI 分析（用于报告存储）"""
         prompt = self._build_inspect_prompt(inspect_results, summary, max_abnormal_hosts=15)
-        async for chunk in self.provider.stream(prompt, max_tokens=1500):
+        async for chunk in self._observed_stream(prompt, max_tokens=1500, op="host_inspect_report"):
             yield chunk
 
     async def analyze_templates_stream(
@@ -374,7 +422,81 @@ class AIAnalyzer:
 
 请用简洁专业的中文回答，重点突出高频异常模板。"""
 
-        async for chunk in self.provider.stream(prompt, max_tokens=2048):
+        async for chunk in self._observed_stream(prompt, max_tokens=2048, op="analyze_templates"):
+            yield chunk
+
+    async def analyze_rca_candidates_stream(
+        self,
+        candidates: list[dict],
+        sample_logs_by_service: dict[str, list[dict]] | None = None,
+        extra_context: str = "",
+    ) -> AsyncIterator[str]:
+        """阶段 B：拿阶段 A 输出的嫌疑组件清单，让 LLM 给结构化 RCA。
+
+        prompt 要求 LLM 返回 JSON-like 结构（root_cause/blast_radius/remediation），
+        UI 端可二次解析；不要求严格 JSON 输出避免被截断卡死。
+        """
+        sample_logs_by_service = sample_logs_by_service or {}
+        lines: list[str] = []
+        for idx, c in enumerate(candidates[:3], 1):
+            ev = c.get("evidence", {}) or {}
+            svc = c.get("service", "?")
+            lines.append(
+                f"[{idx}] service={svc}  score={c.get('score', 0)}\n"
+                f"     burst_z={ev.get('burst_z', 0)}  "
+                f"current_errors={ev.get('current_errors', 0)}  "
+                f"baseline_mean={ev.get('baseline_mean_per_window', 0)}\n"
+                f"     new_templates={ev.get('new_template_count', 0)}  "
+                f"rate_delta={ev.get('error_rate_delta_pct', 0)}%"
+            )
+            examples = ev.get("new_template_examples") or []
+            if examples:
+                lines.append("     新模板样例：")
+                for ex in examples[:3]:
+                    lines.append(f"       - {str(ex)[:160]}")
+            samples = sample_logs_by_service.get(svc) or []
+            if samples:
+                lines.append("     日志样本（最多 6 条）：")
+                for log in samples[:6]:
+                    ts = str(log.get("timestamp", ""))[:19]
+                    msg = str(log.get("line") or log.get("message", ""))[:200]
+                    lines.append(f"       [{ts}] {msg}")
+
+        body = "\n".join(lines) if lines else "（阶段 A 未返回候选）"
+        ctx_hint = f"\n\n附加上下文：\n{extra_context}" if extra_context else ""
+
+        prompt = f"""你是资深 SRE。下面是 Failure Localization 阶段（纯算子）输出的嫌疑组件清单与证据。
+请基于这些证据做根因分析，**不要凭空猜测，只能引用证据里出现的服务/数值**。
+
+嫌疑清单（按嫌疑分降序）：
+{body}{ctx_hint}
+
+请按以下结构输出（用易读的 markdown，不需要严格 JSON）：
+
+## 根因判定
+- 责任服务: <服务名>
+- 故障类别: <GC/OOM/DependencyTimeout/ConfigDrift/NetworkPartition/Saturation/Bug/Other>
+- 直接原因: <1-2 句>
+- 深层原因: <1-2 句>
+
+## 影响范围（blast radius）
+- 直接受影响: <服务/接口列表>
+- 潜在传播路径: <若可推断>
+
+## 修复方案（按优先级）
+对每条给出 risk 与 auto_safe 字段：
+- risk:  low / medium / high
+- auto_safe:  true / false（true 表示在 behaviors.auto=on + 高置信度下可自动执行）
+
+例如：
+1. [risk=low, auto_safe=true] 重启 order-service 副本 1（pod 已 OOM）
+2. [risk=medium, auto_safe=false] 把 max_heap_size 从 2G 调到 4G，需要走 ConfigMap 变更审批
+3. [risk=high, auto_safe=false] 回滚 v1.4.2 到 v1.4.1（涉及流量切换）
+
+## 置信度
+0-1 之间一个数字 + 理由（证据是否足够、是否单源、历史相似度等）"""
+
+        async for chunk in self._observed_stream(prompt, max_tokens=2000, op="rca_stage_b"):
             yield chunk
 
     async def calculate_host_health_score(self, summary: dict) -> int:
