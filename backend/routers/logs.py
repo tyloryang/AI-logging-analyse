@@ -340,9 +340,9 @@ async def get_error_logs(
 
 @router.get("/api/metrics/errors")
 async def get_error_metrics(hours: int = Query(24)):
-    """各服务错误数统计"""
+    """各服务错误数统计（限时返回：预算内拿不到先返回上次结果，后台继续刷新）"""
     try:
-        counts = await loki.count_errors_by_service(hours=hours)
+        counts = await loki.count_errors_by_service_fast(hours=hours)
         return {
             "data": [{"service": k, "count": v} for k, v in counts.items()],
             "total_errors": sum(counts.values()),

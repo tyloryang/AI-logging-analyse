@@ -618,11 +618,11 @@ class LokiClient:
         if task is not None and not task.done():
             return task
 
-        async def _refresh():
+        async def _refresh() -> dict[str, int]:
             try:
-                await self.count_errors_by_service(hours=hours)
+                return await self.count_errors_by_service(hours=hours)
             except Exception:
-                pass
+                return _err_stale.get(cache_key, {})
             finally:
                 _err_refresh_tasks.pop(cache_key, None)
 
@@ -640,7 +640,8 @@ class LokiClient:
             return _err_cache[cache_key]
         task = self._spawn_err_refresh(hours)
         try:
-            return await asyncio.wait_for(asyncio.shield(task), timeout=budget)
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=budget)
+            return result if isinstance(result, dict) else _err_stale.get(cache_key, {})
         except (asyncio.TimeoutError, Exception):
             return _err_stale.get(cache_key, {})
 

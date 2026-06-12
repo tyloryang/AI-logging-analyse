@@ -7,12 +7,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone, timedelta
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Query
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/events", tags=["events"])
 
 _SEVERITY_ORDER = {"critical": 0, "error": 1, "warning": 2, "info": 3}
+_stats_cache: TTLCache = TTLCache(maxsize=1, ttl=30)
 
 
 def _now_ts() -> str:
@@ -86,8 +88,11 @@ async def list_events(
 
 @router.get("/stats")
 async def event_stats():
-    """各级别事件计数，用于仪表盘摘要。"""
+    """各级别事件计数，用于仪表盘摘要（30s 缓存，避免每次实时扫 Loki）。"""
     from state import prom, loki
+
+    if "stats" in _stats_cache:
+        return _stats_cache["stats"]
 
     stats = {"critical": 0, "error": 0, "warning": 0, "info": 0, "total": 0}
 
@@ -108,4 +113,5 @@ async def event_stats():
     except Exception:
         pass
 
+    _stats_cache["stats"] = stats
     return stats
