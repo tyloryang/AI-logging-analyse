@@ -995,9 +995,15 @@ async function loadSlowlog() {
   } catch { slowlog.value = [] }
 }
 
-function parseKsField(ksStr, field) {
-  if (!ksStr) return '-'
-  const m = ksStr.match(new RegExp(`${field}=(\\d+)`))
+function parseKsField(ks, field) {
+  // redis-py 把 keyspace 解析为对象 {keys, expires, avg_ttl}；
+  // 兼容原始字符串 "keys=16,expires=14,avg_ttl=0" 两种格式
+  if (ks == null) return '-'
+  if (typeof ks === 'object') {
+    const v = ks[field]
+    return v == null ? '-' : String(v)
+  }
+  const m = String(ks).match(new RegExp(`${field}=(\\d+)`))
   return m ? m[1] : '-'
 }
 
