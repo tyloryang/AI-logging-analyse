@@ -160,6 +160,62 @@
                   </template>
                 </div>
               </template>
+
+              <!-- 消息浏览 -->
+              <div class="sec-title" style="margin-top:16px">消息浏览</div>
+              <div class="msg-toolbar">
+                <select v-model.number="msgQuery.partition" class="msg-sel">
+                  <option :value="-1">全部分区</option>
+                  <option v-for="p in topicDetail.partitions" :key="p.partition" :value="p.partition">分区 {{ p.partition }}</option>
+                </select>
+                <select v-model="msgQuery.direction" class="msg-sel">
+                  <option value="latest">最新消息</option>
+                  <option value="earliest">最早消息</option>
+                  <option value="offset" :disabled="msgQuery.partition < 0">指定 Offset</option>
+                </select>
+                <input v-if="msgQuery.direction === 'offset'" v-model.number="msgQuery.offset" type="number" min="0"
+                       class="msg-sel" style="width:120px" placeholder="起始 offset"/>
+                <select v-model.number="msgQuery.limit" class="msg-sel">
+                  <option :value="20">20 条</option><option :value="50">50 条</option>
+                  <option :value="100">100 条</option><option :value="200">200 条</option>
+                </select>
+                <button class="btn btn-primary btn-sm" :disabled="msgLoading" @click="loadMessages">
+                  {{ msgLoading ? '抓取中...' : '抓取消息' }}
+                </button>
+                <span v-if="msgResult" class="muted" style="font-size:11px">共 {{ msgResult.count }} 条</span>
+              </div>
+              <div v-if="msgError" class="test-banner fail">{{ msgError }}</div>
+              <template v-if="msgResult">
+                <table class="tbl" v-if="msgResult.messages.length">
+                  <thead><tr><th style="width:54px">分区</th><th style="width:80px">Offset</th><th style="width:150px">时间</th><th style="width:110px">Key</th><th>Value</th><th style="width:64px">大小</th></tr></thead>
+                  <tbody>
+                    <template v-for="(m, mi) in msgResult.messages" :key="m.partition + '-' + m.offset">
+                      <tr class="msg-row" @click="expandedMsg = expandedMsg === mi ? -1 : mi">
+                        <td>{{ m.partition }}</td>
+                        <td class="mono">{{ m.offset }}</td>
+                        <td class="mono" style="font-size:11px">{{ fmtMsgTime(m.timestamp) }}</td>
+                        <td class="mono ellip" :title="m.key">{{ m.key || '-' }}</td>
+                        <td class="mono ellip">
+                          <span v-if="m.value_format === 'json'" class="badge badge-info" style="margin-right:6px">JSON</span>
+                          <span v-else-if="m.value_format === 'base64'" class="badge badge-warn" style="margin-right:6px">二进制</span>
+                          {{ m.value.slice(0, 160) }}
+                        </td>
+                        <td class="muted" style="font-size:11px">{{ fmtBytes(m.size_bytes) }}</td>
+                      </tr>
+                      <tr v-if="expandedMsg === mi">
+                        <td colspan="6" class="msg-expand">
+                          <div v-if="m.headers?.length" class="msg-headers">
+                            Headers：<span v-for="h in m.headers" :key="h.key" class="badge badge-info" style="margin-right:6px">{{ h.key }}={{ h.value }}</span>
+                          </div>
+                          <pre class="msg-pre">{{ prettyValue(m) }}</pre>
+                          <div v-if="m.value_truncated" class="muted" style="font-size:11px">⚠ 消息超过 64KB，已截断展示</div>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div v-else class="empty-state" style="padding:20px"><p>该范围内没有消息</p></div>
+              </template>
             </div>
           </template>
         </div>
@@ -409,8 +465,55 @@ async function loadTopics() {
 async function showTopicDetail(name) {
   selectedTopic.value = name
   topicDetail.value = null
+  msgResult.value = null
+  msgError.value = ''
+  expandedMsg.value = -1
+  msgQuery.value = { partition: -1, direction: 'latest', offset: 0, limit: 50 }
   try { topicDetail.value = await api.kafkaTopicDetail(activeId.value, name) }
   catch (e) { loadError.value = `Topic 详情加载失败：${e}` }
+}
+
+// ── 消息浏览 ──────────────────────────────────────────────────────────────
+const msgQuery   = ref({ partition: -1, direction: 'latest', offset: 0, limit: 50 })
+const msgResult  = ref(null)
+const msgLoading = ref(false)
+const msgError   = ref('')
+const expandedMsg = ref(-1)
+
+async function loadMessages() {
+  if (!topicDetail.value) return
+  msgLoading.value = true
+  msgError.value = ''
+  expandedMsg.value = -1
+  const q = msgQuery.value
+  const params = {
+    partition: q.partition,
+    direction: q.direction === 'offset' ? 'earliest' : q.direction,
+    offset: q.direction === 'offset' ? q.offset : -1,
+    limit: q.limit,
+  }
+  try { msgResult.value = await api.kafkaMessages(activeId.value, topicDetail.value.name, params) }
+  catch (e) { msgError.value = `消息抓取失败：${e}`; msgResult.value = null }
+  finally { msgLoading.value = false }
+}
+
+function fmtMsgTime(ts) {
+  if (!ts) return '-'
+  return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+}
+
+function fmtBytes(n) {
+  if (n == null) return '-'
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+function prettyValue(m) {
+  if (m.value_format === 'json') {
+    try { return JSON.stringify(JSON.parse(m.value), null, 2) } catch { /* fallthrough */ }
+  }
+  return m.value
 }
 
 const createVisible = ref(false)
@@ -557,4 +660,16 @@ onMounted(loadClusters)
 .badge-ok { background: rgba(34,197,94,.15); color: #4ade80; }
 .badge-warn { background: rgba(245,158,11,.15); color: #fbbf24; }
 .badge-info { background: rgba(59,130,246,.15); color: #60a5fa; }
+
+/* 消息浏览 */
+.msg-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.msg-sel { background: var(--bg-input, rgba(255,255,255,.05)); border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; color: inherit; font-size: 12px; }
+.msg-row { cursor: pointer; }
+.msg-row:hover td { background: rgba(59,130,246,.05); }
+.ellip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-expand { background: rgba(0,0,0,.18); }
+.msg-headers { font-size: 11.5px; margin-bottom: 8px; color: var(--text-muted); }
+.msg-pre { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-all; max-height: 360px; overflow-y: auto;
+  background: rgba(0,0,0,.25); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 0; }
 </style>

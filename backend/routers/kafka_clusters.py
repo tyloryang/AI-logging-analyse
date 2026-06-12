@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -474,6 +477,153 @@ async def delete_topic(cluster_id: str, topic: str):
         return {"ok": True, "message": f"Topic {topic} 已删除"}
 
     return await _with_admin(cluster, _delete)
+
+
+# ── 消息浏览 ──────────────────────────────────────────────────────────────────
+
+_MAX_VALUE_BYTES = 64 * 1024   # 单条消息最大返回 64KB，超出截断
+
+
+def _decode_payload(raw: bytes | None) -> dict:
+    """bytes → {text, format, truncated}。优先 UTF-8（JSON 标记 json），
+    无法解码时返回 base64。"""
+    if raw is None:
+        return {"text": "", "format": "empty", "truncated": False}
+    truncated = len(raw) > _MAX_VALUE_BYTES
+    data = raw[:_MAX_VALUE_BYTES]
+    try:
+        text = data.decode("utf-8")
+        fmt = "text"
+        if not truncated:
+            stripped = text.strip()
+            if stripped[:1] in ("{", "["):
+                try:
+                    json.loads(stripped)
+                    fmt = "json"
+                except Exception:
+                    pass
+        return {"text": text, "format": fmt, "truncated": truncated}
+    except UnicodeDecodeError:
+        return {
+            "text": base64.b64encode(data).decode("ascii"),
+            "format": "base64",
+            "truncated": truncated,
+        }
+
+
+@router.get("/clusters/{cluster_id}/topics/{topic}/messages")
+async def browse_messages(
+    cluster_id: str,
+    topic: str,
+    partition: int = -1,          # -1 = 全部分区
+    offset: int = -1,             # >=0 时从指定 offset 开始（需指定 partition）
+    direction: str = "latest",    # latest | earliest
+    limit: int = 50,
+):
+    """抓取 Topic 消息内容（无消费组、不提交 offset，对业务零影响）。"""
+    cluster = _get_cluster(cluster_id)
+    limit = max(1, min(limit, 500))
+
+    # 用 AdminClient 取分区列表（未订阅的 consumer 拿不到该 topic 元数据）
+    async def _list_parts(admin: AIOKafkaAdminClient):
+        metas = await admin.describe_topics([topic])
+        if not metas:
+            return set()
+        return {p["partition"] for p in metas[0].get("partitions", [])}
+
+    all_parts = await _with_admin(cluster, _list_parts)
+
+    consumer = AIOKafkaConsumer(**_client_kwargs(cluster), enable_auto_commit=False)
+    try:
+        await consumer.start()
+        if not all_parts:
+            raise HTTPException(status_code=404, detail=f"Topic {topic} 不存在或无分区")
+        if partition >= 0 and partition not in all_parts:
+            raise HTTPException(status_code=400, detail=f"分区 {partition} 不存在（共 {len(all_parts)} 个分区）")
+
+        tps = (
+            [TopicPartition(topic, partition)]
+            if partition >= 0
+            else [TopicPartition(topic, p) for p in sorted(all_parts)]
+        )
+        consumer.assign(tps)
+        beginnings, ends = await asyncio.gather(
+            consumer.beginning_offsets(tps), consumer.end_offsets(tps)
+        )
+
+        # 计算各分区起始 seek 位置
+        per_part = max(1, limit // len(tps))
+        expected = 0
+        for tp in tps:
+            begin, end = beginnings.get(tp, 0), ends.get(tp, 0)
+            if offset >= 0 and partition >= 0:
+                seek_to = min(max(offset, begin), end)
+            elif direction == "earliest":
+                seek_to = begin
+            else:   # latest：每分区取末尾 per_part 条
+                seek_to = max(end - per_part, begin)
+            consumer.seek(tp, seek_to)
+            expected += max(end - seek_to, 0)
+        expected = min(expected, limit)
+
+        messages: list[dict] = []
+        deadline = time.monotonic() + 6
+        while len(messages) < expected and time.monotonic() < deadline:
+            batch = await consumer.getmany(timeout_ms=800, max_records=limit)
+            if not batch:
+                break
+            for tp, msgs in batch.items():
+                for m in msgs:
+                    value = _decode_payload(m.value)
+                    key = _decode_payload(m.key)
+                    messages.append({
+                        "partition": m.partition,
+                        "offset": m.offset,
+                        "timestamp": m.timestamp,    # epoch ms
+                        "key": key["text"],
+                        "key_format": key["format"],
+                        "value": value["text"],
+                        "value_format": value["format"],
+                        "value_truncated": value["truncated"],
+                        "headers": [
+                            {"key": str(hk), "value": _decode_payload(hv)["text"]}
+                            for hk, hv in (m.headers or [])
+                        ],
+                        "size_bytes": len(m.value or b""),
+                    })
+
+        # 最新模式按时间倒序（新消息在前），其余按 offset 升序
+        if direction == "latest" and offset < 0:
+            messages.sort(key=lambda x: (x["timestamp"], x["partition"], x["offset"]), reverse=True)
+        else:
+            messages.sort(key=lambda x: (x["partition"], x["offset"]))
+        messages = messages[:limit]
+
+        return {
+            "topic": topic,
+            "partition": partition,
+            "direction": direction,
+            "count": len(messages),
+            "partitions_meta": [
+                {
+                    "partition": tp.partition,
+                    "begin_offset": beginnings.get(tp, 0),
+                    "end_offset": ends.get(tp, 0),
+                }
+                for tp in tps
+            ],
+            "messages": messages,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[kafka] browse messages failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"消息抓取失败: {exc}")
+    finally:
+        try:
+            await consumer.stop()
+        except Exception:
+            pass
 
 
 # ── 消费组 ────────────────────────────────────────────────────────────────────

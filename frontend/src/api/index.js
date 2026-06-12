@@ -268,6 +268,7 @@ export const api = {
   kafkaTopicDetail:    (id, topic) => http.get(`/kafka/clusters/${id}/topics/${encodeURIComponent(topic)}`),
   kafkaCreateTopic:    (id, data)  => http.post(`/kafka/clusters/${id}/topics`, data),
   kafkaDeleteTopic:    (id, topic) => http.delete(`/kafka/clusters/${id}/topics/${encodeURIComponent(topic)}`),
+  kafkaMessages:       (id, topic, params) => http.get(`/kafka/clusters/${id}/topics/${encodeURIComponent(topic)}/messages`, { params }),
   kafkaGroups:         (id)        => http.get(`/kafka/clusters/${id}/groups`),
   kafkaGroupLag:       (id, gid)   => http.get(`/kafka/clusters/${id}/groups/${encodeURIComponent(gid)}/lag`),
   // 工单系统
