@@ -587,11 +587,11 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredDeployments.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>镜像</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>节点 IP</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredDeployments.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredDeployments.length"><td colspan="9" class="empty">暂无数据</td></tr>
               <tr v-for="deployment in filteredDeployments" :key="deployment.namespace + '/' + deployment.name"
                   :class="{ 'row-selected': isRowSelected('deployment', deployment) }">
                 <td class="select-col">
@@ -609,6 +609,7 @@
                     <span v-if="scalingKey === scaleKey('deployment', deployment)" class="scale-spinner spinner"></span>
                   </span>
                 </td>
+                <td class="mono small node-list-cell" :title="nodesTitle(deployment)">{{ nodesText(deployment) }}</td>
                 <td class="mono small image-cell" @click="openImageEdit('deployment', deployment)" title="点击编辑镜像">
                   {{ deployment.images.join(', ') }}
                   <span class="image-edit-hint">✎</span>
@@ -633,11 +634,11 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredDaemonSets.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>当前</th><th>可用</th><th>镜像</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>当前</th><th>可用</th><th>节点 IP</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredDaemonSets.length"><td colspan="10" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredDaemonSets.length"><td colspan="11" class="empty">暂无数据</td></tr>
               <tr v-for="daemonSet in filteredDaemonSets" :key="daemonSet.namespace + '/' + daemonSet.name"
                   :class="{ 'row-selected': isRowSelected('daemonset', daemonSet) }">
                 <td class="select-col">
@@ -650,6 +651,7 @@
                 <td>{{ daemonSet.ready }}/{{ daemonSet.desired }}</td>
                 <td>{{ daemonSet.current }}/{{ daemonSet.updated }}</td>
                 <td>{{ daemonSet.available }}</td>
+                <td class="mono small node-list-cell" :title="nodesTitle(daemonSet)">{{ nodesText(daemonSet) }}</td>
                 <td class="mono small image-cell" @click="openImageEdit('daemonset', daemonSet)" title="点击编辑镜像">
                   {{ daemonSet.images.join(', ') }}
                   <span class="image-edit-hint">✎</span>
@@ -674,11 +676,11 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredStatefulSets.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>当前</th><th>更新</th><th>镜像</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>状态</th><th>Ready</th><th>当前</th><th>更新</th><th>节点 IP</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredStatefulSets.length"><td colspan="10" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredStatefulSets.length"><td colspan="11" class="empty">暂无数据</td></tr>
               <tr v-for="statefulSet in filteredStatefulSets" :key="statefulSet.namespace + '/' + statefulSet.name"
                   :class="{ 'row-selected': isRowSelected('statefulset', statefulSet) }">
                 <td class="select-col">
@@ -698,6 +700,7 @@
                 </td>
                 <td>{{ statefulSet.current }}</td>
                 <td>{{ statefulSet.updated }}</td>
+                <td class="mono small node-list-cell" :title="nodesTitle(statefulSet)">{{ nodesText(statefulSet) }}</td>
                 <td class="mono small image-cell" @click="openImageEdit('statefulset', statefulSet)" title="点击编辑镜像">
                   {{ statefulSet.images.join(', ') }}
                   <span class="image-edit-hint">✎</span>
@@ -722,11 +725,11 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredJobs.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>状态</th><th>完成</th><th>并发</th><th>运行</th><th>失败</th><th>镜像</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>状态</th><th>完成</th><th>并发</th><th>运行</th><th>失败</th><th>节点 IP</th><th>镜像</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredJobs.length"><td colspan="11" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredJobs.length"><td colspan="12" class="empty">暂无数据</td></tr>
               <tr v-for="job in filteredJobs" :key="job.namespace + '/' + job.name"
                   :class="{ 'row-selected': isRowSelected('job', job) }">
                 <td class="select-col">
@@ -740,6 +743,7 @@
                 <td>{{ job.parallelism }}</td>
                 <td>{{ job.active }}</td>
                 <td :class="{ 'col-warn': job.failed > 0 }">{{ job.failed }}</td>
+                <td class="mono small node-list-cell" :title="nodesTitle(job)">{{ nodesText(job) }}</td>
                 <td class="mono small">{{ job.images.join(', ') }}</td>
                 <td class="muted mono small" :title="formatRelative(job.age)">{{ formatDateTime(job.age) }}</td>
                 <td class="action-cell">
@@ -761,11 +765,11 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredCronJobs.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>状态</th><th>调度</th><th>挂起</th><th>活跃 Job</th><th>最近调度</th><th>最近成功</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>状态</th><th>调度</th><th>挂起</th><th>活跃 Job</th><th>节点 IP</th><th>最近调度</th><th>最近成功</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredCronJobs.length"><td colspan="11" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredCronJobs.length"><td colspan="12" class="empty">暂无数据</td></tr>
               <tr v-for="cronJob in filteredCronJobs" :key="cronJob.namespace + '/' + cronJob.name"
                   :class="{ 'row-selected': isRowSelected('cronjob', cronJob) }">
                 <td class="select-col">
@@ -778,6 +782,7 @@
                 <td class="mono small">{{ cronJob.schedule }}</td>
                 <td>{{ cronJob.suspend ? '是' : '否' }}</td>
                 <td class="mono small">{{ cronJob.activeJobs.length ? cronJob.activeJobs.join(', ') : cronJob.active }}</td>
+                <td class="mono small node-list-cell" :title="nodesTitle(cronJob)">{{ nodesText(cronJob) }}</td>
                 <td class="muted mono small" :title="formatRelative(cronJob.lastScheduleTime)">{{ formatDateTime(cronJob.lastScheduleTime) }}</td>
                 <td class="muted mono small" :title="formatRelative(cronJob.lastSuccessfulTime)">{{ formatDateTime(cronJob.lastSuccessfulTime) }}</td>
                 <td class="muted mono small" :title="formatRelative(cronJob.age)">{{ formatDateTime(cronJob.age) }}</td>
@@ -800,11 +805,11 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredServices.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>类型</th><th>ClusterIP</th><th>端口</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>类型</th><th>ClusterIP</th><th>端口</th><th>后端节点 IP</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredServices.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredServices.length"><td colspan="9" class="empty">暂无数据</td></tr>
               <tr v-for="service in filteredServices" :key="service.namespace + '/' + service.name"
                   :class="{ 'row-selected': isRowSelected('service', service) }">
                 <td class="select-col">
@@ -816,6 +821,7 @@
                 <td><span class="svc-type" :class="service.type.toLowerCase()">{{ service.type }}</span></td>
                 <td class="mono small">{{ service.clusterIP }}</td>
                 <td class="mono small">{{ service.ports.join(', ') }}</td>
+                <td class="mono small node-list-cell" :title="nodesTitle(service)">{{ nodesText(service) }}</td>
                 <td class="muted mono small" :title="formatRelative(service.age)">{{ formatDateTime(service.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
@@ -835,11 +841,11 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredConfigMaps.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>Key 数</th><th>大小</th><th>Keys 预览</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>Key 数</th><th>大小</th><th>Keys 预览</th><th>引用节点 IP</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredConfigMaps.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredConfigMaps.length"><td colspan="9" class="empty">暂无数据</td></tr>
               <tr v-for="cm in filteredConfigMaps" :key="cm.namespace + '/' + cm.name"
                   :class="{ 'row-selected': isRowSelected('configmap', cm) }">
                 <td class="select-col">
@@ -854,6 +860,7 @@
                   <span v-for="k in (cm.keys || []).slice(0, 5)" :key="k" class="cm-key-tag">{{ k }}</span>
                   <span v-if="(cm.keys || []).length > 5" class="muted">+{{ cm.keys.length - 5 }}</span>
                 </td>
+                <td class="mono small node-list-cell" :title="nodesTitle(cm)">{{ nodesText(cm) }}</td>
                 <td class="muted mono small" :title="formatRelative(cm.age)">{{ formatDateTime(cm.age) }}</td>
                 <td class="action-cell">
                   <div class="action-group">
@@ -870,13 +877,14 @@
           <table class="k8s-table">
             <thead>
               <tr>
-                <th>名称</th><th>状态</th><th>角色</th><th>版本</th><th>OS</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>IP 地址</th><th>状态</th><th>角色</th><th>版本</th><th>OS</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredNodes.length"><td colspan="7" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredNodes.length"><td colspan="8" class="empty">暂无数据</td></tr>
               <tr v-for="node in filteredNodes" :key="node.name">
                 <td class="name-cell">{{ node.name }}</td>
+                <td class="mono small node-list-cell">{{ node.internal_ip || '-' }}</td>
                 <td><span class="status-dot" :class="node.statusClass"></span>{{ node.status }}</td>
                 <td><span class="role-tag">{{ node.roles }}</span></td>
                 <td class="mono small">{{ node.version }}</td>
@@ -1719,6 +1727,24 @@ function matchesSearch(parts) {
   return parts.some((part) => String(part ?? '').toLowerCase().includes(keyword))
 }
 
+// ── 资源所在节点展示 ──────────────────────────────────────────────────────────
+function nodesText(item) {
+  const list = item.node_list || []
+  if (!list.length) return '-'
+  const ips = list.map((n) => n.ip || n.name).filter(Boolean)
+  return ips.slice(0, 2).join(', ') + (ips.length > 2 ? ` +${ips.length - 2}` : '')
+}
+
+function nodesTitle(item) {
+  const list = item.node_list || []
+  if (!list.length) return '无运行中的 Pod'
+  return list.map((n) => `${n.name || '?'} (${n.ip || '-'})`).join('\n')
+}
+
+function nodeSearchParts(item) {
+  return (item.node_list || []).flatMap((n) => [n.name, n.ip])
+}
+
 const filteredPods = computed(() =>
   pods.value.filter((pod) => matchesSearch([
     pod.name, pod.namespace, pod.status, pod.node, pod.host_ip, pod.ip, pod.restarts,
@@ -1728,46 +1754,46 @@ const filteredPods = computed(() =>
 const filteredDeployments = computed(() =>
   deployments.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.ready, item.desired,
-    ...(item.images || []),
+    ...(item.images || []), ...nodeSearchParts(item),
   ]))
 )
 const filteredDaemonSets = computed(() =>
   daemonSets.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.ready, item.desired,
-    item.current, item.updated, item.available, ...(item.images || []),
+    item.current, item.updated, item.available, ...(item.images || []), ...nodeSearchParts(item),
   ]))
 )
 const filteredStatefulSets = computed(() =>
   statefulSets.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.ready, item.desired,
-    item.current, item.updated, ...(item.images || []),
+    item.current, item.updated, ...(item.images || []), ...nodeSearchParts(item),
   ]))
 )
 const filteredJobs = computed(() =>
   jobs.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.succeeded, item.completions,
-    item.parallelism, item.active, item.failed, ...(item.images || []),
+    item.parallelism, item.active, item.failed, ...(item.images || []), ...nodeSearchParts(item),
   ]))
 )
 const filteredCronJobs = computed(() =>
   cronJobs.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.schedule, item.active,
-    item.lastScheduleTime, item.lastSuccessfulTime, ...(item.activeJobs || []),
+    item.lastScheduleTime, item.lastSuccessfulTime, ...(item.activeJobs || []), ...nodeSearchParts(item),
   ]))
 )
 const filteredServices = computed(() =>
   services.value.filter((item) => matchesSearch([
-    item.name, item.namespace, item.type, item.clusterIP, ...(item.ports || []),
+    item.name, item.namespace, item.type, item.clusterIP, ...(item.ports || []), ...nodeSearchParts(item),
   ]))
 )
 const filteredConfigMaps = computed(() =>
   configMaps.value.filter((item) => matchesSearch([
-    item.name, item.namespace, ...(item.keys || []),
+    item.name, item.namespace, ...(item.keys || []), ...nodeSearchParts(item),
   ]))
 )
 const filteredNodes = computed(() =>
   nodes.value.filter((item) => matchesSearch([
-    item.name, item.status, item.roles, item.version, item.os,
+    item.name, item.internal_ip, item.status, item.roles, item.version, item.os,
   ]))
 )
 
@@ -3644,6 +3670,7 @@ onBeforeUnmount(() => { _destroyExec() })
 .mono { font-family: 'Cascadia Code', 'Consolas', monospace; }
 .small { font-size: 11px; }
 .node-ip { color: var(--primary, #3b82f6); font-size: 10.5px; opacity: .85; }
+.node-list-cell { color: var(--primary, #3b82f6); white-space: nowrap; cursor: default; }
 .muted { color: var(--text-muted); }
 .col-warn { color: var(--warning); font-weight: 500; }
 

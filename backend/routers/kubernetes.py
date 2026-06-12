@@ -2597,6 +2597,90 @@ async def list_pods(
 
 # ── Deployments ───────────────────────────────────────────────────────────────
 
+# ── 资源 → 所在节点索引 ──────────────────────────────────────────────────────
+
+def _build_pod_placement_index(v1, namespace: str = "") -> list[dict]:
+    """一次性拉取 Pod 列表，构建『资源 → 所在节点』索引（避免逐资源查询）。"""
+    pods = v1.list_pod_for_all_namespaces() if not namespace else v1.list_namespaced_pod(namespace)
+    index = []
+    for pod in pods.items:
+        owners = {}
+        for ref in (pod.metadata.owner_references or []):
+            owners[ref.kind] = ref.name
+        # 该 Pod 引用的 ConfigMap（volume / envFrom / env valueFrom）
+        cms: set[str] = set()
+        spec = pod.spec
+        for vol in (spec.volumes or []):
+            cm = getattr(vol, "config_map", None)
+            if cm and cm.name:
+                cms.add(cm.name)
+        for c in (spec.containers or []):
+            for ef in (c.env_from or []):
+                cm_ref = getattr(ef, "config_map_ref", None)
+                if cm_ref and cm_ref.name:
+                    cms.add(cm_ref.name)
+            for env in (c.env or []):
+                vf = getattr(env, "value_from", None)
+                ck = getattr(vf, "config_map_key_ref", None) if vf else None
+                if ck and ck.name:
+                    cms.add(ck.name)
+        index.append({
+            "namespace": pod.metadata.namespace,
+            "labels": pod.metadata.labels or {},
+            "owners": owners,
+            "node": pod.spec.node_name or "",
+            "host_ip": pod.status.host_ip or "",
+            "configmaps": cms,
+        })
+    return index
+
+
+def _dedup_node_list(pods: list[dict]) -> list[dict]:
+    seen, out = set(), []
+    for p in pods:
+        key = p["node"] or p["host_ip"]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": p["node"], "ip": p["host_ip"]})
+    return sorted(out, key=lambda x: (x["ip"] or "", x["name"]))
+
+
+def _nodes_by_selector(index: list[dict], namespace: str, match_labels: dict) -> list[dict]:
+    if not match_labels:
+        return []
+    matched = [
+        p for p in index
+        if p["namespace"] == namespace
+        and all(p["labels"].get(k) == v for k, v in match_labels.items())
+    ]
+    return _dedup_node_list(matched)
+
+
+def _nodes_by_owner(index: list[dict], namespace: str, kind: str, name: str, prefix: bool = False) -> list[dict]:
+    matched = []
+    target = name + "-"
+    for p in index:
+        if p["namespace"] != namespace:
+            continue
+        owner = p["owners"].get(kind)
+        if owner is None:
+            continue
+        if owner.startswith(target) if prefix else owner == name:
+            matched.append(p)
+    return _dedup_node_list(matched)
+
+
+def _nodes_by_configmap(index: list[dict], namespace: str, name: str) -> list[dict]:
+    matched = [p for p in index if p["namespace"] == namespace and name in p["configmaps"]]
+    return _dedup_node_list(matched)
+
+
+def _node_ip_map(index: list[dict]) -> dict[str, str]:
+    """节点名 → 节点 IP（从 Pod 索引推导，无需额外 API）。"""
+    return {p["node"]: p["host_ip"] for p in index if p["node"] and p["host_ip"]}
+
+
 @router.get("/deployments")
 async def list_deployments(
     namespace: str = Query("", description="命名空间，空=全部"),
@@ -2605,8 +2689,9 @@ async def list_deployments(
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        _, apps = _get_client(cluster["id"])
+        v1, apps = _get_client(cluster["id"])
         deps = apps.list_deployment_for_all_namespaces() if not namespace else apps.list_namespaced_deployment(namespace)
+        pod_index = _build_pod_placement_index(v1, namespace)
         result = []
         for item in deps.items:
             desired = item.spec.replicas or 0
@@ -2627,6 +2712,10 @@ async def list_deployments(
                     "statusClass": _phase_class(status),
                     "age": _safe_age(item.metadata.creation_timestamp),
                     "images": [c.image for c in (item.spec.template.spec.containers or [])],
+                    "node_list": _nodes_by_selector(
+                        pod_index, item.metadata.namespace,
+                        _resource_selector_labels(item),
+                    ),
                 }
             )
         return result
@@ -2645,8 +2734,9 @@ async def list_daemonsets(
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        _, apps = _get_client(cluster["id"])
+        v1, apps = _get_client(cluster["id"])
         items = apps.list_daemon_set_for_all_namespaces() if not namespace else apps.list_namespaced_daemon_set(namespace)
+        pod_index = _build_pod_placement_index(v1, namespace)
         result = []
         for item in items.items:
             desired = item.status.desired_number_scheduled or 0
@@ -2668,6 +2758,9 @@ async def list_daemonsets(
                     "statusClass": _phase_class(status),
                     "age": _safe_age(item.metadata.creation_timestamp),
                     "images": _container_images(item.spec.template),
+                    "node_list": _nodes_by_owner(
+                        pod_index, item.metadata.namespace, "DaemonSet", item.metadata.name,
+                    ),
                 }
             )
         return result
@@ -2686,8 +2779,9 @@ async def list_statefulsets(
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        _, apps = _get_client(cluster["id"])
+        v1, apps = _get_client(cluster["id"])
         items = apps.list_stateful_set_for_all_namespaces() if not namespace else apps.list_namespaced_stateful_set(namespace)
+        pod_index = _build_pod_placement_index(v1, namespace)
         result = []
         for item in items.items:
             desired = item.spec.replicas or 0
@@ -2707,6 +2801,9 @@ async def list_statefulsets(
                     "statusClass": _phase_class(status),
                     "age": _safe_age(item.metadata.creation_timestamp),
                     "images": _container_images(item.spec.template),
+                    "node_list": _nodes_by_owner(
+                        pod_index, item.metadata.namespace, "StatefulSet", item.metadata.name,
+                    ),
                 }
             )
         return result
@@ -2726,7 +2823,9 @@ async def list_jobs(
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         batch = _get_batch_client(cluster["id"])
+        v1, _ = _get_client(cluster["id"])
         items = batch.list_job_for_all_namespaces() if not namespace else batch.list_namespaced_job(namespace)
+        pod_index = _build_pod_placement_index(v1, namespace)
         result = []
         for item in items.items:
             status = _job_status(item)
@@ -2743,6 +2842,9 @@ async def list_jobs(
                     "failed": item.status.failed or 0,
                     "age": _safe_age(item.metadata.creation_timestamp),
                     "images": _container_images(item.spec.template),
+                    "node_list": _nodes_by_owner(
+                        pod_index, item.metadata.namespace, "Job", item.metadata.name,
+                    ),
                 }
             )
         return result
@@ -2762,7 +2864,9 @@ async def list_cronjobs(
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         batch = _get_batch_client(cluster["id"])
+        v1, _ = _get_client(cluster["id"])
         items = batch.list_cron_job_for_all_namespaces() if not namespace else batch.list_namespaced_cron_job(namespace)
+        pod_index = _build_pod_placement_index(v1, namespace)
         result = []
         for item in items.items:
             active_refs = item.status.active or []
@@ -2782,6 +2886,10 @@ async def list_cronjobs(
                     "status": status,
                     "statusClass": _phase_class(status),
                     "age": _safe_age(item.metadata.creation_timestamp),
+                    # CronJob 的 Pod 由其派生 Job（名称前缀匹配）拥有
+                    "node_list": _nodes_by_owner(
+                        pod_index, item.metadata.namespace, "Job", item.metadata.name, prefix=True,
+                    ),
                 }
             )
         return result
@@ -2802,6 +2910,30 @@ async def list_services(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         v1, _ = _get_client(cluster["id"])
         svcs = v1.list_service_for_all_namespaces() if not namespace else v1.list_namespaced_service(namespace)
+
+        # Endpoints → 后端 Pod 所在节点（节点 IP 经 Pod 索引推导）
+        pod_index = _build_pod_placement_index(v1, namespace)
+        name_to_ip = _node_ip_map(pod_index)
+        ep_nodes: dict[tuple[str, str], list[dict]] = {}
+        try:
+            eps = v1.list_endpoints_for_all_namespaces() if not namespace else v1.list_namespaced_endpoints(namespace)
+            for ep in eps.items:
+                nodes_seen: dict[str, dict] = {}
+                for subset in (ep.subsets or []):
+                    for addr in (subset.addresses or []):
+                        node_name = getattr(addr, "node_name", None) or ""
+                        if not node_name:
+                            continue
+                        nodes_seen.setdefault(node_name, {
+                            "name": node_name,
+                            "ip": name_to_ip.get(node_name, ""),
+                        })
+                ep_nodes[(ep.metadata.namespace, ep.metadata.name)] = sorted(
+                    nodes_seen.values(), key=lambda x: (x["ip"] or "", x["name"])
+                )
+        except Exception as exc:
+            logger.debug("[k8s] list endpoints failed: %s", exc)
+
         result = []
         for item in svcs.items:
             ports = []
@@ -2826,6 +2958,7 @@ async def list_services(
                     ),
                     "ports": ports,
                     "age": _safe_age(item.metadata.creation_timestamp),
+                    "node_list": ep_nodes.get((item.metadata.namespace, item.metadata.name), []),
                 }
             )
         return result
@@ -2850,6 +2983,7 @@ async def list_configmaps(
             if not namespace
             else v1.list_namespaced_config_map(namespace).items
         )
+        pod_index = _build_pod_placement_index(v1, namespace)
         result = []
         for item in items:
             data_keys = list((item.data or {}).keys()) + list((item.binary_data or {}).keys())
@@ -2865,6 +2999,10 @@ async def list_configmaps(
                     "keyCount": len(data_keys),
                     "size": size,
                     "age": _safe_age(item.metadata.creation_timestamp),
+                    # 被哪些节点上的 Pod 引用（volume / envFrom / env valueFrom）
+                    "node_list": _nodes_by_configmap(
+                        pod_index, item.metadata.namespace, item.metadata.name,
+                    ),
                 }
             )
         return result
@@ -2891,9 +3029,14 @@ async def list_nodes(
                 if cond.type == "Ready":
                     ready = "Ready" if cond.status == "True" else "NotReady"
             info = item.status.node_info or {}
+            internal_ip = next(
+                (a.address for a in (item.status.addresses or []) if a.type == "InternalIP"),
+                "",
+            )
             result.append(
                 {
                     "name": item.metadata.name,
+                    "internal_ip": internal_ip,
                     "status": ready,
                     "statusClass": _phase_class(ready),
                     "roles": ", ".join(
