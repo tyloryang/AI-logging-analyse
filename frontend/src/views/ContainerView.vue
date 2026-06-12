@@ -516,7 +516,7 @@
                     :disabled="!sortedFilteredPods.length"
                     title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>状态</th><th>节点</th><th>容器</th>
+                <th>名称</th><th>命名空间</th><th>状态</th><th>节点 / IP</th><th>容器</th>
                 <th class="sortable-th" @click="togglePodRestartSort" :title="`点击切换排序 (当前: ${ {desc:'降序',asc:'升序',null:'默认'}[podRestartSortOrder] || '默认' })`">
                   重启
                   <span class="sort-indicator">{{ podRestartSortOrder === 'desc' ? '↓' : podRestartSortOrder === 'asc' ? '↑' : '⇅' }}</span>
@@ -536,7 +536,10 @@
                 <td class="name-cell">{{ pod.name }}</td>
                 <td><span class="ns-tag">{{ pod.namespace }}</span></td>
                 <td><span class="status-dot" :class="pod.statusClass"></span>{{ pod.status }}</td>
-                <td class="mono small">{{ pod.node || '-' }}</td>
+                <td class="mono small">
+                  <div>{{ pod.node || '-' }}</div>
+                  <div v-if="pod.host_ip" class="node-ip" :title="`节点 IP: ${pod.host_ip}（Pod IP: ${pod.ip || '-'}）`">{{ pod.host_ip }}</div>
+                </td>
                 <td>
                   <span
                     v-for="container in pod.containers"
@@ -1718,7 +1721,7 @@ function matchesSearch(parts) {
 
 const filteredPods = computed(() =>
   pods.value.filter((pod) => matchesSearch([
-    pod.name, pod.namespace, pod.status, pod.node, pod.restarts,
+    pod.name, pod.namespace, pod.status, pod.node, pod.host_ip, pod.ip, pod.restarts,
     ...(pod.containers || []).map((container) => container.name),
   ]))
 )
@@ -3640,6 +3643,7 @@ onBeforeUnmount(() => { _destroyExec() })
 
 .mono { font-family: 'Cascadia Code', 'Consolas', monospace; }
 .small { font-size: 11px; }
+.node-ip { color: var(--primary, #3b82f6); font-size: 10.5px; opacity: .85; }
 .muted { color: var(--text-muted); }
 .col-warn { color: var(--warning); font-weight: 500; }
 

@@ -734,6 +734,8 @@ def _pod_brief(pod) -> dict:
         "status": _pod_status(pod),
         "statusClass": _phase_class(_pod_status(pod)),
         "node": pod.spec.node_name or "",
+        "host_ip": pod.status.host_ip or "",
+        "ip": pod.status.pod_ip or "",
         "age": _safe_age(pod.metadata.creation_timestamp),
         "containers": [
             {
@@ -2576,6 +2578,7 @@ async def list_pods(
                     "status": status,
                     "statusClass": _phase_class(status),
                     "node": pod.spec.node_name or "",
+                    "host_ip": pod.status.host_ip or "",
                     "ip": pod.status.pod_ip or "",
                     "containers": containers,
                     "restarts": sum(c["restarts"] for c in containers),
