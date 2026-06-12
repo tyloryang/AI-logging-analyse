@@ -159,6 +159,7 @@ const MENU = [
     children: [
       { label: '中间件概览', to: '/middleware' },
       { label: 'Redis Cluster', to: '/middleware/redis' },
+      { label: 'Kafka', to: '/middleware/kafka' },
       { label: 'Elasticsearch', to: '/middleware/es' },
     ],
   },

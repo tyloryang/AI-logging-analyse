@@ -256,6 +256,20 @@ export const api = {
   redisSlowlog:        (id, n, db) => http.get(`/redis/clusters/${id}/slowlog`, { params: { count: n, db } }),
   // Redis 命令台
   redisCommand:        (id, data) => http.post(`/redis/clusters/${id}/command`, data),
+  // Kafka 集群管理
+  kafkaClusters:       ()        => http.get('/kafka/clusters'),
+  kafkaAddCluster:     (data)    => http.post('/kafka/clusters', data),
+  kafkaUpdateCluster:  (id, data)=> http.put(`/kafka/clusters/${id}`, data),
+  kafkaDeleteCluster:  (id)      => http.delete(`/kafka/clusters/${id}`),
+  kafkaTestCluster:    (id)      => http.get(`/kafka/clusters/${id}/test`),
+  kafkaTestConfig:     (data)    => http.post('/kafka/clusters/test-config', data),
+  kafkaOverview:       (id)      => http.get(`/kafka/clusters/${id}/overview`),
+  kafkaTopics:         (id, internal = false) => http.get(`/kafka/clusters/${id}/topics`, { params: { include_internal: internal } }),
+  kafkaTopicDetail:    (id, topic) => http.get(`/kafka/clusters/${id}/topics/${encodeURIComponent(topic)}`),
+  kafkaCreateTopic:    (id, data)  => http.post(`/kafka/clusters/${id}/topics`, data),
+  kafkaDeleteTopic:    (id, topic) => http.delete(`/kafka/clusters/${id}/topics/${encodeURIComponent(topic)}`),
+  kafkaGroups:         (id)        => http.get(`/kafka/clusters/${id}/groups`),
+  kafkaGroupLag:       (id, gid)   => http.get(`/kafka/clusters/${id}/groups/${encodeURIComponent(gid)}/lag`),
   // 工单系统
   listTickets:      (params)     => http.get('/tickets',              { params }),
   createTicket:     (data)       => http.post('/tickets', data),
