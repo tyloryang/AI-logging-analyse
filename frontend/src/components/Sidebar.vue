@@ -127,10 +127,10 @@ onMounted(async () => {
 // ── 菜单定义 ────────────────────────────────────────────────────
 const MENU = [
   { id: 'dashboard', icon: 'dashboard', label: '仪表盘', to: '/' },
-  { id: 'cmdb',      icon: 'cmdb',      label: 'CMDB',   to: '/cmdb', module: 'cmdb' },
   {
     id: 'host', icon: 'host', label: '主机中心',
     children: [
+      { label: 'CMDB',     to: '/cmdb', module: 'cmdb' },
       { label: '任务中心', to: '/hosts/tasks' },
       { label: '定时任务', to: '/hosts/cron' },
       { label: '主机申请', to: '/hosts/apply' },

@@ -147,6 +147,28 @@ def _connection_config_from_payload(payload: RedisClusterPayload | RedisClusterT
     }
 
 
+def _flatten_redis_info(raw: Any) -> dict[str, Any]:
+    """统一 redis-py INFO 返回为平坦字典。
+
+    redis-py 5.x 在 `info("all")` 与少数 section 上会返回嵌套结构
+    `{section_name: {key: value, ...}}`，而旧版本直接返回平坦
+    `{key: value, ...}`。本函数兼容两种格式：把"值是 dict 的项"
+    展开到外层，避免下游 `info.get("redis_version")` 等查询命中 None。
+
+    keyspace section（`{"db0": {"keys": 100, ...}}`）不要走本函数 ——
+    那里的 dict 是数据本身，不是 section 包装。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if isinstance(value, dict):
+            out.update(value)
+        else:
+            out[key] = value
+    return out
+
+
 def _to_int(value: Any, default: int = 0) -> int:
     try:
         if value in (None, ""):
@@ -408,7 +430,7 @@ async def _detect_mode(config: dict) -> tuple[str, dict]:
     host, port = _parse_endpoint(_normalize_startup_nodes(config.get("startup_nodes"))[0])
     client = _build_node_client(config, host, port)
     try:
-        info_cluster = await client.info("cluster")
+        info_cluster = _flatten_redis_info(await client.info("cluster"))
         cluster_enabled = str(info_cluster.get("cluster_enabled", "0")).strip() in {"1", "True", "true"}
         mode = _MODE_CLUSTER if cluster_enabled else _MODE_STANDALONE
         return mode, info_cluster
@@ -443,13 +465,13 @@ async def _resolve_runtime_mode(config: dict) -> tuple[str, dict]:
 async def _probe_standalone_node(config: dict, host: str, port: int) -> dict:
     client = _build_node_client(config, host, port)
     try:
-        info = await client.info()
+        info = _flatten_redis_info(await client.info())
         keyspace_hits = _to_int(info.get("keyspace_hits"))
         keyspace_misses = _to_int(info.get("keyspace_misses"))
         hit_total = keyspace_hits + keyspace_misses
         used_memory = _to_int(info.get("used_memory"))
-        replication_info = await client.info("replication")
-        server_info = await client.info("server")
+        replication_info = _flatten_redis_info(await client.info("replication"))
+        server_info = _flatten_redis_info(await client.info("server"))
 
         return {
             "id": f"{host}:{port}",
@@ -495,7 +517,7 @@ async def _probe_cluster_node(config: dict, node: dict) -> dict:
 
     client = _build_node_client(config, host, port)
     try:
-        info = await client.info()
+        info = _flatten_redis_info(await client.info())
         keyspace_hits = _to_int(info.get("keyspace_hits"))
         keyspace_misses = _to_int(info.get("keyspace_misses"))
         hit_total = keyspace_hits + keyspace_misses
@@ -597,8 +619,8 @@ async def _test_standalone_connection(config: dict) -> dict:
     client = _build_node_client(config, host, port)
     try:
         pong = await client.ping()
-        info_server = await client.info("server")
-        info_replication = await client.info("replication")
+        info_server = _flatten_redis_info(await client.info("server"))
+        info_replication = _flatten_redis_info(await client.info("replication"))
         return {
             "ok": bool(pong),
             "mode": _MODE_STANDALONE,
@@ -900,7 +922,11 @@ async def get_redis_info(cluster_id: str, db: int = 0):
     cluster = _get_cluster(cluster_id)
     client = await _get_single_client(cluster, db)
     try:
-        info: dict = await client.info("all")
+        # redis-py 5.x 在 INFO all 上可能返回 {section: {...}} 嵌套字典，
+        # 而旧版本返回平坦字典。统一展平后下游 info.get("redis_version") 等
+        # 才能拿到真实值（这正是「监控统计无数据」问题的根因）。
+        info: dict = _flatten_redis_info(await client.info("all"))
+        # keyspace 段保留嵌套结构（{"db0": {"keys": ..., ...}}），不能展平
         keyspace: dict = await client.info("keyspace")
         # 按段分组
         groups: dict[str, dict] = {

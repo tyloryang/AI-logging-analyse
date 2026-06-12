@@ -1,14 +1,14 @@
 {
-  "name": "aiops-cli",
-  "version": "1.0.0",
-  "description": "AI 运维智能体 CLI — Claude Code 风格",
+  "name": "aiops-code",
+  "version": "2.0.0",
+  "description": "AIOPS Code — Claude Code 风格的 AI 运维智能体 CLI",
   "type": "module",
   "scripts": {
     "build": "esbuild index.mjs --loader:.mjs=jsx --outfile=dist/index.mjs --format=esm --platform=node",
     "start": "npm run build && node dist/index.mjs",
     "dev":   "node dist/index.mjs"
   },
-  "bin": { "aiops": "./dist/bundle.cjs" },
+  "bin": { "aiops": "./dist/index.mjs" },
   "engines": { "node": ">=18" },
   "dependencies": {
     "ink": "^4.4.1",

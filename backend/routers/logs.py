@@ -277,6 +277,47 @@ async def get_logs(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.get("/api/logs/context")
+async def get_log_context(
+    timestamp_ns: int = Query(..., description="选中日志的纳秒时间戳"),
+    service: Optional[str] = Query(None, description="服务名"),
+    line_prefix: Optional[str] = Query(None, description="日志内容前缀，用于精确命中当前行"),
+    labels_json: Optional[str] = Query(None, description="当前日志 labels 的 JSON 对象"),
+    hours: int = Query(24, description="查询时长（小时）"),
+    before: int = Query(249, ge=0, le=500, description="向前取多少条"),
+    after: int = Query(250, ge=0, le=500, description="向后取多少条"),
+    start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
+    end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式"),
+):
+    """围绕某条日志返回同一流的前后文。"""
+    try:
+        label_filters: dict[str, str] | None = None
+        if labels_json:
+            parsed = json.loads(labels_json)
+            if not isinstance(parsed, dict):
+                raise ValueError("labels_json must be a JSON object")
+            label_filters = {
+                str(key): "" if value is None else str(value)
+                for key, value in parsed.items()
+            }
+
+        return await loki.query_log_context(
+            timestamp_ns=timestamp_ns,
+            service=service or None,
+            line_prefix=line_prefix or None,
+            before=before,
+            after=after,
+            hours=hours,
+            start_ns=_parse_time_ns(start_time),
+            end_ns=_parse_time_ns(end_time),
+            label_filters=label_filters,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get("/api/logs/errors")
 async def get_error_logs(
     hours: int = Query(24),
