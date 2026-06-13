@@ -597,35 +597,117 @@
       </div>
     </div>
 
-    <!-- 导入弹窗 -->
-    <div v-if="showImportModal" class="modal-mask" @click.self="showImportModal = false">
-      <div class="host-modal" style="max-width:440px">
-        <div class="modal-header"><span>批量导入主机</span><button class="close-btn" @click="showImportModal = false">✕</button></div>
-        <div class="modal-body">
-          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">支持 <b>.xlsx</b> / <b>.csv</b> 文件，列名以导出模板为准；建议使用导出文件回填，可保留分组 ID、标签、凭证等完整备份字段</p>
-          <div class="form-group">
-            <label>选择文件</label>
-            <input type="file" accept=".xlsx,.xls,.csv" @change="onImportFile" class="file-input" />
+    <!-- 导入向导（两步：上传 → 预览 → 确认）-->
+    <div v-if="showImportModal" class="modal-mask" @click.self="closeImport">
+      <div class="host-modal import-wizard" style="max-width:680px">
+        <div class="modal-header">
+          <span>批量导入主机 <small class="step-hint">步骤 {{ importPreview ? 2 : 1 }} / 2</small></span>
+          <button class="close-btn" @click="closeImport">✕</button>
+        </div>
+
+        <!-- 步骤 1：上传 -->
+        <div v-if="!importPreview" class="modal-body">
+          <div class="wiz-intro">
+            <div class="wiz-intro-icon">📋</div>
+            <div>
+              <p class="wiz-intro-title">从 Excel/CSV 一键导入，分组与凭据自动创建</p>
+              <p class="wiz-intro-sub">
+                只需 IP 列必填。<b>分组名</b>不存在会自动创建；填了 <b>SSH 用户名+密码</b>会自动加密建凭据；
+                任意附加列（如「业务线」「应用名」）会自动进主机标签，不会丢失。
+              </p>
+            </div>
           </div>
-          <div class="form-group">
-            <label>IP 重复时</label>
+
+          <div class="wiz-actions-row">
+            <a href="/api/hosts/template" class="btn btn-outline" download>
+              <span style="margin-right:4px">📥</span>下载导入模板
+            </a>
+            <span class="wiz-sep">或</span>
+            <label class="btn btn-outline wiz-upload-btn">
+              <span style="margin-right:4px">📤</span>选择文件上传
+              <input type="file" accept=".xlsx,.xls,.csv" @change="onImportFile" hidden />
+            </label>
+            <span v-if="importFile" class="wiz-file-name">已选：{{ importFile.name }}</span>
+          </div>
+
+          <div class="form-group" style="margin-top:14px">
+            <label>IP 重复时的策略</label>
             <select v-model="importConflict" class="filter-select" style="width:100%">
               <option value="skip">跳过（保留已有数据）</option>
               <option value="update">覆盖（用文件数据更新）</option>
             </select>
           </div>
-          <div v-if="importResult" class="import-result" :class="importResult.ok ? 'ok' : 'err'">
-            <div style="font-weight:600;margin-bottom:4px">{{ importResult.message }}</div>
-            <div v-if="importResult.error_details?.length" style="font-size:11px;margin-top:4px">
-              <div v-for="e in importResult.error_details" :key="e" style="color:var(--error)">{{ e }}</div>
+
+          <div class="form-group" style="display:flex;gap:18px;font-size:12.5px">
+            <label class="chk">
+              <input type="checkbox" v-model="importAutoGroup"/> 分组不存在时自动创建
+            </label>
+            <label class="chk">
+              <input type="checkbox" v-model="importAutoCred"/> 用户名+密码自动建凭据
+            </label>
+          </div>
+
+          <div v-if="importError" class="form-error">{{ importError }}</div>
+
+          <div class="form-actions">
+            <button class="btn btn-outline" @click="closeImport">取消</button>
+            <button class="btn btn-primary" @click="doPreview" :disabled="!importFile || importing">
+              <span v-if="importing" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+              预览解析结果
+            </button>
+          </div>
+        </div>
+
+        <!-- 步骤 2：预览结果 -->
+        <div v-else class="modal-body">
+          <div class="wiz-summary">
+            <div class="wiz-stat"><span>新增主机</span><strong class="ok">{{ importPreview.added }}</strong></div>
+            <div class="wiz-stat"><span>更新主机</span><strong class="warn">{{ importPreview.updated }}</strong></div>
+            <div class="wiz-stat"><span>跳过</span><strong class="muted">{{ importPreview.skipped }}</strong></div>
+            <div class="wiz-stat"><span>错误</span><strong :class="importPreview.errors ? 'err' : 'muted'">{{ importPreview.errors }}</strong></div>
+            <div class="wiz-stat"><span>新建分组</span><strong class="info">{{ importPreview.new_groups.length }}</strong></div>
+            <div class="wiz-stat"><span>新建凭据</span><strong class="info">{{ importPreview.new_credentials.length }}</strong></div>
+          </div>
+
+          <div v-if="importPreview.new_groups.length || importPreview.new_credentials.length" class="wiz-auto-create">
+            <div v-if="importPreview.new_groups.length">
+              <b>将自动创建分组：</b>
+              <span v-for="g in importPreview.new_groups" :key="g.id" class="wiz-chip">{{ g.name }}</span>
+            </div>
+            <div v-if="importPreview.new_credentials.length" style="margin-top:6px">
+              <b>将自动创建凭据：</b>
+              <span v-for="c in importPreview.new_credentials" :key="c.id" class="wiz-chip">{{ c.name }}</span>
             </div>
           </div>
+
+          <div v-if="importPreview.preview_added.length" class="wiz-rows">
+            <div class="wiz-rows-title">新增主机预览（前 {{ Math.min(10, importPreview.preview_added.length) }} 条）</div>
+            <table class="wiz-table">
+              <thead><tr><th>主机名</th><th>IP</th><th>分组</th><th>环境</th></tr></thead>
+              <tbody>
+                <tr v-for="(h, i) in importPreview.preview_added.slice(0, 10)" :key="i">
+                  <td>{{ h.hostname }}</td><td class="mono">{{ h.ip }}</td><td class="mono small">{{ h.group || '-' }}</td><td>{{ h.env }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="importPreview.error_details?.length" class="wiz-errors">
+            <div style="font-weight:600;margin-bottom:6px">⚠ 错误明细</div>
+            <div v-for="e in importPreview.error_details.slice(0, 10)" :key="e" class="wiz-err-line">{{ e }}</div>
+          </div>
+
+          <div v-if="importResult" class="import-result" :class="importResult.ok ? 'ok' : 'err'">
+            <div style="font-weight:600">✓ {{ importResult.message }}</div>
+          </div>
+
           <div v-if="importError" class="form-error">{{ importError }}</div>
+
           <div class="form-actions">
-            <button class="btn btn-outline" @click="downloadExport">📥 下载模板</button>
-            <button class="btn btn-primary" @click="doImport" :disabled="!importFile || importing">
+            <button class="btn btn-outline" @click="resetWizard">返回</button>
+            <button class="btn btn-primary" @click="doImport" :disabled="importing || !!importResult">
               <span v-if="importing" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
-              导入
+              确认导入 {{ importPreview.added + importPreview.updated }} 条
             </button>
           </div>
         </div>
@@ -1084,25 +1166,65 @@ function downloadExport() {
 const showImportModal = ref(false)
 const importFile      = ref(null)
 const importConflict  = ref('skip')
+const importAutoGroup = ref(true)
+const importAutoCred  = ref(true)
 const importing       = ref(false)
 const importResult    = ref(null)
+const importPreview   = ref(null)
 const importError     = ref('')
 
 function onImportFile(e) {
-  importFile.value  = e.target.files[0] || null
+  importFile.value   = e.target.files[0] || null
   importResult.value = null
+  importPreview.value = null
   importError.value  = ''
+}
+
+function closeImport() {
+  showImportModal.value = false
+  resetWizard()
+  importFile.value = null
+}
+
+function resetWizard() {
+  importPreview.value = null
+  importResult.value  = null
+  importError.value   = ''
+}
+
+async function doPreview() {
+  if (!importFile.value) return
+  importing.value = true
+  importError.value = ''
+  try {
+    importPreview.value = await api.previewImportHosts(importFile.value, {
+      conflict: importConflict.value,
+      auto_create_group: importAutoGroup.value,
+      auto_create_credential: importAutoCred.value,
+    })
+  } catch (e) {
+    importError.value = typeof e === 'string' ? e : '预览失败，请检查文件格式'
+  } finally {
+    importing.value = false
+  }
 }
 
 async function doImport() {
   if (!importFile.value) return
-  importing.value   = true
-  importResult.value = null
-  importError.value  = ''
+  importing.value = true
+  importError.value = ''
   try {
-    const res = await api.importHosts(importFile.value, importConflict.value)
+    const res = await api.importHosts(importFile.value, {
+      conflict: importConflict.value,
+      auto_create_group: importAutoGroup.value,
+      auto_create_credential: importAutoCred.value,
+    })
     importResult.value = res
-    if (res.ok) await loadHosts()
+    if (res.ok) {
+      await loadHosts()
+      // 1.2 秒后自动关闭
+      setTimeout(closeImport, 1500)
+    }
   } catch (e) {
     importError.value = typeof e === 'string' ? e : '导入失败，请检查文件格式'
   } finally {
@@ -1898,8 +2020,39 @@ async function deleteGroup(g) {
 .sync-msg.err { background: rgba(248,81,73,.12); color: var(--error); }
 .file-input { padding: 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 100%; box-sizing: border-box; cursor: pointer; }
 .import-result { font-size: 12px; padding: 8px 12px; border-radius: 5px; margin-top: 6px; }
-.import-result.ok { background: rgba(63,185,80,.12); color: var(--success); }
-.import-result.err { background: rgba(248,81,73,.12); color: var(--error); }
+.import-result.ok { background: rgba(99,130,91,.14); color: var(--success); }
+.import-result.err { background: rgba(189,86,79,.12); color: var(--error); }
+
+/* ── 导入向导样式 ──────────────────────────────────────────── */
+.step-hint { color: var(--text-muted); font-size: 11px; margin-left: 8px; font-weight: 400; }
+.wiz-intro { display: flex; gap: 12px; padding: 14px 16px; background: var(--bg-surface); border-radius: 10px; margin-bottom: 14px; }
+.wiz-intro-icon { font-size: 26px; flex-shrink: 0; }
+.wiz-intro-title { font-weight: 600; margin-bottom: 6px; font-size: 13px; }
+.wiz-intro-sub { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.wiz-actions-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wiz-sep { color: var(--text-muted); font-size: 12px; }
+.wiz-upload-btn { position: relative; cursor: pointer; }
+.wiz-file-name { font-size: 12px; color: var(--text-secondary); padding: 4px 10px; background: var(--bg-surface); border-radius: 6px; }
+.wiz-summary { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 14px; }
+.wiz-stat { background: var(--bg-surface); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.wiz-stat span { font-size: 10.5px; color: var(--text-muted); }
+.wiz-stat strong { font-size: 18px; font-weight: 600; }
+.wiz-stat strong.ok { color: var(--success); }
+.wiz-stat strong.warn { color: var(--warning); }
+.wiz-stat strong.err { color: var(--error); }
+.wiz-stat strong.info { color: var(--accent); }
+.wiz-stat strong.muted { color: var(--text-muted); }
+.wiz-auto-create { background: rgba(217,119,87,.06); border: 1px solid rgba(217,119,87,.18); border-radius: 8px; padding: 10px 12px; font-size: 12px; margin-bottom: 12px; line-height: 1.8; }
+.wiz-chip { display: inline-block; padding: 1px 8px; margin: 2px 4px 2px 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 99px; font-size: 11px; color: var(--text-secondary); }
+.wiz-rows { margin-bottom: 12px; }
+.wiz-rows-title { font-size: 12px; font-weight: 600; margin-bottom: 6px; color: var(--text-secondary); }
+.wiz-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.wiz-table th { padding: 6px 10px; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); text-align: left; }
+.wiz-table td { padding: 6px 10px; border-bottom: 1px solid var(--border-light); }
+.wiz-errors { background: rgba(189,86,79,.06); border: 1px solid rgba(189,86,79,.2); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px; color: var(--error); }
+.wiz-err-line { font-family: var(--font-mono); font-size: 11px; padding: 1px 0; }
+.chk { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-secondary); }
+.chk input { width: auto; }
 .sync-all-bar { flex-shrink: 0; padding: 8px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
 .sync-all-progress { display: flex; align-items: center; gap: 10px; font-size: 12px; }
 .sync-all-label { color: var(--text-muted); white-space: nowrap; }

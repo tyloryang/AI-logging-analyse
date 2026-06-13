@@ -46,10 +46,20 @@ export const api = {
   javaDiagArthas: (hostId, data) => http.post(`/hosts/${hostId}/java-diagnostics/arthas`, data),
   javaDiagFlamegraph: (hostId, data) => http.post(`/hosts/${hostId}/java-diagnostics/flamegraph`, data),
   exportHosts:    ()   => `/api/hosts/export`,
-  importHosts:    (file, conflict = 'skip') => {
+  hostsTemplate:  ()   => `/api/hosts/template`,
+  importHosts:    (file, opts = {}) => {
     const fd = new FormData(); fd.append('file', file)
-    return http.post(`/hosts/import?conflict=${conflict}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    const { conflict = 'skip', auto_create_group = true, auto_create_credential = true } = opts || {}
+    const q = new URLSearchParams({ conflict, auto_create_group, auto_create_credential })
+    return http.post(`/hosts/import?${q}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
+  previewImportHosts: (file, opts = {}) => {
+    const fd = new FormData(); fd.append('file', file)
+    const { conflict = 'skip', auto_create_group = true, auto_create_credential = true } = opts || {}
+    const q = new URLSearchParams({ conflict, auto_create_group, auto_create_credential })
+    return http.post(`/hosts/import/preview?${q}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
+  batchUpdateHosts: (data) => http.post('/hosts/batch-update', data),
   inspectHosts:   (groupId) => http.get('/hosts/inspect', { params: groupId ? { group_id: groupId } : {} }),
   inspectHost:    (id) => http.get(`/hosts/${id}/inspect`),
   notifyInspectGroups: (data) => http.post('/hosts/inspect/notify-groups', data),

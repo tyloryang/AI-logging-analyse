@@ -28,9 +28,9 @@ from state import (
     prom, analyzer,
     REPORTS_DIR,
     load_hosts_list, save_hosts_list,
-    load_groups,
+    load_groups, save_groups,
     encrypt_password, decrypt_password,
-    load_credentials,
+    load_credentials, save_credentials,
     get_user_allowed_groups,
     load_user_groups, save_user_groups,
 )
@@ -319,7 +319,7 @@ _EXPORT_COL_WIDTHS = {
 }
 _ENV_LABEL = {"production":"生产","staging":"预发","development":"开发","testing":"测试","dr":"容灾"}
 _STATUS_LABEL = {"active":"在线","offline":"离线","maintenance":"维护中"}
-_HEADER_CLEANUP_TABLE = str.maketrans("", "", " _-()（）[]{}:/：\t\r\n")
+_HEADER_CLEANUP_TABLE = str.maketrans("", "", " _-()（）[]{}:/：\t\r\n*＊,，.。")
 
 
 def _normalize_import_header(value: str) -> str:
@@ -332,9 +332,49 @@ for _field, _label in _EXPORT_COLS:
     _IMPORT_COL_MAP[_normalize_import_header(_field)] = _field
 _IMPORT_COL_MAP.update({
     _normalize_import_header("分组"): "group_name",
+    _normalize_import_header("group"): "group_name",
     _normalize_import_header("group_id"): "group",
     _normalize_import_header("分组名"): "group_name",
+    _normalize_import_header("分组名称"): "group_name",
+    _normalize_import_header("分组不存在自动创建"): "group_name",  # 模板列名
+    _normalize_import_header("分组不存在则自动创建"): "group_name",
+    _normalize_import_header("ssh密码明文自动加密并建凭据"): "ssh_password",  # 模板列名
     _normalize_import_header("标签"): "labels",
+    # IP / 主机名 常见别名
+    _normalize_import_header("ip"): "ip",
+    _normalize_import_header("ip地址"): "ip",
+    _normalize_import_header("地址"): "ip",
+    _normalize_import_header("address"): "ip",
+    _normalize_import_header("hostname"): "hostname",
+    _normalize_import_header("名称"): "hostname",
+    _normalize_import_header("主机"): "hostname",
+    # SSH 用户名 / 密码 常见别名（模板用的中文描述也能识别）
+    _normalize_import_header("用户名"): "ssh_user",
+    _normalize_import_header("ssh用户"): "ssh_user",
+    _normalize_import_header("user"): "ssh_user",
+    _normalize_import_header("username"): "ssh_user",
+    _normalize_import_header("ssh密码"): "ssh_password",
+    _normalize_import_header("ssh密码明文"): "ssh_password",
+    _normalize_import_header("ssh密码明文自动加密并建凭据"): "ssh_password",
+    _normalize_import_header("密码"): "ssh_password",
+    _normalize_import_header("password"): "ssh_password",
+    _normalize_import_header("port"): "ssh_port",
+    _normalize_import_header("端口"): "ssh_port",
+    _normalize_import_header("ssh端口"): "ssh_port",
+    # 业务字段别名
+    _normalize_import_header("角色"): "role",
+    _normalize_import_header("用途"): "role",
+    _normalize_import_header("应用"): "role",
+    _normalize_import_header("application"): "role",
+    _normalize_import_header("owner"): "owner",
+    _normalize_import_header("负责人"): "owner",
+    _normalize_import_header("机房"): "datacenter",
+    _normalize_import_header("region"): "datacenter",
+    _normalize_import_header("dc"): "datacenter",
+    _normalize_import_header("env"): "env",
+    _normalize_import_header("环境"): "env",
+    _normalize_import_header("status"): "status",
+    _normalize_import_header("状态"): "status",
 })
 
 
@@ -409,31 +449,99 @@ def _normalize_imported_ssh_password(value) -> str:
         return encrypt_password(text)
 
 
-def _resolve_import_group(entry: dict, group_ids: set[str], group_name_map: dict[str, str]) -> tuple[Optional[str], Optional[str]]:
+def _resolve_import_group(
+    entry: dict,
+    group_ids: set[str],
+    group_name_map: dict[str, str],
+    auto_create: bool = True,
+    groups: list[dict] | None = None,
+) -> tuple[Optional[str], Optional[str], Optional[dict]]:
+    """解析导入行的分组归属。返回 (group_id, error, new_group_dict)。
+    auto_create=True 时，分组名不存在则自动创建一个新分组（不报错）。
+    """
     has_group_id = "group" in entry
     has_group_name = "group_name" in entry
     if not has_group_id and not has_group_name:
-        return None, None
+        return None, None, None
 
     raw_group_id = _normalize_text(entry.get("group", "")) if has_group_id else ""
     raw_group_name = _normalize_text(entry.get("group_name", "")) if has_group_name else ""
 
     if raw_group_id:
         if raw_group_id in group_ids:
-            return raw_group_id, None
+            return raw_group_id, None, None
         resolved = group_name_map.get(raw_group_id.casefold())
         if resolved:
-            return resolved, None
-        # 允许显式 group_id 原样导入，便于纯备份恢复。
-        return raw_group_id, None
+            return resolved, None, None
+        return raw_group_id, None, None
 
     if raw_group_name:
         resolved = group_name_map.get(raw_group_name.casefold())
         if resolved:
-            return resolved, None
-        return None, f"分组「{raw_group_name}」不存在"
+            return resolved, None, None
+        if auto_create:
+            new_id = "grp_" + uuid.uuid4().hex[:8]
+            new_group = {"id": new_id, "name": raw_group_name, "description": "Excel 导入自动创建"}
+            if groups is not None:
+                groups.append(new_group)
+            group_ids.add(new_id)
+            group_name_map[raw_group_name.casefold()] = new_id
+            return new_id, None, new_group
+        return None, f"分组「{raw_group_name}」不存在", None
 
-    return "", None
+    return "", None, None
+
+
+def _resolve_import_credential(
+    entry: dict,
+    credentials: list[dict],
+    cred_ids: set[str],
+    cred_signature_map: dict[str, str],
+    auto_create: bool = True,
+) -> tuple[Optional[str], Optional[dict]]:
+    """根据 ssh_user + ssh_password 自动匹配或创建凭据。
+    返回 (credential_id, new_credential_dict)。已显式提供 credential_id 时直接返回。
+    """
+    cred_id = _normalize_text(entry.get("credential_id", ""))
+    if cred_id and cred_id in cred_ids:
+        return cred_id, None
+
+    user = _normalize_text(entry.get("ssh_user", ""))
+    raw_pw = _normalize_text(entry.get("ssh_password", ""))
+    port = _parse_optional_int(entry.get("ssh_port")) or 22
+    if not user or not raw_pw:
+        return cred_id or None, None
+
+    # 通过 user@port + 密码指纹去重（密文/明文统一指纹）
+    plain_pw = raw_pw
+    if raw_pw.startswith("gAAAA"):
+        try:
+            plain_pw = decrypt_password(raw_pw)
+        except Exception:
+            plain_pw = raw_pw
+    import hashlib
+    sig = f"{user}@{port}#" + hashlib.sha1(plain_pw.encode("utf-8", "ignore")).hexdigest()[:12]
+
+    if sig in cred_signature_map:
+        return cred_signature_map[sig], None
+
+    if not auto_create:
+        return cred_id or None, None
+
+    new_id = "cred_" + uuid.uuid4().hex[:8]
+    new_cred = {
+        "id": new_id,
+        "name": f"{user}@:{port} (导入自建)",
+        "username": user,
+        "port": port,
+        "password": encrypt_password(plain_pw),
+        "description": "Excel 导入自动创建",
+        "created_at": _NOW(),
+    }
+    credentials.append(new_cred)
+    cred_ids.add(new_id)
+    cred_signature_map[sig] = new_id
+    return new_id, new_cred
 
 
 @router.get("/api/hosts/export")
@@ -523,63 +631,98 @@ async def export_hosts(user: User = Depends(current_user)):
     )
 
 
-@router.post("/api/hosts/import")
-async def import_hosts(
-    file: UploadFile = File(...),
-    conflict: str = Query("skip", description="重复 IP 处理策略：skip=跳过 / update=覆盖"),
-):
-    """从 Excel 或 CSV 文件批量导入主机。返回导入摘要。"""
+def _parse_import_rows(content: bytes, filename: str) -> list[dict]:
+    """统一解析 xlsx/csv 上传文件 → 字典行列表，原始列名保留。"""
     from openpyxl import load_workbook
     import csv
 
-    content = await file.read()
-    filename = (file.filename or "").lower()
-    now = _NOW()
-
-    # 解析文件
-    rows: list[dict] = []
-    if filename.endswith(".csv"):
+    lower = (filename or "").lower()
+    if lower.endswith(".csv"):
         text = content.decode("utf-8-sig", errors="replace")
-        reader = csv.DictReader(text.splitlines())
-        rows = list(reader)
-    elif filename.endswith((".xlsx", ".xls")):
+        return list(csv.DictReader(text.splitlines()))
+    if lower.endswith((".xlsx", ".xls")):
         wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
         ws = wb.active
         headers_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), [])
         col_names = [str(h).strip() if h else "" for h in headers_row]
+        rows = []
         for row in ws.iter_rows(min_row=2, values_only=True):
-            rows.append({col_names[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row) if i < len(col_names)})
+            d = {}
+            for i, v in enumerate(row):
+                if i < len(col_names) and col_names[i]:
+                    d[col_names[i]] = (str(v).strip() if v is not None else "")
+            rows.append(d)
         wb.close()
-    else:
-        raise HTTPException(status_code=400, detail="仅支持 .xlsx 或 .csv 文件")
+        return rows
+    raise HTTPException(status_code=400, detail="仅支持 .xlsx 或 .csv 文件")
 
-    groups = load_groups()
+
+def _process_import(
+    rows: list[dict],
+    groups: list[dict],
+    credentials: list[dict],
+    hosts: list[dict],
+    *,
+    conflict: str = "skip",
+    auto_create_group: bool = True,
+    auto_create_credential: bool = True,
+    dry_run: bool = False,
+) -> dict:
+    """核心导入处理：分组/凭据自动创建、未知列入 labels、IP 去重。
+    dry_run=True 时不修改原列表，仅返回预览统计。
+    """
+    now = _NOW()
     group_ids = {str(g.get("id", "")).strip() for g in groups if str(g.get("id", "")).strip()}
     group_name_map = {
         str(g.get("name", "")).strip().casefold(): str(g.get("id", "")).strip()
-        for g in groups
-        if str(g.get("name", "")).strip() and str(g.get("id", "")).strip()
+        for g in groups if str(g.get("name", "")).strip() and str(g.get("id", "")).strip()
     }
+    cred_ids = {str(c.get("id", "")).strip() for c in credentials if str(c.get("id", "")).strip()}
 
-    hosts = load_hosts_list()
+    # 凭据指纹：username@port#sha1(pw)
+    import hashlib
+    cred_signature_map: dict[str, str] = {}
+    for c in credentials:
+        u = str(c.get("username", "")).strip()
+        p = c.get("port") or 22
+        raw_pw = str(c.get("password", "")).strip()
+        if not u or not raw_pw:
+            continue
+        try:
+            plain = decrypt_password(raw_pw) if raw_pw.startswith("gAAAA") else raw_pw
+        except Exception:
+            plain = raw_pw
+        sig = f"{u}@{p}#" + hashlib.sha1(plain.encode("utf-8", "ignore")).hexdigest()[:12]
+        cred_signature_map[sig] = c.get("id", "")
+
     existing_ips = {h.get("ip", ""): i for i, h in enumerate(hosts)}
     existing_ids = {h.get("id", ""): i for i, h in enumerate(hosts) if h.get("id")}
-
-    added = skipped = updated = errors = 0
-    error_details: list[str] = []
     rev_status = {v: k for k, v in _STATUS_LABEL.items()}
     rev_env = {v: k for k, v in _ENV_LABEL.items()}
 
+    added = skipped = updated = errors = 0
+    new_groups: list[dict] = []
+    new_credentials: list[dict] = []
+    error_details: list[str] = []
+    preview_added: list[dict] = []
+    preview_updated: list[dict] = []
+
     for row_num, raw in enumerate(rows, 2):
-        # 映射列名
+        # 列名映射：已知列 → 字段；未知列 → 标签
         entry: dict = {}
+        extra_labels: dict = {}
         for raw_key, val in raw.items():
             field = _IMPORT_COL_MAP.get(_normalize_import_header(raw_key))
             if field:
                 entry[field] = _normalize_text(val)
+            elif raw_key and _normalize_text(val):
+                extra_labels[str(raw_key).strip()] = _normalize_text(val)
 
         ip = _normalize_text(entry.get("ip", ""))
         if not ip:
+            # 整行空跳过，不计入错误
+            if not any(_normalize_text(v) for v in raw.values()):
+                continue
             error_details.append(f"第 {row_num} 行：IP 地址为空，跳过")
             errors += 1
             continue
@@ -623,8 +766,15 @@ async def import_hosts(
                 error_details.append(f"第 {row_num} 行：{exc}")
                 errors += 1
                 continue
+        # 未知列名合并入 labels（关键能力：Excel 任意附加列不丢失）
+        if extra_labels:
+            current_labels = entry.get("labels") if isinstance(entry.get("labels"), dict) else {}
+            entry["labels"] = {**current_labels, **extra_labels}
 
-        group_value, group_error = _resolve_import_group(entry, group_ids, group_name_map)
+        group_value, group_error, _new_group = _resolve_import_group(
+            entry, group_ids, group_name_map,
+            auto_create=auto_create_group, groups=groups,
+        )
         entry.pop("group_name", None)
         if group_error:
             error_details.append(f"第 {row_num} 行：{group_error}")
@@ -632,6 +782,19 @@ async def import_hosts(
             continue
         if group_value is not None:
             entry["group"] = group_value
+        if _new_group:
+            new_groups.append(_new_group)
+
+        # 凭据自动匹配/创建：根据 user+port+password 指纹
+        cred_value, _new_cred = _resolve_import_credential(
+            entry, credentials, cred_ids, cred_signature_map,
+            auto_create=auto_create_credential,
+        )
+        if cred_value is not None:
+            entry["credential_id"] = cred_value
+            entry["ssh_password"] = ""   # 绑定了凭据就不再单独存密码
+        if _new_cred:
+            new_credentials.append(_new_cred)
 
         if ip in existing_ips:
             if conflict == "update":
@@ -665,10 +828,15 @@ async def import_hosts(
                 else:
                     merged["updated_at"] = _normalize_text(merged.get("updated_at", "")) or now
                 merged["id"] = _normalize_text(merged.get("id", "")) or old_id or str(uuid.uuid4())
-                hosts[idx] = merged
-                if old_id and old_id != merged["id"]:
-                    existing_ids.pop(old_id, None)
-                existing_ids[merged["id"]] = idx
+                if not dry_run:
+                    hosts[idx] = merged
+                    if old_id and old_id != merged["id"]:
+                        existing_ids.pop(old_id, None)
+                    existing_ids[merged["id"]] = idx
+                preview_updated.append({
+                    "ip": ip, "hostname": merged["hostname"],
+                    "group": merged.get("group", ""), "env": merged.get("env", ""),
+                })
                 updated += 1
             else:
                 skipped += 1
@@ -716,22 +884,212 @@ async def import_hosts(
                 new_entry["labels"] = {}
             new_entry["created_at"] = _normalize_text(new_entry.get("created_at", "")) or now
             new_entry["updated_at"] = _normalize_text(new_entry.get("updated_at", "")) or now
-            hosts.append(new_entry)
-            existing_ips[ip] = len(hosts) - 1
-            existing_ids[new_entry["id"]] = len(hosts) - 1
+            if not dry_run:
+                hosts.append(new_entry)
+                existing_ips[ip] = len(hosts) - 1
+                existing_ids[new_entry["id"]] = len(hosts) - 1
+            preview_added.append({
+                "ip": ip, "hostname": new_entry["hostname"],
+                "group": new_entry.get("group", ""), "env": new_entry.get("env", ""),
+            })
             added += 1
 
-    save_hosts_list(hosts)
+    if not dry_run:
+        if new_groups:
+            save_groups(groups)
+        if new_credentials:
+            save_credentials(credentials)
+        save_hosts_list(hosts)
+
     return {
         "ok": True,
+        "dry_run": dry_run,
         "total": len(rows),
         "added": added,
         "updated": updated,
         "skipped": skipped,
         "errors": errors,
-        "error_details": error_details[:20],
-        "message": f"导入完成：新增 {added} 台，更新 {updated} 台，跳过 {skipped} 台，错误 {errors} 条",
+        "new_groups": [{"id": g["id"], "name": g["name"]} for g in new_groups],
+        "new_credentials": [{"id": c["id"], "name": c["name"]} for c in new_credentials],
+        "preview_added": preview_added[:30],
+        "preview_updated": preview_updated[:30],
+        "error_details": error_details[:30],
+        "message": (
+            f"{'预览' if dry_run else '导入完成'}：新增 {added} 台，更新 {updated} 台，"
+            f"跳过 {skipped} 台，错误 {errors} 条；"
+            f"自动创建 {len(new_groups)} 个分组、{len(new_credentials)} 个凭据"
+        ),
     }
+
+
+@router.post("/api/hosts/import")
+async def import_hosts(
+    file: UploadFile = File(...),
+    conflict: str = Query("skip", description="重复 IP 策略：skip=跳过 / update=覆盖"),
+    auto_create_group: bool = Query(True, description="分组名不存在时自动创建"),
+    auto_create_credential: bool = Query(True, description="ssh_user+password 自动建凭据"),
+):
+    """从 Excel/CSV 批量导入主机，分组/凭据自动创建，未知列入 labels。"""
+    content = await file.read()
+    rows = _parse_import_rows(content, file.filename or "")
+    return _process_import(
+        rows,
+        groups=load_groups(),
+        credentials=load_credentials(),
+        hosts=load_hosts_list(),
+        conflict=conflict,
+        auto_create_group=auto_create_group,
+        auto_create_credential=auto_create_credential,
+        dry_run=False,
+    )
+
+
+@router.post("/api/hosts/import/preview")
+async def import_hosts_preview(
+    file: UploadFile = File(...),
+    conflict: str = Query("skip"),
+    auto_create_group: bool = Query(True),
+    auto_create_credential: bool = Query(True),
+):
+    """预览导入结果（不入库），返回将新增/更新的主机及自动创建的分组/凭据列表。"""
+    content = await file.read()
+    rows = _parse_import_rows(content, file.filename or "")
+    # 用副本避免污染当前状态
+    return _process_import(
+        rows,
+        groups=[dict(g) for g in load_groups()],
+        credentials=[dict(c) for c in load_credentials()],
+        hosts=[dict(h) for h in load_hosts_list()],
+        conflict=conflict,
+        auto_create_group=auto_create_group,
+        auto_create_credential=auto_create_credential,
+        dry_run=True,
+    )
+
+
+@router.get("/api/hosts/template")
+async def download_template():
+    """下载预填好的 Excel 模板（含示例行 + 字段说明 + 下拉校验）。"""
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "主机导入模板"
+
+    # 简化模板：只保留高频字段，IP 必填；其余可选
+    template_cols = [
+        ("ip",            "IP 地址 *",   "192.168.1.10",   16, ""),
+        ("hostname",      "主机名",       "web-server-01",  20, ""),
+        ("group_name",    "分组",         "生产-Web",        18, ""),
+        ("env",           "环境",         "生产",            10, "生产,预发,开发,测试,容灾"),
+        ("status",        "状态",         "在线",            10, "在线,离线,维护中"),
+        ("platform",      "平台",         "Linux",          12, "Linux,Windows,Network,Other"),
+        ("role",          "用途/角色",    "Web 服务",        18, ""),
+        ("owner",         "负责人",       "ops",            12, ""),
+        ("datacenter",    "机房/区域",    "cn-shanghai-1",  16, ""),
+        ("ssh_user",      "SSH 用户名",   "root",           12, ""),
+        ("ssh_port",      "SSH 端口",     "22",             10, ""),
+        ("ssh_password",  "SSH 密码",     "your-password",  20, ""),
+        ("notes",         "备注",         "示例：核心服务",   24, ""),
+    ]
+
+    header_fill = PatternFill("solid", fgColor="FFD97757")
+    header_font = Font(bold=True, color="FFFFFFFF", size=10)
+    center = Alignment(horizontal="center", vertical="center")
+    border_side = Side(style="thin", color="FFCCCCCC")
+    cell_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+
+    for col_idx, (field, label, sample, width, options) in enumerate(template_cols, 1):
+        c = ws.cell(row=1, column=col_idx, value=label)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = center
+        c.border = cell_border
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+        # 第 2 行写示例
+        ex = ws.cell(row=2, column=col_idx, value=sample)
+        ex.font = Font(size=9, color="FF999999", italic=True)
+        ex.border = cell_border
+
+        # 下拉校验
+        if options:
+            dv = DataValidation(type="list", formula1=f'"{options}"', allow_blank=True)
+            dv.add(f"{get_column_letter(col_idx)}3:{get_column_letter(col_idx)}1000")
+            ws.add_data_validation(dv)
+
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "A2"
+
+    # 说明 sheet
+    ws2 = wb.create_sheet("使用说明")
+    tips = [
+        ("说明", "内容"),
+        ("最小必填", "仅 IP 地址必填，其他字段可全部留空（系统自动补默认值）"),
+        ("分组", "填分组名称即可。分组不存在会自动创建，无需先去分组管理建分组"),
+        ("凭据", "填 SSH 用户名 + 密码，系统自动加密并创建凭据，相同 user@port+密码会复用现有凭据"),
+        ("附加字段", "Excel 任意附加列（如「业务线」「应用名」）会自动放进主机标签，不会丢失"),
+        ("批量更新", "重复 IP 默认跳过，需要更新可在导入页选「覆盖」策略"),
+        ("示例行", "第 2 行的灰色斜体是示例，导入前请删除或覆盖"),
+        ("中英文均可", "列名识别中文、英文、大小写、空格、下划线、括号都没问题"),
+    ]
+    for r, (k, v) in enumerate(tips, 1):
+        ws2.cell(row=r, column=1, value=k).font = Font(bold=(r == 1), size=10)
+        ws2.cell(row=r, column=2, value=v).font = Font(size=10)
+    ws2.column_dimensions["A"].width = 18
+    ws2.column_dimensions["B"].width = 80
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = "CMDB主机导入模板.xlsx"
+    encoded = quote(filename, encoding="utf-8")
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
+
+
+class BatchUpdateRequest(BaseModel):
+    host_ids: list[str]
+    fields: dict   # 任意字段：group/env/status/role/owner/datacenter/labels...
+
+
+@router.post("/api/hosts/batch-update")
+async def batch_update_hosts(body: BatchUpdateRequest, user: User = Depends(current_user)):
+    """批量更新选中主机的任意字段（list 视图浮动栏使用）。"""
+    if not body.host_ids:
+        raise HTTPException(400, "至少选中一个主机")
+    if not body.fields:
+        raise HTTPException(400, "未提供要更新的字段")
+
+    allowed_fields = {
+        "platform", "os_version", "status", "env", "role", "owner",
+        "datacenter", "group", "labels", "notes",
+    }
+    fields = {k: v for k, v in body.fields.items() if k in allowed_fields}
+    if not fields:
+        raise HTTPException(400, "字段名不在允许范围")
+
+    hosts = load_hosts_list()
+    target_ids = set(body.host_ids)
+    now = _NOW()
+    updated = 0
+    for h in hosts:
+        if h.get("id") not in target_ids:
+            continue
+        if "labels" in fields and isinstance(fields["labels"], dict):
+            cur = h.get("labels") if isinstance(h.get("labels"), dict) else {}
+            h["labels"] = {**cur, **fields["labels"]}
+            applied = {k: v for k, v in fields.items() if k != "labels"}
+            h.update(applied)
+        else:
+            h.update(fields)
+        h["updated_at"] = now
+        updated += 1
+    save_hosts_list(hosts)
+    return {"ok": True, "updated": updated}
 
 
 # ── SSH 同步系统信息 ─────────────────────────────────────────────────────────
