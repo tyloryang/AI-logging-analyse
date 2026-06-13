@@ -56,7 +56,8 @@ const routes = [
   // ── 10. 工具市场 ──────────────────────────────────────────────
   { path: '/tools',         component: () => import('../views/ToolMarketView.vue'), name: 'tools' },
   { path: '/tools/java-diagnostics', component: () => import('../views/JavaDiagnosticView.vue'), name: 'tools-java-diagnostics', meta: { module: 'ssh' } },
-  { path: '/tools/ssh',     component: () => import('../views/SSHTerminal.vue'),    name: 'tools-ssh',     meta: { module: 'ssh' } },
+  // /tools/ssh 已并入 CMDB，保留路径重定向到 CMDB 的 SSH tab
+  { path: '/tools/ssh', redirect: '/cmdb?tab=ssh' },
   { path: '/tools/slowlog', component: () => import('../views/SlowLogView.vue'),    name: 'tools-slowlog', meta: { module: 'slowlog' } },
   { path: '/tools/report',  component: () => import('../views/AnalysisReport.vue'), name: 'tools-report',  meta: { module: 'report' } },
   { path: '/tools/metrics', component: () => import('../views/MetricsMonitor.vue'), name: 'tools-metrics', meta: { module: 'metrics' } },
@@ -85,7 +86,7 @@ const routes = [
   { path: '/skywalking',   redirect: '/observability/trace' },
   { path: '/hosts/assets', redirect: '/cmdb' },
   { path: '/hosts',        redirect: '/cmdb' },
-  { path: '/ssh',          redirect: '/tools/ssh' },
+  { path: '/ssh',          redirect: '/cmdb?tab=ssh' },
   { path: '/slowlog',      redirect: '/tools/slowlog' },
   { path: '/report',       redirect: '/tools/report' },
   { path: '/agent',        redirect: '/aiops/assistant' },

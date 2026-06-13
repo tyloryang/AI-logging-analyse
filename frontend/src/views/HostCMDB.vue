@@ -24,10 +24,14 @@
     <div class="toolbar">
       <div class="toolbar-left">
         <div class="tab-group">
-          <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">主机 CMDB</button>
+          <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">
+            主机 CMDB <span class="tab-count">{{ hosts.length }}</span>
+          </button>
           <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">巡检报告</button>
-          <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">分组管理</button>
-          <RouterLink to="/tools/ssh" class="tab-btn ssh-link">SSH 终端 →</RouterLink>
+          <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
+            分组管理 <span class="tab-count">{{ groups.length }}</span>
+          </button>
+          <button class="tab-btn" :class="{ active: tab === 'ssh' }" @click="tab = 'ssh'">SSH 终端</button>
         </div>
       </div>
       <div class="toolbar-right">
@@ -63,7 +67,7 @@
             <span v-else>⟳</span> 一键同步
           </button>
         </template>
-        <button class="btn btn-outline" @click="tab === 'cmdb' ? loadHosts() : (tab === 'groups' ? loadGroups() : null)" :disabled="loading">
+        <button class="btn btn-outline" @click="refreshActiveTab()" :disabled="loading">
           <span v-if="loading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
           <span v-else>↺</span> 刷新
         </button>
@@ -308,6 +312,16 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- SSH 终端 -->
+    <div v-show="tab === 'ssh'" class="ssh-tab-wrap">
+      <SSHTerminal
+        :external-hosts="hosts"
+        :external-credentials="credentials"
+        :embedded="true"
+        @credentials-changed="loadCredentials"
+      />
     </div>
 
     </div><!-- /content-main -->
@@ -862,6 +876,7 @@
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { api } from '../api/index.js'
+import SSHTerminal from './SSHTerminal.vue'
 
 const router = useRouter()
 
@@ -940,7 +955,31 @@ async function loadCredentials() {
   } catch {}
 }
 
-onMounted(() => { loadHosts(); loadGroups(); loadCredentials() })
+onMounted(() => {
+  // 支持 URL ?tab=xxx 直接进入对应 tab（替代旧 /tools/ssh 路由）
+  const q = router.currentRoute.value.query.tab
+  if (q === 'ssh' || q === 'inspect' || q === 'groups' || q === 'cmdb') tab.value = q
+  loadHosts(); loadGroups(); loadCredentials()
+})
+
+// 主 tab 刷新动作：每个 tab 调对应的加载函数，并联动凭据（SSH tab 也用）
+function refreshActiveTab() {
+  if (tab.value === 'cmdb' || tab.value === 'inspect') {
+    loadHosts()
+    loadCredentials()
+  } else if (tab.value === 'groups') {
+    loadGroups()
+    loadHosts()  // 分组上的「主机数」依赖最新 hosts
+  } else if (tab.value === 'ssh') {
+    loadHosts()
+    loadCredentials()
+  }
+}
+
+// 主机数据变更时通知其他 tab：CMDB 增删改后自动让 groups 重算主机数
+watch(hosts, () => {
+  if (groups.value.length) loadGroups()
+}, { deep: true, flush: 'post' })
 
 function selectHost(h) { selectedHost.value = h === selectedHost.value ? null : h }
 
@@ -1916,7 +1955,10 @@ async function deleteGroup(g) {
 .tab-btn { padding: 6px 14px; font-size: 13px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background 0.15s; white-space: nowrap; }
 .tab-btn:hover { background: var(--bg-hover); }
 .tab-btn.active { background: var(--accent); color: #fff; }
-.tab-btn.ssh-link { text-decoration: none; display: flex; align-items: center; color: var(--text-muted); }
+.tab-count { display: inline-block; padding: 1px 8px; margin-left: 6px; border-radius: 99px; font-size: 11px; background: var(--bg-surface); color: var(--text-muted); }
+.tab-btn.active .tab-count { background: var(--accent-soft); color: var(--accent); }
+.ssh-tab-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.ssh-tab-wrap > * { flex: 1; min-height: 0; }
 .search-input { padding: 5px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 200px; }
 .filter-select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
 

@@ -187,7 +187,6 @@ const MENU = [
     children: [
       { label: '工具概览',   to: '/tools' },
       { label: 'Java 诊断', to: '/tools/java-diagnostics', module: 'ssh' },
-      { label: 'SSH 终端',   to: '/tools/ssh',     module: 'ssh' },
       { label: '慢日志分析', to: '/tools/slowlog',  module: 'slowlog' },
       { label: '指标监控',   to: '/tools/metrics',  module: 'metrics' },
     ],

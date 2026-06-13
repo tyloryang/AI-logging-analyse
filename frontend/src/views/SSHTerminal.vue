@@ -1,8 +1,8 @@
 <template>
   <div class="ssh-page" :class="{ 'is-fullscreen': fullscreen }">
 
-    <!-- Page header (hidden in fullscreen) -->
-    <div class="ssh-header">
+    <!-- Page header (hidden in fullscreen / embedded mode) -->
+    <div class="ssh-header" v-if="!embedded">
       <div class="ssh-header-left">
         <h1>SSH 终端</h1>
         <span class="subtitle">Web Terminal · 多会话</span>
@@ -172,14 +172,24 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 import { api } from '../api/index.js'
 
+// 作为子组件嵌入 CMDB 时由父组件传入 hosts / credentials，避免重复请求；
+// 独立路由打开时（无 props）走自己的加载流程。
+const props = defineProps({
+  externalHosts:       { type: Array, default: null },
+  externalCredentials: { type: Array, default: null },
+  embedded:            { type: Boolean, default: false },  // 嵌入模式下隐藏 page header
+})
+const emit = defineEmits(['credentials-changed'])
+
 const route = useRoute()
+const isEmbedded = () => props.externalHosts !== null
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const hosts       = ref([])
@@ -422,7 +432,8 @@ async function saveCred() {
       await api.createCredential(payload)
     }
     resetCredForm()
-    await loadCredentials()
+    if (isEmbedded()) await _loadCredentialsForEmbedded()
+    else await loadCredentials()
   } catch (e) {
     alert('保存凭证失败: ' + (typeof e === 'string' ? e : e?.message || '未知错误'))
   } finally {
@@ -433,12 +444,26 @@ async function saveCred() {
 async function deleteCred(id) {
   if (!confirm('确定删除此凭证？已绑定该凭证的主机将需要重新配置。')) return
   await api.deleteCredential(id)
-  await loadCredentials()
+  if (isEmbedded()) await _loadCredentialsForEmbedded()
+  else await loadCredentials()
+}
+
+// 嵌入模式：父组件传入的数据直接采用，并同步监听变化
+watch(() => props.externalHosts, (v) => { if (Array.isArray(v)) hosts.value = v }, { immediate: true })
+watch(() => props.externalCredentials, (v) => { if (Array.isArray(v)) credentials.value = v }, { immediate: true })
+
+// 嵌入模式重写 loadCredentials：改写后端后通知父组件刷新
+async function _loadCredentialsForEmbedded() {
+  const r = await api.listCredentials()
+  credentials.value = r || []
+  emit('credentials-changed')
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
   window.addEventListener('keydown', handleKeydown)
+  // 嵌入模式：数据来自 props，不重复请求
+  if (isEmbedded()) return
   try {
     const [hostsRes] = await Promise.all([
       api.getHosts(),
