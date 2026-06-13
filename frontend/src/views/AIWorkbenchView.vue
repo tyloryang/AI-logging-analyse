@@ -1954,8 +1954,8 @@ onMounted(async () => {
   --wb-accent-soft: rgba(56, 139, 253, 0.12);
   --wb-accent-line: rgba(56, 139, 253, 0.28);
   --wb-shadow: 0 22px 60px rgba(15, 23, 42, 0.08);
-  --wb-font-display: "Segoe UI Variable Display", "PingFang SC", "Microsoft YaHei UI", sans-serif;
-  --wb-font-body: "Segoe UI Variable", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --wb-font-display: "Source Serif Pro", "Tiempos Headline", "Noto Serif SC", Georgia, "PingFang SC", serif;
+  --wb-font-body: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
   height: 100%;
   overflow: hidden;
   background:
