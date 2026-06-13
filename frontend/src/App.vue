@@ -12,6 +12,9 @@
         </keep-alive>
       </main>
       <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant' && route.name !== 'aiops-workbench' && canUseAgent" />
+      <div class="topbar-tools">
+        <TimeRangePicker />
+      </div>
       <CommandPalette />
     </div>
   </router-view>
@@ -21,6 +24,7 @@
 import Sidebar from './components/Sidebar.vue'
 import AIOpsAssistantFloat from './components/AIOpsAssistantFloat.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import TimeRangePicker from './components/TimeRangePicker.vue'
 import { computed } from 'vue'
 import { useAuthStore } from './stores/auth.js'
 
@@ -44,5 +48,9 @@ const canUseAgent = computed(() => authStore.can('agent', 'view'))
   position: relative;
   display: flex;
   flex-direction: column;
+}
+.topbar-tools {
+  position: fixed; top: 14px; right: 18px; z-index: 50;
+  display: flex; align-items: center; gap: 10px;
 }
 </style>

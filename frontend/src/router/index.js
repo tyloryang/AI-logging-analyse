@@ -48,6 +48,7 @@ const routes = [
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },
   { path: '/observability/logs',     component: () => import('../views/LogAnalysis.vue'),    name: 'obs-logs',     meta: { module: 'log' } },
   { path: '/observability/trace',    component: () => import('../views/SkyWalkingView.vue'), name: 'obs-trace',    meta: { module: 'skywalking' } },
+  { path: '/observability/api-red',  component: () => import('../views/ApiRedView.vue'),     name: 'obs-api-red',  meta: { module: 'skywalking' } },
   { path: '/observability/alerts',   component: () => import('../views/AlertHistory.vue'),   name: 'obs-alerts',   meta: { module: 'alert' } },
 
   // ── 9. 事件墙 ─────────────────────────────────────────────────

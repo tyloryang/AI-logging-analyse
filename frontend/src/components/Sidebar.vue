@@ -177,6 +177,7 @@ const MENU = [
       { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
       { label: '日志中心',   to: '/observability/logs',    module: 'log' },
       { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
+      { label: '接口 RED',   to: '/observability/api-red', module: 'skywalking' },
       { label: '告警中心',   to: '/observability/alerts',  module: 'alert' },
       { label: '分析报告',   to: '/tools/report',          module: 'report' },
     ],

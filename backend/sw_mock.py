@@ -339,4 +339,25 @@ ENDPOINT_TOPN = [
 ]
 
 def get_endpoint_topn(top_n: int = 20) -> list[dict]:
-    return ENDPOINT_TOPN[:top_n]
+    """Mock 返回 RED 完整字段：avg/p95/p99/cpm/qps/sla/error_rate/red_tone"""
+    out = []
+    for ep in ENDPOINT_TOPN[:top_n]:
+        avg = ep["avg_ms"]
+        sla = ep["sla"]
+        cpm = max(30, int(2400 / max(avg, 10)))   # 简单衍生
+        p95 = int(avg * 2.1)
+        p99 = int(avg * 3.0)
+        error_rate = round(100 - sla, 2)
+        red_tone = "danger" if error_rate > 5 or p95 > 1000 else "warn" if error_rate > 1 or p95 > 500 else "ok"
+        out.append({
+            "name": ep["name"],
+            "avg_ms": avg,
+            "p95": p95,
+            "p99": p99,
+            "cpm": cpm,
+            "qps": round(cpm / 60, 2),
+            "sla": sla,
+            "error_rate": error_rate,
+            "red_tone": red_tone,
+        })
+    return out

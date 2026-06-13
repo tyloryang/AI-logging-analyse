@@ -127,6 +127,7 @@ export const api = {
   swGetTopology:    (params)             => http.get('/sw/topology', { params }),
   swGetMetrics:     (params)             => http.get('/sw/metrics', { params }),
   swGetEndpointTopN:(params)             => http.get('/sw/endpoint-topn', { params }),
+  swEndpointTopN:   (hours = 1, topN = 20) => http.get('/sw/endpoint-topn', { params: { hours, top_n: topN } }),
   swTest:           ()                   => http.get('/sw/test'),
   // 可观测性总览
   observabilityOverview: (params, config = {}) => http.get('/observability/overview', { ...config, params }),

@@ -27,6 +27,9 @@
           <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">
             主机 CMDB <span class="tab-count">{{ hosts.length }}</span>
           </button>
+          <button class="tab-btn" :class="{ active: tab === 'fleet' }" @click="tab = 'fleet'">
+            健康总览 <span v-if="fleetWarnCount" class="tab-count warn">⚠ {{ fleetWarnCount }}</span>
+          </button>
           <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">巡检报告</button>
           <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
             分组管理 <span class="tab-count">{{ groups.length }}</span>
@@ -294,26 +297,82 @@
           <table class="inspect-table">
             <thead>
               <tr>
-                <th>状态</th>
-                <th>主机名</th>
-                <th>IP</th>
-                <th>OS</th>
-                <th>分组</th>
-                <th v-for="col in inspectCheckCols" :key="col">{{ col }}</th>
+                <th class="th-sort" @click="setInspectSort('status')">状态<span class="sort-icon">{{ inspectSortIcon('status') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('hostname')">主机名<span class="sort-icon">{{ inspectSortIcon('hostname') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('ip')">IP<span class="sort-icon">{{ inspectSortIcon('ip') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('os')">系统<span class="sort-icon">{{ inspectSortIcon('os') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('cpu')">CPU 使用率<span class="sort-icon">{{ inspectSortIcon('cpu') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('cpu_cores')">CPU 核心<span class="sort-icon">{{ inspectSortIcon('cpu_cores') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('memory')">内存使用率<span class="sort-icon">{{ inspectSortIcon('memory') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('mem_total')">内存总量<span class="sort-icon">{{ inspectSortIcon('mem_total') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('load1')">负载 1m<span class="sort-icon">{{ inspectSortIcon('load1') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('load')">负载 5m<span class="sort-icon">{{ inspectSortIcon('load') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('load15')">负载 15m<span class="sort-icon">{{ inspectSortIcon('load15') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('uptime')">运行时长<span class="sort-icon">{{ inspectSortIcon('uptime') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('disk_mount')">磁盘挂载<span class="sort-icon">{{ inspectSortIcon('disk_mount') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('disk')">磁盘使用率<span class="sort-icon">{{ inspectSortIcon('disk') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('disk_size')">磁盘容量<span class="sort-icon">{{ inspectSortIcon('disk_size') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('network_rx')">网络入<span class="sort-icon">{{ inspectSortIcon('network_rx') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('network_tx')">网络出<span class="sort-icon">{{ inspectSortIcon('network_tx') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('disk_read')">磁盘读<span class="sort-icon">{{ inspectSortIcon('disk_read') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('disk_write')">磁盘写<span class="sort-icon">{{ inspectSortIcon('disk_write') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('tcp')">TCP 连接<span class="sort-icon">{{ inspectSortIcon('tcp') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('tcp_tw')">TIME_WAIT<span class="sort-icon">{{ inspectSortIcon('tcp_tw') }}</span></th>
+                <th class="th-sort" @click="setInspectSort('issues')">异常项<span class="sort-icon">{{ inspectSortIcon('issues') }}</span></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in inspectResults" :key="r.instance" :class="'irow-'+r.overall">
-                <td><span class="inspect-badge" :class="r.overall">{{ inspectStatusLabel(r.overall) }}</span></td>
-                <td class="itd-host">{{ r.hostname || r.instance }}</td>
-                <td class="mono itd-ip">{{ r.ip }}</td>
-                <td class="itd-os">{{ r.os || '-' }}</td>
-                <td class="itd-group">{{ groupMap[r.group] || '-' }}</td>
-                <td v-for="col in inspectCheckCols" :key="col">
-                  <span v-if="checkStatus(r, col)" class="check-cell" :class="checkStatus(r, col)">
-                    {{ checkValue(r, col) }}
-                  </span>
+              <tr v-for="row in sortedInspectResults" :key="row.instance || row.ip" :class="'irow-'+row.overall">
+                <td><span class="inspect-badge" :class="row.overall">{{ inspectStatusLabel(row.overall) }}</span></td>
+                <td class="itd-host">
+                  <div class="inspect-host-name">{{ row.hostname || row.instance || row.ip || '-' }}</div>
+                  <div class="inspect-host-meta">{{ groupMap[row.group] || '未分组' }}</div>
+                </td>
+                <td class="mono itd-ip">{{ row.ip || '-' }}</td>
+                <td class="inspect-plain-cell">{{ row.os || '-' }}</td>
+                <td class="inspect-metric-cell compact">
+                  <b :class="usageClass(inspectMetric(row, 'cpu_usage'))">{{ pctText(inspectMetric(row, 'cpu_usage')) }}</b>
+                </td>
+                <td class="inspect-metric-cell compact">
+                  <b>{{ valueText(row.cpu_cores) }}</b>
+                </td>
+                <td class="inspect-metric-cell compact">
+                  <b :class="usageClass(inspectMetric(row, 'mem_usage'))">{{ pctText(inspectMetric(row, 'mem_usage')) }}</b>
+                </td>
+                <td class="inspect-metric-cell compact">
+                  <b>{{ gbText(inspectMetric(row, 'mem_total_gb') || row.memory_gb) }}</b>
+                </td>
+                <td class="inspect-metric-cell compact"><b>{{ valueText(inspectMetric(row, 'load1')) }}</b></td>
+                <td class="inspect-metric-cell compact"><b>{{ valueText(inspectMetric(row, 'load5')) }}</b></td>
+                <td class="inspect-metric-cell compact"><b>{{ valueText(inspectMetric(row, 'load15')) }}</b></td>
+                <td class="inspect-metric-cell compact">
+                  <b>{{ inspectUptimeText(row) }}</b>
+                </td>
+                <td class="inspect-plain-cell">
+                  {{ highestDisk(row)?.mountpoint || highestDisk(row)?.mount || '-' }}
+                </td>
+                <td class="inspect-metric-cell compact">
+                  <b :class="usageClass(highestDiskUsage(row))">{{ pctText(highestDiskUsage(row)) }}</b>
+                </td>
+                <td class="inspect-disk-cell">
+                  <div v-if="highestDisk(row)" class="inspect-disk-line single">
+                    <span>{{ gbText(highestDisk(row).used_gb) }} / {{ gbText(highestDisk(row).total_gb ?? highestDisk(row).size_gb) }}</span>
+                  </div>
                   <span v-else class="check-na">-</span>
+                </td>
+                <td class="inspect-metric-cell compact"><b>{{ mbpsText(inspectMetric(row, 'net_recv_mbps')) }}</b></td>
+                <td class="inspect-metric-cell compact"><b>{{ mbpsText(inspectMetric(row, 'net_send_mbps')) }}</b></td>
+                <td class="inspect-metric-cell compact"><b>{{ mbpsText(inspectMetric(row, 'disk_read_mbps')) }}</b></td>
+                <td class="inspect-metric-cell compact"><b>{{ mbpsText(inspectMetric(row, 'disk_write_mbps')) }}</b></td>
+                <td class="inspect-metric-cell compact"><b>{{ valueText(inspectMetric(row, 'tcp_estab')) }}</b></td>
+                <td class="inspect-metric-cell compact"><b>{{ valueText(inspectMetric(row, 'tcp_tw')) }}</b></td>
+                <td class="inspect-issues-cell">
+                  <template v-if="abnormalChecks(row).length">
+                    <span v-for="check in abnormalChecks(row)" :key="check.item" class="check-cell" :class="check.status">
+                      {{ check.item }} {{ check.value }}
+                    </span>
+                  </template>
+                  <span v-else class="check-cell normal">全部正常</span>
                 </td>
               </tr>
             </tbody>
@@ -351,14 +410,72 @@
       </div>
     </div>
 
+    <!-- 健康总览（Beszel 同款卡片墙） -->
+    <div v-show="tab === 'fleet'" class="fleet-wrap">
+      <div class="fleet-stats">
+        <div class="fleet-stat"><span>主机总数</span><strong>{{ hosts.length }}</strong></div>
+        <div class="fleet-stat ok"><span>健康</span><strong>{{ fleetStats.ok }}</strong></div>
+        <div class="fleet-stat warn"><span>告警</span><strong>{{ fleetStats.warn }}</strong></div>
+        <div class="fleet-stat danger"><span>危险</span><strong>{{ fleetStats.danger }}</strong></div>
+        <div class="fleet-stat unknown"><span>未同步</span><strong>{{ fleetStats.unknown }}</strong></div>
+        <div class="fleet-stat"><span>采集时间</span><strong class="ts">{{ fleetLastSync || '—' }}</strong></div>
+        <span class="fleet-spacer"></span>
+        <input v-model="fleetSearch" class="fleet-search" placeholder="按主机名 / IP 过滤" />
+        <button class="btn btn-outline btn-sm" @click="loadHosts" :disabled="loading">⟳ 刷新</button>
+      </div>
+
+      <div v-if="!hosts.length" class="empty-state"><span class="icon">🖥</span><p>暂无主机数据</p></div>
+      <div v-else class="fleet-grid">
+        <div
+          v-for="h in fleetVisibleHosts" :key="h.id"
+          class="fleet-card" :class="'tone-' + fleetTone(h)"
+          @click="selectHost(h)"
+        >
+          <div class="fc-head">
+            <span class="fc-status" :class="fleetTone(h)"></span>
+            <div class="fc-title">
+              <div class="fc-name">{{ h.hostname || h.ip }}</div>
+              <div class="fc-ip">{{ h.ip }}</div>
+            </div>
+            <span class="fc-env">{{ envLabel(h.env) || '—' }}</span>
+          </div>
+
+          <div class="fc-row">
+            <span class="fc-label">CPU</span>
+            <div class="fc-bar"><div class="fc-bar-fill" :class="usageTone(h.cpu_usage_pct)" :style="{ width: clampPct(h.cpu_usage_pct) + '%' }"></div></div>
+            <span class="fc-val" :class="usageTone(h.cpu_usage_pct)">{{ h.cpu_usage_pct != null ? h.cpu_usage_pct.toFixed(1) + '%' : '—' }}</span>
+          </div>
+          <div class="fc-row">
+            <span class="fc-label">内存</span>
+            <div class="fc-bar"><div class="fc-bar-fill" :class="usageTone(h.memory_usage_pct)" :style="{ width: clampPct(h.memory_usage_pct) + '%' }"></div></div>
+            <span class="fc-val" :class="usageTone(h.memory_usage_pct)">{{ h.memory_usage_pct != null ? h.memory_usage_pct.toFixed(1) + '%' : '—' }}</span>
+          </div>
+          <div class="fc-row">
+            <span class="fc-label">磁盘 /</span>
+            <div class="fc-bar"><div class="fc-bar-fill" :class="usageTone(rootDiskPct(h))" :style="{ width: clampPct(rootDiskPct(h)) + '%' }"></div></div>
+            <span class="fc-val" :class="usageTone(rootDiskPct(h))">{{ rootDiskPct(h) != null ? rootDiskPct(h).toFixed(0) + '%' : '—' }}</span>
+          </div>
+
+          <div class="fc-meta">
+            <span title="负载 5 分钟">⟶ {{ h.load5 != null ? h.load5.toFixed(2) : '—' }}</span>
+            <span title="TCP 连接">⇄ {{ h.tcp_connections ?? '—' }}</span>
+            <span class="fc-uptime" :title="'最后同步: ' + (h.last_sync_at || '—')">⌚ {{ h.uptime_text || '—' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- SSH 终端 -->
     <div v-show="tab === 'ssh'" class="ssh-tab-wrap">
-      <SSHTerminal
-        :external-hosts="hosts"
-        :external-credentials="credentials"
-        :embedded="true"
-        @credentials-changed="loadCredentials"
-      />
+      <KeepAlive>
+        <SSHTerminal
+          v-if="tab === 'ssh'"
+          :external-hosts="hosts"
+          :external-credentials="credentials"
+          :embedded="true"
+          @credentials-changed="loadCredentials"
+        />
+      </KeepAlive>
     </div>
 
     </div><!-- /content-main -->
@@ -911,12 +1028,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { api } from '../api/index.js'
-import SSHTerminal from './SSHTerminal.vue'
 
 const router = useRouter()
+const SSHTerminal = defineAsyncComponent(() => import('./SSHTerminal.vue'))
 
 // ── 数据 ─────────────────────────────────────────────────────────────────────
 const hosts       = ref([])
@@ -996,8 +1113,11 @@ async function loadCredentials() {
 onMounted(() => {
   // 支持 URL ?tab=xxx 直接进入对应 tab（替代旧 /tools/ssh 路由）
   const q = router.currentRoute.value.query
-  if (q.tab && ['ssh', 'inspect', 'groups', 'cmdb'].includes(q.tab)) tab.value = q.tab
-  if (q.q) search.value = String(q.q)
+  if (q.tab && ['ssh', 'inspect', 'groups', 'cmdb', 'fleet'].includes(q.tab)) tab.value = q.tab
+  if (q.q) {
+    search.value = String(q.q)
+    fleetSearch.value = String(q.q)
+  }
   if (q.env) envFilter.value = String(q.env)
   if (q.group) groupFilter.value = String(q.group)
   loadHosts(); loadGroups(); loadCredentials()
@@ -1010,9 +1130,67 @@ function syncQueryToUrl() {
   if (search.value) q.q = search.value
   if (envFilter.value) q.env = envFilter.value
   if (groupFilter.value) q.group = groupFilter.value
+  // 健康总览的搜索独立持久化
+  if (tab.value === 'fleet' && fleetSearch.value) q.q = fleetSearch.value
   router.replace({ query: q }).catch(() => {})
 }
 watch([tab, search, envFilter, groupFilter], () => syncQueryToUrl(), { flush: 'post' })
+
+// ── 健康总览（Beszel 同款）──────────────────────────────────────────────────
+const fleetSearch = ref('')
+
+function rootDiskPct(h) {
+  const list = h.disk_usage || []
+  const root = list.find(d => d.mount === '/') || list[0]
+  return root?.used_pct ?? null
+}
+
+function usageTone(pct) {
+  if (pct == null) return 'unknown'
+  if (pct >= 90) return 'danger'
+  if (pct >= 75) return 'warn'
+  return 'ok'
+}
+
+function fleetTone(h) {
+  if (h.status === 'maintenance') return 'unknown'
+  if (h.status === 'offline') return 'danger'
+  // 无采集数据视为未同步
+  if (h.cpu_usage_pct == null && h.memory_usage_pct == null && rootDiskPct(h) == null) return 'unknown'
+  // 任意一项危险即危险
+  const t = [usageTone(h.cpu_usage_pct), usageTone(h.memory_usage_pct), usageTone(rootDiskPct(h))]
+  if (t.includes('danger')) return 'danger'
+  if (t.includes('warn')) return 'warn'
+  return 'ok'
+}
+
+const fleetStats = computed(() => {
+  const acc = { ok: 0, warn: 0, danger: 0, unknown: 0 }
+  for (const h of hosts.value) acc[fleetTone(h)]++
+  return acc
+})
+
+const fleetWarnCount = computed(() => fleetStats.value.warn + fleetStats.value.danger)
+
+const fleetLastSync = computed(() => {
+  const times = hosts.value.map(h => h.last_sync_at).filter(Boolean).sort()
+  if (!times.length) return ''
+  return times[times.length - 1].replace('T', ' ').slice(0, 16)
+})
+
+const fleetVisibleHosts = computed(() => {
+  const kw = fleetSearch.value.trim().toLowerCase()
+  const list = kw
+    ? hosts.value.filter(h => (h.hostname || '').toLowerCase().includes(kw) || (h.ip || '').includes(kw))
+    : hosts.value
+  // 排序：危险 > 告警 > 健康 > 未同步；同 tone 按 CPU 降序
+  const order = { danger: 0, warn: 1, ok: 2, unknown: 3 }
+  return [...list].sort((a, b) => {
+    const oa = order[fleetTone(a)], ob = order[fleetTone(b)]
+    if (oa !== ob) return oa - ob
+    return (b.cpu_usage_pct ?? 0) - (a.cpu_usage_pct ?? 0)
+  })
+})
 
 // ── 批量选择 + 浮动操作栏 ────────────────────────────────────────────────────
 const selectedHostIds = ref(new Set())
@@ -1818,20 +1996,160 @@ const inspectNotifyMessage = ref('')
 const inspectNotifyStatus  = ref('ok')
 const excelDownloading   = ref(false)
 const aiExpanded         = ref(true)
+const inspectSortKey     = ref('status')
+const inspectSortAsc     = ref(false)
 
-const inspectCheckCols = computed(() => {
-  const cols = new Set()
-  inspectResults.value.forEach(r => (r.checks || []).forEach(c => cols.add(c.item)))
-  return [...cols]
+function inspectMetrics(row) {
+  return row?.metrics && typeof row.metrics === 'object' ? row.metrics : {}
+}
+
+function inspectMetric(row, key) {
+  return inspectMetrics(row)[key]
+}
+
+function toSortableNumber(value) {
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) ? numberValue : null
+}
+
+function statusRank(status) {
+  return { critical: 3, warning: 2, normal: 1 }[status] || 0
+}
+
+function highestDisk(row) {
+  return inspectPartitions(row).reduce((highest, partition) => {
+    if (!highest) return partition
+    const currentUsage = Number(partition.usage_pct ?? partition.used_pct)
+    const highestUsage = Number(highest.usage_pct ?? highest.used_pct)
+    if (!Number.isFinite(currentUsage)) return highest
+    if (!Number.isFinite(highestUsage)) return partition
+    return currentUsage > highestUsage ? partition : highest
+  }, null)
+}
+
+function highestDiskUsage(row) {
+  const disk = highestDisk(row)
+  const usage = Number(disk?.usage_pct ?? disk?.used_pct)
+  return Number.isFinite(usage) ? usage : null
+}
+
+function issueCount(row) {
+  return abnormalChecks(row).length
+}
+
+function inspectSortValue(row, key) {
+  if (key === 'status') return statusRank(row?.overall)
+  if (key === 'hostname') return String(row?.hostname || row?.instance || row?.ip || '').toLowerCase()
+  if (key === 'ip') return String(row?.ip || '').toLowerCase()
+  if (key === 'os') return String(row?.os || '').toLowerCase()
+  if (key === 'cpu') return toSortableNumber(inspectMetric(row, 'cpu_usage'))
+  if (key === 'cpu_cores') return toSortableNumber(row?.cpu_cores)
+  if (key === 'memory') return toSortableNumber(inspectMetric(row, 'mem_usage'))
+  if (key === 'mem_total') return toSortableNumber(inspectMetric(row, 'mem_total_gb') || row?.memory_gb)
+  if (key === 'load1') return toSortableNumber(inspectMetric(row, 'load1'))
+  if (key === 'load') return toSortableNumber(inspectMetric(row, 'load5'))
+  if (key === 'load15') return toSortableNumber(inspectMetric(row, 'load15'))
+  if (key === 'uptime') return toSortableNumber(inspectMetric(row, 'uptime_seconds'))
+  if (key === 'disk_mount') return String(highestDisk(row)?.mountpoint || highestDisk(row)?.mount || '').toLowerCase()
+  if (key === 'disk') return highestDiskUsage(row)
+  if (key === 'disk_size') return toSortableNumber(highestDisk(row)?.total_gb ?? highestDisk(row)?.size_gb)
+  if (key === 'network') {
+    const receive = toSortableNumber(inspectMetric(row, 'net_recv_mbps'))
+    const send = toSortableNumber(inspectMetric(row, 'net_send_mbps'))
+    return receive === null && send === null ? null : (receive || 0) + (send || 0)
+  }
+  if (key === 'network_rx') return toSortableNumber(inspectMetric(row, 'net_recv_mbps'))
+  if (key === 'network_tx') return toSortableNumber(inspectMetric(row, 'net_send_mbps'))
+  if (key === 'diskio') {
+    const read = toSortableNumber(inspectMetric(row, 'disk_read_mbps'))
+    const write = toSortableNumber(inspectMetric(row, 'disk_write_mbps'))
+    return read === null && write === null ? null : (read || 0) + (write || 0)
+  }
+  if (key === 'disk_read') return toSortableNumber(inspectMetric(row, 'disk_read_mbps'))
+  if (key === 'disk_write') return toSortableNumber(inspectMetric(row, 'disk_write_mbps'))
+  if (key === 'tcp') return toSortableNumber(inspectMetric(row, 'tcp_estab'))
+  if (key === 'tcp_tw') return toSortableNumber(inspectMetric(row, 'tcp_tw'))
+  if (key === 'issues') return issueCount(row)
+  return ''
+}
+
+function setInspectSort(key) {
+  if (inspectSortKey.value === key) inspectSortAsc.value = !inspectSortAsc.value
+  else {
+    inspectSortKey.value = key
+    inspectSortAsc.value = ['hostname', 'ip', 'os', 'disk_mount'].includes(key)
+  }
+}
+
+function inspectSortIcon(key) {
+  if (inspectSortKey.value !== key) return '⇅'
+  return inspectSortAsc.value ? '↑' : '↓'
+}
+
+const sortedInspectResults = computed(() => {
+  const list = [...inspectResults.value]
+  list.sort((left, right) => {
+    const leftValue = inspectSortValue(left, inspectSortKey.value)
+    const rightValue = inspectSortValue(right, inspectSortKey.value)
+    let result
+    if (leftValue === null && rightValue !== null) return 1
+    if (leftValue !== null && rightValue === null) return -1
+    if (leftValue === null && rightValue === null) result = 0
+    else if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+      result = leftValue - rightValue
+    } else {
+      result = String(leftValue).localeCompare(String(rightValue), 'zh-CN', { numeric: true, sensitivity: 'base' })
+    }
+    if (result === 0) {
+      result = String(left?.hostname || left?.ip || '').localeCompare(String(right?.hostname || right?.ip || ''), 'zh-CN', { numeric: true, sensitivity: 'base' })
+    }
+    return inspectSortAsc.value ? result : -result
+  })
+  return list
 })
 
-function checkStatus(r, col) {
-  const c = (r.checks || []).find(c => c.item === col)
-  return c?.status
+function mbpsText(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  const numberValue = Number(value)
+  if (!Number.isFinite(numberValue)) return '-'
+  return `${numberValue.toFixed(numberValue >= 10 ? 1 : 2)}MB/s`
 }
-function checkValue(r, col) {
-  const c = (r.checks || []).find(c => c.item === col)
-  return c?.value ?? '-'
+
+function uptimeFromSeconds(value) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 0) return '-'
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  return `${days ? `${days}天` : ''}${hours || days ? `${hours}小时` : ''}${minutes}分钟`
+}
+
+function inspectUptimeText(row) {
+  return uptimeFromSeconds(inspectMetric(row, 'uptime_seconds'))
+}
+
+function uptimeDaysText(row) {
+  const seconds = Number(inspectMetric(row, 'uptime_seconds'))
+  if (!Number.isFinite(seconds) || seconds < 0) return '-'
+  return `${(seconds / 86400).toFixed(1)}天`
+}
+
+function inspectPartitions(row) {
+  const partitions = Array.isArray(row?.partitions) ? [...row.partitions] : []
+  const priority = ['/', '/data', '/var', '/home', '/boot', '/boot/efi']
+  partitions.sort((left, right) => {
+    const leftMount = left.mountpoint || left.mount || ''
+    const rightMount = right.mountpoint || right.mount || ''
+    const leftIndex = priority.indexOf(leftMount)
+    const rightIndex = priority.indexOf(rightMount)
+    if (leftIndex !== -1 || rightIndex !== -1) return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex)
+    return String(leftMount).localeCompare(String(rightMount))
+  })
+  return partitions
+}
+
+function abnormalChecks(row) {
+  return (row?.checks || []).filter(check => check.status !== 'normal')
 }
 
 function switchToInspect() { tab.value = 'inspect' }
@@ -2083,6 +2401,62 @@ async function deleteGroup(g) {
 .tab-btn:hover { background: var(--bg-hover); }
 .tab-btn.active { background: var(--accent); color: #fff; }
 .tab-count { display: inline-block; padding: 1px 8px; margin-left: 6px; border-radius: 99px; font-size: 11px; background: var(--bg-surface); color: var(--text-muted); }
+.tab-count.warn { background: rgba(189,86,79,.14); color: var(--error); font-weight: 600; }
+
+/* ── 健康总览（Beszel 同款卡片墙）─────────────────────────────────── */
+.fleet-wrap { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.fleet-stats { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fleet-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 110px; }
+.fleet-stat span { font-size: 10.5px; color: var(--text-muted); }
+.fleet-stat strong { font-size: 18px; font-weight: 600; }
+.fleet-stat strong.ts { font-size: 12px; font-family: var(--font-mono); color: var(--text-secondary); }
+.fleet-stat.ok strong { color: var(--success); }
+.fleet-stat.warn strong { color: var(--warning); }
+.fleet-stat.danger strong { color: var(--error); }
+.fleet-stat.unknown strong { color: var(--text-muted); }
+.fleet-spacer { flex: 1; }
+.fleet-search { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; width: 240px; }
+
+.fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.fleet-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
+  padding: 14px; cursor: pointer; transition: border-color .15s, transform .15s;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.fleet-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.fleet-card.tone-danger { border-left: 3px solid var(--error); }
+.fleet-card.tone-warn   { border-left: 3px solid var(--warning); }
+.fleet-card.tone-ok     { border-left: 3px solid var(--success); }
+.fleet-card.tone-unknown{ border-left: 3px solid var(--text-muted); }
+
+.fc-head { display: flex; align-items: center; gap: 10px; }
+.fc-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.fc-status.ok       { background: var(--success); box-shadow: 0 0 0 3px rgba(99,130,91,.18); }
+.fc-status.warn     { background: var(--warning); box-shadow: 0 0 0 3px rgba(197,138,70,.18); }
+.fc-status.danger   { background: var(--error); box-shadow: 0 0 0 3px rgba(189,86,79,.18); }
+.fc-status.unknown  { background: var(--text-muted); }
+.fc-title { flex: 1; min-width: 0; }
+.fc-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fc-ip { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.fc-env { font-size: 10.5px; padding: 2px 8px; border-radius: 99px; background: var(--bg-surface); color: var(--text-secondary); flex-shrink: 0; }
+
+.fc-row { display: grid; grid-template-columns: 50px 1fr 56px; align-items: center; gap: 8px; font-size: 11.5px; }
+.fc-label { color: var(--text-muted); }
+.fc-bar { height: 6px; background: var(--bg-surface); border-radius: 99px; overflow: hidden; }
+.fc-bar-fill { height: 100%; border-radius: 99px; transition: width .25s; background: var(--success); }
+.fc-bar-fill.warn { background: var(--warning); }
+.fc-bar-fill.danger { background: var(--error); }
+.fc-bar-fill.unknown { background: var(--text-muted); opacity: .35; }
+.fc-val { text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+.fc-val.warn { color: var(--warning); font-weight: 600; }
+.fc-val.danger { color: var(--error); font-weight: 600; }
+
+.fc-meta {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 11px; color: var(--text-muted);
+  padding-top: 6px; border-top: 1px solid var(--border-light); margin-top: 4px;
+}
+.fc-uptime { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* CMDB 浮动批量操作栏 */
 .cmdb-batch-bar {
@@ -2373,7 +2747,9 @@ async function deleteGroup(g) {
 .inspect-table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
 .inspect-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .inspect-table th { position: sticky; top: 0; background: var(--bg-header); padding: 7px 10px; text-align: left; font-weight: 600; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
-.inspect-table td { padding: 6px 10px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; }
+.inspect-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; vertical-align: top; }
+.inspect-table th.th-sort { cursor: pointer; user-select: none; }
+.inspect-table th.th-sort:hover { color: var(--text-primary); }
 .irow-warning { background: rgba(210,153,34,.04); }
 .irow-critical { background: rgba(248,81,73,.06); }
 .inspect-badge { font-size: 11px; padding: 2px 7px; border-radius: 10px; }
@@ -2386,7 +2762,23 @@ async function deleteGroup(g) {
 .check-cell.critical { background: rgba(248,81,73,.1); color: var(--error); }
 .check-na { color: var(--text-muted); }
 .itd-host { font-weight: 500; }
-.itd-ip, .itd-os, .itd-group { color: var(--text-muted); }
+.inspect-host-name { color: var(--text-primary); font-weight: 600; }
+.inspect-host-meta { color: var(--text-muted); font-size: 11px; margin-top: 3px; }
+.itd-meta, .itd-ip, .itd-os, .itd-group { color: var(--text-muted); }
+.itd-meta { min-width: 150px; line-height: 1.45; white-space: normal !important; }
+.inspect-metric-cell { min-width: 120px; max-width: 160px; display: flex; flex-direction: column; gap: 3px; color: var(--text-muted); line-height: 1.35; white-space: normal !important; }
+.inspect-metric-cell b { color: var(--text-primary); font-weight: 600; }
+.inspect-metric-cell span { font-size: 11px; }
+.inspect-metric-cell b.ok, .inspect-disk-line b.ok { color: var(--success); }
+.inspect-metric-cell b.warn, .inspect-disk-line b.warn { color: var(--warning); }
+.inspect-metric-cell b.crit, .inspect-disk-line b.crit { color: var(--error); }
+.inspect-disk-cell { min-width: 190px; white-space: normal !important; }
+.inspect-disk-list { display: flex; flex-direction: column; gap: 4px; }
+.inspect-disk-line { display: grid; grid-template-columns: minmax(42px, 1fr) auto; gap: 4px 8px; align-items: center; padding: 4px 6px; border-radius: 5px; background: var(--bg-input); }
+.inspect-disk-line span { color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.inspect-disk-line small { grid-column: 1 / -1; color: var(--text-muted); }
+.inspect-issues-cell { min-width: 220px; white-space: normal !important; }
+.inspect-issues-cell .check-cell { display: inline-block; margin: 0 4px 4px 0; }
 
 /* 分组管理 */
 .groups-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: 10px; }

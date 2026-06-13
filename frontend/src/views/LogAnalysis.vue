@@ -1754,7 +1754,19 @@ function startAIAnalysis() {
   )
 }
 
+// 钻取入口：从 URL ?service=&level=&hours=&q= 预填查询条件（指标→日志）
+function _applyRouteQuery() {
+  const q = (typeof window !== 'undefined' && window.location.hash.includes('?'))
+    ? Object.fromEntries(new URLSearchParams(window.location.hash.split('?')[1]))
+    : {}
+  if (q.service) selectedService.value = q.service
+  if (q.level)   levelFilter.value = q.level
+  if (q.hours)   hours.value = String(q.hours)
+  if (q.q)       keyword.value = q.q
+}
+
 onMounted(async () => {
+  _applyRouteQuery()
   await loadLabelCatalog()
   loadServices()
   loadLogs()
