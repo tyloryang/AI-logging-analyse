@@ -300,7 +300,7 @@ const ICONS = {
   border-radius: 7px;
   display: flex; align-items: center; justify-content: center;
   color: #fff; flex-shrink: 0;
-  box-shadow: 0 2px 8px rgba(56,139,253,0.35);
+  box-shadow: 0 2px 8px rgba(217, 119, 87, 0.35);
 }
 .logo-texts { display: flex; flex-direction: column; gap: 1px; }
 .logo-text  { font-family: 'Cascadia Code', 'Consolas','Cascadia Code',monospace; font-size: 13px; font-weight: 700; color: var(--text-sidebar-active,#fff); letter-spacing:.03em; line-height:1.2; }
@@ -323,7 +323,7 @@ const ICONS = {
   cursor: pointer;
 }
 .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text-sidebar-active,#fff); }
-.nav-item.active { background: rgba(56,139,253,0.14); color: #fff; border-left-color: var(--accent,#388bfd); font-weight: 500; }
+.nav-item.active { background: var(--bg-sidebar-active); color: var(--text-sidebar-strong); border-left-color: var(--accent); font-weight: 500; }
 .nav-icon { display: flex; align-items: center; width: 15px; flex-shrink: 0; opacity: .75; }
 .nav-item:hover .nav-icon, .nav-item.active .nav-icon { opacity: 1; }
 .nav-badge { margin-left: auto; font-size: 10px; background: var(--accent); color: #fff; padding: 1px 5px; border-radius: 8px; font-weight: 600; }
@@ -356,7 +356,7 @@ const ICONS = {
   transition: background .12s, color .12s;
 }
 .nav-sub-item:hover { background: rgba(255,255,255,0.04); color: var(--text-sidebar-active,#fff); }
-.nav-sub-item.active { color: #fff; background: rgba(56,139,253,0.14); border-left-color: var(--accent); font-weight: 500; }
+.nav-sub-item.active { color: var(--text-sidebar-strong); background: var(--bg-sidebar-active); border-left-color: var(--accent); font-weight: 500; }
 .sub-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .4; flex-shrink: 0; }
 .nav-sub-item.active .sub-dot { opacity: 1; background: var(--accent); }
 
