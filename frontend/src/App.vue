@@ -12,6 +12,7 @@
         </keep-alive>
       </main>
       <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant' && route.name !== 'aiops-workbench' && canUseAgent" />
+      <CommandPalette />
     </div>
   </router-view>
 </template>
@@ -19,6 +20,7 @@
 <script setup>
 import Sidebar from './components/Sidebar.vue'
 import AIOpsAssistantFloat from './components/AIOpsAssistantFloat.vue'
+import CommandPalette from './components/CommandPalette.vue'
 import { computed } from 'vue'
 import { useAuthStore } from './stores/auth.js'
 

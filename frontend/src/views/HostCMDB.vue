@@ -132,6 +132,9 @@
         <table v-else class="host-table">
           <thead>
             <tr>
+              <th class="select-col">
+                <input type="checkbox" :checked="allVisibleSelected" :indeterminate.prop="someVisibleSelected" @change="toggleSelectAll" title="全选当前列表" />
+              </th>
               <th>状态</th>
               <th class="th-sort" @click="setSort('hostname')">主机名<span class="sort-icon">{{ sortKey==='hostname'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
               <th class="th-sort" @click="setSort('ip')">IP<span class="sort-icon">{{ sortKey==='ip'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
@@ -149,7 +152,10 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="h in sortedHosts" :key="h.id" @click="selectHost(h)">
+            <tr v-for="h in sortedHosts" :key="h.id" :class="{ 'row-selected': selectedHostIds.has(h.id) }" @click="selectHost(h)">
+              <td class="select-col" @click.stop>
+                <input type="checkbox" :checked="selectedHostIds.has(h.id)" @change="toggleHostSelected(h)" />
+              </td>
               <td>
                 <div class="status-cell">
                   <span class="status-line"><span class="status-dot" :class="h.status"></span><span class="status-text">{{ statusLabel(h.status) }}</span></span>
@@ -211,6 +217,37 @@
           </tbody>
         </table>
       </div>
+
+      <!-- 选中浮动操作栏 -->
+      <transition name="batch-slide">
+        <div v-if="selectedHostIds.size" class="cmdb-batch-bar">
+          <span class="cb-count">已选 <strong>{{ selectedHostIds.size }}</strong> 台主机</span>
+          <button class="btn-ghost btn-xs" @click="selectedHostIds = new Set(); selectedHostIds = new Set(selectedHostIds)">清空</button>
+          <span class="cb-sep"></span>
+          <select v-model="batchField.group" class="batch-select" @change="applyBatchField('group', batchField.group)">
+            <option value="">改分组…</option>
+            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+          </select>
+          <select v-model="batchField.env" class="batch-select" @change="applyBatchField('env', batchField.env)">
+            <option value="">改环境…</option>
+            <option value="production">生产</option>
+            <option value="staging">预发</option>
+            <option value="development">开发</option>
+            <option value="testing">测试</option>
+            <option value="dr">容灾</option>
+          </select>
+          <select v-model="batchField.status" class="batch-select" @change="applyBatchField('status', batchField.status)">
+            <option value="">改状态…</option>
+            <option value="active">在线</option>
+            <option value="offline">离线</option>
+            <option value="maintenance">维护中</option>
+          </select>
+          <button class="btn btn-outline btn-xs" @click="batchApplyCredential">批量绑定凭据</button>
+          <button class="btn btn-outline btn-xs danger" @click="batchDeleteSelected">批量删除</button>
+          <span v-if="batchRunning" class="spinner" style="width:13px;height:13px"></span>
+          <span v-if="batchResult" class="cb-result">{{ batchResult }}</span>
+        </div>
+      </transition>
     </div>
 
     <!-- 巡检报告 -->
@@ -744,6 +781,7 @@
           <div class="form-group">
             <label>应用范围</label>
             <select v-model="batchCredForm.scope" class="filter-select" style="width:100%">
+              <option v-if="selectedHostIds.size" value="selected">选中主机（{{ selectedHostIds.size }} 台）</option>
               <option value="all">全部主机（{{ hosts.length }} 台）</option>
               <option value="filtered">当前筛选（{{ filteredHosts.length }} 台）</option>
               <option v-for="g in groups" :key="g.id" :value="'group:' + g.id">
@@ -957,10 +995,97 @@ async function loadCredentials() {
 
 onMounted(() => {
   // 支持 URL ?tab=xxx 直接进入对应 tab（替代旧 /tools/ssh 路由）
-  const q = router.currentRoute.value.query.tab
-  if (q === 'ssh' || q === 'inspect' || q === 'groups' || q === 'cmdb') tab.value = q
+  const q = router.currentRoute.value.query
+  if (q.tab && ['ssh', 'inspect', 'groups', 'cmdb'].includes(q.tab)) tab.value = q.tab
+  if (q.q) search.value = String(q.q)
+  if (q.env) envFilter.value = String(q.env)
+  if (q.group) groupFilter.value = String(q.group)
   loadHosts(); loadGroups(); loadCredentials()
 })
+
+// ── URL query 双向同步：tab/搜索/筛选写进 URL，可分享可后退 ────────────────
+function syncQueryToUrl() {
+  const q = {}
+  if (tab.value && tab.value !== 'cmdb') q.tab = tab.value
+  if (search.value) q.q = search.value
+  if (envFilter.value) q.env = envFilter.value
+  if (groupFilter.value) q.group = groupFilter.value
+  router.replace({ query: q }).catch(() => {})
+}
+watch([tab, search, envFilter, groupFilter], () => syncQueryToUrl(), { flush: 'post' })
+
+// ── 批量选择 + 浮动操作栏 ────────────────────────────────────────────────────
+const selectedHostIds = ref(new Set())
+const batchField = ref({ group: '', env: '', status: '' })
+const batchRunning = ref(false)
+const batchResult = ref('')
+
+const visibleHostIds = computed(() => sortedHosts.value.map(h => h.id))
+const allVisibleSelected = computed(() => visibleHostIds.value.length > 0 && visibleHostIds.value.every(id => selectedHostIds.value.has(id)))
+const someVisibleSelected = computed(() => {
+  const total = visibleHostIds.value.filter(id => selectedHostIds.value.has(id)).length
+  return total > 0 && total < visibleHostIds.value.length
+})
+
+function toggleSelectAll() {
+  const next = new Set(selectedHostIds.value)
+  if (allVisibleSelected.value) {
+    visibleHostIds.value.forEach(id => next.delete(id))
+  } else {
+    visibleHostIds.value.forEach(id => next.add(id))
+  }
+  selectedHostIds.value = next
+}
+
+function toggleHostSelected(host) {
+  const next = new Set(selectedHostIds.value)
+  if (next.has(host.id)) next.delete(host.id)
+  else next.add(host.id)
+  selectedHostIds.value = next
+}
+
+async function applyBatchField(field, value) {
+  if (!value || !selectedHostIds.value.size) return
+  batchRunning.value = true
+  batchResult.value = ''
+  try {
+    const r = await api.batchUpdateHosts({
+      host_ids: Array.from(selectedHostIds.value),
+      fields: { [field]: value },
+    })
+    batchResult.value = `已更新 ${r.updated} 台`
+    setTimeout(() => batchResult.value = '', 2500)
+    await loadHosts()
+  } catch (e) {
+    batchResult.value = '失败: ' + (typeof e === 'string' ? e : e?.message || '未知')
+  } finally {
+    batchRunning.value = false
+    batchField.value[field] = ''
+  }
+}
+
+async function batchDeleteSelected() {
+  const ids = Array.from(selectedHostIds.value)
+  if (!ids.length) return
+  if (!confirm(`确认删除选中的 ${ids.length} 台主机？此操作不可恢复！`)) return
+  batchRunning.value = true
+  let ok = 0
+  for (const id of ids) {
+    try { await api.deleteHost(id); ok++ } catch { /* 跳过失败 */ }
+  }
+  batchResult.value = `已删除 ${ok}/${ids.length} 台`
+  setTimeout(() => batchResult.value = '', 2500)
+  selectedHostIds.value = new Set()
+  batchRunning.value = false
+  await loadHosts()
+}
+
+function batchApplyCredential() {
+  // 复用现有的「批量应用 SSH 凭证」弹窗，但传入选中范围
+  batchCredForm.scope = 'selected'
+  batchCredForm.selectedIds = Array.from(selectedHostIds.value)
+  showBatchCredModal.value = true
+}
 
 // 主 tab 刷新动作：每个 tab 调对应的加载函数，并联动凭据（SSH tab 也用）
 function refreshActiveTab() {
@@ -1384,6 +1509,8 @@ async function doBatchCred() {
   const scope = batchCredForm.scope
   if (scope === 'filtered') {
     payload.host_ids = filteredHosts.value.map(h => h.id)
+  } else if (scope === 'selected') {
+    payload.host_ids = batchCredForm.selectedIds || Array.from(selectedHostIds.value)
   } else if (scope.startsWith('group:')) {
     payload.group = scope.slice(6)
   }
@@ -1956,6 +2083,34 @@ async function deleteGroup(g) {
 .tab-btn:hover { background: var(--bg-hover); }
 .tab-btn.active { background: var(--accent); color: #fff; }
 .tab-count { display: inline-block; padding: 1px 8px; margin-left: 6px; border-radius: 99px; font-size: 11px; background: var(--bg-surface); color: var(--text-muted); }
+
+/* CMDB 浮动批量操作栏 */
+.cmdb-batch-bar {
+  position: fixed;
+  left: 50%; bottom: 24px; transform: translateX(-50%);
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md);
+  padding: 10px 16px;
+  display: flex; align-items: center; gap: 10px;
+  z-index: 100;
+  font-size: 12.5px;
+}
+.cb-count strong { color: var(--accent); font-weight: 700; margin: 0 3px; }
+.cb-sep { width: 1px; height: 18px; background: var(--border); }
+.cb-result { color: var(--success); font-size: 11.5px; }
+.batch-select {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 10px; font-size: 12px; color: inherit; min-width: 110px;
+}
+.row-selected td { background: rgba(217,119,87,.06) !important; }
+.batch-slide-enter-active, .batch-slide-leave-active { transition: transform .25s ease, opacity .2s ease; }
+.batch-slide-enter-from, .batch-slide-leave-to { transform: translateX(-50%) translateY(24px); opacity: 0; }
+.select-col { width: 36px; text-align: center; }
+.select-col input { width: auto; cursor: pointer; }
+.btn.danger { color: var(--error); border-color: var(--error); }
+.btn.danger:hover { background: rgba(189,86,79,.08); }
 .tab-btn.active .tab-count { background: var(--accent-soft); color: var(--accent); }
 .ssh-tab-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .ssh-tab-wrap > * { flex: 1; min-height: 0; }
