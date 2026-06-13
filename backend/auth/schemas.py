@@ -44,8 +44,8 @@ class ChangePasswordRequest(BaseModel):
 class UserOut(BaseModel):
     id: str
     username: str
-    email: str
-    display_name: str
+    email: Optional[str] = ""
+    display_name: Optional[str] = ""
     status: str
     is_superuser: bool
     created_at: str
@@ -55,8 +55,8 @@ class UserOut(BaseModel):
 class MeOut(BaseModel):
     id: str
     username: str
-    email: str
-    display_name: str
+    email: Optional[str] = ""
+    display_name: Optional[str] = ""
     is_superuser: bool
     permissions: Dict[str, str]  # {module_id: level}
 

@@ -9,6 +9,11 @@
       <div class="spinner"></div><p>加载中...</p>
     </div>
 
+    <div v-else-if="loadError" class="empty-state" style="height:300px">
+      <span class="icon">⚠️</span><p>{{ loadError }}</p>
+      <button class="btn btn-outline" @click="load">重试</button>
+    </div>
+
     <template v-else>
       <div class="alert-stats">
         <div class="as-item critical"><span class="as-num">{{ counts.critical }}</span><span class="as-label">严重</span></div>
@@ -42,6 +47,7 @@ import { ref, computed, onMounted } from 'vue'
 import { api } from '../api/index.js'
 
 const loading = ref(true)
+const loadError = ref('')
 const alerts = ref([])
 
 const counts = computed(() => ({
@@ -56,21 +62,27 @@ function alertLevel(count) {
   return 'info'
 }
 
-onMounted(async () => {
+async function load() {
+  loading.value = true
+  loadError.value = ''
   try {
     const r = await api.getErrorMetrics(24)
     const now = new Date()
-    alerts.value = r.data.map((item, i) => ({
+    alerts.value = (r.data || []).map((item, i) => ({
       id: i,
       service: item.service,
       count: item.count,
       level: alertLevel(item.count),
       time: new Date(now - i * 120000).toLocaleString('zh-CN', { hour12: false }),
     }))
+  } catch (e) {
+    loadError.value = `告警数据加载失败：${e}`
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(load)
 </script>
 
 <style scoped>

@@ -58,6 +58,7 @@ from routers.middleware import router as middleware_router
 from routers.tickets import router as tickets_router
 from routers.elasticsearch import router as es_router
 from routers.redis_clusters import router as redis_router
+from routers.kafka_clusters import router as kafka_router
 from routers.alerts import router as alerts_router
 from routers.rca import router as rca_router
 from routers.jenkins import router as jenkins_router
@@ -218,6 +219,7 @@ app.include_router(middleware_router)
 app.include_router(tickets_router)
 app.include_router(es_router)
 app.include_router(redis_router)
+app.include_router(kafka_router)
 app.include_router(alerts_router)
 app.include_router(rca_router)
 app.include_router(jenkins_router)

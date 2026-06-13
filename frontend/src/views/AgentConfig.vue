@@ -71,21 +71,47 @@
         </div>
 
         <div class="form-section">
-          <label class="form-label">角色定义 <span class="form-hint">（System Prompt 的核心身份描述）</span></label>
-          <textarea v-model="config.definition" class="form-textarea" rows="3"
-            placeholder="例如：你是一名资深 SRE 工程师，负责保障平台稳定性..."></textarea>
+          <div class="form-section-head">
+            <label class="form-label">角色定义 <span class="form-hint">（System Prompt 的核心身份描述）</span></label>
+            <div class="template-bar">
+              <span class="template-label">快速模板</span>
+              <button class="template-chip" v-for="t in ROLE_TEMPLATES" :key="t.key"
+                @click="config.definition = t.text" :title="t.text.slice(0, 80) + '...'">{{ t.label }}</button>
+            </div>
+          </div>
+          <textarea v-model="config.definition" class="form-textarea" rows="5"
+            placeholder="建议包含 4 段：①身份（你是谁，资深 SRE / DBA / K8s 专家 / 只读分析师）  ②职责（守护稳定性 / 故障分析 / 配置审核）  ③工作原则（先调工具拿事实再下结论 / 高风险操作必经审批）  ④输出风格（结构化、用中文、给可执行步骤）"></textarea>
+          <div class="form-meta">
+            <span class="form-counter" :class="{ warn: (config.definition || '').length > 800 }">
+              {{ (config.definition || '').length }} / 1500 字
+            </span>
+            <span class="form-tip">提示：长 prompt 会增加每轮 token 消耗，建议 ≤800 字</span>
+          </div>
         </div>
 
         <div class="form-section">
           <label class="form-label">MCP 能力说明 <span class="form-hint">（告知 AI 可用哪些 MCP 工具）</span></label>
           <textarea v-model="config.mcp_desc" class="form-textarea" rows="3"
-            placeholder="例如：你可以通过下方的 MCP 与 Redis、Nacos 通信，获取业务数据..."></textarea>
+            placeholder="例如：你可以通过下方已配置的 MCP 与 Redis、Nacos、Prometheus 通信，获取业务配置和实时指标。"></textarea>
         </div>
 
         <div class="form-section">
-          <label class="form-label">Skill 能力说明 <span class="form-hint">（告知 AI 可调用哪些自动化能力）</span></label>
-          <textarea v-model="config.skill_desc" class="form-textarea" rows="3"
-            placeholder="例如：还可以通过调用 Skill 完成自动化巡检 order-service 等能力..."></textarea>
+          <div class="form-section-head">
+            <label class="form-label">Skill 能力说明 <span class="form-hint">（告知 AI 可调用哪些自动化能力）</span></label>
+            <div class="template-bar">
+              <span class="template-label">快速模板</span>
+              <button class="template-chip" v-for="t in SKILL_DESC_TEMPLATES" :key="t.key"
+                @click="config.skill_desc = t.text" :title="t.text.slice(0, 80) + '...'">{{ t.label }}</button>
+            </div>
+          </div>
+          <textarea v-model="config.skill_desc" class="form-textarea" rows="4"
+            placeholder="建议按「能力类别」组织：①查询类（查日志/指标/Pod 状态）  ②诊断类（巡检主机/分析慢日志）  ③执行类（重启服务/滚动更新）。同时说明高风险动作的二次确认机制。"></textarea>
+          <div class="form-meta">
+            <span class="form-counter" :class="{ warn: (config.skill_desc || '').length > 600 }">
+              {{ (config.skill_desc || '').length }} / 1000 字
+            </span>
+            <span class="form-tip">Skill 实际执行权限由「工具风险注册表」+ behaviors.auto 决定</span>
+          </div>
         </div>
 
         <div class="form-section form-row">
@@ -147,9 +173,10 @@
         <!-- 添加 MCP 表单 -->
         <div v-if="showAddMcp" class="add-form">
           <input v-model="newMcp.name" class="form-input" placeholder="名称，如：Redis MCP" style="flex:1" />
-          <select v-model="newMcp.type" class="form-input" style="width:90px">
+          <select v-model="newMcp.type" class="form-input" style="width:150px">
             <option value="http">HTTP</option>
             <option value="sse">SSE</option>
+            <option value="streamable_http">Streamable HTTP</option>
             <option value="stdio">Stdio</option>
           </select>
           <input v-model="newMcp.url" class="form-input" placeholder="地址，如：http://192.168.9.226:8000/sse" style="flex:2" />
@@ -159,9 +186,10 @@
         <div v-if="editingMcpId" class="add-form add-form-edit">
           <span class="form-chip">编辑 MCP</span>
           <input v-model="editingMcp.name" class="form-input" placeholder="名称" style="flex:1" />
-          <select v-model="editingMcp.type" class="form-input" style="width:90px">
+          <select v-model="editingMcp.type" class="form-input" style="width:150px">
             <option value="http">HTTP</option>
             <option value="sse">SSE</option>
+            <option value="streamable_http">Streamable HTTP</option>
             <option value="stdio">Stdio</option>
           </select>
           <input v-model="editingMcp.url" class="form-input" placeholder="地址" style="flex:2" />
@@ -210,21 +238,63 @@
       <div class="card">
         <div class="section-toolbar">
           <span class="section-count">已启用 {{ skillList.filter(s=>s.enabled).length }} / {{ skillList.length }} 个 Skill</span>
-          <button class="btn btn-outline btn-sm">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            导入 Skill
-          </button>
+          <div class="section-toolbar-actions">
+            <button class="btn btn-outline btn-sm" @click="showAddSkill = !showAddSkill" title="手动新增 Skill">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              新增
+            </button>
+            <button class="btn btn-outline btn-sm" @click="triggerImportSkills" title="从 JSON 文件导入">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              导入
+            </button>
+            <button class="btn btn-outline btn-sm" @click="exportSkills" :disabled="!skillList.length" title="导出全部 Skill 为 JSON">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              导出
+            </button>
+            <input ref="importSkillsInput" type="file" accept="application/json,.json" style="display:none" @change="onImportSkillsFile" />
+          </div>
         </div>
+
+        <!-- 导入结果汇总 -->
+        <div v-if="importResult" class="import-result" :class="importResult.kind">
+          <span>{{ importResult.text }}</span>
+          <button class="import-result-close" @click="importResult = null">✕</button>
+        </div>
+
+        <!-- 新增 Skill 表单 -->
+        <div v-if="showAddSkill" class="add-form add-form-edit">
+          <span class="form-chip">新增 Skill</span>
+          <input v-model="newSkill.icon" class="form-input" placeholder="图标" style="width:60px" maxlength="4" />
+          <input v-model="newSkill.name" class="form-input" placeholder="Skill 名称，如：主机巡检" style="flex:1" />
+          <input v-model="newSkill.desc" class="form-input" placeholder="说明，如：自动巡检所有主机 CPU/内存/磁盘" style="flex:2" />
+          <select v-model="newSkill.tool_name" class="form-input" style="width:200px" :title="selectedToolHint">
+            <option value="">未绑定工具</option>
+            <option v-for="t in availableTools" :key="t.name" :value="t.name">
+              {{ t.name }} · {{ riskLabel(t.risk) }}
+            </option>
+          </select>
+          <input v-model="newSkillTagsInput" class="form-input" placeholder="标签（逗号分隔）" style="width:180px" />
+          <button class="btn btn-primary btn-sm" @click="addSkill">确认</button>
+          <button class="btn btn-outline btn-sm" @click="cancelAddSkill">取消</button>
+        </div>
+
         <div class="skill-grid">
           <div class="skill-card card" v-for="s in skillList" :key="s.id" :class="{ 'skill-on': s.enabled }">
             <div class="skill-header">
               <span class="skill-icon">{{ s.icon }}</span>
               <span class="skill-name">{{ s.name }}</span>
+              <button class="skill-delete" @click.stop="removeSkill(s)" title="删除该 Skill">✕</button>
               <button class="toggle-switch sm" :class="{ on: s.enabled }" @click="s.enabled = !s.enabled; toggleSkill(s)">
                 <span class="toggle-thumb"></span>
               </button>
             </div>
             <div class="skill-desc">{{ s.desc }}</div>
+            <div class="skill-meta-row">
+              <span v-if="s.tool_name" class="skill-tool" :title="`绑定工具：${s.tool_name}`">
+                🔗 {{ s.tool_name }}
+              </span>
+              <span v-else class="skill-tool warn" title="未绑定工具，启用后 LLM 无法实际调用">⚠ 未绑定工具</span>
+            </div>
             <div class="skill-tags">
               <span class="skill-tag" v-for="t in s.tags" :key="t">{{ t }}</span>
             </div>
@@ -431,6 +501,102 @@ const SKILL_MODES = [
   { value: 'confirm', label: '执行前确认' },
   { value: 'dry',     label: '仅限预览' },
 ]
+
+// 角色定义快速模板（点击注入到 textarea，可二次编辑）
+const ROLE_TEMPLATES = [
+  {
+    key: 'sre',
+    label: '资深 SRE',
+    text: `你是一名资深 SRE（网站可靠性工程师），负责保障 AIOps 平台稳定性。
+
+【职责】
+- 实时监控告警、快速定位故障根因、给出可执行修复方案
+- 主动发现潜在风险（容量、慢查询、依赖异常）并给出优化建议
+
+【工作原则】
+- 先调工具拿事实，不靠记忆下结论
+- 高风险操作（重启/扩缩容/改配置）必须二次确认或走审批
+- 输出结构化中文：先结论，再依据，最后操作步骤（带回滚预案）
+
+【自我介绍】
+直接说"我是 AIOps 智能运维助手"，不要主动声明基于大模型。`,
+  },
+  {
+    key: 'reader',
+    label: '只读分析师',
+    text: `你是 AIOps 只读分析助手，只用查询类工具，不执行任何写操作。
+
+【职责】
+- 帮用户读懂日志、指标、Trace
+- 在数据基础上给出趋势与异常解读，不下定论
+
+【工作原则】
+- 只调 query/get/list/inspect 类工具
+- 如果用户问"怎么改/重启"，告知"已切到只读模式，请联系有写权限的同事"`,
+  },
+  {
+    key: 'k8s',
+    label: 'K8s 专家',
+    text: `你是 Kubernetes 集群专家，专注容器编排、Pod 排障、资源拓扑分析。
+
+【职责】
+- 用 K8s 工具查 Pod/Deployment/Service/ConfigMap 状态
+- 对 CrashLoopBackOff、ImagePullBackOff、OOMKilled 等典型故障给出诊断步骤
+- ConfigMap 修改时必须先 diff 关键 key 再走审批
+
+【输出】
+- 列出"已查的资源 / 关键观察 / 假设根因 / 验证步骤 / 修复 + 回滚"`,
+  },
+  {
+    key: 'db',
+    label: 'DBA',
+    text: `你是数据库 / 中间件运维专家，覆盖 MySQL、Redis、Kafka、Elasticsearch。
+
+【职责】
+- 慢查询分析、连接池/内存/复制状态巡检
+- 索引建议、Key 大小/过期策略评估
+- 备份/恢复方案审核（不直接 drop/flush）
+
+【禁忌】
+- 任何 DROP / FLUSHALL / TRUNCATE / 删除主从同步状态的操作必须人工审批`,
+  },
+]
+
+// Skill 能力说明快速模板
+const SKILL_DESC_TEMPLATES = [
+  {
+    key: 'standard',
+    label: '标准三段',
+    text: `你可以通过下方 Skill 完成以下三类自动化能力：
+
+①【查询类】查日志（Loki）、查指标（Prometheus）、查 K8s 资源状态、检索历史报告与相似故障
+②【诊断类】全量主机巡检、慢查询 Top-N、模板聚类、根因定位
+③【执行类】滚动重启 Deployment、ConfigMap 改键、Ansible Playbook 推送
+
+执行类 Skill 默认进审批流，behaviors.auto 开启 + 风险等级低时才自动跑。`,
+  },
+  {
+    key: 'minimal',
+    label: '极简版',
+    text: `你可以调用下方 Skill 中已启用的能力来辅助分析与处置问题。
+具体调用哪个工具由你自己根据问题判断；只读类直接调，写类需告知用户后再触发。`,
+  },
+  {
+    key: 'detail',
+    label: '细分类',
+    text: `Skill 能力清单（按调用频率排序）：
+
+- query_error_logs / count_errors_by_service：日志快速定位
+- get_host_metrics / inspect_all_hosts：主机指标与全量巡检
+- get_k8s_summary / get_k8s_pods / get_k8s_deployments：集群快照
+- recall_similar_incidents / search_daily_reports：历史检索
+- es_list_indices / es_cluster_health：ES 状态
+- export_report_pdf：生成 PDF 报告（低风险，可自动）
+- call_mcp_tool：通用 MCP（写动作走审批）
+
+每次回答前先简述选择某个 Skill 的理由，再调用。`,
+  },
+]
 const activeTab = ref('basic')
 const saving    = ref(false)
 const toast     = ref('')
@@ -438,8 +604,15 @@ const toast     = ref('')
 // ── API 辅助 ─────────────────────────────────────────────────────────
 async function apiFetch(url, opts = {}) {
   const resp = await fetch(url, { credentials: 'include', ...opts })
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  const text = await resp.text()
+  let payload = {}
+  if (text) {
+    try { payload = JSON.parse(text) } catch { payload = { detail: text } }
+  }
+  if (!resp.ok) {
+    throw new Error(payload.detail || payload.message || `HTTP ${resp.status}`)
+  }
+  return payload
 }
 
 function showToast(msg, ms = 2000) {
@@ -582,17 +755,38 @@ async function loadMcps() {
 
 const showAddMcp = ref(false)
 const newMcp = reactive({ name: '', type: 'http', url: '' })
+const editingMcpId = ref('')
+const editingMcp = reactive({ name: '', type: 'http', url: '', enabled: true })
+
+function resetMcpForm(target) {
+  Object.assign(target, { name: '', type: 'http', url: '', enabled: true })
+}
+
+function replaceMcp(updated) {
+  if (!updated?.id) return
+  const idx = mcpList.value.findIndex(item => item.id === updated.id)
+  if (idx >= 0) {
+    mcpList.value.splice(idx, 1, { ...mcpList.value[idx], ...updated })
+  }
+}
 
 async function addMcp() {
-  if (!newMcp.name || !newMcp.url) return
+  if (!newMcp.name.trim() || !newMcp.url.trim()) {
+    showToast('❌ MCP 名称和地址不能为空')
+    return
+  }
   try {
     const created = await apiFetch('/api/agent-config/mcps', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newMcp }),
+      body: JSON.stringify({
+        name: newMcp.name.trim(),
+        type: newMcp.type,
+        url: newMcp.url.trim(),
+      }),
     })
     mcpList.value.push(created)
-    newMcp.name = ''; newMcp.url = ''; newMcp.type = 'http'
+    resetMcpForm(newMcp)
     showAddMcp.value = false
     await loadStats()
     showToast('✓ MCP 已添加')
@@ -606,6 +800,7 @@ async function removeMcp(id) {
   try {
     await apiFetch(`/api/agent-config/mcps/${id}`, { method: 'DELETE' })
     mcpList.value = mcpList.value.filter(m => m.id !== id)
+    if (editingMcpId.value === id) cancelEditMcp()
     await loadStats()
     showToast('✓ 已删除')
   } catch (e) {
@@ -623,24 +818,97 @@ async function pingMcp(m) {
   }
 }
 
-async function toggleMcp(m) {
+function startEditMcp(m) {
+  showAddMcp.value = false
+  editingMcpId.value = m.id
+  Object.assign(editingMcp, {
+    name: m.name || '',
+    type: m.type || 'http',
+    url: m.url || '',
+    enabled: m.enabled !== false,
+  })
+}
+
+function cancelEditMcp() {
+  editingMcpId.value = ''
+  resetMcpForm(editingMcp)
+}
+
+async function saveMcp() {
+  if (!editingMcpId.value) return
+  if (!editingMcp.name.trim() || !editingMcp.url.trim()) {
+    showToast('❌ MCP 名称和地址不能为空')
+    return
+  }
   try {
-    await apiFetch(`/api/agent-config/mcps/${m.id}`, {
+    const updated = await apiFetch(`/api/agent-config/mcps/${editingMcpId.value}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: m.enabled }),
+      body: JSON.stringify({
+        name: editingMcp.name.trim(),
+        type: editingMcp.type,
+        url: editingMcp.url.trim(),
+        enabled: !!editingMcp.enabled,
+      }),
     })
-  } catch { m.enabled = !m.enabled }
+    replaceMcp(updated)
+    cancelEditMcp()
+    await loadStats()
+    showToast('✓ MCP 已更新')
+  } catch (e) {
+    showToast(`❌ 更新失败：${e.message}`)
+  }
+}
+
+async function toggleMcp(m) {
+  const previous = !!m.enabled
+  const next = !previous
+  m.enabled = next
+  try {
+    const updated = await apiFetch(`/api/agent-config/mcps/${m.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    })
+    replaceMcp(updated)
+    await loadStats()
+    showToast(next ? '✓ MCP 已启用' : '✓ MCP 已停用')
+  } catch (e) {
+    m.enabled = previous
+    showToast(`❌ 操作失败：${e.message}`)
+  }
 }
 
 // ── Skill ─────────────────────────────────────────────────────────────
 const skillList = ref([])
+const availableTools = ref([])
+const showAddSkill = ref(false)
+const newSkill = reactive({ icon: '🛠️', name: '', desc: '', tool_name: '', enabled: true })
+const newSkillTagsInput = ref('')
+const importSkillsInput = ref(null)
+const importResult = ref(null)
+
+const RISK_LABELS = {
+  read:        '只读 · 自动放行',
+  write_low:   '低风险写',
+  write_high:  '高风险写 · 需审批',
+  destructive: '破坏性 · 严禁自动',
+}
+function riskLabel(r) { return RISK_LABELS[r] || (r || '未知') }
+const selectedToolHint = '工具的风险等级由 backend/agent/risk_registry.py 决定'
 
 async function loadSkills() {
   try {
     const d = await apiFetch('/api/agent-config/skills')
     skillList.value = d.data || []
   } catch { /* ignore */ }
+}
+
+async function loadAvailableTools() {
+  try {
+    const d = await apiFetch('/api/agent-config/skills/available-tools')
+    availableTools.value = d.data || []
+  } catch { availableTools.value = [] }
 }
 
 async function toggleSkill(s) {
@@ -652,6 +920,117 @@ async function toggleSkill(s) {
     })
     await loadStats()
   } catch { s.enabled = !s.enabled }
+}
+
+function cancelAddSkill() {
+  showAddSkill.value = false
+  newSkill.icon = '🛠️'
+  newSkill.name = ''
+  newSkill.desc = ''
+  newSkill.tool_name = ''
+  newSkill.enabled = true
+  newSkillTagsInput.value = ''
+}
+
+async function addSkill() {
+  const name = newSkill.name.trim()
+  if (!name) { showToast('❌ 请填写 Skill 名称'); return }
+  try {
+    const tags = newSkillTagsInput.value.split(/[,，]/).map(t => t.trim()).filter(Boolean)
+    const created = await apiFetch('/api/agent-config/skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        desc: newSkill.desc.trim(),
+        icon: (newSkill.icon || '🛠️').trim(),
+        tool_name: newSkill.tool_name.trim(),
+        tags,
+        enabled: !!newSkill.enabled,
+      }),
+    })
+    skillList.value.push(created)
+    cancelAddSkill()
+    await loadStats()
+    showToast('✓ Skill 已新增')
+  } catch (e) {
+    showToast(`❌ 新增失败：${e.message}`)
+  }
+}
+
+async function removeSkill(s) {
+  if (!confirm(`确定删除 Skill「${s.name}」？此操作不可撤销。`)) return
+  try {
+    await apiFetch(`/api/agent-config/skills/${s.id}`, { method: 'DELETE' })
+    skillList.value = skillList.value.filter(item => item.id !== s.id)
+    await loadStats()
+    showToast('✓ 已删除')
+  } catch (e) {
+    showToast(`❌ 删除失败：${e.message}`)
+  }
+}
+
+function triggerImportSkills() {
+  importResult.value = null
+  if (importSkillsInput.value) {
+    importSkillsInput.value.value = ''
+    importSkillsInput.value.click()
+  }
+}
+
+async function onImportSkillsFile(ev) {
+  const file = ev.target.files && ev.target.files[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    let parsed
+    try { parsed = JSON.parse(text) } catch (e) {
+      importResult.value = { kind: 'err', text: `❌ JSON 解析失败：${e.message}` }
+      return
+    }
+    // 兼容两种格式：直接数组 / {skills: [...]} 包装
+    const items = Array.isArray(parsed) ? parsed
+                : Array.isArray(parsed?.skills) ? parsed.skills
+                : null
+    if (!items) {
+      importResult.value = { kind: 'err', text: '❌ 文件结构错误：根需为 Skill 数组，或形如 {"skills": [...]}' }
+      return
+    }
+
+    const strategy = confirm(`即将导入 ${items.length} 条 Skill。\n\n点击「确定」=覆盖已存在的同名 Skill；\n点击「取消」=跳过已存在的（保留旧记录）。`)
+      ? 'overwrite' : 'skip'
+
+    const res = await apiFetch('/api/agent-config/skills/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skills: items, strategy }),
+    })
+    await loadSkills()
+    await loadStats()
+    const errSuffix = res.errors && res.errors.length ? `，${res.errors.length} 条错误（行号：${res.errors.map(e=>e.index).join(',')}）` : ''
+    importResult.value = {
+      kind: res.errors && res.errors.length ? 'warn' : 'ok',
+      text: `✓ 导入完成：新增 ${res.imported}，${strategy==='overwrite'?'覆盖':'跳过'} ${strategy==='overwrite'?res.overwritten:res.skipped}${errSuffix}`,
+    }
+  } catch (e) {
+    importResult.value = { kind: 'err', text: `❌ 导入失败：${e.message}` }
+  }
+}
+
+function exportSkills() {
+  const blob = new Blob([JSON.stringify({
+    exported_at: new Date().toISOString(),
+    skills: skillList.value.map(({ id, ...rest }) => rest),
+  }, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `aiops-skills-${new Date().toISOString().slice(0,10)}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  showToast('✓ 已导出')
 }
 
 // ── 模型配置 ───────────────────────────────────────────────────────────
@@ -835,7 +1214,7 @@ async function removeSa(id) {
 
 // ── 初始化 ────────────────────────────────────────────────────────────
 onMounted(async () => {
-  await Promise.all([loadBasic(), loadBehaviors(), loadMcps(), loadSkills(), loadModels(), loadSa(), loadStats()])
+  await Promise.all([loadBasic(), loadBehaviors(), loadMcps(), loadSkills(), loadModels(), loadSa(), loadStats(), loadAvailableTools()])
 })
 </script>
 
@@ -997,8 +1376,50 @@ onMounted(async () => {
 .skill-icon { font-size: 18px; }
 .skill-name { flex: 1; font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .skill-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 8px; }
+.skill-meta-row { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.skill-tool { font-size: 11px; padding: 2px 8px; background: var(--bg-hover); border-radius: 4px; color: var(--text-secondary); }
+.skill-tool.warn { background: rgba(245, 158, 11, .12); color: #d97706; }
+.skill-delete { background: none; border: 0; cursor: pointer; color: var(--text-muted); font-size: 14px; padding: 2px 6px; border-radius: 4px; }
+.skill-delete:hover { background: rgba(239, 68, 68, .12); color: #dc2626; }
 .skill-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .skill-tag { font-size: 10px; padding: 2px 7px; background: var(--accent-dim); color: var(--accent); border-radius: 3px; }
+
+/* Skill 工具栏：新增 / 导入 / 导出三件套 */
+.section-toolbar-actions { display: flex; gap: 6px; }
+
+/* 导入结果横幅 */
+.import-result {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 14px; margin: 0 0 12px;
+  border-radius: 6px; font-size: 13px;
+  border: 1px solid transparent;
+}
+.import-result.ok   { background: rgba(34, 197, 94, .10); border-color: rgba(34, 197, 94, .35); color: #16a34a; }
+.import-result.warn { background: rgba(245, 158, 11, .10); border-color: rgba(245, 158, 11, .4);  color: #d97706; }
+.import-result.err  { background: rgba(239, 68, 68, .10);  border-color: rgba(239, 68, 68, .35); color: #dc2626; }
+.import-result-close { background: none; border: 0; color: inherit; opacity: .55; cursor: pointer; font-size: 14px; }
+.import-result-close:hover { opacity: 1; }
+
+/* 角色定义 / Skill 说明区：快速模板栏 + 字符计数 */
+.form-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 6px;
+}
+.template-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.template-label { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
+.template-chip {
+  font-size: 11px; padding: 3px 9px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 999px;
+  cursor: pointer; color: var(--text-secondary);
+  transition: border-color .12s, color .12s, background .12s;
+}
+.template-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.form-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 4px; font-size: 11px; color: var(--text-muted);
+}
+.form-counter.warn { color: #d97706; }
+.form-tip { color: var(--text-muted); }
 
 /* ── Model market ── */
 .model-market { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }

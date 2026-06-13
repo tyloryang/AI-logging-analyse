@@ -775,12 +775,74 @@ async def update_mcp(mcp_id: str, body: McpUpdate):
 class SkillToggle(BaseModel):
     enabled:   Optional[bool] = None
     tool_name: Optional[str]  = None
+    name:      Optional[str]  = None
+    desc:      Optional[str]  = None
+    icon:      Optional[str]  = None
+    tags:      Optional[list[str]] = None
+
+
+class SkillCreate(BaseModel):
+    name:      str
+    desc:      str  = ""
+    icon:      str  = "🛠️"
+    tool_name: str  = ""
+    tags:      list[str] = []
+    enabled:   bool = True
+
+
+class SkillImportRequest(BaseModel):
+    skills:   list[SkillCreate]
+    strategy: str = "skip"   # skip(已存在则跳过) | overwrite(已存在则覆盖)
+
+
+def _skill_signature(s: dict) -> str:
+    """用 (name, tool_name) 作为去重指纹，import 时识别重复条目。"""
+    return f"{str(s.get('name', '')).strip().lower()}|{str(s.get('tool_name', '')).strip().lower()}"
 
 
 @router.get("/skills")
 async def list_skills():
     cfg = _load()
     return {"data": cfg.get("skills", [])}
+
+
+@router.get("/skills/available-tools")
+async def list_available_skill_tools():
+    """列出所有可绑定到 Skill 的工具名 + 风险等级，供前端 tool_name 下拉补全。"""
+    try:
+        from agent.tools import ALL_TOOLS
+        from agent.risk_registry import risk_of
+    except Exception as exc:
+        logger.warning("[agent_config] ALL_TOOLS unavailable: %s", exc)
+        return {"data": []}
+    return {
+        "data": [
+            {"name": t.name, "description": (t.description or "")[:160], "risk": risk_of(t.name).value}
+            for t in ALL_TOOLS
+        ]
+    }
+
+
+@router.post("/skills")
+async def create_skill(body: SkillCreate):
+    """新增 Skill。"""
+    cfg = _load()
+    skills = cfg.setdefault("skills", [])
+    name = str(body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Skill 名称不能为空")
+    new_skill = {
+        "id":        str(uuid.uuid4())[:8],
+        "icon":      str(body.icon or "🛠️").strip() or "🛠️",
+        "name":      name,
+        "desc":      str(body.desc or "").strip(),
+        "tool_name": str(body.tool_name or "").strip(),
+        "tags":      [str(t).strip() for t in (body.tags or []) if str(t).strip()],
+        "enabled":   bool(body.enabled),
+    }
+    skills.append(new_skill)
+    _save(cfg)
+    return new_skill
 
 
 @router.put("/skills/{skill_id}")
@@ -793,9 +855,96 @@ async def update_skill(skill_id: str, body: SkillToggle):
                 s["enabled"] = bool(payload["enabled"])
             if "tool_name" in payload:
                 s["tool_name"] = str(payload["tool_name"]).strip()
+            if "name" in payload:
+                name = str(payload["name"]).strip()
+                if not name:
+                    raise HTTPException(status_code=400, detail="Skill 名称不能为空")
+                s["name"] = name
+            if "desc" in payload:
+                s["desc"] = str(payload["desc"]).strip()
+            if "icon" in payload:
+                s["icon"] = str(payload["icon"]).strip() or s.get("icon") or "🛠️"
+            if "tags" in payload:
+                s["tags"] = [str(t).strip() for t in (payload["tags"] or []) if str(t).strip()]
             _save(cfg)
             return s
     raise HTTPException(status_code=404, detail="Skill 不存在")
+
+
+@router.delete("/skills/{skill_id}")
+async def delete_skill(skill_id: str):
+    cfg = _load()
+    skills = cfg.get("skills", [])
+    orig_len = len(skills)
+    cfg["skills"] = [s for s in skills if s.get("id") != skill_id]
+    if len(cfg["skills"]) == orig_len:
+        raise HTTPException(status_code=404, detail="Skill 不存在")
+    _save(cfg)
+    return {"ok": True}
+
+
+@router.post("/skills/import")
+async def import_skills(body: SkillImportRequest):
+    """批量导入 Skill。
+
+    strategy=skip:      已存在（按 name+tool_name 指纹）则跳过
+    strategy=overwrite: 已存在则覆盖整条记录（id 保持不变）
+    返回 {imported, skipped, overwritten, errors[]}。
+    """
+    if not body.skills:
+        return {"imported": 0, "skipped": 0, "overwritten": 0, "errors": []}
+
+    strategy = str(body.strategy or "skip").lower()
+    if strategy not in {"skip", "overwrite"}:
+        raise HTTPException(status_code=400, detail="strategy 只能是 skip 或 overwrite")
+
+    cfg = _load()
+    skills = cfg.setdefault("skills", [])
+    existing_by_sig: dict[str, dict] = {_skill_signature(s): s for s in skills if isinstance(s, dict)}
+
+    imported = 0
+    skipped = 0
+    overwritten = 0
+    errors: list[dict] = []
+
+    for idx, item in enumerate(body.skills):
+        name = str(item.name or "").strip()
+        if not name:
+            errors.append({"index": idx, "error": "name 不能为空"})
+            continue
+
+        candidate = {
+            "id":        str(uuid.uuid4())[:8],
+            "icon":      str(item.icon or "🛠️").strip() or "🛠️",
+            "name":      name,
+            "desc":      str(item.desc or "").strip(),
+            "tool_name": str(item.tool_name or "").strip(),
+            "tags":      [str(t).strip() for t in (item.tags or []) if str(t).strip()],
+            "enabled":   bool(item.enabled),
+        }
+        sig = _skill_signature(candidate)
+        existing = existing_by_sig.get(sig)
+
+        if existing is None:
+            skills.append(candidate)
+            existing_by_sig[sig] = candidate
+            imported += 1
+        elif strategy == "overwrite":
+            candidate["id"] = existing.get("id") or candidate["id"]
+            existing.clear()
+            existing.update(candidate)
+            overwritten += 1
+        else:
+            skipped += 1
+
+    _save(cfg)
+    return {
+        "imported":    imported,
+        "skipped":     skipped,
+        "overwritten": overwritten,
+        "errors":      errors,
+        "total":       len(skills),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

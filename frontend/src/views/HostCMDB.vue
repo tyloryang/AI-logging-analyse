@@ -31,20 +31,29 @@
         </div>
       </div>
       <div class="toolbar-right">
-        <input v-if="tab === 'cmdb'" v-model="search" class="search-input" placeholder="搜索主机名/IP/负责人..." />
         <template v-if="tab === 'cmdb'">
-          <select v-model="envFilter" class="filter-select">
-            <option value="">全部环境</option>
-            <option value="production">生产</option>
-            <option value="staging">预发</option>
-            <option value="development">开发</option>
-            <option value="testing">测试</option>
-            <option value="dr">容灾</option>
-          </select>
-          <select v-model="groupFilter" class="filter-select">
-            <option value="">全部分组</option>
-            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
-          </select>
+          <div class="filter-group" :title="search ? `搜索: ${search}` : '搜索主机名/IP/负责人'">
+            <span class="filter-icon">🔍</span>
+            <input v-model="search" class="search-input" placeholder="搜索..." />
+          </div>
+          <div class="filter-group" title="环境过滤">
+            <span class="filter-icon">🏷️</span>
+            <select v-model="envFilter" class="filter-select">
+              <option value="">全部环境</option>
+              <option value="production">生产</option>
+              <option value="staging">预发</option>
+              <option value="development">开发</option>
+              <option value="testing">测试</option>
+              <option value="dr">容灾</option>
+            </select>
+          </div>
+          <div class="filter-group" title="分组过滤">
+            <span class="filter-icon">📁</span>
+            <select v-model="groupFilter" class="filter-select">
+              <option value="">全部分组</option>
+              <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+            </select>
+          </div>
           <button class="btn btn-primary" @click="openAdd">+ 添加主机</button>
           <button class="btn btn-outline" @click="downloadExport" title="导出 Excel">📥 导出</button>
           <button class="btn btn-outline" @click="showImportModal = true" title="从 Excel/CSV 导入">📤 导入</button>
@@ -60,10 +69,13 @@
         </button>
         <!-- 巡检操作按钮 -->
         <template v-if="tab === 'inspect'">
-          <select v-model="inspectGroupId" class="filter-select" :disabled="inspecting">
-            <option value="">全部主机</option>
-            <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.host_count || 0 }}台）</option>
-          </select>
+          <div class="filter-group" title="巡检范围">
+            <span class="filter-icon">🎯</span>
+            <select v-model="inspectGroupId" class="filter-select" :disabled="inspecting">
+              <option value="">全部主机</option>
+              <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.host_count || 0 }}台）</option>
+            </select>
+          </div>
           <button class="btn btn-primary" @click="runInspect" :disabled="inspecting || inspectAiStreaming">
             <span v-if="inspecting" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>🔍</span> {{ inspectGroupId ? '巡检此分组' : '执行巡检' }}
@@ -1785,6 +1797,40 @@ async function deleteGroup(g) {
 .tab-btn.ssh-link { text-decoration: none; display: flex; align-items: center; color: var(--text-muted); }
 .search-input { padding: 5px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 200px; }
 .filter-select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
+
+/* 紧凑 filter-group: 图标 + 内嵌输入/下拉，整体节省横向空间 */
+.filter-group {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg-input);
+  overflow: hidden;
+  transition: border-color .15s, box-shadow .15s;
+}
+.filter-group:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim, rgba(99, 102, 241, .15)); }
+.filter-group:has(input:disabled),
+.filter-group:has(select:disabled) { opacity: .55; }
+.filter-icon { padding: 0 4px 0 8px; font-size: 12px; color: var(--text-muted); user-select: none; pointer-events: none; }
+.filter-group .search-input {
+  width: 140px;
+  padding: 5px 10px 5px 2px;
+  border: 0; outline: none; background: transparent;
+  font-size: 13px;
+  transition: width .2s ease;
+}
+.filter-group .search-input:focus { width: 220px; }
+.filter-group .filter-select {
+  padding: 5px 22px 5px 2px;
+  min-width: 92px; max-width: 160px;
+  border: 0; outline: none; background: transparent;
+  cursor: pointer; font-size: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+                    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 50%, calc(100% - 7px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
 
 /* 内容区 */
 .content-row { display: flex; gap: 10px; flex: 1; overflow: hidden; min-height: 0; }

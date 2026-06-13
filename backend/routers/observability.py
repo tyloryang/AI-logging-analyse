@@ -246,7 +246,7 @@ def _format_window_text(window_minutes: int) -> str:
 async def _get_loki_error_count(hours: float = 1) -> tuple[int, list[dict]]:
     """返回 (total_error_count, [{service, count}]) """
     try:
-        counts = await loki.count_errors_by_service(hours=hours)
+        counts = await loki.count_errors_by_service_fast(hours=hours)
         breakdown = [
             {"service": service, "count": count}
             for service, count in counts.items()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -24,7 +25,15 @@ _namespace_service_map_cache: TTLCache = TTLCache(maxsize=2, ttl=120)
 _grouped_svc_cache: TTLCache = TTLCache(maxsize=1, ttl=60)
 _group_service_map_cache: TTLCache = TTLCache(maxsize=8, ttl=120)
 _group_error_cache: TTLCache = TTLCache(maxsize=16, ttl=60)
+# Stale-while-revalidate: keep the last successful error counts forever so the
+# dashboard can answer instantly while a background task refreshes the data.
+_err_stale: dict[str, dict[str, int]] = {}
+_err_refresh_tasks: dict[str, "asyncio.Task"] = {}
 _DISPLAY_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def _demo_mode() -> bool:
+    return os.getenv("LOKI_DEMO_MODE", "").lower() in ("1", "true", "yes")
 
 
 def _format_display_timestamp(ts_ns: str | int) -> str:
@@ -105,6 +114,22 @@ class LokiClient:
         params: Optional[dict] = None,
         timeout: Optional[httpx.Timeout] = None,
     ) -> dict:
+        if _demo_mode():
+            import loki_mock
+
+            if path == "/loki/api/v1/labels":
+                return {"status": "success", "data": loki_mock.get_all_labels()}
+
+            label_match = re.fullmatch(r"/loki/api/v1/label/([^/]+)/values", path)
+            if label_match:
+                return {"status": "success", "data": loki_mock.get_label_values(label_match.group(1))}
+
+            if path == "/loki/api/v1/series":
+                match_expr = None
+                if params:
+                    match_expr = params.get("match[]")
+                return {"status": "success", "data": loki_mock.get_series(match_expr)}
+
         resp = await self._client.get(
             f"{self.base_url}{path}",
             headers=self._headers(),
@@ -315,6 +340,22 @@ class LokiClient:
         group_label: Optional[str] = None,
         group_value: Optional[str] = None,
     ) -> dict:
+        if _demo_mode():
+            import loki_mock
+
+            return loki_mock.query_logs_page(
+                service=service,
+                hours=hours,
+                page_size=page_size,
+                cursor_ns=cursor_ns,
+                level=level,
+                keyword=keyword,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                group_label=group_label,
+                group_value=group_value,
+            )
+
         now_ns = int(time.time() * 1e9)
         s_ns = start_ns if start_ns is not None else int(now_ns - hours * 3600 * 1e9)
         e_ns = (cursor_ns - 1) if cursor_ns is not None else (end_ns if end_ns is not None else now_ns)
@@ -361,6 +402,21 @@ class LokiClient:
         group_label: Optional[str] = None,
         group_value: Optional[str] = None,
     ) -> list[dict]:
+        if _demo_mode():
+            import loki_mock
+
+            return loki_mock.query_logs(
+                service=service,
+                hours=hours,
+                limit=limit,
+                level=level,
+                keyword=keyword,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                group_label=group_label,
+                group_value=group_value,
+            )
+
         now_ns = int(time.time() * 1e9)
         s_ns = start_ns if start_ns is not None else int(now_ns - hours * 3600 * 1e9)
         e_ns = end_ns if end_ns is not None else now_ns
@@ -380,6 +436,121 @@ class LokiClient:
 
         return await self.query_range(query, s_ns, e_ns, limit, use_scan_timeout=use_scan_timeout)
 
+    async def query_log_context(
+        self,
+        *,
+        timestamp_ns: int,
+        service: Optional[str] = None,
+        line_prefix: Optional[str] = None,
+        before: int = 10,
+        after: int = 10,
+        hours: float = 24,
+        start_ns: Optional[int] = None,
+        end_ns: Optional[int] = None,
+        label_filters: Optional[dict[str, str]] = None,
+    ) -> dict:
+        if _demo_mode():
+            import loki_mock
+
+            return loki_mock.query_log_context(
+                timestamp_ns=timestamp_ns,
+                service=service,
+                line_prefix=line_prefix,
+                before=before,
+                after=after,
+                hours=hours,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                label_filters=label_filters,
+            )
+
+        now_ns = int(time.time() * 1e9)
+        lower_bound = start_ns if start_ns is not None else int(now_ns - hours * 3600 * 1e9)
+        upper_bound = end_ns if end_ns is not None else now_ns
+
+        svc_label = await self._detect_service_label()
+        normalized_filters: dict[str, str] = {}
+        for label, value in (label_filters or {}).items():
+            if not label or value in (None, ""):
+                continue
+            if label.startswith("__") or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", label):
+                continue
+            normalized_filters[label] = str(value)
+
+        if not service:
+            service = normalized_filters.get(svc_label) or None
+        normalized_filters.pop(svc_label, None)
+
+        if not service and not normalized_filters:
+            raise ValueError("missing stream labels for context lookup")
+
+        query = self._build_log_query(
+            service_label=svc_label,
+            service=service,
+            label_filters=normalized_filters or None,
+        )
+
+        anchor_rows = await self.query_range(
+            query,
+            timestamp_ns,
+            timestamp_ns,
+            max(before + after + 1, 20),
+            direction="forward",
+            use_scan_timeout=True,
+        )
+        anchor_rows.sort(key=lambda item: int(item["timestamp_ns"]))
+
+        anchor = None
+        if line_prefix:
+            anchor = next((row for row in anchor_rows if row["line"].startswith(line_prefix)), None)
+        if anchor is None and anchor_rows:
+            anchor = anchor_rows[0]
+
+        anchor_found = anchor is not None
+        if anchor is None:
+            anchor_labels = dict(normalized_filters)
+            if service:
+                anchor_labels[svc_label] = service
+            anchor = {
+                "timestamp": _format_display_timestamp(timestamp_ns),
+                "timestamp_ns": str(timestamp_ns),
+                "line": line_prefix or "",
+                "labels": anchor_labels,
+            }
+
+        before_rows: list[dict] = []
+        if before > 0 and lower_bound < timestamp_ns:
+            before_rows = await self.query_range(
+                query,
+                lower_bound,
+                timestamp_ns - 1,
+                before,
+                direction="backward",
+                use_scan_timeout=True,
+            )
+            before_rows.sort(key=lambda item: int(item["timestamp_ns"]))
+
+        after_rows: list[dict] = []
+        if after > 0 and upper_bound > timestamp_ns:
+            after_rows = await self.query_range(
+                query,
+                timestamp_ns + 1,
+                upper_bound,
+                after,
+                direction="forward",
+                use_scan_timeout=True,
+            )
+            after_rows.sort(key=lambda item: int(item["timestamp_ns"]))
+
+        rows = before_rows + [anchor] + after_rows
+        return {
+            "data": rows,
+            "anchor_index": len(before_rows),
+            "anchor_found": anchor_found,
+            "before_count": len(before_rows),
+            "after_count": len(after_rows),
+        }
+
     async def query_error_logs(
         self,
         service: Optional[str] = None,
@@ -398,6 +569,13 @@ class LokiClient:
         )
 
     async def count_errors_by_service(self, hours: float = 24) -> dict[str, int]:
+        if _demo_mode():
+            import loki_mock
+
+            result = loki_mock.count_errors_by_service(hours=hours)
+            _err_cache[f"err_{hours}"] = result
+            return result
+
         cache_key = f"err_{hours}"
         if cache_key in _err_cache:
             return _err_cache[cache_key]
@@ -430,13 +608,53 @@ class LokiClient:
 
         result = dict(sorted(counts.items(), key=lambda item: item[1], reverse=True))
         _err_cache[cache_key] = result
+        _err_stale[cache_key] = result
         return result
+
+    def _spawn_err_refresh(self, hours: float) -> "asyncio.Task":
+        """启动（或复用）一个后台错误计数刷新任务，避免并发重复扫描。"""
+        cache_key = f"err_{hours}"
+        task = _err_refresh_tasks.get(cache_key)
+        if task is not None and not task.done():
+            return task
+
+        async def _refresh() -> dict[str, int]:
+            try:
+                return await self.count_errors_by_service(hours=hours)
+            except Exception:
+                return _err_stale.get(cache_key, {})
+            finally:
+                _err_refresh_tasks.pop(cache_key, None)
+
+        task = asyncio.create_task(_refresh())
+        _err_refresh_tasks[cache_key] = task
+        return task
+
+    async def count_errors_by_service_fast(
+        self, hours: float = 24, budget: float = 15.0
+    ) -> dict[str, int]:
+        """错误计数的限时版本：budget 秒内拿不到就返回上次成功结果（或空），
+        同时让真实统计在后台继续跑，下次请求即可命中缓存。"""
+        cache_key = f"err_{hours}"
+        if cache_key in _err_cache:
+            return _err_cache[cache_key]
+        task = self._spawn_err_refresh(hours)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=budget)
+            return result if isinstance(result, dict) else _err_stale.get(cache_key, {})
+        except (asyncio.TimeoutError, Exception):
+            return _err_stale.get(cache_key, {})
 
     async def count_errors_by_group_service(
         self,
         group_label: str,
         hours: float = 24,
     ) -> dict[str, dict[str, int]]:
+        if _demo_mode():
+            import loki_mock
+
+            return loki_mock.count_errors_by_group_service(group_label, hours=hours)
+
         resolved_group_label = await self._resolve_group_label(group_label)
         if not resolved_group_label:
             return {}
@@ -690,12 +908,13 @@ class LokiClient:
 
         service_map_task = asyncio.create_task(self._get_service_map_by_group_label(resolved_group_label))
         group_error_counts_task = asyncio.create_task(self.count_errors_by_group_service(resolved_group_label))
-        fallback_error_counts_task = asyncio.create_task(self.count_errors_by_service())
+        fallback_error_counts_task = asyncio.create_task(self.count_errors_by_service_fast())
 
         service_map = await service_map_task
         try:
-            group_error_counts = await group_error_counts_task
-        except Exception:
+            # 错误计数限时等待：拿不到先返回 0，后台刷新后下次请求命中缓存
+            group_error_counts = await asyncio.wait_for(group_error_counts_task, timeout=20)
+        except (asyncio.TimeoutError, Exception):
             group_error_counts = {}
         try:
             fallback_error_counts = await fallback_error_counts_task
@@ -734,28 +953,6 @@ class LokiClient:
         _grouped_svc_cache[cache_key] = result
         return result
 
-        if not resolved_group_label or not group_values:
-            services = await self.get_services()
-            result = [{"namespace": "", "label": "全部服务", "services": services}]
-            _grouped_svc_cache[cache_key] = result
-            return result
-
-        semaphore = asyncio.Semaphore(8)
-
-        async def _build_group(namespace: str) -> Optional[dict]:
-            async with semaphore:
-                apps = await self.get_services_by_namespace(namespace, namespace_label=namespace_label)
-            if not apps:
-                return None
-            services = [{"name": app, "error_count": error_counts.get(app, 0)} for app in apps]
-            services.sort(key=lambda item: -item["error_count"])
-            return {"namespace": namespace, "label": namespace, "services": services}
-
-        grouped = await asyncio.gather(*(_build_group(namespace) for namespace in namespaces))
-        result = [item for item in grouped if item]
-        _grouped_svc_cache["grouped_services"] = result
-        return result
-
     async def get_services(self) -> list[dict]:
         if "services" in _svc_cache:
             return _svc_cache["services"]
@@ -771,7 +968,7 @@ class LokiClient:
             except Exception:
                 names = []
 
-        error_counts = await self.count_errors_by_service()
+        error_counts = await self.count_errors_by_service_fast()
         services = [{"name": name, "error_count": error_counts.get(name, 0)} for name in names]
         services.sort(key=lambda item: item["error_count"], reverse=True)
         _svc_cache["services"] = services

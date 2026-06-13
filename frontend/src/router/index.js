@@ -36,6 +36,7 @@ const routes = [
   // ── 7. 中间件 ─────────────────────────────────────────────────
   { path: '/middleware',    component: () => import('../views/MiddlewareView.vue'),     name: 'middleware' },
   { path: '/middleware/redis', component: () => import('../views/RedisClusterView.vue'), name: 'middleware-redis' },
+  { path: '/middleware/kafka', component: () => import('../views/KafkaClusterView.vue'), name: 'middleware-kafka' },
   { path: '/middleware/es', component: () => import('../views/ElasticsearchView.vue'),  name: 'middleware-es' },
 
   // ── 7.5. CI/CD ────────────────────────────────────────────────
