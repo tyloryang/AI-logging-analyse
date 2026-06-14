@@ -179,41 +179,61 @@
         </div>
       </div>
 
-      <!-- 右侧详情 -->
-      <div v-if="selectedJob" class="detail-panel">
-        <div class="detail-header">
+    </div>
+
+    <!-- Job 详情 + 日志 全屏弹框 -->
+    <div v-if="selectedJob" class="modal-mask" @click.self="selectedJob = null">
+      <div class="modal-card jenkins-detail-modal">
+        <div class="modal-header">
           <div class="detail-heading">
             <span class="detail-title">{{ selectedJob.shortName || selectedJob.name }}</span>
             <span class="detail-breadcrumb">{{ jobBreadcrumb(selectedJob) }}</span>
           </div>
           <button class="close-btn" @click="selectedJob=null">✕</button>
         </div>
-        <div class="detail-body">
-          <div class="build-select-row">
-            <label>构建号</label>
-            <select v-model="buildNum" @change="loadBuildDetail" class="build-select">
-              <option value="lastBuild">最新</option>
-              <option v-for="n in buildNumbers" :key="n" :value="String(n)">#{{ n }}</option>
-            </select>
-          </div>
-          <div v-if="buildDetail" class="build-detail">
-            <div class="detail-row"><span class="dl">结果</span><span class="dv"><span class="result-badge" :class="resultClass(buildDetail.result)">{{ resultLabel(buildDetail.result) }}</span></span></div>
-            <div class="detail-row"><span class="dl">构建号</span><span class="dv mono">#{{ buildDetail.number }}</span></div>
-            <div class="detail-row"><span class="dl">时间</span><span class="dv small">{{ fmtTs(buildDetail.timestamp) }}</span></div>
-            <div class="detail-row"><span class="dl">耗时</span><span class="dv">{{ fmtDur(buildDetail.duration) }}</span></div>
-            <div class="detail-row"><span class="dl">链接</span><span class="dv"><a :href="buildDetail.url" target="_blank" class="jenkins-link">Jenkins ↗</a></span></div>
-          </div>
-          <div class="detail-actions">
-            <button class="btn btn-primary" style="width:100%;margin-bottom:6px" @click="openBuild(selectedJob)">▶ 触发新构建</button>
-            <button class="btn btn-outline" style="width:100%" @click="viewLogs(selectedJob)">📄 查看日志</button>
-          </div>
-          <div v-if="logContent" class="log-wrap">
-            <div class="log-header">
-              <span>日志（末尾 {{ logLines }} 行）</span>
-              <select v-model.number="logLines" @change="loadLog(selectedJob)" class="log-lines-select"><option :value="50">50</option><option :value="100">100</option><option :value="200">200</option><option :value="500">500</option></select>
+
+        <div class="jdm-body">
+          <!-- 左侧元数据列 -->
+          <aside class="jdm-meta">
+            <div class="build-select-row">
+              <label>构建号</label>
+              <select v-model="buildNum" @change="loadBuildDetail" class="build-select">
+                <option value="lastBuild">最新</option>
+                <option v-for="n in buildNumbers" :key="n" :value="String(n)">#{{ n }}</option>
+              </select>
             </div>
-            <pre class="log-content">{{ logContent }}</pre>
-          </div>
+            <div v-if="buildDetail" class="build-detail">
+              <div class="detail-row"><span class="dl">结果</span><span class="dv"><span class="result-badge" :class="resultClass(buildDetail.result)">{{ resultLabel(buildDetail.result) }}</span></span></div>
+              <div class="detail-row"><span class="dl">构建号</span><span class="dv mono">#{{ buildDetail.number }}</span></div>
+              <div class="detail-row"><span class="dl">时间</span><span class="dv small">{{ fmtTs(buildDetail.timestamp) }}</span></div>
+              <div class="detail-row"><span class="dl">耗时</span><span class="dv">{{ fmtDur(buildDetail.duration) }}</span></div>
+              <div class="detail-row"><span class="dl">链接</span><span class="dv"><a :href="buildDetail.url" target="_blank" class="jenkins-link">Jenkins ↗</a></span></div>
+            </div>
+            <div class="detail-actions">
+              <button class="btn btn-primary" style="width:100%;margin-bottom:6px" @click="openBuild(selectedJob)">▶ 触发新构建</button>
+              <button class="btn btn-outline" style="width:100%" @click="viewLogs(selectedJob)">📄 加载日志</button>
+            </div>
+          </aside>
+
+          <!-- 右侧日志主区 -->
+          <section class="jdm-log">
+            <div class="log-header">
+              <span><strong>构建日志</strong>{{ logContent ? ` · 末尾 ${logLines} 行` : '' }}</span>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select v-model.number="logLines" @change="loadLog(selectedJob)" class="log-lines-select">
+                  <option :value="100">100</option><option :value="200">200</option>
+                  <option :value="500">500</option><option :value="1000">1000</option>
+                  <option :value="2000">2000</option>
+                </select>
+                <button class="btn btn-outline btn-sm" @click="loadLog(selectedJob)">⟳ 刷新</button>
+              </div>
+            </div>
+            <pre v-if="logContent" class="log-content jdm-log-pre">{{ logContent }}</pre>
+            <div v-else class="empty-state" style="flex:1">
+              <span class="icon">📄</span>
+              <p>点击左侧「加载日志」拉取构建日志</p>
+            </div>
+          </section>
         </div>
       </div>
     </div>
@@ -760,6 +780,17 @@ onMounted(async () => {
 /* 弹窗 */
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 200; display: flex; align-items: center; justify-content: center; }
 .modal-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; width: 480px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Jenkins 全屏详情弹框：左侧元数据 + 右侧大日志面板 */
+.jenkins-detail-modal { width: 92vw; max-width: 1400px; height: 88vh; max-height: 88vh; }
+.jdm-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+.jdm-meta { width: 280px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 14px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.jdm-log { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 14px 16px; gap: 8px; }
+.jdm-log .log-header { padding: 0 4px; font-size: 12.5px; color: var(--text-secondary); }
+.jdm-log-pre { flex: 1; max-height: none !important; font-size: 12px; line-height: 1.55; padding: 14px 16px; white-space: pre; overflow: auto; background: var(--bg-base); border: 1px solid var(--border); border-radius: 8px; }
+.jdm-meta .detail-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--border-light); font-size: 12.5px; }
+.jdm-meta .dl { color: var(--text-muted); }
+.jdm-meta .dv { color: var(--text-primary); }
 .inst-modal { width: 420px; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 14px; }
 .modal-body { overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }

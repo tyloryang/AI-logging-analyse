@@ -31,6 +31,30 @@
       <div class="kpi"><span>平均错误率</span><strong>{{ avgErrorRate }}%</strong></div>
     </div>
 
+    <!-- Grafana 风格 4 张时序图（实时聚合，10s 轮询）-->
+    <div class="grafana-grid">
+      <div class="g-panel">
+        <div class="g-title"><span class="g-dot" style="background:#60a5fa"></span>QPS 总量 · Rate</div>
+        <Sparkline :values="series.qps" :tone="'#60a5fa'" :height="92" unit=" rps"
+          :fmt="v => v == null ? '—' : v.toFixed(1)" />
+      </div>
+      <div class="g-panel">
+        <div class="g-title"><span class="g-dot" style="background:#BD564F"></span>错误率 · Errors</div>
+        <Sparkline :values="series.err" :tone="'#BD564F'" :height="92" unit="%"
+          :fmt="v => v == null ? '—' : v.toFixed(2)" />
+      </div>
+      <div class="g-panel">
+        <div class="g-title"><span class="g-dot" style="background:#C58A46"></span>p95 延迟 · Duration</div>
+        <Sparkline :values="series.p95" :tone="'#C58A46'" :height="92" unit=" ms"
+          :fmt="v => v == null ? '—' : Math.round(v)" />
+      </div>
+      <div class="g-panel">
+        <div class="g-title"><span class="g-dot" style="background:#D97757"></span>p99 延迟</div>
+        <Sparkline :values="series.p99" :tone="'#D97757'" :height="92" unit=" ms"
+          :fmt="v => v == null ? '—' : Math.round(v)" />
+      </div>
+    </div>
+
     <!-- 排序与过滤 -->
     <div class="filter-bar">
       <input v-model="search" class="search" placeholder="按接口名 / 服务名过滤" />
@@ -57,6 +81,7 @@
           <th class="num">p95<br/><small>ms</small></th>
           <th class="num">p99<br/><small>ms</small></th>
           <th class="num">SLA<br/><small>%</small></th>
+          <th style="width:140px">QPS 趋势</th>
           <th></th>
         </tr>
       </thead>
@@ -75,6 +100,13 @@
           <td class="num mono" :class="latencyTone(ep.p95)">{{ ep.p95 ?? '-' }}</td>
           <td class="num mono" :class="latencyTone(ep.p99)">{{ ep.p99 ?? '-' }}</td>
           <td class="num mono">{{ ep.sla?.toFixed(1) ?? '-' }}</td>
+          <td class="ep-spark">
+            <Sparkline
+              :values="epSeries[ep.name] || []"
+              :height="28" :show-grid="false" :show-labels="false"
+              :tone="errorTone(ep.error_rate) === 'danger' ? '#BD564F' : '#60a5fa'"
+            />
+          </td>
           <td>
             <button class="link" @click="jumpLogs(ep)" title="跳到日志中心，按服务过滤">日志 →</button>
           </td>
@@ -85,10 +117,21 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api/index.js'
 import { useTimeRangeStore } from '../stores/timeRange.js'
+import Sparkline from '../components/Sparkline.vue'
+
+// 时序缓冲：60 个数据点；10 秒一个 = 10 分钟历史
+const MAX_POINTS = 60
+const series = reactive({ qps: [], err: [], p95: [], p99: [] })
+const epSeries = reactive({})   // { endpointName: [number] }
+
+function pushSeries(arr, v) {
+  arr.push(Number.isFinite(v) ? v : null)
+  if (arr.length > MAX_POINTS) arr.shift()
+}
 
 const router = useRouter()
 const timeStore = useTimeRangeStore()
@@ -115,20 +158,49 @@ async function load() {
   loading.value = true
   try {
     const data = await api.swEndpointTopN(hours.value, topN.value)
-    // 拆分 "service: METHOD:/path" 形如 'order-service: POST:/api/orders'
     endpoints.value = (Array.isArray(data) ? data : []).map(ep => {
       const parts = String(ep.name || '').split(':')
       const svc = parts[0]?.trim() || ''
       const path = parts.slice(1).join(':').trim() || ep.name
       return { ...ep, _service: svc, _endpoint: path }
     })
+    // 聚合时序：所有接口求总和/均值
+    if (endpoints.value.length) {
+      const totalQps = endpoints.value.reduce((s, e) => s + (e.qps || 0), 0)
+      const avgErr = endpoints.value.reduce((s, e) => s + (e.error_rate || 0), 0) / endpoints.value.length
+      const maxP95 = Math.max(...endpoints.value.map(e => e.p95 || 0))
+      const maxP99 = Math.max(...endpoints.value.map(e => e.p99 || 0))
+      // 首次加载预填 3 点形成短曲线，避免「单点不画」
+      const seed = (arr, v) => {
+        if (arr.length === 0) { arr.push(v, v); }
+        pushSeries(arr, v)
+      }
+      seed(series.qps, totalQps)
+      seed(series.err, avgErr)
+      seed(series.p95, maxP95)
+      seed(series.p99, maxP99)
+    }
+    // 每接口 sparkline 缓冲
+    for (const ep of endpoints.value) {
+      if (!epSeries[ep.name]) epSeries[ep.name] = [ep.qps || 0, ep.qps || 0]
+      pushSeries(epSeries[ep.name], ep.qps || 0)
+    }
   } catch (e) { endpoints.value = [] }
   finally { loading.value = false }
 }
 
 watch([hours, topN], load)
 
-onMounted(load)
+let pollTimer = null
+onMounted(() => {
+  // 兼容旧 localStorage 中的非整数小时（如 Dashboard 写入的 0.5）：
+  // 若当前不在本页 select 候选内，回退到 1 小时
+  const allowed = [1, 6, 24, 72]
+  if (!allowed.includes(timeStore.hours)) timeStore.set(1)
+  load()
+  pollTimer = setInterval(load, 10000)   // 10s 轮询积累时序
+})
+onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer) })
 
 const stats = computed(() => {
   const acc = { ok: 0, warn: 0, danger: 0 }
@@ -185,6 +257,25 @@ function jumpLogs(ep) {
 .page-header .subtitle { color: var(--text-secondary); font-size: 13px; }
 .header-actions { display: flex; gap: 8px; align-items: center; }
 .filter { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; min-width: 110px; }
+
+.grafana-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 12px; margin-bottom: 16px;
+}
+.g-panel {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px 14px 14px; min-width: 0;
+}
+.g-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-secondary); font-weight: 600;
+  margin-bottom: 8px;
+}
+.g-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+.ep-spark { padding: 4px 8px !important; min-width: 130px; vertical-align: middle; }
+
+@media (max-width: 1200px) { .grafana-grid { grid-template-columns: repeat(2, 1fr); } }
 
 .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 14px; }
 .kpi { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; }
