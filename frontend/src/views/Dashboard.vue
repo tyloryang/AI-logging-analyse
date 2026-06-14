@@ -32,28 +32,30 @@
     </div>
 
     <div class="stats-row">
-      <div class="stat-card" :class="{ 'stat-alert': overview.alert_count > 0 }">
+      <div class="stat-card drillable" :class="{ 'stat-alert': overview.alert_count > 0 }"
+           @click="goAlerts" title="查看告警历史">
         <div class="stat-num" :class="{ 'num-alert': overview.alert_count > 0 }">
           {{ loading ? '--' : overview.alert_count }}
         </div>
-        <div class="stat-label">告警触发</div>
+        <div class="stat-label">告警触发 <span class="drill-arrow">→</span></div>
         <div class="stat-bar alert-bar"></div>
       </div>
-      <div class="stat-card" :class="{ 'stat-warn': overview.error_count > 5 }">
+      <div class="stat-card drillable" :class="{ 'stat-warn': overview.error_count > 5 }"
+           @click="goErrorLogs" title="按错误级别查询日志">
         <div class="stat-num" :class="{ 'num-warn': overview.error_count > 5 }">
           {{ loading ? '--' : overview.error_count }}
         </div>
-        <div class="stat-label">服务错误</div>
+        <div class="stat-label">服务错误 <span class="drill-arrow">→</span></div>
         <div class="stat-bar error-bar"></div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card drillable" @click="goTraces" title="查看接口 RED 仪表盘">
         <div class="stat-num num-info">{{ loading ? '--' : overview.trace_count }}</div>
-        <div class="stat-label">Trace 数</div>
+        <div class="stat-label">Trace 数 <span class="drill-arrow">→</span></div>
         <div class="stat-bar trace-bar"></div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card drillable" @click="goGrafana" title="打开 Grafana 看板列表">
         <div class="stat-num num-success">{{ loading ? '--' : overview.grafana_count }}</div>
-        <div class="stat-label">Grafana 看板</div>
+        <div class="stat-label">Grafana 看板 <span class="drill-arrow">→</span></div>
         <div class="stat-bar grafana-bar"></div>
       </div>
     </div>
@@ -160,8 +162,8 @@
                 >
                   RCA 详情
                 </RouterLink>
-                <RouterLink :to="`/logs?service=${svc.service}`" class="rca-link">日志分析</RouterLink>
-                <RouterLink to="/skywalking" class="rca-link">链路追踪</RouterLink>
+                <RouterLink :to="{ path: '/observability/logs', query: { service: svc.service } }" class="rca-link">日志分析</RouterLink>
+                <RouterLink :to="{ path: '/observability/trace', query: { service: svc.service } }" class="rca-link">链路追踪</RouterLink>
                 <button class="rca-link" @click="askAI(svc.service)">AI 分析</button>
               </div>
             </div>
@@ -352,13 +354,30 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { onBeforeUnmount, onMounted, reactive, ref, computed, watch } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
+import { useTimeRangeStore } from '../stores/timeRange.js'
+
+const router = useRouter()
+const timeStore = useTimeRangeStore()
+
+// ── KPI 钻取 ──────────────────────────────────────────────────────────────
+function goAlerts()    { router.push('/observability/alerts') }
+function goErrorLogs() { router.push({ path: '/observability/logs', query: { level: 'error' } }) }
+function goTraces()    { router.push('/observability/api-red') }
+function goGrafana()   { router.push('/observability/grafana') }
+function goServiceLogs(service) { router.push({ path: '/observability/logs', query: { service } }) }
 import { api } from '../api/index.js'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 
 const loading = ref(false)
-const windowMinutes = ref(10)
+// windowMinutes 与全局时间窗 store 双向绑定（hours → minutes）
+const windowMinutes = computed({
+  get: () => Math.round(timeStore.hours * 60),
+  set: (v) => timeStore.set((Number(v) || 60) / 60),
+})
+// 全局时间窗变化时自动 reload
+watch(() => timeStore.hours, () => loadAll())
 const overview = reactive({
   alert_count: 0,
   error_count: 0,
@@ -632,6 +651,10 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.stat-card.drillable { cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s; }
+.stat-card.drillable:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: var(--shadow-md); }
+.drill-arrow { color: var(--accent); opacity: 0; margin-left: 4px; transition: opacity .15s, transform .15s; display: inline-block; }
+.stat-card.drillable:hover .drill-arrow { opacity: 1; transform: translateX(2px); }
 .stat-card {
   background: var(--bg-card);
   border: 1px solid var(--border);

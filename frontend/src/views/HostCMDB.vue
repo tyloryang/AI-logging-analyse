@@ -429,7 +429,7 @@
         <div
           v-for="h in fleetVisibleHosts" :key="h.id"
           class="fleet-card" :class="'tone-' + fleetTone(h)"
-          @click="selectHost(h)"
+          @click="openHostFromFleet(h)"
         >
           <div class="fc-head">
             <span class="fc-status" :class="fleetTone(h)"></span>
@@ -1028,7 +1028,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, defineAsyncComponent } from 'vue'
+import { ref, reactive, computed, watch, onMounted, nextTick, defineAsyncComponent } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { api } from '../api/index.js'
 
@@ -1191,6 +1191,17 @@ const fleetVisibleHosts = computed(() => {
     return (b.cpu_usage_pct ?? 0) - (a.cpu_usage_pct ?? 0)
   })
 })
+
+// 点 fleet 卡片：切到 cmdb tab 并选中该主机
+function openHostFromFleet(h) {
+  tab.value = 'cmdb'
+  selectedHost.value = h
+  nextTick(() => {
+    const row = [...document.querySelectorAll('.host-table tbody tr')]
+      .find(tr => tr.innerText.includes(h.ip))
+    row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+}
 
 // ── 批量选择 + 浮动操作栏 ────────────────────────────────────────────────────
 const selectedHostIds = ref(new Set())
