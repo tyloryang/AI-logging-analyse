@@ -27,9 +27,6 @@
           <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">
             主机 CMDB <span class="tab-count">{{ hosts.length }}</span>
           </button>
-          <button class="tab-btn" :class="{ active: tab === 'fleet' }" @click="tab = 'fleet'">
-            健康总览 <span v-if="fleetWarnCount" class="tab-count warn">⚠ {{ fleetWarnCount }}</span>
-          </button>
           <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">巡检报告</button>
           <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
             分组管理 <span class="tab-count">{{ groups.length }}</span>
@@ -405,61 +402,6 @@
           <div v-if="g.description" class="group-desc">{{ g.description }}</div>
           <div v-if="g.alert_matchers?.length" class="group-desc">
             告警标签：{{ formatAlertMatcherPreview(g.alert_matchers) }}
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 健康总览（Beszel 同款卡片墙） -->
-    <div v-show="tab === 'fleet'" class="fleet-wrap">
-      <div class="fleet-stats">
-        <div class="fleet-stat"><span>主机总数</span><strong>{{ hosts.length }}</strong></div>
-        <div class="fleet-stat ok"><span>健康</span><strong>{{ fleetStats.ok }}</strong></div>
-        <div class="fleet-stat warn"><span>告警</span><strong>{{ fleetStats.warn }}</strong></div>
-        <div class="fleet-stat danger"><span>危险</span><strong>{{ fleetStats.danger }}</strong></div>
-        <div class="fleet-stat unknown"><span>未同步</span><strong>{{ fleetStats.unknown }}</strong></div>
-        <div class="fleet-stat"><span>采集时间</span><strong class="ts">{{ fleetLastSync || '—' }}</strong></div>
-        <span class="fleet-spacer"></span>
-        <input v-model="fleetSearch" class="fleet-search" placeholder="按主机名 / IP 过滤" />
-        <button class="btn btn-outline btn-sm" @click="loadHosts" :disabled="loading">⟳ 刷新</button>
-      </div>
-
-      <div v-if="!hosts.length" class="empty-state"><span class="icon">🖥</span><p>暂无主机数据</p></div>
-      <div v-else class="fleet-grid">
-        <div
-          v-for="h in fleetVisibleHosts" :key="h.id"
-          class="fleet-card" :class="'tone-' + fleetTone(h)"
-          @click="openHostFromFleet(h)"
-        >
-          <div class="fc-head">
-            <span class="fc-status" :class="fleetTone(h)"></span>
-            <div class="fc-title">
-              <div class="fc-name">{{ h.hostname || h.ip }}</div>
-              <div class="fc-ip">{{ h.ip }}</div>
-            </div>
-            <span class="fc-env">{{ envLabel(h.env) || '—' }}</span>
-          </div>
-
-          <div class="fc-row">
-            <span class="fc-label">CPU</span>
-            <div class="fc-bar"><div class="fc-bar-fill" :class="usageTone(h.cpu_usage_pct)" :style="{ width: clampPct(h.cpu_usage_pct) + '%' }"></div></div>
-            <span class="fc-val" :class="usageTone(h.cpu_usage_pct)">{{ h.cpu_usage_pct != null ? h.cpu_usage_pct.toFixed(1) + '%' : '—' }}</span>
-          </div>
-          <div class="fc-row">
-            <span class="fc-label">内存</span>
-            <div class="fc-bar"><div class="fc-bar-fill" :class="usageTone(h.memory_usage_pct)" :style="{ width: clampPct(h.memory_usage_pct) + '%' }"></div></div>
-            <span class="fc-val" :class="usageTone(h.memory_usage_pct)">{{ h.memory_usage_pct != null ? h.memory_usage_pct.toFixed(1) + '%' : '—' }}</span>
-          </div>
-          <div class="fc-row">
-            <span class="fc-label">磁盘 /</span>
-            <div class="fc-bar"><div class="fc-bar-fill" :class="usageTone(rootDiskPct(h))" :style="{ width: clampPct(rootDiskPct(h)) + '%' }"></div></div>
-            <span class="fc-val" :class="usageTone(rootDiskPct(h))">{{ rootDiskPct(h) != null ? rootDiskPct(h).toFixed(0) + '%' : '—' }}</span>
-          </div>
-
-          <div class="fc-meta">
-            <span title="负载 5 分钟">⟶ {{ h.load5 != null ? h.load5.toFixed(2) : '—' }}</span>
-            <span title="TCP 连接">⇄ {{ h.tcp_connections ?? '—' }}</span>
-            <span class="fc-uptime" :title="'最后同步: ' + (h.last_sync_at || '—')">⌚ {{ h.uptime_text || '—' }}</span>
           </div>
         </div>
       </div>
@@ -1113,11 +1055,8 @@ async function loadCredentials() {
 onMounted(() => {
   // 支持 URL ?tab=xxx 直接进入对应 tab（替代旧 /tools/ssh 路由）
   const q = router.currentRoute.value.query
-  if (q.tab && ['ssh', 'inspect', 'groups', 'cmdb', 'fleet'].includes(q.tab)) tab.value = q.tab
-  if (q.q) {
-    search.value = String(q.q)
-    fleetSearch.value = String(q.q)
-  }
+  if (q.tab && ['ssh', 'inspect', 'groups', 'cmdb'].includes(q.tab)) tab.value = q.tab
+  if (q.q) search.value = String(q.q)
   if (q.env) envFilter.value = String(q.env)
   if (q.group) groupFilter.value = String(q.group)
   loadHosts(); loadGroups(); loadCredentials()
@@ -1130,78 +1069,9 @@ function syncQueryToUrl() {
   if (search.value) q.q = search.value
   if (envFilter.value) q.env = envFilter.value
   if (groupFilter.value) q.group = groupFilter.value
-  // 健康总览的搜索独立持久化
-  if (tab.value === 'fleet' && fleetSearch.value) q.q = fleetSearch.value
   router.replace({ query: q }).catch(() => {})
 }
 watch([tab, search, envFilter, groupFilter], () => syncQueryToUrl(), { flush: 'post' })
-
-// ── 健康总览（Beszel 同款）──────────────────────────────────────────────────
-const fleetSearch = ref('')
-
-function rootDiskPct(h) {
-  const list = h.disk_usage || []
-  const root = list.find(d => d.mount === '/') || list[0]
-  return root?.used_pct ?? null
-}
-
-function usageTone(pct) {
-  if (pct == null) return 'unknown'
-  if (pct >= 90) return 'danger'
-  if (pct >= 75) return 'warn'
-  return 'ok'
-}
-
-function fleetTone(h) {
-  if (h.status === 'maintenance') return 'unknown'
-  if (h.status === 'offline') return 'danger'
-  // 无采集数据视为未同步
-  if (h.cpu_usage_pct == null && h.memory_usage_pct == null && rootDiskPct(h) == null) return 'unknown'
-  // 任意一项危险即危险
-  const t = [usageTone(h.cpu_usage_pct), usageTone(h.memory_usage_pct), usageTone(rootDiskPct(h))]
-  if (t.includes('danger')) return 'danger'
-  if (t.includes('warn')) return 'warn'
-  return 'ok'
-}
-
-const fleetStats = computed(() => {
-  const acc = { ok: 0, warn: 0, danger: 0, unknown: 0 }
-  for (const h of hosts.value) acc[fleetTone(h)]++
-  return acc
-})
-
-const fleetWarnCount = computed(() => fleetStats.value.warn + fleetStats.value.danger)
-
-const fleetLastSync = computed(() => {
-  const times = hosts.value.map(h => h.last_sync_at).filter(Boolean).sort()
-  if (!times.length) return ''
-  return times[times.length - 1].replace('T', ' ').slice(0, 16)
-})
-
-const fleetVisibleHosts = computed(() => {
-  const kw = fleetSearch.value.trim().toLowerCase()
-  const list = kw
-    ? hosts.value.filter(h => (h.hostname || '').toLowerCase().includes(kw) || (h.ip || '').includes(kw))
-    : hosts.value
-  // 排序：危险 > 告警 > 健康 > 未同步；同 tone 按 CPU 降序
-  const order = { danger: 0, warn: 1, ok: 2, unknown: 3 }
-  return [...list].sort((a, b) => {
-    const oa = order[fleetTone(a)], ob = order[fleetTone(b)]
-    if (oa !== ob) return oa - ob
-    return (b.cpu_usage_pct ?? 0) - (a.cpu_usage_pct ?? 0)
-  })
-})
-
-// 点 fleet 卡片：切到 cmdb tab 并选中该主机
-function openHostFromFleet(h) {
-  tab.value = 'cmdb'
-  selectedHost.value = h
-  nextTick(() => {
-    const row = [...document.querySelectorAll('.host-table tbody tr')]
-      .find(tr => tr.innerText.includes(h.ip))
-    row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  })
-}
 
 // ── 批量选择 + 浮动操作栏 ────────────────────────────────────────────────────
 const selectedHostIds = ref(new Set())
@@ -2420,61 +2290,6 @@ async function deleteGroup(g) {
 .tab-btn.active { background: var(--accent); color: #fff; }
 .tab-count { display: inline-block; padding: 1px 8px; margin-left: 6px; border-radius: 99px; font-size: 11px; background: var(--bg-surface); color: var(--text-muted); }
 .tab-count.warn { background: rgba(189,86,79,.14); color: var(--error); font-weight: 600; }
-
-/* ── 健康总览（Beszel 同款卡片墙）─────────────────────────────────── */
-.fleet-wrap { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
-.fleet-stats { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.fleet-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 110px; }
-.fleet-stat span { font-size: 10.5px; color: var(--text-muted); }
-.fleet-stat strong { font-size: 18px; font-weight: 600; }
-.fleet-stat strong.ts { font-size: 12px; font-family: var(--font-mono); color: var(--text-secondary); }
-.fleet-stat.ok strong { color: var(--success); }
-.fleet-stat.warn strong { color: var(--warning); }
-.fleet-stat.danger strong { color: var(--error); }
-.fleet-stat.unknown strong { color: var(--text-muted); }
-.fleet-spacer { flex: 1; }
-.fleet-search { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; width: 240px; }
-
-.fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.fleet-card {
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
-  padding: 14px; cursor: pointer; transition: border-color .15s, transform .15s;
-  display: flex; flex-direction: column; gap: 8px;
-}
-.fleet-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
-.fleet-card.tone-danger { border-left: 3px solid var(--error); }
-.fleet-card.tone-warn   { border-left: 3px solid var(--warning); }
-.fleet-card.tone-ok     { border-left: 3px solid var(--success); }
-.fleet-card.tone-unknown{ border-left: 3px solid var(--text-muted); }
-
-.fc-head { display: flex; align-items: center; gap: 10px; }
-.fc-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.fc-status.ok       { background: var(--success); box-shadow: 0 0 0 3px rgba(99,130,91,.18); }
-.fc-status.warn     { background: var(--warning); box-shadow: 0 0 0 3px rgba(197,138,70,.18); }
-.fc-status.danger   { background: var(--error); box-shadow: 0 0 0 3px rgba(189,86,79,.18); }
-.fc-status.unknown  { background: var(--text-muted); }
-.fc-title { flex: 1; min-width: 0; }
-.fc-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fc-ip { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 1px; }
-.fc-env { font-size: 10.5px; padding: 2px 8px; border-radius: 99px; background: var(--bg-surface); color: var(--text-secondary); flex-shrink: 0; }
-
-.fc-row { display: grid; grid-template-columns: 50px 1fr 56px; align-items: center; gap: 8px; font-size: 11.5px; }
-.fc-label { color: var(--text-muted); }
-.fc-bar { height: 6px; background: var(--bg-surface); border-radius: 99px; overflow: hidden; }
-.fc-bar-fill { height: 100%; border-radius: 99px; transition: width .25s; background: var(--success); }
-.fc-bar-fill.warn { background: var(--warning); }
-.fc-bar-fill.danger { background: var(--error); }
-.fc-bar-fill.unknown { background: var(--text-muted); opacity: .35; }
-.fc-val { text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
-.fc-val.warn { color: var(--warning); font-weight: 600; }
-.fc-val.danger { color: var(--error); font-weight: 600; }
-
-.fc-meta {
-  display: flex; align-items: center; gap: 12px;
-  font-size: 11px; color: var(--text-muted);
-  padding-top: 6px; border-top: 1px solid var(--border-light); margin-top: 4px;
-}
-.fc-uptime { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* CMDB 浮动批量操作栏 */
 .cmdb-batch-bar {
