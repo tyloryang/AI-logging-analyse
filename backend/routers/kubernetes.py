@@ -34,6 +34,81 @@ _KUBECONFIG_PATH_SEPARATOR = os.pathsep
 _SUMMARY_CACHE: TTLCache = TTLCache(maxsize=16, ttl=15)
 _SUMMARY_LOCKS: dict[str, asyncio.Lock] = {}
 
+# ─── 资源列表缓存（首次实时拉，之后 TTL 内复用，force=true 跳过缓存）──────────
+# 优先 Redis（共享缓存，多副本一致），无 Redis 时降级到本地 TTLCache。
+_RES_TTL_SEC = int(os.getenv("K8S_RES_CACHE_TTL", "30"))
+_RES_LOCAL_CACHE: TTLCache = TTLCache(maxsize=256, ttl=_RES_TTL_SEC)
+_RES_LOCKS: dict[str, asyncio.Lock] = {}
+
+_REDIS_CLIENT = None
+_REDIS_INIT = False
+
+
+def _redis():
+    """惰性初始化 Redis 客户端；REDIS_URL 未配置则返回 None。"""
+    global _REDIS_CLIENT, _REDIS_INIT
+    if _REDIS_INIT:
+        return _REDIS_CLIENT
+    _REDIS_INIT = True
+    url = os.getenv("REDIS_URL", "").strip()
+    if not url:
+        logger.info("[k8s-cache] REDIS_URL 未配置，使用本地 TTLCache（TTL=%ds）", _RES_TTL_SEC)
+        return None
+    try:
+        import redis.asyncio as aioredis
+        _REDIS_CLIENT = aioredis.from_url(url, decode_responses=True, socket_timeout=2)
+        logger.info("[k8s-cache] Redis 客户端就绪 url=%s ttl=%ds", url, _RES_TTL_SEC)
+    except Exception as exc:
+        logger.warning("[k8s-cache] Redis 不可用，降级到本地缓存: %s", exc)
+        _REDIS_CLIENT = None
+    return _REDIS_CLIENT
+
+
+async def _cache_get(key: str):
+    """先查 Redis，再回退本地 TTLCache。"""
+    r = _redis()
+    if r is not None:
+        try:
+            raw = await r.get(key)
+            if raw is not None:
+                return json.loads(raw)
+        except Exception as exc:
+            logger.warning("[k8s-cache] Redis GET 失败 key=%s: %s", key, exc)
+    return _RES_LOCAL_CACHE.get(key)
+
+
+async def _cache_set(key: str, value):
+    r = _redis()
+    if r is not None:
+        try:
+            await r.set(key, json.dumps(value, ensure_ascii=False, default=str), ex=_RES_TTL_SEC)
+        except Exception as exc:
+            logger.warning("[k8s-cache] Redis SET 失败 key=%s: %s", key, exc)
+    _RES_LOCAL_CACHE[key] = value
+
+
+def _res_cache_key(kind: str, cluster_id: str, namespace: str = "") -> str:
+    return f"k8s:res:{cluster_id or 'default'}:{kind}:{namespace or '_all_'}"
+
+
+async def _list_with_cache(kind: str, cluster_id: str, namespace: str, force: bool, loader):
+    """通用缓存包装：force=true 跳过读，否则缓存命中直接返回；
+    多副本同时 miss 时通过 asyncio.Lock 收敛为单次加载。"""
+    key = _res_cache_key(kind, cluster_id, namespace)
+    if not force:
+        cached = await _cache_get(key)
+        if cached is not None:
+            return cached
+    lock = _RES_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        if not force:
+            cached = await _cache_get(key)
+            if cached is not None:
+                return cached
+        data = await loader()
+        await _cache_set(key, data)
+        return data
+
 
 def _read_text_auto(path: Path) -> str:
     """读取文件，优先 UTF-8，失败时回退到系统编码（兼容中文 Windows GBK 环境）。"""
@@ -2510,11 +2585,22 @@ async def list_namespaces(
 async def list_pods(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, _ = _get_client(cluster["id"])
+        async def _load():
+            v1, _ = _get_client(cluster["id"])
+            return await _list_pods_impl(v1, namespace)
+        return await _list_with_cache("pods", cluster["id"], namespace, force, _load)
+    except Exception as exc:
+        logger.warning("[k8s] list_pods failed: %s", exc)
+        raise HTTPException(502, f"k8s 连接失败: {exc}")
+
+
+async def _list_pods_impl(v1, namespace: str):
+    try:
         pods = v1.list_pod_for_all_namespaces() if not namespace else v1.list_namespaced_pod(namespace)
         result = []
         for pod in pods.items:
@@ -2591,8 +2677,8 @@ async def list_pods(
             )
         return result
     except Exception as exc:
-        logger.warning("[k8s] list_pods failed: %s", exc)
-        raise HTTPException(502, f"k8s 连接失败: {exc}")
+        logger.warning("[k8s] _list_pods_impl failed: %s", exc)
+        raise
 
 
 # ── Deployments ───────────────────────────────────────────────────────────────
@@ -2685,40 +2771,43 @@ def _node_ip_map(index: list[dict]) -> dict[str, str]:
 async def list_deployments(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, apps = _get_client(cluster["id"])
-        deps = apps.list_deployment_for_all_namespaces() if not namespace else apps.list_namespaced_deployment(namespace)
-        pod_index = _build_pod_placement_index(v1, namespace)
-        result = []
-        for item in deps.items:
-            desired = item.spec.replicas or 0
-            ready = item.status.ready_replicas or 0
-            updated = item.status.updated_replicas or 0
-            avail = item.status.available_replicas or 0
-            ok = ready == desired and desired > 0
-            status = "Ready" if ok else ("Progressing" if updated < desired else "Degraded")
-            result.append(
-                {
-                    "name": item.metadata.name,
-                    "namespace": item.metadata.namespace,
-                    "desired": desired,
-                    "ready": ready,
-                    "updated": updated,
-                    "available": avail,
-                    "status": status,
-                    "statusClass": _phase_class(status),
-                    "age": _safe_age(item.metadata.creation_timestamp),
-                    "images": [c.image for c in (item.spec.template.spec.containers or [])],
-                    "node_list": _nodes_by_selector(
-                        pod_index, item.metadata.namespace,
-                        _resource_selector_labels(item),
-                    ),
-                }
-            )
-        return result
+        async def _load():
+            v1, apps = _get_client(cluster["id"])
+            deps = apps.list_deployment_for_all_namespaces() if not namespace else apps.list_namespaced_deployment(namespace)
+            pod_index = _build_pod_placement_index(v1, namespace)
+            result = []
+            for item in deps.items:
+                desired = item.spec.replicas or 0
+                ready = item.status.ready_replicas or 0
+                updated = item.status.updated_replicas or 0
+                avail = item.status.available_replicas or 0
+                ok = ready == desired and desired > 0
+                status = "Ready" if ok else ("Progressing" if updated < desired else "Degraded")
+                result.append(
+                    {
+                        "name": item.metadata.name,
+                        "namespace": item.metadata.namespace,
+                        "desired": desired,
+                        "ready": ready,
+                        "updated": updated,
+                        "available": avail,
+                        "status": status,
+                        "statusClass": _phase_class(status),
+                        "age": _safe_age(item.metadata.creation_timestamp),
+                        "images": [c.image for c in (item.spec.template.spec.containers or [])],
+                        "node_list": _nodes_by_selector(
+                            pod_index, item.metadata.namespace,
+                            _resource_selector_labels(item),
+                        ),
+                    }
+                )
+            return result
+        return await _list_with_cache("deployments", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_deployments failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
@@ -2730,40 +2819,43 @@ async def list_deployments(
 async def list_daemonsets(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, apps = _get_client(cluster["id"])
-        items = apps.list_daemon_set_for_all_namespaces() if not namespace else apps.list_namespaced_daemon_set(namespace)
-        pod_index = _build_pod_placement_index(v1, namespace)
-        result = []
-        for item in items.items:
-            desired = item.status.desired_number_scheduled or 0
-            ready = item.status.number_ready or 0
-            updated = item.status.updated_number_scheduled or 0
-            available = item.status.number_available or 0
-            current = item.status.current_number_scheduled or 0
-            status = _workload_status(ready, desired, updated)
-            result.append(
-                {
-                    "name": item.metadata.name,
-                    "namespace": item.metadata.namespace,
-                    "desired": desired,
-                    "current": current,
-                    "ready": ready,
-                    "updated": updated,
-                    "available": available,
-                    "status": status,
-                    "statusClass": _phase_class(status),
-                    "age": _safe_age(item.metadata.creation_timestamp),
-                    "images": _container_images(item.spec.template),
-                    "node_list": _nodes_by_owner(
-                        pod_index, item.metadata.namespace, "DaemonSet", item.metadata.name,
-                    ),
-                }
-            )
-        return result
+        async def _load():
+            v1, apps = _get_client(cluster["id"])
+            items = apps.list_daemon_set_for_all_namespaces() if not namespace else apps.list_namespaced_daemon_set(namespace)
+            pod_index = _build_pod_placement_index(v1, namespace)
+            result = []
+            for item in items.items:
+                desired = item.status.desired_number_scheduled or 0
+                ready = item.status.number_ready or 0
+                updated = item.status.updated_number_scheduled or 0
+                available = item.status.number_available or 0
+                current = item.status.current_number_scheduled or 0
+                status = _workload_status(ready, desired, updated)
+                result.append(
+                    {
+                        "name": item.metadata.name,
+                        "namespace": item.metadata.namespace,
+                        "desired": desired,
+                        "current": current,
+                        "ready": ready,
+                        "updated": updated,
+                        "available": available,
+                        "status": status,
+                        "statusClass": _phase_class(status),
+                        "age": _safe_age(item.metadata.creation_timestamp),
+                        "images": _container_images(item.spec.template),
+                        "node_list": _nodes_by_owner(
+                            pod_index, item.metadata.namespace, "DaemonSet", item.metadata.name,
+                        ),
+                    }
+                )
+            return result
+        return await _list_with_cache("daemonsets", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_daemonsets failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
@@ -2775,38 +2867,41 @@ async def list_daemonsets(
 async def list_statefulsets(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, apps = _get_client(cluster["id"])
-        items = apps.list_stateful_set_for_all_namespaces() if not namespace else apps.list_namespaced_stateful_set(namespace)
-        pod_index = _build_pod_placement_index(v1, namespace)
-        result = []
-        for item in items.items:
-            desired = item.spec.replicas or 0
-            ready = item.status.ready_replicas or 0
-            current = item.status.current_replicas or 0
-            updated = item.status.updated_replicas or 0
-            status = _workload_status(ready, desired, updated)
-            result.append(
-                {
-                    "name": item.metadata.name,
-                    "namespace": item.metadata.namespace,
-                    "desired": desired,
-                    "ready": ready,
-                    "current": current,
-                    "updated": updated,
-                    "status": status,
-                    "statusClass": _phase_class(status),
-                    "age": _safe_age(item.metadata.creation_timestamp),
-                    "images": _container_images(item.spec.template),
-                    "node_list": _nodes_by_owner(
-                        pod_index, item.metadata.namespace, "StatefulSet", item.metadata.name,
-                    ),
-                }
-            )
-        return result
+        async def _load():
+            v1, apps = _get_client(cluster["id"])
+            items = apps.list_stateful_set_for_all_namespaces() if not namespace else apps.list_namespaced_stateful_set(namespace)
+            pod_index = _build_pod_placement_index(v1, namespace)
+            result = []
+            for item in items.items:
+                desired = item.spec.replicas or 0
+                ready = item.status.ready_replicas or 0
+                current = item.status.current_replicas or 0
+                updated = item.status.updated_replicas or 0
+                status = _workload_status(ready, desired, updated)
+                result.append(
+                    {
+                        "name": item.metadata.name,
+                        "namespace": item.metadata.namespace,
+                        "desired": desired,
+                        "ready": ready,
+                        "current": current,
+                        "updated": updated,
+                        "status": status,
+                        "statusClass": _phase_class(status),
+                        "age": _safe_age(item.metadata.creation_timestamp),
+                        "images": _container_images(item.spec.template),
+                        "node_list": _nodes_by_owner(
+                            pod_index, item.metadata.namespace, "StatefulSet", item.metadata.name,
+                        ),
+                    }
+                )
+            return result
+        return await _list_with_cache("statefulsets", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_statefulsets failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
@@ -2818,36 +2913,39 @@ async def list_statefulsets(
 async def list_jobs(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        batch = _get_batch_client(cluster["id"])
-        v1, _ = _get_client(cluster["id"])
-        items = batch.list_job_for_all_namespaces() if not namespace else batch.list_namespaced_job(namespace)
-        pod_index = _build_pod_placement_index(v1, namespace)
-        result = []
-        for item in items.items:
-            status = _job_status(item)
-            result.append(
-                {
-                    "name": item.metadata.name,
-                    "namespace": item.metadata.namespace,
-                    "status": status,
-                    "statusClass": _phase_class(status),
-                    "completions": item.spec.completions or 0,
-                    "parallelism": item.spec.parallelism or 0,
-                    "active": item.status.active or 0,
-                    "succeeded": item.status.succeeded or 0,
-                    "failed": item.status.failed or 0,
-                    "age": _safe_age(item.metadata.creation_timestamp),
-                    "images": _container_images(item.spec.template),
-                    "node_list": _nodes_by_owner(
-                        pod_index, item.metadata.namespace, "Job", item.metadata.name,
-                    ),
-                }
-            )
-        return result
+        async def _load():
+            batch = _get_batch_client(cluster["id"])
+            v1, _ = _get_client(cluster["id"])
+            items = batch.list_job_for_all_namespaces() if not namespace else batch.list_namespaced_job(namespace)
+            pod_index = _build_pod_placement_index(v1, namespace)
+            result = []
+            for item in items.items:
+                status = _job_status(item)
+                result.append(
+                    {
+                        "name": item.metadata.name,
+                        "namespace": item.metadata.namespace,
+                        "status": status,
+                        "statusClass": _phase_class(status),
+                        "completions": item.spec.completions or 0,
+                        "parallelism": item.spec.parallelism or 0,
+                        "active": item.status.active or 0,
+                        "succeeded": item.status.succeeded or 0,
+                        "failed": item.status.failed or 0,
+                        "age": _safe_age(item.metadata.creation_timestamp),
+                        "images": _container_images(item.spec.template),
+                        "node_list": _nodes_by_owner(
+                            pod_index, item.metadata.namespace, "Job", item.metadata.name,
+                        ),
+                    }
+                )
+            return result
+        return await _list_with_cache("jobs", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_jobs failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
@@ -2859,40 +2957,43 @@ async def list_jobs(
 async def list_cronjobs(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        batch = _get_batch_client(cluster["id"])
-        v1, _ = _get_client(cluster["id"])
-        items = batch.list_cron_job_for_all_namespaces() if not namespace else batch.list_namespaced_cron_job(namespace)
-        pod_index = _build_pod_placement_index(v1, namespace)
-        result = []
-        for item in items.items:
-            active_refs = item.status.active or []
-            suspend = bool(item.spec.suspend)
-            status = "Suspended" if suspend else ("Active" if active_refs else "Idle")
-            last_successful = getattr(item.status, "last_successful_time", None)
-            result.append(
-                {
-                    "name": item.metadata.name,
-                    "namespace": item.metadata.namespace,
-                    "schedule": item.spec.schedule or "",
-                    "suspend": suspend,
-                    "active": len(active_refs),
-                    "activeJobs": [ref.name for ref in active_refs if ref.name],
-                    "lastScheduleTime": _safe_age(item.status.last_schedule_time),
-                    "lastSuccessfulTime": _safe_age(last_successful),
-                    "status": status,
-                    "statusClass": _phase_class(status),
-                    "age": _safe_age(item.metadata.creation_timestamp),
-                    # CronJob 的 Pod 由其派生 Job（名称前缀匹配）拥有
-                    "node_list": _nodes_by_owner(
-                        pod_index, item.metadata.namespace, "Job", item.metadata.name, prefix=True,
-                    ),
-                }
-            )
-        return result
+        async def _load():
+            batch = _get_batch_client(cluster["id"])
+            v1, _ = _get_client(cluster["id"])
+            items = batch.list_cron_job_for_all_namespaces() if not namespace else batch.list_namespaced_cron_job(namespace)
+            pod_index = _build_pod_placement_index(v1, namespace)
+            result = []
+            for item in items.items:
+                active_refs = item.status.active or []
+                suspend = bool(item.spec.suspend)
+                status = "Suspended" if suspend else ("Active" if active_refs else "Idle")
+                last_successful = getattr(item.status, "last_successful_time", None)
+                result.append(
+                    {
+                        "name": item.metadata.name,
+                        "namespace": item.metadata.namespace,
+                        "schedule": item.spec.schedule or "",
+                        "suspend": suspend,
+                        "active": len(active_refs),
+                        "activeJobs": [ref.name for ref in active_refs if ref.name],
+                        "lastScheduleTime": _safe_age(item.status.last_schedule_time),
+                        "lastSuccessfulTime": _safe_age(last_successful),
+                        "status": status,
+                        "statusClass": _phase_class(status),
+                        "age": _safe_age(item.metadata.creation_timestamp),
+                        # CronJob 的 Pod 由其派生 Job（名称前缀匹配）拥有
+                        "node_list": _nodes_by_owner(
+                            pod_index, item.metadata.namespace, "Job", item.metadata.name, prefix=True,
+                        ),
+                    }
+                )
+            return result
+        return await _list_with_cache("cronjobs", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_cronjobs failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
@@ -2904,54 +3005,54 @@ async def list_cronjobs(
 async def list_services(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, _ = _get_client(cluster["id"])
-        svcs = v1.list_service_for_all_namespaces() if not namespace else v1.list_namespaced_service(namespace)
+        async def _load():
+            v1, _ = _get_client(cluster["id"])
+            svcs = v1.list_service_for_all_namespaces() if not namespace else v1.list_namespaced_service(namespace)
 
-        # Endpoints → 后端 Pod 所在节点（节点 IP 经 Pod 索引推导）
-        pod_index = _build_pod_placement_index(v1, namespace)
-        name_to_ip = _node_ip_map(pod_index)
-        ep_nodes: dict[tuple[str, str], list[dict]] = {}
-        try:
-            eps = v1.list_endpoints_for_all_namespaces() if not namespace else v1.list_namespaced_endpoints(namespace)
-            for ep in eps.items:
-                nodes_seen: dict[str, dict] = {}
-                for subset in (ep.subsets or []):
-                    for addr in (subset.addresses or []):
-                        node_name = getattr(addr, "node_name", None) or ""
-                        if not node_name:
-                            continue
-                        nodes_seen.setdefault(node_name, {
-                            "name": node_name,
-                            "ip": name_to_ip.get(node_name, ""),
-                        })
-                ep_nodes[(ep.metadata.namespace, ep.metadata.name)] = sorted(
-                    nodes_seen.values(), key=lambda x: (x["ip"] or "", x["name"])
-                )
-        except Exception as exc:
-            logger.debug("[k8s] list endpoints failed: %s", exc)
+            # Endpoints → 后端 Pod 所在节点
+            pod_index = _build_pod_placement_index(v1, namespace)
+            name_to_ip = _node_ip_map(pod_index)
+            ep_nodes: dict[tuple[str, str], list[dict]] = {}
+            try:
+                eps = v1.list_endpoints_for_all_namespaces() if not namespace else v1.list_namespaced_endpoints(namespace)
+                for ep in eps.items:
+                    nodes_seen: dict[str, dict] = {}
+                    for subset in (ep.subsets or []):
+                        for addr in (subset.addresses or []):
+                            node_name = getattr(addr, "node_name", None) or ""
+                            if not node_name:
+                                continue
+                            nodes_seen.setdefault(node_name, {
+                                "name": node_name,
+                                "ip": name_to_ip.get(node_name, ""),
+                            })
+                    ep_nodes[(ep.metadata.namespace, ep.metadata.name)] = sorted(
+                        nodes_seen.values(), key=lambda x: (x["ip"] or "", x["name"])
+                    )
+            except Exception as exc:
+                logger.debug("[k8s] list endpoints failed: %s", exc)
 
-        result = []
-        for item in svcs.items:
-            ports = []
-            for port in (item.spec.ports or []):
-                entry = f"{port.port}"
-                if port.node_port:
-                    entry += f":{port.node_port}"
-                if port.protocol and port.protocol != "TCP":
-                    entry += f"/{port.protocol}"
-                ports.append(entry)
-            result.append(
-                {
+            result = []
+            for item in svcs.items:
+                ports = []
+                for port in (item.spec.ports or []):
+                    entry = f"{port.port}"
+                    if port.node_port:
+                        entry += f":{port.node_port}"
+                    if port.protocol and port.protocol != "TCP":
+                        entry += f"/{port.protocol}"
+                    ports.append(entry)
+                result.append({
                     "name": item.metadata.name,
                     "namespace": item.metadata.namespace,
                     "type": item.spec.type or "ClusterIP",
                     "clusterIP": item.spec.cluster_ip or "",
-                    "externalIP": ", ".join(item.spec.external_i_ps or [])
-                    or (
+                    "externalIP": ", ".join(item.spec.external_i_ps or []) or (
                         item.status.load_balancer.ingress[0].ip
                         if item.status.load_balancer and item.status.load_balancer.ingress
                         else ""
@@ -2959,9 +3060,9 @@ async def list_services(
                     "ports": ports,
                     "age": _safe_age(item.metadata.creation_timestamp),
                     "node_list": ep_nodes.get((item.metadata.namespace, item.metadata.name), []),
-                }
-            )
-        return result
+                })
+            return result
+        return await _list_with_cache("services", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_services failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
@@ -2973,39 +3074,42 @@ async def list_services(
 async def list_configmaps(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, _ = _get_client(cluster["id"])
-        items = (
-            v1.list_config_map_for_all_namespaces().items
-            if not namespace
-            else v1.list_namespaced_config_map(namespace).items
-        )
-        pod_index = _build_pod_placement_index(v1, namespace)
-        result = []
-        for item in items:
-            data_keys = list((item.data or {}).keys()) + list((item.binary_data or {}).keys())
-            # 大小估算: data values 字符长度 + binary_data base64 长度
-            size = sum(len(v or "") for v in (item.data or {}).values()) + sum(
-                len(v or "") for v in (item.binary_data or {}).values()
+        async def _load():
+            v1, _ = _get_client(cluster["id"])
+            items = (
+                v1.list_config_map_for_all_namespaces().items
+                if not namespace
+                else v1.list_namespaced_config_map(namespace).items
             )
-            result.append(
-                {
-                    "name": item.metadata.name,
-                    "namespace": item.metadata.namespace,
-                    "keys": data_keys,
-                    "keyCount": len(data_keys),
-                    "size": size,
-                    "age": _safe_age(item.metadata.creation_timestamp),
-                    # 被哪些节点上的 Pod 引用（volume / envFrom / env valueFrom）
-                    "node_list": _nodes_by_configmap(
-                        pod_index, item.metadata.namespace, item.metadata.name,
-                    ),
-                }
-            )
-        return result
+            pod_index = _build_pod_placement_index(v1, namespace)
+            result = []
+            for item in items:
+                data_keys = list((item.data or {}).keys()) + list((item.binary_data or {}).keys())
+                # 大小估算: data values 字符长度 + binary_data base64 长度
+                size = sum(len(v or "") for v in (item.data or {}).values()) + sum(
+                    len(v or "") for v in (item.binary_data or {}).values()
+                )
+                result.append(
+                    {
+                        "name": item.metadata.name,
+                        "namespace": item.metadata.namespace,
+                        "keys": data_keys,
+                        "keyCount": len(data_keys),
+                        "size": size,
+                        "age": _safe_age(item.metadata.creation_timestamp),
+                        # 被哪些节点上的 Pod 引用（volume / envFrom / env valueFrom）
+                        "node_list": _nodes_by_configmap(
+                            pod_index, item.metadata.namespace, item.metadata.name,
+                        ),
+                    }
+                )
+            return result
+        return await _list_with_cache("configmaps", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_configmaps failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
@@ -3016,42 +3120,45 @@ async def list_configmaps(
 @router.get("/nodes")
 async def list_nodes(
     cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        v1, _ = _get_client(cluster["id"])
-        nodes = v1.list_node()
-        result = []
-        for item in nodes.items:
-            ready = "Unknown"
-            for cond in (item.status.conditions or []):
-                if cond.type == "Ready":
-                    ready = "Ready" if cond.status == "True" else "NotReady"
-            info = item.status.node_info or {}
-            internal_ip = next(
-                (a.address for a in (item.status.addresses or []) if a.type == "InternalIP"),
-                "",
-            )
-            result.append(
-                {
-                    "name": item.metadata.name,
-                    "internal_ip": internal_ip,
-                    "status": ready,
-                    "statusClass": _phase_class(ready),
-                    "roles": ", ".join(
-                        key.split("/")[-1]
-                        for key in (item.metadata.labels or {})
-                        if key.startswith("node-role.kubernetes.io/")
-                    )
-                    or "worker",
-                    "version": getattr(info, "kubelet_version", ""),
-                    "os": getattr(info, "os_image", ""),
-                    "arch": getattr(info, "architecture", ""),
-                    "age": _safe_age(item.metadata.creation_timestamp),
-                }
-            )
-        return result
+        async def _load():
+            v1, _ = _get_client(cluster["id"])
+            nodes = v1.list_node()
+            result = []
+            for item in nodes.items:
+                ready = "Unknown"
+                for cond in (item.status.conditions or []):
+                    if cond.type == "Ready":
+                        ready = "Ready" if cond.status == "True" else "NotReady"
+                info = item.status.node_info or {}
+                internal_ip = next(
+                    (a.address for a in (item.status.addresses or []) if a.type == "InternalIP"),
+                    "",
+                )
+                result.append(
+                    {
+                        "name": item.metadata.name,
+                        "internal_ip": internal_ip,
+                        "status": ready,
+                        "statusClass": _phase_class(ready),
+                        "roles": ", ".join(
+                            key.split("/")[-1]
+                            for key in (item.metadata.labels or {})
+                            if key.startswith("node-role.kubernetes.io/")
+                        )
+                        or "worker",
+                        "version": getattr(info, "kubelet_version", ""),
+                        "os": getattr(info, "os_image", ""),
+                        "arch": getattr(info, "architecture", ""),
+                        "age": _safe_age(item.metadata.creation_timestamp),
+                    }
+                )
+            return result
+        return await _list_with_cache("nodes", cluster["id"], "", force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_nodes failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
