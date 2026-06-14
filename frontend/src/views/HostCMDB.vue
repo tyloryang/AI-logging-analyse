@@ -2756,9 +2756,10 @@ async function deleteGroup(g) {
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 .inspect-table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
-.inspect-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.inspect-table th { position: sticky; top: 0; background: var(--bg-header); padding: 7px 10px; text-align: left; font-weight: 600; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
-.inspect-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; vertical-align: top; }
+.inspect-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: auto; }
+.inspect-table th, .inspect-table td { padding: 8px 10px; box-sizing: border-box; }
+.inspect-table th { position: sticky; top: 0; background: var(--bg-header); text-align: left; font-weight: 600; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.inspect-table td { border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; vertical-align: middle; }
 .inspect-table th.th-sort { cursor: pointer; user-select: none; }
 .inspect-table th.th-sort:hover { color: var(--text-primary); }
 .irow-warning { background: rgba(210,153,34,.04); }
@@ -2777,7 +2778,11 @@ async function deleteGroup(g) {
 .inspect-host-meta { color: var(--text-muted); font-size: 11px; margin-top: 3px; }
 .itd-meta, .itd-ip, .itd-os, .itd-group { color: var(--text-muted); }
 .itd-meta { min-width: 150px; line-height: 1.45; white-space: normal !important; }
-.inspect-metric-cell { min-width: 120px; max-width: 160px; display: flex; flex-direction: column; gap: 3px; color: var(--text-muted); line-height: 1.35; white-space: normal !important; }
+/* td 必须保持 table-cell；用 block 子元素堆叠主值/副值，不要 display:flex 否则破列对齐 */
+.inspect-metric-cell { min-width: 88px; color: var(--text-muted); line-height: 1.4; white-space: nowrap; vertical-align: middle; }
+.inspect-metric-cell.compact { min-width: 72px; }
+.inspect-metric-cell b { display: block; color: var(--text-primary); font-weight: 600; }
+.inspect-metric-cell span { display: block; font-size: 11px; }
 .inspect-metric-cell b { color: var(--text-primary); font-weight: 600; }
 .inspect-metric-cell span { font-size: 11px; }
 .inspect-metric-cell b.ok, .inspect-disk-line b.ok { color: var(--success); }
