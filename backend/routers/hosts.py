@@ -2112,6 +2112,10 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                     # 有 Prometheus 数据：使用巡检结果，补全 CMDB 信息
                     r = dict(prom_map[ip])
                     r["hostname"] = h.get("hostname") or r.get("hostname") or ip
+                    r["os"]       = r.get("os") or h.get("os_version", "")
+                    r["cpu_cores"] = h.get("cpu_cores")
+                    r["memory_gb"] = h.get("memory_gb")
+                    r["disk_gb"]   = h.get("disk_gb")
                     r["group"]    = h.get("group", "")
                     r["env"]      = h.get("env", "")
                     results.append(r)
@@ -2122,6 +2126,9 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                         "ip":       ip,
                         "hostname": h.get("hostname") or ip,
                         "os":       h.get("os_version", ""),
+                        "cpu_cores": h.get("cpu_cores"),
+                        "memory_gb": h.get("memory_gb"),
+                        "disk_gb":   h.get("disk_gb"),
                         "job":      "",
                         "state":    "offline",
                         "group":    h.get("group", ""),
@@ -2136,6 +2143,51 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                         "metrics":    {},
                         "partitions": [],
                     })
+
+            # 把 Prometheus 指标回写到 hosts.json，让 CMDB 列表 / 健康总览 / 卡片墙
+            # 同步看到最新的 cpu_usage_pct / memory_usage_pct / load5 / disk_usage
+            now = _NOW()
+            hosts_by_ip = {h.get("ip"): h for h in all_hosts if h.get("ip")}
+            mutated = False
+            for r in results:
+                host = hosts_by_ip.get(r.get("ip"))
+                if not host:
+                    continue
+                m = r.get("metrics") or {}
+                if "cpu_usage" in m:
+                    host["cpu_usage_pct"] = round(float(m["cpu_usage"]), 1)
+                    mutated = True
+                if "mem_usage" in m:
+                    host["memory_usage_pct"] = round(float(m["mem_usage"]), 1)
+                    mutated = True
+                if "load5" in m:
+                    host["load5"] = round(float(m["load5"]), 2)
+                    mutated = True
+                if "load1" in m: host["load1"] = round(float(m["load1"]), 2); mutated = True
+                if "load15" in m: host["load15"] = round(float(m["load15"]), 2); mutated = True
+                if "uptime_seconds" in m:
+                    host["uptime_seconds"] = int(m["uptime_seconds"])
+                    host["uptime_text"] = _format_uptime(int(m["uptime_seconds"]))
+                    mutated = True
+                if "tcp_estab" in m: host["tcp_connections"] = int(m["tcp_estab"]); mutated = True
+                if "tcp_tw" in m: host["tcp_time_wait"] = int(m["tcp_tw"]); mutated = True
+                if "net_recv_mbps" in m: host["network_rx_bps"] = int(float(m["net_recv_mbps"]) * 1024 * 1024 / 8); mutated = True
+                if "net_send_mbps" in m: host["network_tx_bps"] = int(float(m["net_send_mbps"]) * 1024 * 1024 / 8); mutated = True
+                # 磁盘：把巡检返回的 partitions 转成 hosts 标准的 disk_usage 结构
+                if r.get("partitions"):
+                    host["disk_usage"] = [{
+                        "mount": p.get("mountpoint") or p.get("mount") or "",
+                        "size_gb": round(float(p.get("total_gb") or p.get("size_gb") or 0), 1),
+                        "used_gb": round(float(p.get("used_gb") or 0), 1),
+                        "avail_gb": round(float(p.get("avail_gb") or 0), 1),
+                        "used_pct": round(float(p.get("used_pct") or p.get("usage_pct") or 0), 1),
+                    } for p in r["partitions"] if p.get("mountpoint") or p.get("mount")]
+                    mutated = True
+                if mutated:
+                    host["metrics_updated_at"] = now
+                    host["last_sync_at"] = now
+            if mutated:
+                save_hosts_list(all_hosts)
 
             # 严重 → 警告 → 正常排序
             sev = {"critical": 2, "warning": 1, "normal": 0}
@@ -2336,12 +2388,13 @@ async def export_inspect_excel(req: InspectExcelRequest):
         ws2 = wb.create_sheet("全部主机明细")
         headers2 = [
             "主机名", "IP地址", "操作系统", "状态", "巡检结果",
-            "CPU使用率(%)", "内存使用率(%)", "内存总量(GB)",
-            "负载(5m)", "网络收(Mbps)", "网络发(Mbps)",
-            "TCP连接数", "运行时长(天)", "磁盘分区详情",
+            "CPU使用率(%)", "CPU核心数", "内存使用率(%)", "内存总量(GB)",
+            "负载(1m)", "负载(5m)", "负载(15m)",
+            "网络收(MB/s)", "网络发(MB/s)", "磁盘读(MB/s)", "磁盘写(MB/s)",
+            "TCP连接数", "TCP TIME_WAIT", "运行时长(天)", "磁盘分区详情",
         ]
         header_row(ws2, headers2)
-        col_widths(ws2, [18, 16, 22, 10, 10, 14, 14, 14, 10, 14, 14, 12, 12, 40])
+        col_widths(ws2, [18, 16, 22, 10, 10, 14, 10, 14, 14, 10, 10, 10, 14, 14, 14, 14, 12, 14, 12, 40])
         ws2.row_dimensions[1].height = 22
 
         for ri, h in enumerate(results, 2):
@@ -2366,9 +2419,12 @@ async def export_inspect_excel(req: InspectExcelRequest):
             row_vals = [
                 h.get("hostname", "-"), h.get("ip", "-"), h.get("os", "-"),
                 h.get("state", "-"), status_label,
-                fmt(m.get("cpu_usage")), fmt(m.get("mem_usage")), fmt(m.get("mem_total_gb")),
-                fmt(m.get("load5")), fmt(m.get("net_recv_mbps")), fmt(m.get("net_send_mbps")),
-                m.get("tcp_estab") or "-", uptime_days, disk_text,
+                fmt(m.get("cpu_usage")), h.get("cpu_cores") or "-", fmt(m.get("mem_usage")), fmt(m.get("mem_total_gb") or h.get("memory_gb")),
+                fmt(m.get("load1")), fmt(m.get("load5")), fmt(m.get("load15")),
+                fmt(m.get("net_recv_mbps")), fmt(m.get("net_send_mbps")), fmt(m.get("disk_read_mbps")), fmt(m.get("disk_write_mbps")),
+                m.get("tcp_estab") if m.get("tcp_estab") is not None else "-",
+                m.get("tcp_tw") if m.get("tcp_tw") is not None else "-",
+                uptime_days, disk_text,
             ]
             for ci, val in enumerate(row_vals, 1):
                 data_cell(ws2, ri, ci, val, overall if ci == 5 else None)

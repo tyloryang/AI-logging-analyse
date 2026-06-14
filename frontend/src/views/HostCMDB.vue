@@ -2174,7 +2174,14 @@ async function runInspect() {
   const url = `/api/hosts/inspect${inspectGroupId.value ? `?group_id=${encodeURIComponent(inspectGroupId.value)}` : ''}`
   const es = new EventSource(url)
   es.onmessage = (e) => {
-    if (e.data === '[DONE]') { es.close(); inspecting.value = false; return }
+    if (e.data === '[DONE]') {
+      es.close()
+      inspecting.value = false
+      // 巡检后端会把 Prometheus 指标回写到 hosts.json；前端拉一次 hosts
+      // 让 CMDB 列表 / 健康总览 / 主机详情 同步看到最新 cpu / mem / 磁盘
+      loadHosts()
+      return
+    }
     try {
       const msg = JSON.parse(e.data)
       if (msg.type === 'inspect_data') {
