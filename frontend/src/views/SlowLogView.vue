@@ -316,6 +316,10 @@
                 <input v-model="tab.filterUser" placeholder="用户过滤" class="filter-input" />
                 <input v-model="tab.filterSql" placeholder="SQL关键字" class="filter-input" />
                 <div class="export-btns">
+                  <button class="btn-ai" @click="runAiAnalyze(tab)" :disabled="aiStreaming && aiActiveKey===tab.key" title="基于 TOP 慢查询调用 AI 分析根因 + 优化建议">
+                    <span v-if="aiStreaming && aiActiveKey===tab.key" class="spinner-sm"></span>
+                    ✨ AI 分析
+                  </button>
                   <span class="export-label">导出：</span>
                   <button class="btn-export" @click="exportEntries(tab, 'csv')"  title="下载 CSV，Excel 可直接打开">CSV</button>
                   <button class="btn-export" @click="exportEntries(tab, 'log')"  title="重建为标准 MySQL 慢日志格式">LOG</button>
@@ -420,6 +424,29 @@
           </div>
         </div>
       </template>
+    </div>
+
+    <!-- AI 分析弹框 -->
+    <div v-if="aiOpen" class="modal-mask" @click.self="closeAiModal">
+      <div class="modal-card ai-modal">
+        <div class="modal-header">
+          <span>✨ AI 慢日志分析 <small class="ai-target">{{ aiTargetLabel }}</small></span>
+          <button class="close-btn" @click="closeAiModal">✕</button>
+        </div>
+        <div class="ai-body">
+          <div v-if="aiError" class="ai-error">⚠ {{ aiError }}</div>
+          <pre v-if="aiContent" class="ai-content" v-html="renderAi(aiContent)"></pre>
+          <div v-else-if="aiStreaming" class="ai-loading">
+            <span class="spinner-sm"></span>
+            <span>AI 正在分析慢查询...</span>
+          </div>
+        </div>
+        <div class="ai-footer">
+          <span class="ai-hint">基于 TOP 10 慢 SQL · 数据源：MySQL 慢日志</span>
+          <button v-if="aiStreaming" class="btn-secondary" @click="abortAi">停止</button>
+          <button v-else class="btn-secondary" @click="closeAiModal">关闭</button>
+        </div>
+      </div>
     </div>
 
     <!-- 空态 -->
@@ -741,6 +768,67 @@ function fmtNum(n) {
   return String(n??0)
 }
 
+// ── AI 分析 ──────────────────────────────────────────────────────────────
+const aiOpen = ref(false)
+const aiStreaming = ref(false)
+const aiContent = ref('')
+const aiError = ref('')
+const aiActiveKey = ref('')
+const aiTargetLabel = ref('')
+let aiEs = null
+
+function renderAi(text) {
+  // 极简 markdown：标题加粗、列表加缩进，避免引入额外依赖
+  return (text || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^(#+)\s*(.+)$/gm, '<strong>$2</strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+}
+
+async function runAiAnalyze(tab) {
+  const entries = filteredEntries(tab)
+  if (!entries.length) { alert('当前过滤结果为空，无可分析数据'); return }
+  if (aiEs) { aiEs.close(); aiEs = null }
+  aiActiveKey.value = tab.key
+  aiTargetLabel.value = `${tab.target.host_ip}${tab.target.label ? ' · ' + tab.target.label : ''} · ${entries.length} 条慢查询`
+  aiOpen.value = true
+  aiStreaming.value = true
+  aiContent.value = ''
+  aiError.value = ''
+
+  const entriesJson = encodeURIComponent(JSON.stringify(entries))
+  const dateRange = (cred.date_from || cred.date_to)
+    ? `${cred.date_from || ''}~${cred.date_to || ''}` : ''
+  const url = `/api/slowlog/analyze/stream?entries_json=${entriesJson}&host_ip=${encodeURIComponent(tab.target.host_ip)}&date=${encodeURIComponent(dateRange)}`
+
+  aiEs = new EventSource(url)
+  aiEs.onmessage = (e) => {
+    if (e.data === '[DONE]') { aiStreaming.value = false; aiEs?.close(); aiEs = null; return }
+    try {
+      const msg = JSON.parse(e.data)
+      if (msg.chunk) aiContent.value += msg.chunk
+      else if (msg.error) { aiError.value = msg.error; aiStreaming.value = false; aiEs?.close(); aiEs = null }
+    } catch {}
+  }
+  aiEs.onerror = () => {
+    if (!aiContent.value && !aiError.value) aiError.value = 'AI 服务连接失败，请检查后端 AI 配置'
+    aiStreaming.value = false
+    aiEs?.close(); aiEs = null
+  }
+}
+
+function abortAi() {
+  if (aiEs) { aiEs.close(); aiEs = null }
+  aiStreaming.value = false
+}
+
+function closeAiModal() {
+  abortAi()
+  aiOpen.value = false
+  setTimeout(() => { aiContent.value = ''; aiError.value = ''; aiActiveKey.value = '' }, 200)
+}
+
 // ── 导出 ──────────────────────────────────────────────────────────────────
 const exporting = ref(false)
 async function exportEntries(tab, fmt) {
@@ -959,6 +1047,54 @@ async function exportEntries(tab, fmt) {
 .export-label { font-size:11px; color:var(--text-muted); }
 .btn-export   { padding:4px 9px; font-size:11px; font-weight:600; background:var(--bg-hover); border:1px solid var(--border); border-radius:var(--radius); color:var(--text-secondary); cursor:pointer; transition:.15s; }
 .btn-export:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
+
+/* AI 分析按钮 + 弹框 */
+.btn-ai {
+  padding: 4px 12px; font-size: 11.5px; font-weight: 600;
+  background: var(--accent); color: #fff; border: none; border-radius: var(--radius);
+  cursor: pointer; transition: background .15s, opacity .15s;
+  display: inline-flex; align-items: center; gap: 4px; margin-right: 8px;
+}
+.btn-ai:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-ai:disabled { opacity: .55; cursor: not-allowed; }
+
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 200;
+  display: flex; align-items: center; justify-content: center; padding: 5vh 4vw; }
+.modal-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
+  display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-md); }
+.modal-card .modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border-light);
+  font-weight: 600; font-size: 14px;
+}
+.modal-card .close-btn {
+  background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: 16px; padding: 4px 8px; border-radius: 4px;
+}
+.modal-card .close-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.ai-modal { width: min(820px, 96vw); max-height: 86vh; }
+.ai-target { font-size: 11.5px; color: var(--text-muted); font-weight: 400; margin-left: 8px; }
+.ai-body { flex: 1; overflow-y: auto; padding: 18px 22px; min-height: 220px; }
+.ai-content {
+  white-space: pre-wrap; word-break: break-word;
+  font-family: var(--font-sans); font-size: 13.5px; line-height: 1.75;
+  color: var(--text-primary); margin: 0;
+}
+.ai-content :deep(strong) { color: var(--accent); font-weight: 700; display: block; margin: 12px 0 4px; }
+.ai-content :deep(code) {
+  background: var(--bg-surface); padding: 1px 6px; border-radius: 4px;
+  font-family: var(--font-mono); font-size: 12px;
+}
+.ai-loading { display: flex; align-items: center; gap: 10px; color: var(--text-muted); padding: 30px 0; }
+.ai-error { background: rgba(189,86,79,.1); color: var(--error); border-radius: 8px;
+  padding: 12px 14px; font-size: 13px; margin-bottom: 12px; }
+.ai-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px; border-top: 1px solid var(--border-light);
+  font-size: 12px;
+}
+.ai-hint { color: var(--text-muted); }
 .table-wrap { overflow-x:auto; }
 table { width:100%; border-collapse:collapse; }
 th { padding:8px 10px; font-size:10px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.06em; text-align:left; white-space:nowrap; border-bottom:1px solid var(--border-light); }

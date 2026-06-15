@@ -221,18 +221,18 @@ def build_summary(entries: List[Dict]) -> Dict:
         return {"total": 0, "alert_count": 0, "avg_query_time": 0,
                 "max_query_time": 0, "top_slow": []}
 
-    alert_count  = sum(1 for e in entries if e["is_alert"])
-    avg_qt       = round(sum(e["query_time"] for e in entries) / len(entries), 2)
-    max_qt       = max(e["query_time"] for e in entries)
-    top_slow     = sorted(entries, key=lambda x: x["query_time"], reverse=True)[:5]
+    alert_count  = sum(1 for e in entries if e.get("is_alert") or float(e.get("query_time", 0) or 0) >= 10)
+    avg_qt       = round(sum(float(e.get("query_time", 0) or 0) for e in entries) / len(entries), 2)
+    max_qt       = max(float(e.get("query_time", 0) or 0) for e in entries)
+    top_slow     = sorted(entries, key=lambda x: float(x.get("query_time", 0) or 0), reverse=True)[:5]
 
     # 按用户统计
     user_stats: Dict[str, Dict] = {}
     for e in entries:
-        u = e["user"] or "unknown"
+        u = e.get("user") or "unknown"
         user_stats.setdefault(u, {"user": u, "count": 0, "total_time": 0.0})
         user_stats[u]["count"] += 1
-        user_stats[u]["total_time"] += e["query_time"]
+        user_stats[u]["total_time"] += float(e.get("query_time", 0) or 0)
     top_users = sorted(user_stats.values(), key=lambda x: x["total_time"], reverse=True)[:5]
 
     return {
@@ -240,7 +240,7 @@ def build_summary(entries: List[Dict]) -> Dict:
         "alert_count":    alert_count,
         "avg_query_time": avg_qt,
         "max_query_time": round(max_qt, 3),
-        "top_slow":       [{"id": e["id"], "query_time": e["query_time"],
-                            "sql_brief": e["sql"][:120]} for e in top_slow],
+        "top_slow":       [{"id": e.get("id", ""), "query_time": e.get("query_time", 0),
+                            "sql_brief": str(e.get("sql", ""))[:120]} for e in top_slow],
         "top_users":      top_users,
     }
