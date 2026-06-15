@@ -211,7 +211,8 @@
             </div>
             <div class="detail-actions">
               <button class="btn btn-primary" style="width:100%;margin-bottom:6px" @click="openBuild(selectedJob)">▶ 触发新构建</button>
-              <button class="btn btn-outline" style="width:100%" @click="viewLogs(selectedJob)">📄 加载日志</button>
+              <button class="btn btn-outline" style="width:100%;margin-bottom:6px" @click="viewLogs(selectedJob)">📄 加载日志</button>
+              <button class="btn btn-outline" style="width:100%" @click="openEditConfig(selectedJob)">✎ 编辑配置</button>
             </div>
           </aside>
 
@@ -234,6 +235,43 @@
               <p>点击左侧「加载日志」拉取构建日志</p>
             </div>
           </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- Job 配置编辑弹窗 -->
+    <div v-if="showConfigModal" class="modal-mask" @click.self="closeConfigModal">
+      <div class="modal-card config-modal">
+        <div class="modal-header">
+          <span>✎ 编辑 Job 配置 <small class="cfg-job">{{ configJob }}</small></span>
+          <button class="close-btn" @click="closeConfigModal">✕</button>
+        </div>
+        <div class="cfg-body">
+          <div v-if="configLoading" class="cfg-loading"><span class="spinner-sm"></span> 加载 config.xml ...</div>
+          <template v-else>
+            <div class="cfg-toolbar">
+              <span class="cfg-meta">大小：{{ formatSize(configXml.length) }} · 字符数：{{ configXml.length }}</span>
+              <span style="flex:1"></span>
+              <span v-if="configDirty" class="cfg-dirty">● 未保存</span>
+              <button class="btn btn-outline btn-sm" @click="resetConfig" :disabled="!configDirty">↺ 还原</button>
+            </div>
+            <textarea
+              v-model="configXml"
+              class="cfg-textarea mono"
+              spellcheck="false"
+              placeholder="Jenkins Job config.xml"
+              @input="configDirty = configXml !== configXmlOriginal"
+            ></textarea>
+            <div v-if="configMsg" class="build-msg" :class="configOk ? 'ok' : 'err'">{{ configMsg }}</div>
+          </template>
+        </div>
+        <div class="cfg-footer">
+          <span class="cfg-hint">⚠ 直接保存会立刻覆盖 Jenkins 上的 Job 配置，建议先在 Jenkins UI 备份一份</span>
+          <span style="flex:1"></span>
+          <button class="btn btn-outline" @click="closeConfigModal">关闭</button>
+          <button class="btn btn-primary" @click="saveConfig" :disabled="!configDirty || configSaving">
+            <span v-if="configSaving" class="spinner-sm"></span> 保存
+          </button>
         </div>
       </div>
     </div>
@@ -605,6 +643,81 @@ async function loadLog(j) {
   }
 }
 
+// ── Job 配置编辑 ─────────────────────────────────────────────────────────────
+const showConfigModal = ref(false)
+const configJob       = ref('')
+const configXml       = ref('')
+const configXmlOriginal = ref('')
+const configDirty     = ref(false)
+const configLoading   = ref(false)
+const configSaving    = ref(false)
+const configMsg       = ref('')
+const configOk        = ref(false)
+
+async function openEditConfig(j) {
+  if (!j || !activeInstance.value) return
+  configJob.value = j.name || j.shortName
+  configXml.value = ''
+  configXmlOriginal.value = ''
+  configDirty.value = false
+  configMsg.value = ''
+  configLoading.value = true
+  showConfigModal.value = true
+  try {
+    const r = await api.jenkinsGetJobConfig(activeInstance.value.id, configJob.value)
+    configXml.value = r.config_xml || ''
+    configXmlOriginal.value = configXml.value
+  } catch (e) {
+    configMsg.value = '加载失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+    configOk.value = false
+  } finally {
+    configLoading.value = false
+  }
+}
+
+function resetConfig() {
+  configXml.value = configXmlOriginal.value
+  configDirty.value = false
+  configMsg.value = ''
+}
+
+async function saveConfig() {
+  if (!configDirty.value) return
+  configSaving.value = true
+  configMsg.value = ''
+  try {
+    const r = await api.jenkinsUpdateJobConfig(activeInstance.value.id, configJob.value, configXml.value)
+    configOk.value = true
+    configMsg.value = r.message || '已保存'
+    configXmlOriginal.value = configXml.value
+    configDirty.value = false
+    // 1.2 秒后清空提示
+    setTimeout(() => { configMsg.value = '' }, 1500)
+  } catch (e) {
+    configOk.value = false
+    configMsg.value = '保存失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  } finally {
+    configSaving.value = false
+  }
+}
+
+function closeConfigModal() {
+  if (configDirty.value && !confirm('有未保存修改，确认关闭？')) return
+  showConfigModal.value = false
+  setTimeout(() => {
+    configJob.value = ''
+    configXml.value = ''
+    configXmlOriginal.value = ''
+    configMsg.value = ''
+  }, 200)
+}
+
+function formatSize(n) {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1024 / 1024).toFixed(2) + ' MB'
+}
+
 // ── 触发构建 ──────────────────────────────────────────────────────────────────
 const showBuildModal   = ref(false)
 const buildForm        = ref({ job: '', paramsText: '' })
@@ -780,6 +893,30 @@ onMounted(async () => {
 /* 弹窗 */
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 200; display: flex; align-items: center; justify-content: center; }
 .modal-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; width: 480px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Job 配置编辑弹框 */
+.config-modal { width: 88vw; max-width: 1100px; height: 82vh; max-height: 82vh; }
+.cfg-body { flex: 1; display: flex; flex-direction: column; padding: 14px 18px; gap: 10px; min-height: 0; }
+.cfg-loading { display: flex; align-items: center; gap: 8px; padding: 40px; color: var(--text-muted); justify-content: center; }
+.cfg-toolbar { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted); }
+.cfg-meta { font-family: var(--font-mono); }
+.cfg-dirty { color: var(--warning); font-weight: 600; font-size: 11.5px; }
+.cfg-textarea {
+  flex: 1; min-height: 0; resize: none;
+  background: var(--bg-base); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; font-size: 12.5px; line-height: 1.6;
+  font-family: var(--font-mono); white-space: pre; tab-size: 2;
+  outline: none; box-shadow: none;
+}
+.cfg-textarea:focus { border-color: var(--accent); }
+.cfg-footer {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 18px; border-top: 1px solid var(--border-light);
+  font-size: 12px;
+}
+.cfg-hint { color: var(--warning); }
+.cfg-job { font-size: 11.5px; color: var(--text-muted); font-weight: 400; margin-left: 8px; font-family: var(--font-mono); }
 
 /* Jenkins 全屏详情弹框：左侧元数据 + 右侧大日志面板 */
 .jenkins-detail-modal { width: 92vw; max-width: 1400px; height: 88vh; max-height: 88vh; }

@@ -94,6 +94,20 @@ class JenkinsClient:
             r.raise_for_status()
             return r.text
 
+    async def _post_xml(self, path: str, xml_body: str) -> httpx.Response:
+        """POST application/xml body（用于 config.xml 上传 / job 创建）"""
+        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=30) as client:
+            crumb = await self._get_crumb(client)
+            headers = {**self._headers(), **crumb, "Content-Type": "application/xml"}
+            r = await client.post(f"{self.url}{path}", content=xml_body, headers=headers)
+            if r.status_code == 403:
+                self._crumb = None
+                crumb = await self._get_crumb(client)
+                headers = {**self._headers(), **crumb, "Content-Type": "application/xml"}
+                r = await client.post(f"{self.url}{path}", content=xml_body, headers=headers)
+            r.raise_for_status()
+            return r
+
     # ── 查询 ──────────────────────────────────────────────────────────────────
 
     async def get_all_jobs(self) -> list[dict]:
@@ -175,6 +189,18 @@ class JenkinsClient:
     async def get_queue_items(self) -> list[dict]:
         data = await self._get("/queue/api/json")
         return data.get("items", [])
+
+    # ── Job 配置（config.xml）────────────────────────────────────────────────
+
+    async def get_job_config(self, job: str) -> str:
+        """读取 Job 的 config.xml 原文，支持文件夹路径。"""
+        path = _job_api_path(job)
+        return await self._get_text(f"{path}/config.xml")
+
+    async def update_job_config(self, job: str, xml_body: str) -> None:
+        """POST 上传新的 config.xml，覆盖 Job 配置。"""
+        path = _job_api_path(job)
+        await self._post_xml(f"{path}/config.xml", xml_body)
 
     # ── 操作 ──────────────────────────────────────────────────────────────────
 

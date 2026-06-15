@@ -326,6 +326,8 @@ export const api = {
   jenkinsGetRunning:      (id)         => http.get(`/jenkins/instances/${id}/running`),
   jenkinsGetQueue:        (id)         => http.get(`/jenkins/instances/${id}/queue`),
   jenkinsBuild:           (id, data)   => http.post(`/jenkins/instances/${id}/build`, data),
+  jenkinsGetJobConfig:    (id, job)    => http.get(`/jenkins/instances/${id}/jobs/${encodeURIComponent(job)}/config`),
+  jenkinsUpdateJobConfig: (id, job, config_xml) => http.put(`/jenkins/instances/${id}/jobs/${encodeURIComponent(job)}/config`, { config_xml }),
   jenkinsCancelQueue:     (id, qid)    => http.post(`/jenkins/instances/${id}/queue/cancel`, { queue_id: qid }),
   // 兼容旧接口
   jenkinsGetConfig:     ()           => http.get('/jenkins/config'),

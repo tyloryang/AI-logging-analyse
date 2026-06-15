@@ -294,6 +294,36 @@ class BuildRequest(BaseModel):
     params: Optional[dict] = None
 
 
+@router.get("/api/jenkins/instances/{instance_id}/jobs/{job_name:path}/config")
+async def get_job_config(instance_id: str, job_name: str):
+    """读取 Job 的 config.xml，返回原文供前端编辑。"""
+    inst = _get_instance(instance_id)
+    try:
+        xml = await _make_client(inst).get_job_config(job_name)
+        return {"job": job_name, "config_xml": xml, "size": len(xml)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"读取配置失败: {e}")
+
+
+class JobConfigUpdate(BaseModel):
+    config_xml: str
+
+
+@router.put("/api/jenkins/instances/{instance_id}/jobs/{job_name:path}/config")
+async def update_job_config(instance_id: str, job_name: str, body: JobConfigUpdate):
+    """保存 Job 的 config.xml（覆盖式更新，Jenkins 端会触发配置变更）。"""
+    if not body.config_xml.strip():
+        raise HTTPException(status_code=400, detail="config_xml 不能为空")
+    if "<" not in body.config_xml[:200]:
+        raise HTTPException(status_code=400, detail="config_xml 不像合法 XML，请检查内容")
+    inst = _get_instance(instance_id)
+    try:
+        await _make_client(inst).update_job_config(job_name, body.config_xml)
+        return {"ok": True, "message": f"{job_name} 配置已更新"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"保存失败: {e}")
+
+
 @router.post("/api/jenkins/instances/{instance_id}/build")
 async def trigger_build(instance_id: str, body: BuildRequest):
     inst = _get_instance(instance_id)
