@@ -1699,11 +1699,23 @@ _find_java() {{
     readlink -f "$(command -v java)" 2>/dev/null || command -v java
     return
   fi
-  # 2. 从目标 JVM 进程的符号链接找
+  # 2. 从目标 JVM 进程的符号链接找（需要同用户或 root 才有权限）
   local exe
   exe=$(readlink -f /proc/{pid}/exe 2>/dev/null)
   if [ -n "$exe" ] && [ -x "$exe" ]; then echo "$exe"; return; fi
-  # 3. 从进程 JAVA_HOME 环境变量找
+  # 3. /proc/{pid}/cmdline 首参数：很多启动脚本写绝对路径 (/data/jdk/bin/java -jar app.jar)
+  local cmd0
+  cmd0=$(tr '\\0' '\\n' < /proc/{pid}/cmdline 2>/dev/null | head -1)
+  if [ -n "$cmd0" ] && [ -x "$cmd0" ] && [ "${{cmd0##*/}}" = "java" ]; then
+    readlink -f "$cmd0" 2>/dev/null || echo "$cmd0"; return
+  fi
+  # 4. ps 命令行兜底（pid 已死也能从父进程拿到）
+  local ps_cmd
+  ps_cmd=$(ps -p {pid} -o args= 2>/dev/null | awk '{{print $1}}')
+  if [ -n "$ps_cmd" ] && [ -x "$ps_cmd" ] && [ "${{ps_cmd##*/}}" = "java" ]; then
+    readlink -f "$ps_cmd" 2>/dev/null || echo "$ps_cmd"; return
+  fi
+  # 5. 从进程 JAVA_HOME 环境变量找
   local jhome
   jhome=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^JAVA_HOME=' | cut -d= -f2)
   if [ -n "$jhome" ] && [ "${{jhome%/jre}}" != "$jhome" ]; then
@@ -1711,10 +1723,28 @@ _find_java() {{
   fi
   if [ -n "$jhome" ] && [ -x "$jhome/bin/java" ]; then echo "$jhome/bin/java"; return; fi
   if [ -n "$jhome" ] && [ -x "$jhome/jre/bin/java" ]; then echo "$jhome/jre/bin/java"; return; fi
-  # 4. 常见安装路径
-  for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java /opt/jdk*/bin/java /opt/java/*/bin/java; do
+  # 6. 常见安装路径（覆盖容器/物理机/云主机常见目录）
+  for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java \\
+           /opt/jdk*/bin/java /opt/java/*/bin/java /opt/jdk/*/bin/java \\
+           /data/jdk*/bin/java /data/java*/bin/java /data/jdk/*/bin/java \\
+           /app/jdk*/bin/java /app/java*/bin/java \\
+           /srv/jdk*/bin/java /srv/java*/bin/java \\
+           /home/*/jdk*/bin/java /home/*/java*/bin/java \\
+           /root/jdk*/bin/java /root/java*/bin/java \\
+           /usr/java/*/bin/java; do
     [ -x "$p" ] && {{ readlink -f "$p" 2>/dev/null || echo "$p"; return; }}
   done
+  # 7. 最后兜底：限深 find，避免全盘扫描
+  local found
+  found=$(find /opt /data /app /srv /usr/local /usr/lib/jvm /root /home -maxdepth 5 \\
+          -type f -executable -name java 2>/dev/null | head -1)
+  if [ -n "$found" ]; then echo "$found"; return; fi
+  # 失败前打印诊断信息到 stderr 帮助排查
+  echo "[diag] PATH=$PATH" >&2
+  echo "[diag] /proc/{pid}/exe -> $(readlink -f /proc/{pid}/exe 2>&1 || echo '权限不足')" >&2
+  echo "[diag] /proc/{pid}/cmdline first arg -> ${{cmd0:-空}}" >&2
+  echo "[diag] ps args first token -> ${{ps_cmd:-空}}" >&2
+  echo "[diag] JAVA_HOME from env -> ${{jhome:-空}}" >&2
   echo ""
 }}
 
@@ -1747,7 +1777,13 @@ _find_jdk_home() {{
 
 JAVA=$(_find_java)
 if [ -z "$JAVA" ]; then
-  echo "未找到 java 命令，请确认 JDK 已安装或 /proc/{pid} 进程存在" >&2
+  echo "" >&2
+  echo "未找到 java 命令。请确认：" >&2
+  echo "  1) 目标主机已安装 JDK（不能只有 JRE，Arthas 需要 tools.jar）" >&2
+  echo "  2) PID {pid} 仍存活" >&2
+  echo "  3) SSH 用户对 /proc/{pid}/exe 有读权限（同用户或 root）" >&2
+  echo "  4) 或在系统 PATH/JAVA_HOME 中配置 java" >&2
+  echo "  上方 [diag] 输出包含诊断信息" >&2
   exit 2
 fi
 JAVA_HOME=$(_find_jdk_home "$JAVA")
@@ -1817,7 +1853,9 @@ _find_java() {{
 }}
 JAVA=$(_find_java)
 if [ -z "$JAVA" ]; then
-  echo "未找到 java 命令，请确认 JDK 已安装" >&2
+  echo "" >&2
+  echo "未找到 java 命令。请确认目标主机已安装 JDK 且 PID {pid} 存活。" >&2
+  echo "上方 [diag] 输出包含 PATH / /proc/{pid}/exe / cmdline 等诊断信息" >&2
   exit 2
 fi
 _download_file() {{
