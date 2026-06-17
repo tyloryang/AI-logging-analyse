@@ -889,9 +889,15 @@ class LokiClient:
             "service_label": service_label,
         }
 
-    async def get_grouped_services(self, group_label: Optional[str] = None) -> list[dict]:
+    async def get_grouped_services(
+        self,
+        group_label: Optional[str] = None,
+        with_errors: bool = True,
+    ) -> list[dict]:
+        """按 namespace/env/team 等标签分组返回服务。with_errors=False 时跳过
+        所有错误统计查询，毫秒级返回（前端首屏快路径）。"""
         resolved_group_label = await self._resolve_group_label(group_label) if group_label else None
-        cache_key = f"grouped_services:{resolved_group_label or 'default'}"
+        cache_key = f"grouped_services:{resolved_group_label or 'default'}:{'full' if with_errors else 'fast'}"
         if cache_key in _grouped_svc_cache:
             return _grouped_svc_cache[cache_key]
 
@@ -901,24 +907,26 @@ class LokiClient:
             group_values = await self.get_label_values(resolved_group_label)
 
         if not resolved_group_label or not group_values:
-            services = await self.get_services()
+            services = await self.get_services(with_errors=with_errors)
             result = [{"key": "", "label": "All Services", "group_label": "", "services": services}]
             _grouped_svc_cache[cache_key] = result
             return result
 
-        service_map_task = asyncio.create_task(self._get_service_map_by_group_label(resolved_group_label))
-        group_error_counts_task = asyncio.create_task(self.count_errors_by_group_service(resolved_group_label))
-        fallback_error_counts_task = asyncio.create_task(self.count_errors_by_service_fast())
+        service_map = await self._get_service_map_by_group_label(resolved_group_label)
 
-        service_map = await service_map_task
-        try:
-            # 错误计数限时等待：拿不到先返回 0，后台刷新后下次请求命中缓存
-            group_error_counts = await asyncio.wait_for(group_error_counts_task, timeout=20)
-        except (asyncio.TimeoutError, Exception):
+        if with_errors:
+            group_error_counts_task = asyncio.create_task(self.count_errors_by_group_service(resolved_group_label))
+            fallback_error_counts_task = asyncio.create_task(self.count_errors_by_service_fast())
+            try:
+                group_error_counts = await asyncio.wait_for(group_error_counts_task, timeout=20)
+            except (asyncio.TimeoutError, Exception):
+                group_error_counts = {}
+            try:
+                fallback_error_counts = await fallback_error_counts_task
+            except Exception:
+                fallback_error_counts = {}
+        else:
             group_error_counts = {}
-        try:
-            fallback_error_counts = await fallback_error_counts_task
-        except Exception:
             fallback_error_counts = {}
 
         result: list[dict] = []
@@ -953,9 +961,13 @@ class LokiClient:
         _grouped_svc_cache[cache_key] = result
         return result
 
-    async def get_services(self) -> list[dict]:
-        if "services" in _svc_cache:
-            return _svc_cache["services"]
+    async def get_services(self, with_errors: bool = True) -> list[dict]:
+        """获取服务列表。with_errors=False 时跳过错误统计（毫秒级返回，
+        前端可分两步加载：先快速展示服务名，统计稍后再补）。"""
+        # 完整结果（含 error_count）有独立缓存 key，避免污染只要名字的快速路径
+        cache_key = "services" if with_errors else "services_names"
+        if cache_key in _svc_cache:
+            return _svc_cache[cache_key]
 
         label = await self._detect_service_label()
         try:
@@ -968,8 +980,15 @@ class LokiClient:
             except Exception:
                 names = []
 
+        if not with_errors:
+            # 快速路径：只返回服务名，按字母排序，error_count 占位 0
+            services_only = [{"name": name, "error_count": 0} for name in sorted(names)]
+            _svc_cache[cache_key] = services_only
+            return services_only
+
+        # 完整路径：计错误数并按错误数降序排
         error_counts = await self.count_errors_by_service_fast()
         services = [{"name": name, "error_count": error_counts.get(name, 0)} for name in names]
         services.sort(key=lambda item: item["error_count"], reverse=True)
-        _svc_cache["services"] = services
+        _svc_cache[cache_key] = services
         return services

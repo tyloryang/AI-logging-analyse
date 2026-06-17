@@ -192,23 +192,36 @@ async def _trace_keyword_result(
 # ── 服务列表 ──────────────────────────────────────────────────────────────────
 
 @router.get("/api/services")
-async def get_services():
-    """获取所有服务及其错误数"""
+async def get_services(
+    with_errors: bool = Query(True, description="false=快速路径，只返回服务名，跳过错误统计"),
+):
+    """获取所有服务列表。with_errors=false 用于前端首屏秒级渲染。"""
     try:
-        services = await loki.get_services()
-        return {"data": services, "total": len(services)}
+        services = await loki.get_services(with_errors=with_errors)
+        return {"data": services, "total": len(services), "with_errors": with_errors}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Loki 连接失败: {e}")
+
+
+@router.get("/api/services/error-counts")
+async def get_service_error_counts(hours: float = Query(24, gt=0, le=168)):
+    """单独返回各服务错误数（前端服务列表懒补）。"""
+    try:
+        counts = await loki.count_errors_by_service_fast(hours=hours)
+        return {"data": counts, "total_errors": sum(counts.values())}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.get("/api/services/grouped")
 async def get_services_grouped(
     group_by: Optional[str] = Query(None, description="按 Loki 标签分组，如 namespace/env/team"),
+    with_errors: bool = Query(True, description="false=只返回服务名分组，跳过错误统计（首屏秒级）"),
 ):
-    """获取按指定 Loki 标签分组的服务列表。"""
+    """按指定 Loki 标签分组返回服务列表。with_errors=false 给前端首屏用。"""
     try:
-        groups = await loki.get_grouped_services(group_label=group_by)
-        return {"data": groups, "group_by": group_by or ""}
+        groups = await loki.get_grouped_services(group_label=group_by, with_errors=with_errors)
+        return {"data": groups, "group_by": group_by or "", "with_errors": with_errors}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Loki 连接失败: {e}")
 

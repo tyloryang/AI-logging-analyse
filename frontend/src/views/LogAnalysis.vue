@@ -3,7 +3,11 @@
     <!-- 左侧服务过滤 -->
     <aside class="service-panel">
       <div class="panel-header">
-        <span class="panel-title">服务列表</span>
+        <span class="panel-title">服务列表
+          <span v-if="loadingCounts" class="counts-tip" title="错误数后台统计中...">
+            <span class="spinner-mini"></span>统计中
+          </span>
+        </span>
         <!-- 时间模式切换 -->
         <div class="time-mode-tabs">
           <button class="tmode-btn" :class="{ active: timeMode === 'relative' }" @click="timeMode = 'relative'; onTimeModeChange()">快速</button>
@@ -716,6 +720,7 @@ const selectedService = ref('')
 const serviceSearch  = ref('')   // 左侧服务名搜索
 const hours          = ref('1')
 const loadingSvcs    = ref(false)
+const loadingCounts  = ref(false)   // 错误数后台补充进行中
 const groupBy        = ref('namespace')
 const selectedGroupLabel = ref('')
 const selectedGroupValue = ref('')
@@ -1386,18 +1391,22 @@ function onGroupByChange() {
 }
 
 // ── 数据加载 ─────────────────────────────
+// 两步加载：
+//   STEP 1: with_errors=false 毫秒级返回服务名 → 立即渲染（loadingSvcs 早结束）
+//   STEP 2: 异步调 /services/error-counts，把错误数 patch 回服务对象（loadingCounts）
 async function loadServices() {
   const requestId = ++servicesRequestId
   servicesAbort?.abort()
   const controller = new AbortController()
   servicesAbort = controller
   loadingSvcs.value = true
+  loadingCounts.value = false
   try {
-    // 优先尝试分组接口
+    // ── STEP 1：拉服务名（快）─────────────────────────────
     let rg = null
     try {
       rg = await api.getServicesGrouped(
-        { group_by: groupBy.value || undefined },
+        { group_by: groupBy.value || undefined, with_errors: false },
         { signal: controller.signal },
       )
     } catch (error) {
@@ -1406,16 +1415,39 @@ async function loadServices() {
     if (requestId !== servicesRequestId) return
     if (rg?.data?.length) {
       serviceGroups.value = rg.data
-      // 自动展开第一个 namespace
       openNs.value = new Set([rg.data[0]?.key ?? rg.data[0]?.namespace ?? rg.data[0]?.label ?? ''])
-      // 平铺 services 保持兼容（totalErrors 等计算用）
       services.value = rg.data.flatMap(g => g.services)
     } else {
-      const r = await api.getServices({ signal: controller.signal })
+      const r = await api.getServices({ with_errors: false }, { signal: controller.signal })
       if (requestId !== servicesRequestId) return
       services.value = r.data
       serviceGroups.value = []
       openNs.value = new Set()
+    }
+    loadingSvcs.value = false   // 首屏已可见，用户可选服务查日志
+
+    // ── STEP 2：后台异步补错误数 ──────────────────────────
+    loadingCounts.value = true
+    try {
+      const r2 = await api.getServiceErrorCounts(24, { signal: controller.signal })
+      if (requestId !== servicesRequestId) return
+      const counts = r2?.data || {}
+      // patch 进 services 与 serviceGroups
+      for (const s of services.value) s.error_count = counts[s.name] || 0
+      for (const g of serviceGroups.value) {
+        for (const s of (g.services || [])) s.error_count = counts[s.name] || 0
+      }
+      // 重排：错误多的靠前
+      services.value.sort((a, b) => (b.error_count || 0) - (a.error_count || 0))
+      for (const g of serviceGroups.value) {
+        (g.services || []).sort((a, b) => (b.error_count || 0) - (a.error_count || 0) || a.name.localeCompare(b.name))
+      }
+    } catch (error) {
+      if (!isCanceled(error)) {
+        // 错误统计失败不影响主流程，保留服务列表
+      }
+    } finally {
+      if (requestId === servicesRequestId) loadingCounts.value = false
     }
   } catch (error) {
     if (!isCanceled(error)) {
@@ -2046,6 +2078,10 @@ onBeforeUnmount(() => {
 .svc-empty em { color: var(--text-primary); font-style: normal; }
 
 .svc-list-wrap { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+.counts-tip { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px;
+  font-size: 11px; color: var(--text-muted); font-weight: 400; }
+.spinner-mini { width: 8px; height: 8px; border: 1.5px solid var(--border-strong);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 .svc-item {
   display: flex; align-items: center; gap: 8px;
   padding: 7px 10px; border-radius: 6px;
