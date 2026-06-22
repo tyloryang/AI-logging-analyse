@@ -152,6 +152,29 @@ FOUR_LAYER_THINKING = (
     "④ 经验提炼：「规律：如果[<触发条件>]，则检查[<检查点>]」（可复用运维模式）\n\n"
 )
 
+SKILL_OUTPUT_TEMPLATE = (
+    "\n\n【Skill 输出模板 — 最终回答必须严格遵循此结构】\n\n"
+    "无论你做了几轮工具调用，最终给用户的那段话必须按下面三段式输出，每段都用中文 Markdown 标题，"
+    "不要漏段、不要换名：\n\n"
+    "## 结论\n"
+    "用 1-3 句精炼概括根因 / 异常 / 当前态势。先说结果，再补关键定语。\n"
+    "如果不确定，明确写「初步判断」并标注信心等级（高 / 中 / 低）。\n\n"
+    "## 依据\n"
+    "列出 3-6 条**事实证据**，每条 1 行，必须来自工具返回（指标值 / 日志片段 / 服务名 / 时间戳）。\n"
+    "禁止凭空陈述，禁止『应该是』、『可能是』这类无证据推测。\n"
+    "格式示例：\n"
+    "  • [指标] order-service CPU 92%（节点 node02）\n"
+    "  • [日志] payment-svc 14:32 起 timeout 错误 152 条\n"
+    "  • [Trace] /api/order POST p99=2.4s（基线 240ms）\n\n"
+    "## 建议操作\n"
+    "按优先级给 2-4 条**可执行**动作，每条标注：风险等级（低/中/高）+ 是否需要审批。\n"
+    "格式示例：\n"
+    "  • [P1·低风险] 重启 order-service-2 Pod（不影响其他副本）\n"
+    "  • [P2·中风险·需审批] 扩容 Redis 连接池 50→200（生产环境）\n"
+    "  • [P3·低风险] 增加 Grafana 告警阈值，CPU>85% 告警\n\n"
+    "原则：**结论先行、依据可验、操作可执行**。\n"
+)
+
 SYSTEM_PROMPTS = {
     "guided": (
         "你是一个“引导式多轮对话”助手（Wizard）。你的目标不是一次性给出最终答案，"
@@ -495,6 +518,9 @@ def build_graph(mode: str = "chat", checkpointer=None, runtime_overrides: dict |
     # 诊断类模式注入四层思考框架
     if mode in ("rca", "inspect", "chat"):
         system_prompt = FOUR_LAYER_THINKING + system_prompt
+    # 最终回答强制三段式 Skill 整形模板（参考 SxDevOps：结论 / 依据 / 建议操作）
+    if mode in ("rca", "inspect", "chat"):
+        system_prompt = system_prompt + SKILL_OUTPUT_TEMPLATE
 
     # 按当前 confirm_mode 裁剪模型可见工具：ask 模式下高风险工具直接不暴露给 LLM
     try:

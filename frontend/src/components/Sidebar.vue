@@ -124,30 +124,78 @@ onMounted(async () => {
   } catch { /* ignore */ }
 })
 
-// ── 菜单定义 ────────────────────────────────────────────────────
+// ── 菜单定义（SxDevOps 4 大模块结构：可观测性 / 事件中心 / 任务中心 / AIOps）──
 const MENU = [
   { id: 'dashboard', icon: 'dashboard', label: '仪表盘', to: '/' },
+
+  // ① 可观测性 — 取证层
   {
-    id: 'host', icon: 'host', label: '主机中心',
+    id: 'obs', icon: 'obs', label: '可观测性',
     children: [
-      { label: 'CMDB',     to: '/cmdb', module: 'cmdb' },
-      { label: '任务中心', to: '/hosts/tasks' },
-      { label: '定时任务', to: '/hosts/cron' },
-      { label: '主机申请', to: '/hosts/apply' },
+      { label: '日志中心',   to: '/observability/logs',    module: 'log' },
+      { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
+      { label: '接口 RED',   to: '/observability/api-red', module: 'skywalking' },
+      { label: '告警中心',   to: '/observability/alerts',  module: 'alert' },
+      { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
+      { label: '指标监控',   to: '/tools/metrics',         module: 'metrics' },
+      { label: '统一观测台', to: '/observability/unified' },
     ],
   },
-  // { id: 'cloud', icon: 'cloud', label: '多云管理', to: '/cloud' },
+
+  // ② 事件中心 — 复盘层
   {
-    id: 'ticket', icon: 'ticket', label: '工单系统',
+    id: 'event-center', icon: 'event', label: '事件中心',
     children: [
-      { label: '应用发布', to: '/tickets/deploy' },
-      { label: 'SQL 审计', to: '/tickets/sql' },
-      { label: '事务工单', to: '/tickets/incident' },
-      { label: '审批流',   to: '/tickets/approval' },
+      { label: '事件总览',   to: '/event-center' },
+      { label: '事件墙',     to: '/events' },
+      { label: '应用发布',   to: '/tickets/deploy' },
+      { label: 'SQL 审计',   to: '/tickets/sql' },
+      { label: '事务工单',   to: '/tickets/incident' },
+      { label: '审批流',     to: '/tickets/approval' },
+    ],
+  },
+
+  // ③ 任务中心 — 动作层
+  {
+    id: 'task-center', icon: 'task', label: '任务中心',
+    children: [
+      { label: '任务总览',   to: '/task-center' },
+      { label: '待确认动作', to: '/task-center?tab=pending' },
+      { label: '主机任务',   to: '/hosts/tasks' },
+      { label: '定时任务',   to: '/hosts/cron' },
+      { label: '主机申请',   to: '/hosts/apply' },
+      { label: '巡检报告',   to: '/cmdb?tab=inspect' },
+      { label: 'Java 诊断',  to: '/tools/java-diagnostics', module: 'ssh' },
+      { label: '慢日志分析', to: '/tools/slowlog',          module: 'slowlog' },
+      { label: '分析报告',   to: '/tools/report',           module: 'report' },
+    ],
+  },
+
+  // ④ AIOps — 智能体
+  {
+    id: 'aiops', icon: 'aiops', label: 'AIOps',
+    children: [
+      { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
+      { label: '🧠 根因分析', to: '/aiops/rca' },
+      { label: '🔴 故障大盘', to: '/aiops/fault' },
+      { label: '📊 异常检测', to: '/aiops/anomaly' },
+      { label: '🧰 AI 工作台', to: '/aiops/workbench', module: 'agent' },
+      { label: '◈ Claude',     to: '/aiops/claude',   module: 'agent' },
+      { label: '⚙ 智能配置',  to: '/aiops/config' },
+    ],
+  },
+
+  // ─── 资源中心（被 4 大模块调用的事实层）───
+  {
+    id: 'cmdb', icon: 'host', label: 'CMDB',
+    children: [
+      { label: '主机 CMDB',  to: '/cmdb?tab=cmdb', module: 'cmdb' },
+      { label: '分组管理',   to: '/cmdb?tab=groups', module: 'cmdb' },
+      { label: 'SSH 终端',   to: '/cmdb?tab=ssh', module: 'cmdb' },
     ],
   },
   {
-    id: 'container', icon: 'container', label: '容器管理',
+    id: 'container', icon: 'container', label: '容器',
     children: [
       { label: '容器列表',      to: '/containers' },
       { label: 'K8s 拓扑流图',  to: '/k8s/topology' },
@@ -167,41 +215,6 @@ const MENU = [
     id: 'cicd', icon: 'cicd', label: 'CI/CD',
     children: [
       { label: 'Jenkins', to: '/cicd/jenkins' },
-    ],
-  },
-  {
-    id: 'obs', icon: 'obs', label: '可观测性',
-    children: [
-      { label: '统一观测台', to: '/observability/unified' },
-      { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
-      { label: '日志中心',   to: '/observability/logs',    module: 'log' },
-      { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
-      { label: '接口 RED',   to: '/observability/api-red', module: 'skywalking' },
-      { label: '告警中心',   to: '/observability/alerts',  module: 'alert' },
-      { label: '分析报告',   to: '/tools/report',          module: 'report' },
-    ],
-  },
-  { id: 'events', icon: 'event',  label: '事件墙',   to: '/events' },
-  {
-    id: 'tools', icon: 'tools', label: '工具市场',
-    children: [
-      { label: '工具概览',   to: '/tools' },
-      { label: 'Java 诊断', to: '/tools/java-diagnostics', module: 'ssh' },
-      { label: '慢日志分析', to: '/tools/slowlog',  module: 'slowlog' },
-      { label: '指标监控',   to: '/tools/metrics',  module: 'metrics' },
-    ],
-  },
-  {
-    id: 'aiops', icon: 'aiops', label: 'AIOps 智能运维',
-    children: [
-      { label: '🔴 故障大盘', to: '/aiops/fault' },
-      { label: '🔔 告警中心', to: '/aiops/alerts' },
-      { label: '🧠 根因分析', to: '/aiops/rca' },
-      { label: '📊 异常检测', to: '/aiops/anomaly' },
-      { label: '🧰 AI 工作台', to: '/aiops/workbench', module: 'agent' },
-      { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
-      { label: '◈ Claude',     to: '/aiops/claude',   module: 'agent' },
-      { label: '⚙ 智能配置',  to: '/aiops/config' },
     ],
   },
   {

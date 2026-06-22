@@ -43,7 +43,7 @@ const routes = [
   { path: '/cicd/jenkins', component: () => import('../views/JenkinsView.vue'), name: 'cicd-jenkins' },
 
   // ── 8. 可观测性 ───────────────────────────────────────────────
-  { path: '/observability/unified',  component: () => import('../views/ObsUnifiedView.vue'), name: 'obs-unified' },
+  { path: '/observability/unified',  redirect: '/observability/overview' },
   { path: '/observability/overview', component: () => import('../views/Dashboard.vue'),      name: 'obs-overview' },
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },
   { path: '/observability/logs',     component: () => import('../views/LogAnalysis.vue'),    name: 'obs-logs',     meta: { module: 'log' } },
@@ -53,6 +53,8 @@ const routes = [
 
   // ── 9. 事件墙 ─────────────────────────────────────────────────
   { path: '/events', component: () => import('../views/EventWallView.vue'), name: 'events' },
+  { path: '/event-center', component: () => import('../views/EventCenterView.vue'), name: 'event-center' },
+  { path: '/task-center',  component: () => import('../views/TaskCenterView.vue'),  name: 'task-center' },
 
   // ── 10. 工具市场 ──────────────────────────────────────────────
   { path: '/tools',         component: () => import('../views/ToolMarketView.vue'), name: 'tools' },
