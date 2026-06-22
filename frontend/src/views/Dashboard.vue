@@ -31,6 +31,30 @@
       </div>
     </div>
 
+    <!-- 协作链路 4 步引导条（SxDevOps 同款）-->
+    <div class="flow-strip">
+      <div class="flow-strip-label">协作链路</div>
+      <RouterLink class="flow-strip-step" to="/">
+        <span class="fss-num">1</span>
+        <div class="fss-text"><strong>看态势</strong><small>仪表盘 · SLA · KPI</small></div>
+      </RouterLink>
+      <span class="flow-strip-arrow">→</span>
+      <RouterLink class="flow-strip-step" to="/observability/logs">
+        <span class="fss-num">2</span>
+        <div class="fss-text"><strong>找证据</strong><small>日志 · Trace · 告警</small></div>
+      </RouterLink>
+      <span class="flow-strip-arrow">→</span>
+      <RouterLink class="flow-strip-step" to="/aiops/assistant">
+        <span class="fss-num">3</span>
+        <div class="fss-text"><strong>问系统</strong><small>AIOps 智能助手</small></div>
+      </RouterLink>
+      <span class="flow-strip-arrow">→</span>
+      <RouterLink class="flow-strip-step" to="/tickets/deploy">
+        <span class="fss-num">4</span>
+        <div class="fss-text"><strong>确认动作</strong><small>任务草稿 · 工单审批</small></div>
+      </RouterLink>
+    </div>
+
     <div class="stats-row">
       <div class="stat-card drillable" :class="{ 'stat-alert': overview.alert_count > 0 }"
            @click="goAlerts" title="查看告警历史">
@@ -649,6 +673,52 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
+}
+
+/* SxDevOps 协作链路引导条 */
+.flow-strip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow-x: auto;
+}
+.flow-strip-label {
+  font-size: 11.5px; color: var(--text-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.flow-strip-step {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px; border-radius: 10px;
+  background: var(--bg-surface);
+  text-decoration: none; color: inherit;
+  border: 1px solid var(--border);
+  transition: border-color .15s, background .15s, transform .15s;
+  flex-shrink: 0;
+}
+.flow-strip-step:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+  transform: translateY(-1px);
+}
+.fss-num {
+  width: 22px; height: 22px; flex-shrink: 0;
+  background: var(--accent); color: #fff;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+}
+.fss-text { display: flex; flex-direction: column; line-height: 1.25; }
+.fss-text strong { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.fss-text small { font-size: 11px; color: var(--text-muted); }
+.flow-strip-arrow { color: var(--accent); font-weight: 700; flex-shrink: 0; }
+
+@media (max-width: 1100px) {
+  .flow-strip-step .fss-text small { display: none; }
 }
 
 .stat-card.drillable { cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s; }
