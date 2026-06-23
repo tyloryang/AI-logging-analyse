@@ -7,6 +7,7 @@
 import { defineStore } from 'pinia'
 
 const PRESETS = [
+  { hours: 0.083333, label: '最近 5 分钟' },
   { hours: 0.25, label: '最近 15 分钟' },
   { hours: 0.5,  label: '最近 30 分钟' },
   { hours: 1,    label: '最近 1 小时'   },

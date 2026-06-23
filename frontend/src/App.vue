@@ -12,7 +12,7 @@
         </keep-alive>
       </main>
       <AIOpsAssistantFloat v-if="route.name !== 'aiops-assistant' && route.name !== 'aiops-workbench' && canUseAgent" />
-      <div class="topbar-tools">
+      <div v-if="route.name !== 'obs-logs'" class="topbar-tools">
         <TimeRangePicker />
       </div>
       <CommandPalette />

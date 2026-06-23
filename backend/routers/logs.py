@@ -48,7 +48,7 @@ def _build_cache_key(prefix: str, *parts) -> str:
 async def _get_clustered_templates(
     *,
     service: Optional[str],
-    hours: int,
+    hours: float,
     limit: int,
     top_n: int,
     level: Optional[str],
@@ -109,7 +109,7 @@ async def _trace_keyword_result(
     *,
     keyword: str,
     service: Optional[str],
-    hours: int,
+    hours: float,
     start_ns: Optional[int],
     end_ns: Optional[int],
     group_label: Optional[str] = None,
@@ -254,7 +254,7 @@ async def get_log_label_values(
 @router.get("/api/logs")
 async def get_logs(
     service: Optional[str] = Query(None, description="服务名称"),
-    hours: int = Query(24, description="查询时长（小时）"),
+    hours: float = Query(24, gt=0, description="查询时长（小时，支持小数）"),
     limit: int = Query(200, le=1000, description="每页条数（游标分页）"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn/info"),
     keyword: Optional[str] = Query(None, description="关键字过滤（不区分大小写）"),
@@ -296,7 +296,7 @@ async def get_log_context(
     service: Optional[str] = Query(None, description="服务名"),
     line_prefix: Optional[str] = Query(None, description="日志内容前缀，用于精确命中当前行"),
     labels_json: Optional[str] = Query(None, description="当前日志 labels 的 JSON 对象"),
-    hours: int = Query(24, description="查询时长（小时）"),
+    hours: float = Query(24, gt=0, description="查询时长（小时，支持小数）"),
     before: int = Query(249, ge=0, le=500, description="向前取多少条"),
     after: int = Query(250, ge=0, le=500, description="向后取多少条"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
@@ -333,7 +333,7 @@ async def get_log_context(
 
 @router.get("/api/logs/errors")
 async def get_error_logs(
-    hours: int = Query(24),
+    hours: float = Query(24, gt=0),
     limit: int = Query(5000, le=20000),
     group_label: Optional[str] = Query(None),
     group_value: Optional[str] = Query(None),
@@ -352,7 +352,7 @@ async def get_error_logs(
 
 
 @router.get("/api/metrics/errors")
-async def get_error_metrics(hours: int = Query(24)):
+async def get_error_metrics(hours: float = Query(24, gt=0)):
     """各服务错误数统计（限时返回：预算内拿不到先返回上次结果，后台继续刷新）"""
     try:
         counts = await loki.count_errors_by_service_fast(hours=hours)
@@ -369,7 +369,7 @@ async def get_error_metrics(hours: int = Query(24)):
 @router.get("/api/logs/templates")
 async def get_log_templates(
     service: Optional[str] = Query(None, description="服务名称"),
-    hours: int = Query(24, description="查询时长（小时）"),
+    hours: float = Query(24, gt=0, description="查询时长（小时，支持小数）"),
     limit: int = Query(10000, le=50000, description="参与聚类的日志上限"),
     top_n: int = Query(100, le=500, description="返回模板数上限"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn，不传则聚类全量日志"),
@@ -412,7 +412,7 @@ async def get_log_templates(
 async def trace_keyword(
     keyword: str = Query(..., description="追踪关键字，如 traceId 值"),
     service: Optional[str] = Query(None, description="服务名称"),
-    hours: int = Query(24, description="查询时长（小时）"),
+    hours: float = Query(24, gt=0, description="查询时长（小时，支持小数）"),
     group_label: Optional[str] = Query(None, description="额外的 Loki 分组标签名"),
     group_value: Optional[str] = Query(None, description="额外的 Loki 分组标签值"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
@@ -443,7 +443,7 @@ async def trace_keyword(
 @router.get("/api/analyze/templates/stream")
 async def analyze_templates_stream(
     service: Optional[str] = Query(None),
-    hours: int = Query(24),
+    hours: float = Query(24, gt=0),
     level: Optional[str] = Query(None),
     keyword: Optional[str] = Query(None),
     group_label: Optional[str] = Query(None),
@@ -500,7 +500,7 @@ async def analyze_templates_stream(
 @router.get("/api/analyze/stream")
 async def analyze_logs_stream(
     service:    Optional[str] = Query(None),
-    hours:      int           = Query(24),
+    hours:      float         = Query(24, gt=0),
     level:      Optional[str] = Query(None),
     keyword:    Optional[str] = Query(None),
     group_label: Optional[str] = Query(None),

@@ -15,6 +15,9 @@
         </div>
         <!-- 相对时间选择 -->
         <select v-if="timeMode === 'relative'" v-model="hours" class="time-select" @change="onParamChange">
+          <option value="0.083333">最近 5 分钟</option>
+          <option value="0.25">最近 15 分钟</option>
+          <option value="0.5">最近 30 分钟</option>
           <option value="1">最近 1 小时</option>
           <option value="6">最近 6 小时</option>
           <option value="24">最近 24 小时</option>
@@ -718,7 +721,7 @@ const serviceGroups  = ref([])   // 按 namespace 分组 [{namespace, label, ser
 const openNs         = ref(new Set())  // 已展开的 namespace
 const selectedService = ref('')
 const serviceSearch  = ref('')   // 左侧服务名搜索
-const hours          = ref('1')
+const hours          = ref('0.083333')
 const loadingSvcs    = ref(false)
 const loadingCounts  = ref(false)   // 错误数后台补充进行中
 const groupBy        = ref('namespace')
