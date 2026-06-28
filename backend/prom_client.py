@@ -21,11 +21,18 @@ class PrometheusClient:
         self._client = httpx.AsyncClient(**kw)
         logger.info("[Prometheus] url=%s, auth=%s", self.base_url, "yes" if self.auth else "no")
 
-    async def query(self, promql: str, timeout: float | None = None) -> list[dict]:
+    async def query(
+        self,
+        promql: str,
+        timeout: float | None = None,
+        time_ts: float | int | str | None = None,
+    ) -> list[dict]:
         """执行即时查询"""
         url = f"{self.base_url}/api/v1/query"
         logger.debug("[Prometheus] GET %s?query=%s", url, promql[:60])
         kw = {"params": {"query": promql}}
+        if time_ts is not None:
+            kw["params"]["time"] = str(time_ts)
         if timeout:
             kw["timeout"] = httpx.Timeout(timeout)
         resp = await self._client.get(url, **kw)
@@ -34,6 +41,52 @@ class PrometheusClient:
         if data.get("status") != "success":
             raise RuntimeError(f"Prometheus query failed: {data}")
         return data.get("data", {}).get("result", [])
+
+    async def query_instant(
+        self,
+        promql: str,
+        timeout: float | None = None,
+        time_ts: float | int | str | None = None,
+    ) -> list[dict]:
+        return await self.query(promql, timeout=timeout, time_ts=time_ts)
+
+    async def query_range(
+        self,
+        promql: str,
+        start: float | int | str,
+        end: float | int | str,
+        step: float | int | str,
+        timeout: float | None = None,
+    ) -> list[dict]:
+        url = f"{self.base_url}/api/v1/query_range"
+        kw = {
+            "params": {
+                "query": promql,
+                "start": str(start),
+                "end": str(end),
+                "step": str(step),
+            }
+        }
+        if timeout:
+            kw["timeout"] = httpx.Timeout(timeout)
+        resp = await self._client.get(url, **kw)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") != "success":
+            raise RuntimeError(f"Prometheus range query failed: {data}")
+        return data.get("data", {}).get("result", [])
+
+    async def label_values(self, label: str = "__name__", timeout: float | None = None) -> list[str]:
+        url = f"{self.base_url}/api/v1/label/{label}/values"
+        kw = {}
+        if timeout:
+            kw["timeout"] = httpx.Timeout(timeout)
+        resp = await self._client.get(url, **kw)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") != "success":
+            raise RuntimeError(f"Prometheus label values failed: {data}")
+        return [str(value) for value in data.get("data", [])]
 
     async def get_targets(self) -> list[dict]:
         """获取所有 Prometheus targets"""

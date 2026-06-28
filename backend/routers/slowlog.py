@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from slow_log_parser import parse_slow_log, build_summary
 from sql_cluster import cluster_slow_queries
 from state import load_cmdb, load_credentials, decrypt_password, analyzer
+from ssh_utils import ssh_connect_options
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -55,8 +56,13 @@ async def _read_remote_file(
 
     try:
         async with asyncssh.connect(
-            host, port=port, username=username, password=password,
-            known_hosts=None, connect_timeout=15,
+            **ssh_connect_options(
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                connect_timeout=15,
+            )
         ) as conn:
             try:
                 result = await asyncio.wait_for(

@@ -251,6 +251,43 @@ async def get_log_label_values(
 
 # ── 日志查询 ──────────────────────────────────────────────────────────────────
 
+@router.get("/api/logs/query-range")
+async def query_loki_range(
+    query: str = Query(..., description="LogQL query"),
+    hours: float = Query(1, gt=0, le=168, description="Relative query window in hours"),
+    limit: int = Query(200, ge=1, le=5000),
+    direction: str = Query("backward", pattern="^(forward|backward)$"),
+    start_time: Optional[str] = Query(None, description="ISO start time"),
+    end_time: Optional[str] = Query(None, description="ISO end time"),
+):
+    """Run a raw Loki query_range and normalize stream rows for query pages."""
+    try:
+        end_ns = _parse_time_ns(end_time)
+        if end_ns is None:
+            end_ns = int(datetime.now(timezone.utc).timestamp() * 1e9)
+        start_ns = _parse_time_ns(start_time)
+        if start_ns is None:
+            start_ns = int(end_ns - hours * 3600 * 1e9)
+        rows = await loki.query_range(
+            query=query,
+            start_ts=start_ns,
+            end_ts=end_ns,
+            limit=limit,
+            direction=direction,
+            use_scan_timeout=True,
+        )
+        return {
+            "data": rows,
+            "total": len(rows),
+            "query": query,
+            "start_ns": start_ns,
+            "end_ns": end_ns,
+            "direction": direction,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get("/api/logs")
 async def get_logs(
     service: Optional[str] = Query(None, description="服务名称"),

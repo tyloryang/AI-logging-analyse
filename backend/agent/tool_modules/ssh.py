@@ -24,6 +24,7 @@ async def execute_ssh_command(
     """
     import asyncssh
     from state import load_hosts_list, decrypt_password, load_credentials
+    from ssh_utils import ssh_connect_options
 
     danger = _check_safe(command)
     if danger:
@@ -68,8 +69,13 @@ async def execute_ssh_command(
 
     try:
         async with asyncssh.connect(
-            host=ip, port=port, username=username, password=password,
-            known_hosts=None, connect_timeout=10,
+            **ssh_connect_options(
+                host=ip,
+                port=port,
+                username=username,
+                password=password,
+                connect_timeout=10,
+            )
         ) as conn:
             result = await conn.run(command, timeout=timeout)
             stdout = (result.stdout or "").strip()

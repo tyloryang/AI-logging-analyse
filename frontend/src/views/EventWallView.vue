@@ -17,6 +17,11 @@
           <option value="">全部来源</option>
           <option value="prometheus">Prometheus</option>
           <option value="loki">Loki</option>
+          <option value="jenkins">Jenkins</option>
+          <option value="gitlab">GitLab</option>
+          <option value="argocd">ArgoCD</option>
+          <option value="jira">Jira</option>
+          <option value="custom">Custom</option>
         </select>
         <select v-model="hours" class="filter-select">
           <option :value="1">最近 1h</option>
@@ -116,7 +121,15 @@ const SEVERITIES = [
   { key: 'info',     label: 'Info' },
 ]
 const SEV_LABEL    = { critical: '严重', error: '错误', warning: '警告', info: '信息' }
-const SOURCE_LABEL = { prometheus: 'Prometheus', loki: 'Loki' }
+const SOURCE_LABEL = {
+  prometheus: 'Prometheus',
+  loki: 'Loki',
+  jenkins: 'Jenkins',
+  gitlab: 'GitLab',
+  argocd: 'ArgoCD',
+  jira: 'Jira',
+  custom: 'Custom',
+}
 
 const events      = ref([])
 const loading     = ref(false)

@@ -131,6 +131,7 @@ const MENU = [
     id: 'host', icon: 'host', label: '主机中心',
     children: [
       { label: 'CMDB',     to: '/cmdb', module: 'cmdb' },
+      { label: '任务工作台', to: '/hosts/workbench' },
       { label: '任务中心', to: '/hosts/tasks' },
       { label: '定时任务', to: '/hosts/cron' },
       { label: '主机申请', to: '/hosts/apply' },
@@ -173,8 +174,11 @@ const MENU = [
     id: 'obs', icon: 'obs', label: '可观测性',
     children: [
       { label: '统一观测台', to: '/observability/unified' },
+      { label: '可视化',   to: '/observability/visualization', module: 'metrics' },
+      { label: '指标查询',   to: '/observability/metrics-query', module: 'metrics' },
+      { label: '日志中心',   to: '/observability/logs-query',    module: 'log' },
       { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
-      { label: '日志中心',   to: '/observability/logs',    module: 'log' },
+      { label: '日志分析',   to: '/observability/logs',    module: 'log' },
       { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
       { label: '接口 RED',   to: '/observability/api-red', module: 'skywalking' },
       { label: '告警中心',   to: '/observability/alerts',  module: 'alert' },

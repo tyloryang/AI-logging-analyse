@@ -1093,14 +1093,22 @@
               正在加载详情...
             </div>
             <pre v-else-if="detailView === 'json'" class="json-view">{{ detailText }}</pre>
+            <!-- YAML：编辑态用 textarea；只读态用可折叠视图 -->
             <textarea
-              v-else-if="detailView === 'yaml'"
+              v-else-if="detailView === 'yaml' && yamlEditing"
               v-model="yamlBuffer"
               class="yaml-editor"
-              :readonly="!yamlEditing"
               spellcheck="false"
               @input="onYamlInput"
             ></textarea>
+            <div v-else-if="detailView === 'yaml'" class="yaml-fold-view">
+              <div class="yaml-fold-toolbar">
+                <button class="btn-ghost btn-xs" @click="expandAllYaml">展开全部</button>
+                <button class="btn-ghost btn-xs" @click="collapseTopLevel">折叠 spec / status</button>
+                <span class="yaml-fold-hint">点击 ▶/▼ 折叠对应节点</span>
+              </div>
+              <div class="yaml-fold-pre" v-html="yamlFoldHtml" @click="onYamlFoldClick"></div>
+            </div>
             <!-- Events tab -->
             <div v-else class="events-panel">
               <div v-if="eventsLoading" class="loading-row compact">
@@ -1195,12 +1203,35 @@
             </button>
           </div>
           <div v-if="logError" class="modal-tip modal-tip-error">{{ logError }}</div>
+          <!-- 多关键字过滤栏（支持空格分隔 + 排除模式 -prefix）-->
+          <div class="log-filter-bar">
+            <input
+              v-model="logFilterKeywords"
+              class="log-filter-input"
+              placeholder="多关键字过滤，空格分隔。前缀 - 表示排除（例：ERROR timeout -DEBUG）"
+              spellcheck="false"
+              autocapitalize="off"
+            />
+            <label class="log-filter-toggle" :title="logFilterMode === 'any' ? '任一关键字匹配即显示' : '所有关键字都需匹配才显示'">
+              <input type="checkbox" :checked="logFilterMode === 'all'" @change="logFilterMode = ($event.target.checked ? 'all' : 'any')" />
+              <span>{{ logFilterMode === 'all' ? '需全部命中' : '任一命中即可' }}</span>
+            </label>
+            <label class="log-filter-toggle">
+              <input type="checkbox" v-model="logFilterCase" />
+              <span>区分大小写</span>
+            </label>
+            <span class="log-filter-stat" v-if="logFilterKeywords.trim()">
+              <strong>{{ logFilteredLines.length }}</strong> / {{ logTotalLines }} 行命中
+            </span>
+            <button v-if="logFilterKeywords" class="btn-ghost log-filter-clear" @click="logFilterKeywords = ''">清空</button>
+          </div>
           <div class="code-panel">
             <div v-if="logLoading && !logFollowing" class="loading-row compact">
               <span class="spinner"></span>
               正在加载日志...
             </div>
-            <pre v-else ref="logViewEl" class="log-view">{{ logText || '暂无日志输出' }}<span v-if="logFollowing" class="log-cursor">▌</span></pre>
+            <pre v-else-if="!logText" class="log-view">暂无日志输出</pre>
+            <pre v-else ref="logViewEl" class="log-view"><template v-for="(seg, i) in logRenderSegments" :key="i"><span v-if="seg.h" :class="'hl hl-' + (seg.idx % 6)">{{ seg.t }}</span><template v-else>{{ seg.t }}</template></template><span v-if="logFollowing" class="log-cursor">▌</span></pre>
           </div>
         </div>
         <div class="modal-actions">
@@ -1447,7 +1478,89 @@ const detailLoading = ref(false)
 const detailError = ref('')
 const detailData = ref(null)
 // 详情视图 + YAML 编辑状态
-const detailView = ref('json')        // 'json' | 'yaml' | 'events'
+const detailView = ref('yaml')        // 默认 YAML（更符合运维习惯）| json | events
+const collapsedYamlPaths = ref(new Set())   // 折叠的节点路径集合（行号 ID）
+
+function _escHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
+
+// 把 yamlBuffer 解析成可折叠 HTML：扫描每行缩进，给"key:"行注入 ▶/▼ + data-path
+const yamlFoldHtml = computed(() => {
+  const text = yamlBuffer.value || ''
+  if (!text) return '<span class="yaml-empty">（无内容）</span>'
+  const lines = text.split('\n')
+  const out = []
+  // 计算每行缩进等级（2 空格 / 1）
+  const indent = (l) => { const m = l.match(/^( *)/); return m ? m[1].length : 0 }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const ind = indent(line)
+    // 判断是否折叠：找最近的"祖先 path id"在 collapsedPaths 里
+    let hidden = false
+    for (const pid of collapsedYamlPaths.value) {
+      // pid 形如 "lineNo:indent"
+      const [pLine, pInd] = pid.split(':').map(Number)
+      if (i > pLine && ind > pInd) {
+        // 仍属于这个折叠块（直到下一个相同或更小缩进的行）
+        // 检查中间有没有跳出过
+        let still = true
+        for (let j = pLine + 1; j < i; j++) {
+          if (indent(lines[j]) <= pInd && lines[j].trim()) { still = false; break }
+        }
+        if (still) { hidden = true; break }
+      }
+    }
+    if (hidden) continue
+
+    // 判断是否是可折叠 key（行尾以 : 结尾或 :{} :{...} 但下一行缩进更深）
+    const trimmed = line.trimEnd()
+    const nextLine = lines[i + 1] || ''
+    const canFold = trimmed.endsWith(':') && nextLine.trim() && indent(nextLine) > ind
+    const pathId = `${i}:${ind}`
+    const isCollapsed = collapsedYamlPaths.value.has(pathId)
+    const folder = canFold
+      ? `<span class="yaml-folder" data-pid="${pathId}">${isCollapsed ? '▶' : '▼'}</span>`
+      : '<span class="yaml-folder-spacer"></span>'
+    const summary = canFold && isCollapsed ? ` <span class="yaml-fold-summary">{ ... }</span>` : ''
+    // 给 key 染色
+    const colored = _escHtml(line).replace(
+      /^(\s*)([A-Za-z0-9_\-]+)(:)(\s.*)?$/,
+      (_, sp, k, c, rest) => `${sp}<span class="yk">${k}</span>${c}<span class="yv">${rest || ''}</span>`
+    )
+    out.push(`<div class="yaml-line">${folder}<span class="yaml-line-text">${colored}${summary}</span></div>`)
+  }
+  return out.join('')
+})
+
+function _toggleYamlFolder(pid) {
+  const s = new Set(collapsedYamlPaths.value)
+  if (s.has(pid)) s.delete(pid); else s.add(pid)
+  collapsedYamlPaths.value = s
+}
+
+function expandAllYaml() { collapsedYamlPaths.value = new Set() }
+function collapseTopLevel() {
+  // 折叠所有缩进=0 的可折叠 key（spec / status / metadata 等顶级节点）
+  const lines = (yamlBuffer.value || '').split('\n')
+  const s = new Set()
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trimEnd()
+    if (!trimmed.endsWith(':')) continue
+    const ind = (lines[i].match(/^( *)/) || ['', ''])[1].length
+    if (ind !== 0) continue
+    const next = lines[i + 1] || ''
+    if (next.trim() && (next.match(/^( *)/) || ['', ''])[1].length > 0) {
+      s.add(`${i}:0`)
+    }
+  }
+  collapsedYamlPaths.value = s
+}
+
+function onYamlFoldClick(e) {
+  const t = e.target.closest('.yaml-folder')
+  if (!t) return
+  const pid = t.getAttribute('data-pid')
+  if (pid) _toggleYamlFolder(pid)
+}
 const yamlBuffer = ref('')            // textarea 双向绑定
 const yamlOriginal = ref('')          // 加载后的原始 yaml（撤销用）
 const yamlEditing = ref(false)
@@ -1520,6 +1633,76 @@ const showLogModal = ref(false)
 const logLoading = ref(false)
 const logError = ref('')
 const logText = ref('')
+
+// ── 多关键字过滤 + 高亮（参考 grep -e a -e b -e c）─────────────────────────
+const logFilterKeywords = ref('')
+const logFilterMode = ref('any')     // any | all
+const logFilterCase = ref(false)
+
+// 解析关键字：空格分隔；以 - 开头表示排除；保留引号包裹的整段
+function parseLogKeywords(raw) {
+  const tokens = []
+  const re = /"([^"]+)"|(\S+)/g
+  let m
+  while ((m = re.exec(raw)) !== null) {
+    const t = m[1] || m[2]
+    if (!t) continue
+    if (t.startsWith('-') && t.length > 1) tokens.push({ neg: true, text: t.slice(1) })
+    else tokens.push({ neg: false, text: t })
+  }
+  return tokens
+}
+
+const logKwTokens = computed(() => parseLogKeywords(logFilterKeywords.value.trim()))
+const logTotalLines = computed(() => (logText.value ? logText.value.split('\n').length : 0))
+
+function _match(line, kw) {
+  return logFilterCase.value ? line.includes(kw) : line.toLowerCase().includes(kw.toLowerCase())
+}
+
+// 过滤后命中的行（原始字符串），用于统计 + 渲染
+const logFilteredLines = computed(() => {
+  if (!logKwTokens.value.length) return []
+  const pos = logKwTokens.value.filter(t => !t.neg).map(t => t.text)
+  const neg = logKwTokens.value.filter(t => t.neg).map(t => t.text)
+  const lines = (logText.value || '').split('\n')
+  return lines.filter(line => {
+    if (neg.some(k => _match(line, k))) return false
+    if (!pos.length) return true
+    return logFilterMode.value === 'all'
+      ? pos.every(k => _match(line, k))
+      : pos.some(k => _match(line, k))
+  })
+})
+
+// 渲染分段：把 logText 按高亮关键字切片，命中片段标 hl + 颜色 idx；
+// 无关键字时整段一个 segment，纯文本输出。
+const logRenderSegments = computed(() => {
+  const text = logText.value || ''
+  if (!text) return []
+  const tokens = logKwTokens.value.filter(t => !t.neg).map(t => t.text)
+  if (!tokens.length) return [{ t: text, h: false }]
+  // 过滤模式：只渲染命中的行（其余隐藏，省去大文本的 DOM 开销）
+  let workText = text
+  if (tokens.length || logKwTokens.value.length) {
+    workText = logFilteredLines.value.join('\n')
+    if (!workText) return [{ t: '（无命中行）', h: false }]
+  }
+  // 构造单一正则同时匹配所有 token，捕获组保留原文，标颜色 idx
+  const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`(${tokens.map(escape).join('|')})`, logFilterCase.value ? 'g' : 'gi')
+  const out = []
+  let last = 0
+  for (const m of workText.matchAll(re)) {
+    if (m.index > last) out.push({ t: workText.slice(last, m.index), h: false })
+    const matched = m[0]
+    const idx = tokens.findIndex(k => logFilterCase.value ? k === matched : k.toLowerCase() === matched.toLowerCase())
+    out.push({ t: matched, h: true, idx: Math.max(0, idx) })
+    last = m.index + matched.length
+  }
+  if (last < workText.length) out.push({ t: workText.slice(last), h: false })
+  return out
+})
 const logFollowing = ref(false)
 const logViewEl = ref(null)
 let _logEventSource = null
@@ -1833,7 +2016,8 @@ function resetDetailState() {
   detailLoading.value = false
   detailError.value = ''
   detailData.value = null
-  detailView.value = 'json'
+  detailView.value = 'yaml'   // 默认 YAML
+  collapsedYamlPaths.value = new Set()
   yamlBuffer.value = ''
   yamlOriginal.value = ''
   yamlEditing.value = false
@@ -3863,6 +4047,72 @@ onBeforeUnmount(() => { _destroyExec() })
   background: var(--bg-surface);
   overflow: auto;
 }
+
+/* ── 日志多关键字过滤栏 ───────────────────────────────────── */
+.log-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; margin: 6px 0 8px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 10px; flex-wrap: wrap;
+}
+.log-filter-input {
+  flex: 1; min-width: 240px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 12px;
+  font-size: 12.5px; font-family: var(--font-mono);
+  color: inherit; outline: none;
+}
+.log-filter-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12); }
+.log-filter-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--text-secondary);
+  cursor: pointer; user-select: none; white-space: nowrap;
+}
+.log-filter-toggle input { width: auto; cursor: pointer; }
+.log-filter-stat { font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+.log-filter-stat strong { color: var(--accent); font-family: var(--font-mono); margin: 0 2px; }
+.log-filter-clear { font-size: 11px; padding: 2px 8px; }
+
+/* ── YAML 折叠视图 ──────────────────────────────────────── */
+.yaml-fold-view { padding: 8px 0; }
+.yaml-fold-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 12px 8px; border-bottom: 1px solid var(--border-light);
+}
+.yaml-fold-toolbar .btn-xs { font-size: 11px; padding: 2px 10px; border-radius: 6px; }
+.yaml-fold-hint { font-size: 11.5px; color: var(--text-muted); margin-left: auto; }
+.yaml-fold-pre {
+  margin: 0; padding: 10px 14px;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre; overflow-x: auto;
+  user-select: text;
+}
+.yaml-line {
+  display: flex; align-items: flex-start; gap: 6px;
+  border-radius: 4px; padding: 0 2px;
+}
+.yaml-line:hover { background: var(--bg-hover); }
+.yaml-folder {
+  display: inline-block; width: 14px;
+  color: var(--accent); cursor: pointer; user-select: none;
+  font-size: 10px; line-height: 1.55; flex-shrink: 0;
+}
+.yaml-folder-spacer { display: inline-block; width: 14px; flex-shrink: 0; }
+.yaml-line-text { flex: 1; min-width: 0; }
+.yk { color: var(--accent); font-weight: 600; }
+.yv { color: var(--text-primary); }
+.yaml-fold-summary { color: var(--text-muted); font-style: italic; margin-left: 4px; opacity: .6; }
+.yaml-empty { color: var(--text-muted); padding: 14px; }
+
+/* 多关键字 6 色高亮 */
+.log-view .hl { padding: 0 2px; border-radius: 3px; font-weight: 600; }
+.log-view .hl-0 { background: rgba(217,119,87,.32); color: var(--text-primary); }
+.log-view .hl-1 { background: rgba(99,130,91,.32); color: var(--text-primary); }
+.log-view .hl-2 { background: rgba(96,165,250,.32); color: var(--text-primary); }
+.log-view .hl-3 { background: rgba(197,138,70,.34); color: var(--text-primary); }
+.log-view .hl-4 { background: rgba(189,86,79,.30); color: var(--text-primary); }
+.log-view .hl-5 { background: rgba(168,85,247,.30); color: var(--text-primary); }
 .json-view,
 .log-view,
 .yaml-editor {

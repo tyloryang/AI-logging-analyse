@@ -14,10 +14,10 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from cachetools import TTLCache
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -285,12 +285,245 @@ async def _get_sw_trace_count(hours: float = 1) -> tuple[int, list[dict]]:
 
 # ── 辅助：从 Prometheus 获取告警数（alertmanager alerts） ──────────────────
 
+_HOST_ALERT_KEYWORDS = (
+    "host",
+    "node",
+    "instancedown",
+    "machine",
+    "filesystem",
+    "disk",
+    "load",
+    "主机",
+    "节点",
+    "磁盘",
+)
+
+
+def _load_active_alert_groups(limit: int = 500) -> list[dict]:
+    try:
+        from services.alert_dedup import list_groups as _list_groups
+        groups = _list_groups(status=None, limit=limit)
+        return [g for g in groups if g.get("status") not in ("resolved", "suppressed")]
+    except Exception as e:
+        logger.warning("[obs] Alert groups load failed: %s", e)
+        return []
+
+
+def _collect_alert_labels(group: dict) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for source in (group.get("group_labels"), group.get("common_labels"), group.get("labels")):
+        if isinstance(source, dict):
+            labels.update({str(k): str(v) for k, v in source.items() if v is not None})
+
+    for raw in group.get("raw_alerts", []) or []:
+        if not isinstance(raw, dict):
+            continue
+        raw_labels = raw.get("labels", {})
+        if isinstance(raw_labels, dict):
+            labels.update({str(k): str(v) for k, v in raw_labels.items() if v is not None})
+
+    for key in ("alertname", "service", "severity", "namespace", "env"):
+        value = group.get(key)
+        if value not in (None, ""):
+            labels.setdefault(key, str(value))
+    return labels
+
+
+def _host_identity_values(hosts: list[dict]) -> set[str]:
+    values: set[str] = set()
+    for host in hosts:
+        for key in ("ip", "hostname", "name", "instance"):
+            raw = str(host.get(key) or "").strip().lower()
+            if not raw:
+                continue
+            values.add(raw)
+            values.add(raw.split(":", 1)[0])
+            if key == "ip":
+                values.add(f"{raw}:9100")
+    values.discard("")
+    return values
+
+
+def _is_host_related_alert(group: dict, host_values: set[str]) -> bool:
+    labels = _collect_alert_labels(group)
+    alertname = str(labels.get("alertname") or group.get("alertname") or "").lower()
+    service = str(labels.get("service") or group.get("service") or "").lower()
+    job = str(labels.get("job") or "").lower()
+    summary = " ".join(
+        str(group.get(key) or "")
+        for key in ("summary", "description")
+    ).lower()
+    infra_text = " ".join([alertname, service, job, summary])
+
+    if any(keyword in infra_text for keyword in _HOST_ALERT_KEYWORDS):
+        return True
+
+    identity_keys = ("instance", "node", "host", "hostname", "exported_instance", "nodename")
+    for key in identity_keys:
+        value = str(labels.get(key) or "").strip().lower()
+        if not value:
+            continue
+        if value in host_values or value.split(":", 1)[0] in host_values:
+            return True
+
+    return False
+
+
+def _host_status_is_abnormal(host: dict) -> bool:
+    status = str(host.get("status") or "").strip().lower()
+    if not status:
+        return False
+    return status not in {"active", "online", "running", "normal", "ok", "healthy"}
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _count_not_ready(summary: dict, key: str, ready_key: str) -> int:
+    item = summary.get(key) or {}
+    return max(0, _to_int(item.get("total")) - _to_int(item.get(ready_key)))
+
+
+def _resource_total_from_k8s_summary(summary: dict) -> int:
+    return sum(
+        _to_int((summary.get(key) or {}).get("total"))
+        for key in (
+            "pods",
+            "nodes",
+            "deployments",
+            "daemonSets",
+            "statefulSets",
+            "jobs",
+            "cronJobs",
+        )
+    )
+
+
+def _container_abnormal_from_k8s_summary(summary: dict) -> dict:
+    pods = _count_not_ready(summary, "pods", "running")
+    nodes = _count_not_ready(summary, "nodes", "ready")
+    deployments = _count_not_ready(summary, "deployments", "ready")
+    daemonsets = _count_not_ready(summary, "daemonSets", "ready")
+    statefulsets = _count_not_ready(summary, "statefulSets", "ready")
+    workloads = deployments + daemonsets + statefulsets
+    return {
+        "total": pods + nodes + workloads,
+        "pods": pods,
+        "nodes": nodes,
+        "workloads": workloads,
+        "deployments": deployments,
+        "daemonSets": daemonsets,
+        "statefulSets": statefulsets,
+    }
+
+
+async def _get_k8s_resource_health_summary() -> dict:
+    empty = {
+        "available": False,
+        "cluster": {},
+        "resource_count": 0,
+        "abnormal_count": 0,
+        "abnormal": {
+            "total": 0,
+            "pods": 0,
+            "nodes": 0,
+            "workloads": 0,
+            "deployments": 0,
+            "daemonSets": 0,
+            "statefulSets": 0,
+        },
+        "summary": {},
+    }
+    try:
+        from routers import kubernetes as k8s
+
+        cluster = k8s._get_cluster()
+        cache_key = cluster["id"]
+        summary = k8s._SUMMARY_CACHE.get(cache_key)
+        if summary is None:
+            core_task = asyncio.to_thread(k8s._fetch_core_summary_resources, cluster["id"])
+            apps_task = asyncio.to_thread(k8s._fetch_apps_summary_resources, cluster["id"])
+            batch_task = asyncio.to_thread(k8s._fetch_batch_summary_resources, cluster["id"])
+            (pods, nodes), \
+            (deps, daemonsets, statefulsets), \
+            (jobs, cronjobs) = await asyncio.wait_for(
+                asyncio.gather(core_task, apps_task, batch_task),
+                timeout=8,
+            )
+            summary = k8s._build_cluster_summary_payload(
+                cluster,
+                pods,
+                deps,
+                daemonsets,
+                statefulsets,
+                jobs,
+                cronjobs,
+                nodes,
+            )
+            k8s._SUMMARY_CACHE[cache_key] = summary
+
+        abnormal = _container_abnormal_from_k8s_summary(summary)
+        return {
+            "available": True,
+            "cluster": summary.get("cluster", {}),
+            "resource_count": _resource_total_from_k8s_summary(summary),
+            "abnormal_count": abnormal["total"],
+            "abnormal": abnormal,
+            "summary": summary,
+        }
+    except asyncio.TimeoutError:
+        logger.warning("[obs] K8s resource summary timed out")
+        return {**empty, "error": "timeout"}
+    except HTTPException as e:
+        logger.debug("[obs] K8s resource summary skipped: %s", e.detail)
+        return {**empty, "error": str(e.detail)}
+    except Exception as e:
+        logger.warning("[obs] K8s resource summary failed: %s", e)
+        return {**empty, "error": str(e)}
+
+
+async def _get_resource_health_summary() -> dict:
+    hosts = load_hosts_list()
+    active_alerts = _load_active_alert_groups(limit=500)
+    host_values = _host_identity_values(hosts)
+    host_alerts = [
+        group for group in active_alerts
+        if _is_host_related_alert(group, host_values)
+    ]
+    k8s_summary = await _get_k8s_resource_health_summary()
+    host_count = len(hosts)
+    host_status_abnormal = sum(1 for host in hosts if _host_status_is_abnormal(host))
+    container_resource_count = _to_int(k8s_summary.get("resource_count"))
+    container_abnormal_count = _to_int(k8s_summary.get("abnormal_count"))
+    resource_count = host_count + container_resource_count
+    return {
+        "resource_count": resource_count,
+        "resource_summary": {
+            "total": resource_count,
+            "hosts": host_count,
+            "containers": container_resource_count,
+            "k8s_available": bool(k8s_summary.get("available")),
+        },
+        "host_abnormal_alert_count": len(host_alerts),
+        "host_resource_summary": {
+            "total": host_count,
+            "abnormal_alerts": len(host_alerts),
+            "abnormal_status": host_status_abnormal,
+        },
+        "container_resource_count": container_resource_count,
+        "container_resource_abnormal_count": container_abnormal_count,
+        "container_resource_summary": k8s_summary,
+    }
+
+
 async def _get_alert_count() -> tuple[int, list[dict]]:
     """返回 (active_alert_count, recent_alerts)，直接读 AIOps 告警存储。"""
     try:
-        from services.alert_dedup import list_groups as _list_groups
-        groups = _list_groups(status=None, limit=200)
-        active = [g for g in groups if g.get("status") not in ("resolved", "suppressed")]
+        active = _load_active_alert_groups(limit=200)
         recent = []
         for g in active[:10]:
             recent.append({
@@ -436,6 +669,9 @@ async def get_overview(
     """
     汇总返回：
       - alert_count      告警触发数
+      - resource_count   CMDB + K8s 资源数量
+      - host_abnormal_alert_count 主机运行异常告警数
+      - container_resource_abnormal_count 容器资源异常数量
       - error_count      服务错误数
       - trace_count      Trace 量
       - grafana_count    Grafana 看板数
@@ -460,10 +696,12 @@ async def get_overview(
 
         (alert_count, recent_alerts), \
         (error_count, error_breakdown), \
-        (trace_count, recent_traces) = await asyncio.gather(
+        (trace_count, recent_traces), \
+        resource_health = await asyncio.gather(
             _get_alert_count(),
             _get_loki_error_count(window_hours),
             _get_sw_trace_count(window_hours),
+            _get_resource_health_summary(),
         )
 
         problem_services = await _get_problem_services(
@@ -475,6 +713,7 @@ async def get_overview(
 
         payload = {
             "alert_count": alert_count,
+            **resource_health,
             "error_count": error_count,
             "trace_count": trace_count,
             "grafana_count": len(grafana_boards),
@@ -787,6 +1026,79 @@ class GrafanaBoardIn(BaseModel):
     title: str
     uid: str = ""
     url: str = ""   # 完整 URL（直接填写时优先；uid 用于拼接）
+
+
+class PrometheusInstantQueryIn(BaseModel):
+    query: str
+    time: Optional[float] = None
+
+
+class PrometheusRangeQueryIn(BaseModel):
+    query: str
+    start: float
+    end: float
+    step: int = 60
+
+
+@router.post("/metrics/query")
+async def query_prometheus_instant(body: PrometheusInstantQueryIn):
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        result = await prom.query_instant(query, timeout=20, time_ts=body.time)
+        return {
+            "status": "success",
+            "result_type": "vector",
+            "data": result,
+            "query": query,
+            "series_count": len(result),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/metrics/query-range")
+async def query_prometheus_range(body: PrometheusRangeQueryIn):
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    if body.end <= body.start:
+        raise HTTPException(status_code=400, detail="end must be greater than start")
+    step = max(1, min(int(body.step or 60), 3600))
+    try:
+        result = await prom.query_range(
+            query,
+            start=body.start,
+            end=body.end,
+            step=step,
+            timeout=30,
+        )
+        return {
+            "status": "success",
+            "result_type": "matrix",
+            "data": result,
+            "query": query,
+            "start": body.start,
+            "end": body.end,
+            "step": step,
+            "series_count": len(result),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/metrics/label-values/{label}")
+async def prometheus_label_values(
+    label: str,
+    limit: int = Query(200, ge=1, le=5000),
+):
+    try:
+        values = await prom.label_values(label, timeout=15)
+        values = sorted(values)
+        return {"label": label, "data": values[:limit], "total": len(values)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.get("/grafana/boards")

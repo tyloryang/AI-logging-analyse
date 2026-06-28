@@ -496,6 +496,29 @@
             </div>
           </div>
 
+          <!-- AI 翻译条（dbx 风格：自然语言 → Redis 命令） -->
+          <div class="ai-translate-bar">
+            <span class="ai-spark">✨</span>
+            <input
+              v-model="aiQuery"
+              class="ai-translate-input"
+              placeholder="用自然语言描述意图，AI 生成 Redis 命令。例：『查所有 session: 开头的 key 总数』"
+              @keydown.enter.prevent="aiTranslate"
+            />
+            <button class="con-btn-run" :disabled="aiTranslating || !aiQuery.trim()" @click="aiTranslate">
+              <span v-if="aiTranslating" class="spinner-mini"></span>{{ aiTranslating ? '生成中' : 'AI 生成' }}
+            </button>
+          </div>
+          <div v-if="aiResult" class="ai-result" :class="'risk-' + (aiResult.risk || 'low')">
+            <div class="ai-result-cmd">
+              <span class="ai-result-label">建议命令：</span>
+              <code>{{ aiResult.command }}</code>
+              <button class="con-btn-clear" title="填入命令行" @click="consoleCmd = aiResult.command; aiResult = null">→ 填入</button>
+            </div>
+            <div class="ai-result-explain">{{ aiResult.explain }}</div>
+            <div v-if="aiResult.risk_reason" class="ai-result-risk">⚠ {{ aiResult.risk_reason }}</div>
+          </div>
+
           <!-- 输入区 -->
           <div class="con-input-wrap">
             <span class="con-prompt-static">[db{{ consoleDb }}]&gt;</span>
@@ -1016,6 +1039,32 @@ function formatSlowTs(ts) {
 // ── 命令台（完整重写）────────────────────────────────────────────────────────
 const consoleDb      = ref(0)
 const consoleCmd     = ref('')
+
+// ── AI 翻译（dbx 风格）─────────────────────────────────
+const aiQuery = ref('')
+const aiTranslating = ref(false)
+const aiResult = ref(null)
+async function aiTranslate() {
+  if (!aiQuery.value.trim()) return
+  aiTranslating.value = true
+  aiResult.value = null
+  try {
+    const r = await fetch('/api/ai/translate', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scene: 'redis', query: aiQuery.value,
+        context: { db: consoleDb.value, current_keys_pattern: keyPattern.value || '*' },
+      }),
+    })
+    if (!r.ok) throw new Error('translate failed: ' + r.status)
+    aiResult.value = await r.json()
+  } catch (e) {
+    aiResult.value = { command: '', explain: '', risk: 'medium', risk_reason: 'AI 调用失败：' + e }
+  } finally {
+    aiTranslating.value = false
+  }
+}
 const consoleRunning = ref(false)
 const consoleSession = ref([])    // 当前会话的命令+结果序列
 const cmdHistoryAll  = ref([])    // 历史命令列表（仅命令，用于↑↓导航）
@@ -1528,6 +1577,39 @@ onMounted(async () => {
 
 /* 输入区 */
 .con-input-wrap { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid #30363d; background: #161b22; }
+
+/* AI 翻译条 */
+.ai-translate-bar {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid #30363d;
+  background: rgba(217,119,87,.06);
+}
+.ai-spark { color: var(--accent); font-size: 14px; }
+.ai-translate-input {
+  flex: 1; background: rgba(0,0,0,.18); border: 1px solid rgba(217,119,87,.28);
+  border-radius: 8px; padding: 6px 12px;
+  font-size: 12.5px; color: inherit; outline: none;
+}
+.ai-translate-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217,119,87,.18); }
+.ai-result {
+  margin: 0 14px 6px; padding: 10px 12px;
+  border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border);
+  font-size: 12.5px; display: flex; flex-direction: column; gap: 5px;
+}
+.ai-result.risk-medium { border-color: rgba(197,138,70,.5); background: rgba(197,138,70,.06); }
+.ai-result.risk-high { border-color: rgba(189,86,79,.5); background: rgba(189,86,79,.08); }
+.ai-result-cmd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-result-label { font-size: 11px; color: var(--text-muted); }
+.ai-result-cmd code {
+  flex: 1; min-width: 0; padding: 4px 8px; border-radius: 6px;
+  background: rgba(0,0,0,.18); font-family: var(--font-mono); font-size: 12px;
+  color: var(--text-primary); word-break: break-all; white-space: pre-wrap;
+}
+.ai-result-explain { color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+.ai-result-risk { color: var(--error); font-size: 11.5px; }
+.spinner-mini { display: inline-block; width: 10px; height: 10px; margin-right: 4px;
+  border: 1.5px solid rgba(255,255,255,.4); border-top-color: #fff;
+  border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
 .con-prompt-static { color: #3fb950; font-family: monospace; font-size: 13px; flex-shrink: 0; }
 .con-input { flex: 1; background: transparent; border: none; outline: none; color: #e6edf3; font-family: 'Consolas','Monaco',monospace; font-size: 13px; caret-color: #58a6ff; }
 .con-input::placeholder { color: #484f58; }

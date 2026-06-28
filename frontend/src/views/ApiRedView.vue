@@ -6,12 +6,37 @@
         <span class="subtitle">Rate · Errors · Duration · 微服务接口实时健康（数据源 SkyWalking）</span>
       </div>
       <div class="header-actions">
-        <select v-model.number="hours" class="filter">
-          <option :value="1">最近 1 小时</option>
-          <option :value="6">最近 6 小时</option>
-          <option :value="24">最近 24 小时</option>
-          <option :value="72">最近 3 天</option>
-        </select>
+        <div class="timebar">
+          <div class="time-presets">
+            <button
+              v-for="p in TIME_PRESETS"
+              :key="p.seconds"
+              class="time-btn"
+              :class="{ active: timeMode === 'preset' && presetSeconds === p.seconds }"
+              @click="applyPreset(p.seconds)"
+            >{{ p.label }}</button>
+            <button
+              class="time-btn time-custom-btn"
+              :class="{ active: timeMode === 'custom' }"
+              @click="toggleCustomPicker"
+            >自定义 {{ showCustomPicker ? '▲' : '▼' }}</button>
+          </div>
+          <span class="time-label">{{ timeRangeLabel }}</span>
+          <div v-if="showCustomPicker" class="custom-picker">
+            <label>
+              <span>开始</span>
+              <input type="datetime-local" step="1" v-model="customStart" />
+            </label>
+            <label>
+              <span>结束</span>
+              <input type="datetime-local" step="1" v-model="customEnd" />
+            </label>
+            <div class="custom-actions">
+              <button class="btn btn-sm btn-primary" :disabled="!customStart || !customEnd" @click="applyCustomRange">应用</button>
+              <button class="btn btn-sm btn-outline" @click="showCustomPicker = false">取消</button>
+            </div>
+          </div>
+        </div>
         <select v-model.number="topN" class="filter">
           <option :value="10">Top 10</option>
           <option :value="20">Top 20</option>
@@ -120,7 +145,6 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api/index.js'
-import { useTimeRangeStore } from '../stores/timeRange.js'
 import Sparkline from '../components/Sparkline.vue'
 
 // 时序缓冲：60 个数据点；10 秒一个 = 10 分钟历史
@@ -134,12 +158,19 @@ function pushSeries(arr, v) {
 }
 
 const router = useRouter()
-const timeStore = useTimeRangeStore()
-// hours 与全局 store 双向绑定（也保留本地 select 可独立改）
-const hours = computed({
-  get: () => timeStore.hours,
-  set: (v) => timeStore.set(v),
-})
+const TIME_PRESETS = [
+  { label: '最近 30s', seconds: 30 },
+  { label: '最近 1min', seconds: 60 },
+  { label: '最近 5min', seconds: 300 },
+]
+const timeMode = ref('preset')
+const presetSeconds = ref(60)
+const customStart = ref('')
+const customEnd = ref('')
+const appliedStart = ref('')
+const appliedEnd = ref('')
+const showCustomPicker = ref(false)
+const lastLoadedAt = ref(new Date())
 const topN  = ref(20)
 const loading = ref(false)
 const endpoints = ref([])
@@ -154,10 +185,77 @@ const SORT_OPTIONS = [
   { key: 'avg_ms', label: '平均耗时' },
 ]
 
+function pad(n) {
+  return String(n).padStart(2, '0')
+}
+
+function toDatetimeLocal(d) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function fmtDatetime(value) {
+  if (!value) return ''
+  return value.replace('T', ' ').slice(0, 19)
+}
+
+function fmtRangeTime(d) {
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+const timeRangeLabel = computed(() => {
+  if (timeMode.value === 'custom' && appliedStart.value && appliedEnd.value) {
+    return `${fmtDatetime(appliedStart.value)} ~ ${fmtDatetime(appliedEnd.value)}`
+  }
+  const end = lastLoadedAt.value
+  const start = new Date(end.getTime() - presetSeconds.value * 1000)
+  const preset = TIME_PRESETS.find(p => p.seconds === presetSeconds.value)
+  return `${fmtRangeTime(start)} ~ ${fmtRangeTime(end)} (${preset?.label || '最近时间'})`
+})
+
+const timeParams = computed(() => {
+  if (timeMode.value === 'custom' && appliedStart.value && appliedEnd.value) {
+    const spanMs = new Date(appliedEnd.value).getTime() - new Date(appliedStart.value).getTime()
+    return {
+      start_time: appliedStart.value,
+      end_time: appliedEnd.value,
+      hours: Math.max(spanMs / 3600000, 1 / 3600),
+    }
+  }
+  return { hours: presetSeconds.value / 3600 }
+})
+
+function applyPreset(seconds) {
+  presetSeconds.value = seconds
+  timeMode.value = 'preset'
+  showCustomPicker.value = false
+  load()
+}
+
+function toggleCustomPicker() {
+  if (!showCustomPicker.value && (!customStart.value || !customEnd.value)) {
+    const end = new Date()
+    const start = new Date(end.getTime() - presetSeconds.value * 1000)
+    customStart.value = toDatetimeLocal(start)
+    customEnd.value = toDatetimeLocal(end)
+  }
+  showCustomPicker.value = !showCustomPicker.value
+}
+
+function applyCustomRange() {
+  if (!customStart.value || !customEnd.value) return
+  if (new Date(customStart.value) >= new Date(customEnd.value)) return
+  appliedStart.value = customStart.value
+  appliedEnd.value = customEnd.value
+  timeMode.value = 'custom'
+  showCustomPicker.value = false
+  load()
+}
+
 async function load() {
+  lastLoadedAt.value = new Date()
   loading.value = true
   try {
-    const data = await api.swEndpointTopN(hours.value, topN.value)
+    const data = await api.swGetEndpointTopN({ ...timeParams.value, top_n: topN.value })
     endpoints.value = (Array.isArray(data) ? data : []).map(ep => {
       const parts = String(ep.name || '').split(':')
       const svc = parts[0]?.trim() || ''
@@ -189,16 +287,14 @@ async function load() {
   finally { loading.value = false }
 }
 
-watch([hours, topN], load)
+watch(topN, load)
 
 let pollTimer = null
 onMounted(() => {
-  // 兼容旧 localStorage 中的非整数小时（如 Dashboard 写入的 0.5）：
-  // 若当前不在本页 select 候选内，回退到 1 小时
-  const allowed = [1, 6, 24, 72]
-  if (!allowed.includes(timeStore.hours)) timeStore.set(1)
   load()
-  pollTimer = setInterval(load, 10000)   // 10s 轮询积累时序
+  pollTimer = setInterval(() => {
+    if (timeMode.value === 'preset') load()
+  }, 10000)   // 10s 轮询积累时序
 })
 onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer) })
 
@@ -245,18 +341,59 @@ function toneTip(ep) {
   return `健康：错误率 ${er}%、p95 ${p}ms`
 }
 function jumpLogs(ep) {
-  // 跳到日志中心，预填服务名 + 当前时间窗
-  router.push({ path: '/observability/logs', query: { service: ep._service, hours: hours.value } })
+  router.push({ path: '/observability/logs', query: { service: ep._service, ...timeParams.value } })
 }
 </script>
 
 <style scoped>
 .red-page { padding: 24px 28px; overflow-y: auto; }
-.page-header { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 18px; gap: 12px; }
+.page-header { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
 .page-header h1 { font-family: var(--font-serif); font-size: 26px; font-weight: 500; letter-spacing: -0.015em; }
 .page-header .subtitle { color: var(--text-secondary); font-size: 13px; }
-.header-actions { display: flex; gap: 8px; align-items: center; }
+.header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .filter { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; min-width: 110px; }
+.timebar { position: relative; display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+.time-presets { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.time-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.time-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.time-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.time-custom-btn { border-style: dashed; }
+.time-label { font-size: 10.5px; color: var(--text-muted); font-family: var(--font-mono); }
+.custom-picker {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  width: 360px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: 0 12px 30px rgba(0,0,0,.28);
+  display: grid;
+  gap: 10px;
+}
+.custom-picker label { display: grid; grid-template-columns: 42px 1fr; gap: 8px; align-items: center; font-size: 12px; color: var(--text-muted); }
+.custom-picker input {
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-primary);
+  padding: 6px 8px;
+  font-size: 12px;
+  color-scheme: dark;
+}
+.custom-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 .grafana-grid {
   display: grid; grid-template-columns: repeat(4, 1fr);

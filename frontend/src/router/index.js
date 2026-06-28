@@ -16,6 +16,7 @@ const routes = [
 
   // ── 3. 主机中心 ───────────────────────────────────────────────
   { path: '/hosts/tasks',  component: () => import('../views/HostTaskView.vue'),    name: 'host-tasks' },
+  { path: '/hosts/workbench', component: () => import('../views/TaskWorkbenchView.vue'), name: 'host-workbench' },
   { path: '/hosts/cron',   component: () => import('../views/HostCronView.vue'),    name: 'host-cron' },
   { path: '/hosts/apply',  component: () => import('../views/HostApplyView.vue'),   name: 'host-apply' },
 
@@ -45,6 +46,9 @@ const routes = [
   // ── 8. 可观测性 ───────────────────────────────────────────────
   { path: '/observability/unified',  component: () => import('../views/ObsUnifiedView.vue'), name: 'obs-unified' },
   { path: '/observability/overview', component: () => import('../views/Dashboard.vue'),      name: 'obs-overview' },
+  { path: '/observability/visualization', component: () => import('../views/ObservabilityVisualizationView.vue'), name: 'obs-visualization', meta: { module: 'metrics' } },
+  { path: '/observability/metrics-query', component: () => import('../views/MetricsQueryView.vue'), name: 'obs-metrics-query', meta: { module: 'metrics' } },
+  { path: '/observability/logs-query', component: () => import('../views/LogsQueryView.vue'), name: 'obs-logs-query', meta: { module: 'log' } },
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },
   { path: '/observability/logs',     component: () => import('../views/LogAnalysis.vue'),    name: 'obs-logs',     meta: { module: 'log' } },
   { path: '/observability/trace',    component: () => import('../views/SkyWalkingView.vue'), name: 'obs-trace',    meta: { module: 'skywalking' } },

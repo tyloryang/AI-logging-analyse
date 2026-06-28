@@ -247,6 +247,25 @@
                     </div>
                   </div>
                   <textarea v-model="qBody" class="editor" spellcheck="false" placeholder='{"query":{"match_all":{}}}' @input="validateBody" @keydown.ctrl.enter.prevent="runQuery"></textarea>
+                  <!-- AI 翻译条（dbx 风格：自然语言 → ES DSL） -->
+                  <div class="ai-translate-bar es-ai-bar">
+                    <span class="ai-spark">✨</span>
+                    <input v-model="aiQuery" class="ai-translate-input"
+                           placeholder="用自然语言描述查询意图，AI 生成 ES DSL。例：『最近 1 小时 error 级别的日志，按时间倒序前 50 条』"
+                           @keydown.enter.prevent="aiTranslate" />
+                    <button class="btn btn-xs btn-primary" :disabled="aiTranslating || !aiQuery.trim()" @click="aiTranslate">
+                      <span v-if="aiTranslating" class="spinner-mini"></span>{{ aiTranslating ? '生成中' : 'AI 生成 DSL' }}
+                    </button>
+                  </div>
+                  <div v-if="aiResult" class="ai-result" :class="'risk-' + (aiResult.risk || 'low')">
+                    <div class="ai-result-cmd">
+                      <span class="ai-result-label">建议 DSL：</span>
+                      <code>{{ aiResult.command }}</code>
+                      <button class="btn btn-xs btn-ghost" title="填入查询体" @click="applyAiDsl">→ 填入</button>
+                    </div>
+                    <div class="ai-result-explain">{{ aiResult.explain }}</div>
+                    <div v-if="aiResult.risk_reason" class="ai-result-risk">⚠ {{ aiResult.risk_reason }}</div>
+                  </div>
                 </div>
                 <div v-if="qHistory.length" class="q-history">
                   <span class="text-xs text-muted">历史:</span>
@@ -366,6 +385,39 @@ const qPath      = ref('_cluster/health')
 const qBody      = ref('')
 const qBodyValid = ref(true)
 const qBodyStatus = ref('')
+
+// ── AI 翻译（dbx 风格）─────────────────────────────────
+const aiQuery = ref('')
+const aiTranslating = ref(false)
+const aiResult = ref(null)
+async function aiTranslate() {
+  if (!aiQuery.value.trim()) return
+  aiTranslating.value = true
+  aiResult.value = null
+  try {
+    const r = await fetch('/api/ai/translate', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scene: 'es', query: aiQuery.value,
+        context: { current_index: qPath.value, current_dsl: qBody.value.slice(0, 500) },
+      }),
+    })
+    if (!r.ok) throw new Error('translate failed: ' + r.status)
+    aiResult.value = await r.json()
+  } catch (e) {
+    aiResult.value = { command: '', explain: '', risk: 'medium', risk_reason: 'AI 调用失败：' + e }
+  } finally {
+    aiTranslating.value = false
+  }
+}
+function applyAiDsl() {
+  if (!aiResult.value?.command) return
+  qBody.value = aiResult.value.command
+  // 触发 validateBody（如果存在）
+  if (typeof validateBody === 'function') validateBody()
+  aiResult.value = null
+}
 const qResult    = ref('')
 const qMeta      = ref(null)
 const qPreset    = ref('')
@@ -754,6 +806,22 @@ tr:hover td { background: var(--bg-hover); }
 .query-layout { flex: 1; display: flex; gap: 10px; padding: 10px 16px 12px; overflow: hidden; min-height: 0; }
 .query-left, .query-right { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow: hidden; }
 .editor-wrap { flex: 1; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+
+/* AI 翻译条（与 Redis 同款）*/
+.es-ai-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: rgba(217,119,87,.05); display: flex; gap: 8px; align-items: center; }
+.ai-spark { color: var(--accent); font-size: 14px; }
+.ai-translate-input { flex: 1; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-size: 12px; color: inherit; outline: none; }
+.ai-translate-input:focus { border-color: var(--accent); }
+.ai-result { margin: 4px 0; padding: 10px 12px; border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border); font-size: 12px; display: flex; flex-direction: column; gap: 5px; }
+.ai-result.risk-medium { border-color: rgba(197,138,70,.5); background: rgba(197,138,70,.06); }
+.ai-result.risk-high { border-color: rgba(189,86,79,.5); background: rgba(189,86,79,.08); }
+.ai-result-cmd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-result-label { font-size: 11px; color: var(--text-muted); }
+.ai-result-cmd code { flex: 1; min-width: 0; padding: 4px 8px; border-radius: 6px; background: rgba(0,0,0,.18); font-family: var(--font-mono); font-size: 11.5px; color: var(--text-primary); word-break: break-all; white-space: pre-wrap; max-height: 200px; overflow: auto; }
+.ai-result-explain { color: var(--text-secondary); font-size: 11.5px; line-height: 1.5; }
+.ai-result-risk { color: var(--error); font-size: 11px; }
+.spinner-mini { display: inline-block; width: 9px; height: 9px; margin-right: 4px; border: 1.5px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .editor-header { padding: 6px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
 textarea.editor { flex: 1; background: transparent; border: none; outline: none; padding: 10px 12px; color: var(--text-primary); font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; line-height: 1.7; resize: none; min-height: 0; }
 .result-content { flex: 1; overflow: auto; padding: 10px 12px; min-height: 0; }

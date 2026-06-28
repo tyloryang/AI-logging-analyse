@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from json_snapshot_store import read_json_file, write_json_file
+from ssh_utils import ssh_connect_options
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ansible", tags=["ansible"])
@@ -99,8 +100,13 @@ async def _ssh_exec_host(host: dict, command: str, timeout: int = 60) -> dict:
 
     try:
         async with asyncssh.connect(
-            host=ip, port=port, username=username, password=password,
-            known_hosts=None, connect_timeout=10,
+            **ssh_connect_options(
+                host=ip,
+                port=port,
+                username=username,
+                password=password,
+                connect_timeout=10,
+            )
         ) as conn:
             result = await conn.run(command, timeout=timeout)
             return {

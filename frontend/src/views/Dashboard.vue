@@ -14,7 +14,7 @@
         </div>
       </div>
       <div class="obs-header-right">
-        <select class="time-select" v-model="windowMinutes" @change="loadAll">
+        <select class="time-select" v-model.number="windowMinutes" @change="loadAll">
           <option :value="10">最近 10 分钟</option>
           <option :value="30">最近 30 分钟</option>
           <option :value="60">最近 1 小时</option>
@@ -57,6 +57,30 @@
         <div class="stat-num num-success">{{ loading ? '--' : overview.grafana_count }}</div>
         <div class="stat-label">Grafana 看板 <span class="drill-arrow">→</span></div>
         <div class="stat-bar grafana-bar"></div>
+      </div>
+      <div class="stat-card drillable stat-resource" @click="goResources" title="查看 CMDB 与容器资源">
+        <div class="stat-num num-resource">{{ loading ? '--' : overview.resource_count }}</div>
+        <div class="stat-label">资源数量 <span class="drill-arrow">→</span></div>
+        <div class="stat-sub">{{ overview.resource_summary?.hosts || 0 }} 主机 · {{ overview.resource_summary?.containers || 0 }} 容器资源</div>
+        <div class="stat-bar resource-bar"></div>
+      </div>
+      <div class="stat-card drillable" :class="{ 'stat-alert': overview.host_abnormal_alert_count > 0 }"
+           @click="goHostAlerts" title="查看主机运行异常告警">
+        <div class="stat-num" :class="{ 'num-alert': overview.host_abnormal_alert_count > 0, 'num-host': overview.host_abnormal_alert_count === 0 }">
+          {{ loading ? '--' : overview.host_abnormal_alert_count }}
+        </div>
+        <div class="stat-label">主机异常告警 <span class="drill-arrow">→</span></div>
+        <div class="stat-sub">活跃主机 / 节点类告警</div>
+        <div class="stat-bar host-bar"></div>
+      </div>
+      <div class="stat-card drillable stat-container" :class="{ 'stat-warn': overview.container_resource_abnormal_count > 0 }"
+           @click="goContainerIssues" title="查看容器资源异常">
+        <div class="stat-num" :class="{ 'num-warn': overview.container_resource_abnormal_count > 0, 'num-container': overview.container_resource_abnormal_count === 0 }">
+          {{ loading ? '--' : overview.container_resource_abnormal_count }}
+        </div>
+        <div class="stat-label">容器资源异常 <span class="drill-arrow">→</span></div>
+        <div class="stat-sub">Pod / Node / 工作负载</div>
+        <div class="stat-bar container-bar"></div>
       </div>
     </div>
 
@@ -354,35 +378,37 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref, computed, watch } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { useTimeRangeStore } from '../stores/timeRange.js'
 
 const router = useRouter()
-const timeStore = useTimeRangeStore()
 
 // ── KPI 钻取 ──────────────────────────────────────────────────────────────
 function goAlerts()    { router.push('/observability/alerts') }
 function goErrorLogs() { router.push({ path: '/observability/logs', query: { level: 'error' } }) }
 function goTraces()    { router.push('/observability/api-red') }
 function goGrafana()   { router.push('/observability/grafana') }
+function goResources() { router.push('/cmdb') }
+function goHostAlerts() { router.push('/observability/alerts') }
+function goContainerIssues() { router.push('/containers') }
 function goServiceLogs(service) { router.push({ path: '/observability/logs', query: { service } }) }
 import { api } from '../api/index.js'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 
 const loading = ref(false)
-// windowMinutes 与全局时间窗 store 双向绑定（hours → minutes）
-const windowMinutes = computed({
-  get: () => Math.round(timeStore.hours * 60),
-  set: (v) => timeStore.set((Number(v) || 60) / 60),
-})
-// 全局时间窗变化时自动 reload
-watch(() => timeStore.hours, () => loadAll())
+const windowMinutes = ref(60)
 const overview = reactive({
   alert_count: 0,
   error_count: 0,
   trace_count: 0,
   grafana_count: 0,
+  resource_count: 0,
+  resource_summary: { total: 0, hosts: 0, containers: 0, k8s_available: false },
+  host_abnormal_alert_count: 0,
+  host_resource_summary: { total: 0, abnormal_alerts: 0, abnormal_status: 0 },
+  container_resource_count: 0,
+  container_resource_abnormal_count: 0,
+  container_resource_summary: null,
   recent_alerts: [],
   recent_traces: [],
   problem_services: [],
@@ -647,7 +673,7 @@ onBeforeUnmount(() => {
 
 .stats-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   gap: 12px;
 }
 
@@ -660,7 +686,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
   border-radius: var(--radius-card);
-  padding: 20px 20px 16px;
+  padding: 18px 16px 14px;
   position: relative;
   overflow: hidden;
   transition: border-color .15s, box-shadow .15s;
@@ -684,8 +710,17 @@ onBeforeUnmount(() => {
   border-left-color: var(--accent);
 }
 
+.stat-card.stat-resource {
+  border-left-color: var(--success);
+  background: linear-gradient(135deg, rgba(63, 185, 80, 0.03) 0%, transparent 60%);
+}
+
+.stat-card.stat-container:not(.stat-warn) {
+  border-left-color: var(--accent);
+}
+
 .stat-num {
-  font-size: 36px;
+  font-size: 34px;
   font-weight: 700;
   font-family: 'Cascadia Code', 'Consolas', 'SF Mono', monospace;
   color: var(--text-primary);
@@ -709,6 +744,15 @@ onBeforeUnmount(() => {
   color: var(--success);
 }
 
+.num-resource {
+  color: var(--success);
+}
+
+.num-host,
+.num-container {
+  color: var(--accent);
+}
+
 .stat-label {
   font-size: 11px;
   font-weight: 600;
@@ -716,6 +760,15 @@ onBeforeUnmount(() => {
   margin-top: 8px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.stat-sub {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stat-bar {

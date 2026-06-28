@@ -70,6 +70,8 @@ def _build_duration(
     else:
         step     = "MINUTE"
         time_fmt = "%Y-%m-%d %H%M"
+        if start_dt.strftime(time_fmt) == end_dt.strftime(time_fmt):
+            start_dt = end_dt - timedelta(minutes=1)
 
     return {
         "start": start_dt.strftime(time_fmt),
@@ -475,7 +477,7 @@ class SkyWalkingClient:
     # ── 接口耗时 TopN ─────────────────────────────────────────────────────────
     async def get_endpoint_topn(
         self,
-        hours: int = 24,
+        hours: float = 24,
         top_n: int = 20,
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,

@@ -24,6 +24,7 @@ export const api = {
   getLogLabelValues:  (label, params = {}, config = {}) => http.get(`/logs/labels/${encodeURIComponent(label)}/values`, { ...config, params }),
   // 日志
   getLogs:        (params, config = {}) => http.get('/logs', { ...config, params }),
+  queryLokiRange: (params, config = {}) => http.get('/logs/query-range', { ...config, params }),
   getLogContext:  (params, config = {}) => http.get('/logs/context', { ...config, params }),
   getErrorLogs:   (params) => http.get('/logs/errors', { params }),
   // 指标
@@ -132,6 +133,9 @@ export const api = {
   swTest:           ()                   => http.get('/sw/test'),
   // 可观测性总览
   observabilityOverview: (params, config = {}) => http.get('/observability/overview', { ...config, params }),
+  prometheusQuery: (data) => http.post('/observability/metrics/query', data),
+  prometheusQueryRange: (data) => http.post('/observability/metrics/query-range', data),
+  prometheusLabelValues: (label, params = {}) => http.get(`/observability/metrics/label-values/${encodeURIComponent(label)}`, { params }),
   // 知识拓扑
   topologyKnowledge: () => http.get('/topology/knowledge'),
   // Grafana 看板管理
@@ -286,6 +290,7 @@ export const api = {
   // 工单系统
   listTickets:      (params)     => http.get('/tickets',              { params }),
   createTicket:     (data)       => http.post('/tickets', data),
+  precheckSqlTicket:(data)       => http.post('/tickets/sql/precheck', data),
   getTicket:        (id)         => http.get(`/tickets/${id}`),
   updateTicket:     (id, data)   => http.put(`/tickets/${id}`, data),
   deleteTicket:     (id)         => http.delete(`/tickets/${id}`),

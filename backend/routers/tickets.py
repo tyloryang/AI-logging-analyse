@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,89 @@ class TicketUpdate(BaseModel):
     comment:     str = ""          # 操作备注
 
 
+class SqlPrecheckRequest(BaseModel):
+    sql:        str = ""
+    datasource: str = ""
+
+
+def _strip_sql_comments(sql: str) -> str:
+    sql = re.sub(r"/\*.*?\*/", " ", sql or "", flags=re.S)
+    sql = re.sub(r"--.*?$", " ", sql, flags=re.M)
+    return sql.strip()
+
+
+def _first_keyword(statement: str) -> str:
+    match = re.match(r"^\s*([a-zA-Z]+)", statement or "")
+    return match.group(1).upper() if match else ""
+
+
+def analyze_sql_risk(sql: str) -> dict:
+    """Lightweight SQL risk precheck inspired by sxdevops SQL audit workflow."""
+    cleaned = _strip_sql_comments(sql)
+    statements = [s.strip() for s in cleaned.split(";") if s.strip()]
+    findings: list[dict] = []
+    score = 0
+
+    def add(level: str, rule: str, message: str, points: int) -> None:
+        nonlocal score
+        findings.append({"level": level, "rule": rule, "message": message})
+        score += points
+
+    if not cleaned:
+        add("warning", "empty_sql", "未填写 SQL，建议补充执行语句后再提交审计。", 3)
+
+    if len(statements) > 1:
+        add("warning", "multi_statement", f"检测到 {len(statements)} 条语句，建议拆分为独立工单便于回滚和审计。", 2)
+
+    for statement in statements:
+        keyword = _first_keyword(statement)
+        upper = statement.upper()
+        if keyword in {"DROP", "TRUNCATE"}:
+            add("critical", "destructive_ddl", f"{keyword} 属于高危破坏性 DDL，必须确认备份、回滚方案和执行窗口。", 8)
+        elif keyword in {"ALTER", "RENAME"}:
+            add("warning", "schema_change", f"{keyword} 会变更表结构，建议补充影响范围、锁表风险和回滚方案。", 4)
+        elif keyword in {"DELETE", "UPDATE"}:
+            if " WHERE " not in f" {upper} ":
+                add("critical", "missing_where", f"{keyword} 未检测到 WHERE 条件，存在全表影响风险。", 8)
+            else:
+                add("warning", "write_dml", f"{keyword} 为写操作，建议先提供 SELECT 验证语句和影响行数预估。", 3)
+        elif keyword in {"INSERT", "REPLACE"}:
+            add("info", "write_insert", f"{keyword} 为写操作，建议确认唯一键冲突和幂等性。", 1)
+        elif keyword in {"GRANT", "REVOKE"}:
+            add("warning", "permission_change", f"{keyword} 会变更数据库权限，建议明确账号、权限范围和有效期。", 4)
+        elif keyword == "SELECT" and re.search(r"\bSELECT\s+\*", upper):
+            add("info", "select_star", "SELECT * 可能返回过多字段，建议改为显式字段列表。", 1)
+        elif keyword and keyword not in {"SELECT", "SHOW", "DESC", "DESCRIBE", "EXPLAIN", "WITH"}:
+            add("warning", "unknown_statement", f"检测到非常见语句 {keyword}，建议人工复核。", 3)
+
+    if not findings:
+        findings.append({"level": "ok", "rule": "readonly", "message": "未发现明显高危模式。"})
+
+    if score >= 8:
+        risk = "critical"
+    elif score >= 4:
+        risk = "high"
+    elif score >= 2:
+        risk = "medium"
+    else:
+        risk = "low"
+
+    suggestions = [
+        "生产执行前先在只读连接或备库验证影响范围。",
+        "写操作请补充回滚 SQL、备份位置和执行窗口。",
+    ]
+    if risk in {"critical", "high"}:
+        suggestions.insert(0, "建议走审批后执行，并在事件墙记录执行结果。")
+
+    return {
+        "risk_level": risk,
+        "score": score,
+        "statement_count": len(statements),
+        "findings": findings,
+        "suggestions": suggestions,
+    }
+
+
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 @router.get("")
@@ -81,16 +165,23 @@ async def create_ticket(body: TicketCreate):
     # 按类型生成编号
     prefix = {"deploy": "DP", "sql": "SQL", "incident": "INC", "approval": "APR"}.get(body.type, "TK")
     count = sum(1 for t in tickets if t.get("type") == body.type)
+    extra = dict(body.extra or {})
+    priority = body.priority
+    if body.type == "sql":
+        sql_audit = analyze_sql_risk(str(extra.get("sql") or body.description or ""))
+        extra["sql_audit"] = sql_audit
+        if sql_audit["risk_level"] in {"critical", "high"} and priority in {"low", "normal"}:
+            priority = "high"
     ticket = {
         "id":          str(uuid.uuid4()),
         "no":          f"{prefix}-{count + 1:04d}",
         "type":        body.type,
         "title":       body.title,
         "description": body.description,
-        "priority":    body.priority,
+        "priority":    priority,
         "assignee":    body.assignee,
         "status":      "pending",
-        "extra":       body.extra,
+        "extra":       extra,
         "created_at":  _now(),
         "updated_at":  _now(),
         "history":     [],
@@ -98,6 +189,11 @@ async def create_ticket(body: TicketCreate):
     tickets.append(ticket)
     _save(tickets)
     return ticket
+
+
+@router.post("/sql/precheck")
+async def precheck_sql_ticket(body: SqlPrecheckRequest):
+    return analyze_sql_risk(body.sql)
 
 
 @router.get("/{ticket_id}")

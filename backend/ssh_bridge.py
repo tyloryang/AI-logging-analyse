@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 import asyncssh
 from fastapi import WebSocket, WebSocketDisconnect
+from ssh_utils import ssh_connect_options
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +80,13 @@ async def ssh_websocket_handler(
 
         # 连接 SSH
         conn = await asyncssh.connect(
-            host, port=port,
-            username=username,
-            password=password,
-            known_hosts=None,
-            connect_timeout=10,
+            **ssh_connect_options(
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                connect_timeout=10,
+            )
         )
         process = await conn.create_process(
             term_type="xterm-256color",

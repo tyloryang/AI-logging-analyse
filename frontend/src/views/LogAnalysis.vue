@@ -1,13 +1,9 @@
 <template>
   <div class="log-layout">
-    <!-- 左侧服务过滤 -->
+    <!-- 左侧标签过滤 -->
     <aside class="service-panel">
       <div class="panel-header">
-        <span class="panel-title">服务列表
-          <span v-if="loadingCounts" class="counts-tip" title="错误数后台统计中...">
-            <span class="spinner-mini"></span>统计中
-          </span>
-        </span>
+        <span class="panel-title">日志标签筛选</span>
         <!-- 时间模式切换 -->
         <div class="time-mode-tabs">
           <button class="tmode-btn" :class="{ active: timeMode === 'relative' }" @click="timeMode = 'relative'; onTimeModeChange()">快速</button>
@@ -15,6 +11,7 @@
         </div>
         <!-- 相对时间选择 -->
         <select v-if="timeMode === 'relative'" v-model="hours" class="time-select" @change="onParamChange">
+          <option value="0.016667">最近 1 分钟</option>
           <option value="0.083333">最近 5 分钟</option>
           <option value="0.25">最近 15 分钟</option>
           <option value="0.5">最近 30 分钟</option>
@@ -49,94 +46,47 @@
             <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
           </div>
           <template v-else>
-            <div v-if="labelCatalog.length" class="label-chip-list">
+            <div v-if="selectedGroupLabel && selectedGroupValue" class="active-label-filter">
+              <span>{{ selectedGroupLabel }}=<em>{{ selectedGroupValue }}</em></span>
+              <button @click="clearLabelFilter">清除</button>
+            </div>
+            <div v-if="labelCatalog.length" class="label-dropdown-panel">
+              <label class="label-select-field">
+                <span>标签名</span>
+                <select v-model="selectedLabelName" @change="onLabelDropdownChange">
+                  <option value="">请选择 Loki 标签</option>
+                  <option v-for="item in labelCatalog" :key="item.name" :value="item.name">
+                    {{ item.name }} · {{ labelRoleText(item) }}
+                  </option>
+                </select>
+              </label>
+              <label class="label-select-field">
+                <span>标签值</span>
+                <select
+                  v-model="selectedLabelValue"
+                  :disabled="!selectedLabelName || loadingLabelValueMap[selectedLabelName]"
+                  @change="onLabelValueDropdownChange"
+                >
+                  <option value="">{{ loadingLabelValueMap[selectedLabelName] ? '加载中...' : '请选择标签值' }}</option>
+                  <option v-for="value in selectedLabelValues" :key="value" :value="value">{{ value }}</option>
+                </select>
+              </label>
               <button
-                v-for="item in labelCatalog"
-                :key="item.name"
-                class="label-chip"
-                :class="{ active: activeLabelName === item.name, groupable: item.groupable }"
-                @click="inspectLabel(item.name)"
-                :title="item.name"
+                class="label-dropdown-apply"
+                :disabled="!selectedLabelName || !selectedLabelValue"
+                @click="applyLabelFilter(selectedLabelName, selectedLabelValue)"
               >
-                {{ item.name }}
+                筛选
               </button>
+              <div v-if="selectedLabelName && !loadingLabelValueMap[selectedLabelName] && !selectedLabelValues.length" class="label-empty">
+                当前标签暂无样例值
+              </div>
             </div>
             <div v-else class="label-empty">未发现 Loki 标签</div>
-            <div v-if="activeLabelName" class="label-values-card">
-              <div class="label-values-header">
-                <span class="label-values-name">{{ activeLabelName }}</span>
-                <span class="label-values-meta">值 {{ activeLabelTotal }}</span>
-              </div>
-              <div v-if="loadingLabelValues" class="loading-row label-loading">
-                <div class="spinner" style="width:12px;height:12px;border-width:2px"></div>
-              </div>
-              <div v-else-if="activeLabelValues.length" class="label-values-list">
-                <span v-for="value in activeLabelValues" :key="value" class="label-value-chip">{{ value }}</span>
-              </div>
-              <div v-else class="label-empty">暂无样例值</div>
-            </div>
           </template>
         </div>
       </div>
 
-      <div class="svc-list-wrap">
-        <!-- 服务搜索 -->
-        <div class="svc-search-wrap">
-          <span class="svc-search-icon">🔍</span>
-          <input
-            v-model="serviceSearch"
-            class="svc-search-input"
-            placeholder="搜索服务名..."
-          />
-          <button v-if="serviceSearch" class="kw-clear" @click="serviceSearch = ''">✕</button>
-        </div>
-        <div class="svc-item" :class="{ active: selectedService === '' }" @click="selectService('')">
-          <span class="svc-dot all"></span>
-          <span class="svc-label">全部服务</span>
-          <span class="svc-badge">{{ totalErrors }}</span>
-        </div>
-        <div v-if="loadingSvcs" class="loading-row">
-          <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
-        </div>
-        <div v-else-if="serviceSearch && !hasSearchMatch" class="svc-empty">
-          未找到匹配 <em>{{ serviceSearch }}</em> 的服务
-        </div>
-        <!-- 按 namespace 分组展示 -->
-        <template v-if="visibleServiceGroups.length">
-          <div v-for="grp in visibleServiceGroups" :key="grp.key || grp.namespace || grp.label" class="svc-ns-group">
-            <div class="svc-ns-header" @click="toggleNs(grp.key || grp.namespace || grp.label)">
-              <span class="svc-ns-arrow" :class="{ open: openNs.has(grp.key || grp.namespace || grp.label) }">▶</span>
-              <span class="svc-ns-label">{{ grp.label || grp.key || grp.namespace }}</span>
-              <span class="svc-ns-count">{{ grp.services.length }}</span>
-            </div>
-            <div v-show="openNs.has(grp.key || grp.namespace || grp.label)" class="svc-ns-children">
-              <div
-                v-for="svc in grp.services" :key="svc.name"
-                class="svc-item svc-item-child"
-                :class="{ active: isSelectedService(svc.name, svc) }"
-                @click="selectService(svc.name, svc)"
-              >
-                <span class="svc-dot" :class="svc.error_count > 0 ? 'error' : 'ok'"></span>
-                <span class="svc-label">{{ svc.name }}</span>
-                <span v-if="svc.error_count" class="svc-badge error">{{ svc.error_count }}</span>
-              </div>
-            </div>
-          </div>
-        </template>
-        <!-- 无 namespace 时平铺 -->
-        <template v-else>
-          <div
-            v-for="svc in visibleServices" :key="svc.name"
-            class="svc-item"
-            :class="{ active: isSelectedService(svc.name) }"
-            @click="selectService(svc.name)"
-          >
-            <span class="svc-dot" :class="svc.error_count > 0 ? 'error' : 'ok'"></span>
-            <span class="svc-label">{{ svc.name }}</span>
-            <span v-if="svc.error_count" class="svc-badge error">{{ svc.error_count }}</span>
-          </div>
-        </template>
-      </div>
     </aside>
 
     <!-- 右侧内容区 -->
@@ -712,18 +662,12 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { api, streamSSE } from '../api/index.js'
 
 // ── 公共状态 ─────────────────────────────
-const services       = ref([])
-const serviceGroups  = ref([])   // 按 namespace 分组 [{namespace, label, services:[]}]
-const openNs         = ref(new Set())  // 已展开的 namespace
 const selectedService = ref('')
-const serviceSearch  = ref('')   // 左侧服务名搜索
-const hours          = ref('0.083333')
-const loadingSvcs    = ref(false)
-const loadingCounts  = ref(false)   // 错误数后台补充进行中
+const hours          = ref('0.016667')
 const groupBy        = ref('namespace')
 const selectedGroupLabel = ref('')
 const selectedGroupValue = ref('')
@@ -731,16 +675,13 @@ const labelCatalog   = ref([])
 const groupOptions   = ref([{ value: 'namespace', label: 'namespace' }])
 const loadingLabelCatalog = ref(false)
 const labelExplorerOpen = ref(true)
-const activeLabelName = ref('')
-const activeLabelValues = ref([])
-const activeLabelTotal = ref(0)
-const loadingLabelValues = ref(false)
+const openLabelGroups = ref(new Set())
+const labelValueMap = ref({})
+const labelValueTotals = ref({})
+const loadingLabelValueMap = ref({})
+const selectedLabelName = ref('')
+const selectedLabelValue = ref('')
 
-function toggleNs(ns) {
-  const s = new Set(openNs.value)
-  s.has(ns) ? s.delete(ns) : s.add(ns)
-  openNs.value = s
-}
 const activeTab      = ref('logs')
 
 // 时间模式：relative（最近N小时） | custom（自定义时间段）
@@ -786,21 +727,15 @@ function onMultiInputBackspace() {
     localKeywords.value.pop()
   }
 }
-let   servicesAbort = null
 let   logsAbort = null
 let   loadMoreAbort = null
 let   templatesAbort = null
 let   traceLogsAbort = null
 let   detailContextAbort = null
-let   servicesRequestId = 0
 let   logsRequestId = 0
 let   loadMoreRequestId = 0
 let   templatesRequestId = 0
 let   detailContextRequestId = 0
-
-const totalErrors = computed(() =>
-  services.value.reduce((s, v) => s + v.error_count, 0)
-)
 
 const groupByOptions = computed(() => {
   const options = groupOptions.value.length
@@ -811,38 +746,9 @@ const groupByOptions = computed(() => {
   }
   return options
 })
-
-// 服务搜索：本地过滤分组列表与扁平列表，命中后自动展开 namespace
-const visibleServiceGroups = computed(() => {
-  if (!serviceSearch.value.trim()) return serviceGroups.value
-  const q = serviceSearch.value.trim().toLowerCase()
-  return serviceGroups.value
-    .map(grp => ({
-      ...grp,
-      services: grp.services.filter(s => (s.name || '').toLowerCase().includes(q)),
-    }))
-    .filter(grp => grp.services.length > 0)
-})
-
-const visibleServices = computed(() => {
-  if (!serviceSearch.value.trim()) return services.value
-  const q = serviceSearch.value.trim().toLowerCase()
-  return services.value.filter(s => (s.name || '').toLowerCase().includes(q))
-})
-
-const hasSearchMatch = computed(() =>
-  visibleServiceGroups.value.length > 0 || visibleServices.value.length > 0
-)
-
-// 搜索命中时自动展开所有命中的 namespace
-watch(serviceSearch, (q) => {
-  if (!q.trim()) return
-  const next = new Set(openNs.value)
-  for (const grp of visibleServiceGroups.value) {
-    next.add(grp.key || grp.namespace || grp.label)
-  }
-  openNs.value = next
-})
+const selectedLabelValues = computed(() => (
+  selectedLabelName.value ? (labelValueMap.value[selectedLabelName.value] || []) : []
+))
 
 function logServiceName(log) {
   return log?.labels?.app || log?.labels?.job || selectedService.value || '—'
@@ -850,6 +756,8 @@ function logServiceName(log) {
 
 function logGroup(log) {
   const labels = log?.labels || {}
+  if (selectedGroupLabel.value && labels[selectedGroupLabel.value]) return labels[selectedGroupLabel.value]
+  if (groupBy.value && labels[groupBy.value]) return labels[groupBy.value]
   return (
     labels.namespace ||
     labels.k8s_namespace_name ||
@@ -886,7 +794,7 @@ function timeParams() {
 }
 
 function currentGroupParams() {
-  if (!selectedService.value || !selectedGroupLabel.value || !selectedGroupValue.value) {
+  if (!selectedGroupLabel.value || !selectedGroupValue.value) {
     return {}
   }
   return {
@@ -1345,47 +1253,80 @@ async function loadLabelCatalog() {
     if (result.default_group_by) {
       groupBy.value = result.default_group_by
     }
+    const preferredLabel = result.default_group_by || result.service_label || labelCatalog.value[0]?.name || ''
+    if (preferredLabel) {
+      selectedLabelName.value = preferredLabel
+      selectedLabelValue.value = ''
+      openLabelGroups.value = new Set([preferredLabel])
+      await ensureLabelValues(preferredLabel)
+    }
   } catch (error) {
     labelCatalog.value = []
     groupOptions.value = [{ value: 'namespace', label: 'namespace' }]
+    openLabelGroups.value = new Set()
+    selectedLabelName.value = ''
+    selectedLabelValue.value = ''
   } finally {
     loadingLabelCatalog.value = false
   }
 }
 
-async function inspectLabel(labelName) {
-  if (!labelName) return
-  if (activeLabelName.value === labelName) {
-    activeLabelName.value = ''
-    activeLabelValues.value = []
-    activeLabelTotal.value = 0
-    loadingLabelValues.value = false
-    return
-  }
+function labelRoleText(item) {
+  if (item?.role === 'service') return '服务'
+  if (item?.role === 'namespace') return '命名空间'
+  if (item?.role === 'group') return '分组'
+  return '标签'
+}
 
-  activeLabelName.value = labelName
-  activeLabelValues.value = []
-  activeLabelTotal.value = 0
-  loadingLabelValues.value = true
+function setLabelLoading(labelName, value) {
+  loadingLabelValueMap.value = { ...loadingLabelValueMap.value, [labelName]: value }
+}
+
+async function ensureLabelValues(labelName) {
+  if (!labelName || labelValueMap.value[labelName]) return
+  setLabelLoading(labelName, true)
   try {
-    const result = await api.getLogLabelValues(labelName, { limit: 20 })
-    if (activeLabelName.value !== labelName) return
-    activeLabelValues.value = result.data || []
-    activeLabelTotal.value = result.total || 0
+    const result = await api.getLogLabelValues(labelName, { limit: 80 })
+    labelValueMap.value = { ...labelValueMap.value, [labelName]: result.data || [] }
+    labelValueTotals.value = { ...labelValueTotals.value, [labelName]: result.total || 0 }
   } catch (error) {
-    if (activeLabelName.value !== labelName) return
-    activeLabelValues.value = []
-    activeLabelTotal.value = 0
+    labelValueMap.value = { ...labelValueMap.value, [labelName]: [] }
+    labelValueTotals.value = { ...labelValueTotals.value, [labelName]: 0 }
   } finally {
-    loadingLabelValues.value = false
+    setLabelLoading(labelName, false)
   }
 }
 
-function onGroupByChange() {
-  selectedService.value = ''
-  selectedGroupLabel.value = ''
-  selectedGroupValue.value = ''
-  loadServices()
+async function toggleLabelGroup(labelName) {
+  if (!labelName) return
+  const next = new Set(openLabelGroups.value)
+  if (next.has(labelName)) {
+    next.delete(labelName)
+  } else {
+    next.add(labelName)
+    ensureLabelValues(labelName)
+  }
+  openLabelGroups.value = next
+}
+
+async function onLabelDropdownChange() {
+  selectedLabelValue.value = ''
+  if (selectedLabelName.value) {
+    await ensureLabelValues(selectedLabelName.value)
+  }
+}
+
+function onLabelValueDropdownChange() {
+  if (selectedLabelName.value && selectedLabelValue.value) {
+    applyLabelFilter(selectedLabelName.value, selectedLabelValue.value)
+  }
+}
+
+function isSelectedLabelFilter(labelName, value) {
+  return selectedGroupLabel.value === labelName && selectedGroupValue.value === value
+}
+
+function refreshActiveData() {
   if (activeTab.value === 'logs') {
     loadLogs()
   } else if (activeTab.value === 'templates') {
@@ -1393,78 +1334,34 @@ function onGroupByChange() {
   }
 }
 
-// ── 数据加载 ─────────────────────────────
-// 两步加载：
-//   STEP 1: with_errors=false 毫秒级返回服务名 → 立即渲染（loadingSvcs 早结束）
-//   STEP 2: 异步调 /services/error-counts，把错误数 patch 回服务对象（loadingCounts）
-async function loadServices() {
-  const requestId = ++servicesRequestId
-  servicesAbort?.abort()
-  const controller = new AbortController()
-  servicesAbort = controller
-  loadingSvcs.value = true
-  loadingCounts.value = false
-  try {
-    // ── STEP 1：拉服务名（快）─────────────────────────────
-    let rg = null
-    try {
-      rg = await api.getServicesGrouped(
-        { group_by: groupBy.value || undefined, with_errors: false },
-        { signal: controller.signal },
-      )
-    } catch (error) {
-      if (isCanceled(error)) return
-    }
-    if (requestId !== servicesRequestId) return
-    if (rg?.data?.length) {
-      serviceGroups.value = rg.data
-      openNs.value = new Set([rg.data[0]?.key ?? rg.data[0]?.namespace ?? rg.data[0]?.label ?? ''])
-      services.value = rg.data.flatMap(g => g.services)
-    } else {
-      const r = await api.getServices({ with_errors: false }, { signal: controller.signal })
-      if (requestId !== servicesRequestId) return
-      services.value = r.data
-      serviceGroups.value = []
-      openNs.value = new Set()
-    }
-    loadingSvcs.value = false   // 首屏已可见，用户可选服务查日志
+function applyLabelFilter(labelName, value) {
+  selectedGroupLabel.value = labelName
+  selectedGroupValue.value = value
+  selectedLabelName.value = labelName
+  selectedLabelValue.value = value
+  if (groupBy.value !== labelName) {
+    groupBy.value = labelName
+  }
+  refreshActiveData()
+}
 
-    // ── STEP 2：后台异步补错误数 ──────────────────────────
-    loadingCounts.value = true
-    try {
-      const r2 = await api.getServiceErrorCounts(24, { signal: controller.signal })
-      if (requestId !== servicesRequestId) return
-      const counts = r2?.data || {}
-      // patch 进 services 与 serviceGroups
-      for (const s of services.value) s.error_count = counts[s.name] || 0
-      for (const g of serviceGroups.value) {
-        for (const s of (g.services || [])) s.error_count = counts[s.name] || 0
-      }
-      // 重排：错误多的靠前
-      services.value.sort((a, b) => (b.error_count || 0) - (a.error_count || 0))
-      for (const g of serviceGroups.value) {
-        (g.services || []).sort((a, b) => (b.error_count || 0) - (a.error_count || 0) || a.name.localeCompare(b.name))
-      }
-    } catch (error) {
-      if (!isCanceled(error)) {
-        // 错误统计失败不影响主流程，保留服务列表
-      }
-    } finally {
-      if (requestId === servicesRequestId) loadingCounts.value = false
-    }
-  } catch (error) {
-    if (!isCanceled(error)) {
-      services.value = []
-      serviceGroups.value = []
-      openNs.value = new Set()
-    }
-  } finally {
-    if (requestId === servicesRequestId) {
-      loadingSvcs.value = false
-    }
-    if (servicesAbort === controller) {
-      servicesAbort = null
-    }
+function clearLabelFilter() {
+  selectedGroupLabel.value = ''
+  selectedGroupValue.value = ''
+  selectedLabelValue.value = ''
+  refreshActiveData()
+}
+
+function onGroupByChange() {
+  selectedGroupLabel.value = ''
+  selectedGroupValue.value = ''
+  selectedLabelName.value = groupBy.value || selectedLabelName.value
+  selectedLabelValue.value = ''
+  if (selectedLabelName.value) ensureLabelValues(selectedLabelName.value)
+  if (activeTab.value === 'logs') {
+    loadLogs()
+  } else if (activeTab.value === 'templates') {
+    loadTemplates()
   }
 }
 
@@ -1581,22 +1478,6 @@ async function loadTemplates() {
       templatesAbort = null
     }
   }
-}
-
-function selectService(name, serviceMeta = null) {
-  selectedService.value = name
-  selectedGroupLabel.value = serviceMeta?.group_label || ''
-  selectedGroupValue.value = serviceMeta?.group_value || ''
-  if (activeTab.value === 'logs')           loadLogs()
-  else if (activeTab.value === 'templates') loadTemplates()
-  // trace tab: 不自动触发，由用户手动点击"开始分析"
-}
-
-function isSelectedService(name, serviceMeta = null) {
-  if (selectedService.value !== name) return false
-  const metaGroupLabel = serviceMeta?.group_label || ''
-  const metaGroupValue = serviceMeta?.group_value || ''
-  return selectedGroupLabel.value === metaGroupLabel && selectedGroupValue.value === metaGroupValue
 }
 
 function onParamChange() {
@@ -1745,9 +1626,7 @@ function startTplAIAnalysis() {
     ...(selectedService.value ? { service: selectedService.value } : {}),
     ...(tplLevelFilter.value ? { level: tplLevelFilter.value } : {}),
     ...(keyword.value ? { keyword: keyword.value } : {}),
-    ...(selectedService.value && selectedGroupLabel.value && selectedGroupValue.value
-      ? { group_label: selectedGroupLabel.value, group_value: selectedGroupValue.value }
-      : {}),
+    ...currentGroupParams(),
   })
   if (timeMode.value === 'custom' && customStart.value && customEnd.value) {
     params.set('start_time', toUtcStr(customStart.value))
@@ -1777,9 +1656,7 @@ function startAIAnalysis() {
     ...(selectedService.value ? { service: selectedService.value } : {}),
     ...(levelFilter.value     ? { level:   levelFilter.value     } : {}),
     ...(keyword.value         ? { keyword: keyword.value         } : {}),
-    ...(selectedService.value && selectedGroupLabel.value && selectedGroupValue.value
-      ? { group_label: selectedGroupLabel.value, group_value: selectedGroupValue.value }
-      : {}),
+    ...currentGroupParams(),
   })
   streamSSE(
     `/api/analyze/stream?${params}`,
@@ -1803,13 +1680,11 @@ function _applyRouteQuery() {
 onMounted(async () => {
   _applyRouteQuery()
   await loadLabelCatalog()
-  loadServices()
   loadLogs()
 })
 
 onBeforeUnmount(() => {
   clearTimeout(searchTimer)
-  servicesAbort?.abort()
   logsAbort?.abort()
   loadMoreAbort?.abort()
   templatesAbort?.abort()
@@ -1823,7 +1698,7 @@ onBeforeUnmount(() => {
 
 /* 左侧服务面板 */
 .service-panel {
-  width: 280px; min-width: 280px;
+  width: 340px; min-width: 320px;
   background: var(--bg-card);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; overflow: hidden;
@@ -1872,8 +1747,11 @@ onBeforeUnmount(() => {
 }
 
 .label-explorer {
-  border-bottom: 1px solid var(--border);
   background: var(--bg-card);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .label-explorer-header {
   display: flex;
@@ -1893,6 +1771,11 @@ onBeforeUnmount(() => {
 }
 .label-explorer-body {
   padding: 0 12px 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 .label-chip-list {
   display: flex;
@@ -1922,12 +1805,143 @@ onBeforeUnmount(() => {
   content: ' *';
   opacity: .7;
 }
-.label-values-card {
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 10px;
-  background: var(--bg-base);
+.active-label-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(99,102,241,.35);
+  border-radius: 8px;
+  background: rgba(99,102,241,.1);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.active-label-filter em {
+  color: var(--accent-hover);
+  font-style: normal;
+  word-break: break-all;
+}
+.active-label-filter button {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+}
+.label-dropdown-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.label-select-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.label-select-field select {
+  width: 100%;
+  min-width: 0;
   border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  padding: 7px 8px;
+  font-size: 12px;
+}
+.label-dropdown-apply {
+  border: 1px solid var(--border-accent);
+  border-radius: 7px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  padding: 7px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.label-dropdown-apply:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.label-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+.label-group-card {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-base);
+  overflow: hidden;
+}
+.label-group-card.active {
+  border-color: rgba(99,102,241,.45);
+}
+.label-group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 7px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.label-group-header:hover {
+  background: var(--bg-hover);
+}
+.label-group-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.label-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, 'Consolas', monospace);
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+.label-group-role {
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  padding: 1px 6px;
+  font-size: 10px;
+}
+.label-group-card.groupable .label-group-role {
+  color: var(--accent);
+  background: rgba(99,102,241,.13);
+}
+.label-group-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.label-total {
+  min-width: 18px;
+  text-align: right;
+}
+.label-values-card {
+  padding: 0 8px 8px;
+  background: transparent;
+  border: 0;
 }
 .label-values-header {
   display: flex;
@@ -1954,12 +1968,20 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   max-width: 100%;
+  border: 1px solid var(--border);
   padding: 3px 8px;
   border-radius: 9999px;
   background: var(--bg-hover);
   color: var(--text-secondary);
   font-size: 11px;
   word-break: break-all;
+  cursor: pointer;
+}
+.label-value-chip:hover,
+.label-value-chip.active {
+  border-color: var(--border-accent);
+  color: var(--accent);
+  background: var(--accent-dim);
 }
 .label-empty {
   font-size: 11px;
@@ -2058,56 +2080,8 @@ onBeforeUnmount(() => {
 }
 .chip-remove:hover { opacity: 1; }
 
-/* 左侧服务名搜索框 */
-.svc-search-wrap {
-  display: flex; align-items: center; gap: 5px;
-  background: var(--bg-base);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 8px;
-  margin: 8px 8px 4px;
-}
-.svc-search-icon { font-size: 12px; flex-shrink: 0; color: var(--text-muted); }
-.svc-search-input {
-  flex: 1; background: transparent; border: none;
-  color: var(--text-primary); font-size: 12px;
-  padding: 6px 0; outline: none;
-}
-.svc-search-input::placeholder { color: var(--text-muted); }
-.svc-empty {
-  font-size: 12px; color: var(--text-muted);
-  padding: 12px 10px; text-align: center;
-}
-.svc-empty em { color: var(--text-primary); font-style: normal; }
-
-.svc-list-wrap { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
-.counts-tip { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px;
-  font-size: 11px; color: var(--text-muted); font-weight: 400; }
-.spinner-mini { width: 8px; height: 8px; border: 1.5px solid var(--border-strong);
-  border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
-.svc-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 10px; border-radius: 6px;
-  cursor: pointer; transition: background .12s;
-}
-.svc-item:hover  { background: var(--bg-hover); }
-.svc-item.active { background: var(--accent-dim); color: var(--accent); }
-.svc-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-.svc-dot.all   { background: var(--accent); }
-.svc-dot.ok    { background: var(--success); }
-.svc-dot.error { background: var(--error); }
-.svc-label { flex: 1; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.svc-badge { font-size: 10px; padding: 1px 6px; border-radius: 9999px; background: rgba(239,68,68,.15); color: var(--error); font-weight: 600; }
-/* namespace 分组 */
-.svc-ns-group { margin-bottom: 2px; }
-.svc-ns-header { display: flex; align-items: center; gap: 6px; padding: 5px 10px; cursor: pointer; border-radius: 5px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
-.svc-ns-header:hover { background: var(--bg-hover); color: var(--text-primary); }
 .svc-ns-arrow { font-size: 8px; transition: transform .2s; display: inline-block; }
 .svc-ns-arrow.open { transform: rotate(90deg); }
-.svc-ns-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.svc-ns-count { font-size: 10px; background: var(--bg-hover); padding: 1px 5px; border-radius: 8px; }
-.svc-ns-children { padding-left: 8px; }
-.svc-item-child { padding-left: 12px; }
 .loading-row { display: flex; justify-content: center; padding: 12px; }
 
 /* 右侧 */

@@ -27,7 +27,6 @@
           <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">
             主机 CMDB <span class="tab-count">{{ hosts.length }}</span>
           </button>
-          <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="switchToInspect">巡检报告</button>
           <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
             分组管理 <span class="tab-count">{{ groups.length }}</span>
           </button>
@@ -71,8 +70,8 @@
           <span v-if="loading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
           <span v-else>↺</span> 刷新
         </button>
-        <!-- 巡检操作按钮 -->
-        <template v-if="tab === 'inspect'">
+        <!-- CMDB 内联巡检操作 -->
+        <template v-if="tab === 'cmdb'">
           <div class="filter-group" title="巡检范围">
             <span class="filter-icon">🎯</span>
             <select v-model="inspectGroupId" class="filter-select" :disabled="inspecting">
@@ -84,19 +83,19 @@
             <span v-if="inspecting" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>🔍</span> {{ inspectGroupId ? '巡检此分组' : '执行巡检' }}
           </button>
-          <button v-if="inspectResults.length && !inspecting" class="btn btn-ai" :disabled="inspectAiStreaming" @click="runInspectAI">
+          <button class="btn btn-ai" :disabled="!inspectResults.length || inspecting || inspectAiStreaming" @click="runInspectAI" title="先执行巡检生成报告后可用">
             <span v-if="inspectAiStreaming" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>🤖</span> AI分析
           </button>
-          <button v-if="inspectResults.length && !inspecting" class="btn btn-outline" @click="openInspectRca">
+          <button class="btn btn-outline" :disabled="!inspectResults.length || inspecting" @click="openInspectRca" title="先执行巡检生成报告后可用">
             <span>🧠</span> 进入 RCA
           </button>
-          <button v-if="inspectResults.length && !inspecting && groups.length" class="btn btn-outline"
-            :disabled="notifyingGroups || !inspectGroupId" @click="notifyGroups()">
+          <button class="btn btn-outline"
+            :disabled="notifyingGroups || !inspectResults.length || inspecting || !inspectGroupId || !groups.length" @click="notifyGroups()" title="选择分组并完成巡检后可推送">
             <span v-if="notifyingGroups" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>📤</span> 推送当前分组
           </button>
-          <button v-if="inspectResults.length && !inspecting" class="btn btn-excel" :disabled="excelDownloading" @click="downloadInspectExcel">
+          <button class="btn btn-excel" :disabled="!inspectResults.length || inspecting || excelDownloading" @click="downloadInspectExcel" title="先执行巡检生成报告后可用">
             <span v-if="excelDownloading" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
             <span v-else>📥</span> 下载 Excel
           </button>
@@ -250,8 +249,23 @@
       </transition>
     </div>
 
-    <!-- 巡检报告 -->
-    <div v-show="tab === 'inspect'" class="inspect-wrap">
+    <!-- 巡检报告：与主机 CMDB 合并展示 -->
+    <div
+      v-show="tab === 'cmdb'"
+      class="inspect-wrap merged-inspect-wrap"
+      :class="{ 'is-empty': !inspectResults.length && !inspecting && !inspectError }"
+    >
+      <div class="inspect-panel-head">
+        <div>
+          <div class="inspect-panel-title">巡检报告</div>
+          <div class="inspect-panel-sub">基于 CMDB 主机和 Prometheus node_exporter 指标生成</div>
+        </div>
+        <div v-if="inspectResults.length" class="inspect-panel-kpis">
+          <span>正常 {{ inspectSummary.normal }}</span>
+          <span>警告 {{ inspectSummary.warning }}</span>
+          <span>严重 {{ inspectSummary.critical }}</span>
+        </div>
+      </div>
       <div v-if="inspecting" class="empty-state"><div class="spinner"></div><p>巡检中，请稍候...</p></div>
       <div v-else-if="inspectError" class="empty-state">
         <span class="icon">⚠️</span><p style="color:var(--error)">{{ inspectError }}</p>
@@ -1055,7 +1069,8 @@ async function loadCredentials() {
 onMounted(() => {
   // 支持 URL ?tab=xxx 直接进入对应 tab（替代旧 /tools/ssh 路由）
   const q = router.currentRoute.value.query
-  if (q.tab && ['ssh', 'inspect', 'groups', 'cmdb'].includes(q.tab)) tab.value = q.tab
+  if (q.tab === 'inspect') tab.value = 'cmdb'
+  else if (q.tab && ['ssh', 'groups', 'cmdb'].includes(q.tab)) tab.value = q.tab
   if (q.q) search.value = String(q.q)
   if (q.env) envFilter.value = String(q.env)
   if (q.group) groupFilter.value = String(q.group)
@@ -1148,7 +1163,7 @@ function batchApplyCredential() {
 
 // 主 tab 刷新动作：每个 tab 调对应的加载函数，并联动凭据（SSH tab 也用）
 function refreshActiveTab() {
-  if (tab.value === 'cmdb' || tab.value === 'inspect') {
+  if (tab.value === 'cmdb') {
     loadHosts()
     loadCredentials()
   } else if (tab.value === 'groups') {
@@ -2033,8 +2048,6 @@ function abnormalChecks(row) {
   return (row?.checks || []).filter(check => check.status !== 'normal')
 }
 
-function switchToInspect() { tab.value = 'inspect' }
-
 async function runInspect() {
   inspecting.value = true
   inspectError.value = ''
@@ -2360,10 +2373,10 @@ async function deleteGroup(g) {
 
 /* 内容区 */
 .content-row { display: flex; gap: 10px; flex: 1; overflow: hidden; min-height: 0; }
-.content-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.content-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: 10px; }
 
 /* 表格 */
-.cmdb-tab-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.cmdb-tab-wrap { flex: 1.15; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
 .host-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .host-table thead { position: sticky; top: 0; z-index: 2; }
@@ -2554,6 +2567,47 @@ async function deleteGroup(g) {
 
 /* 巡检 */
 .inspect-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: 10px; }
+.merged-inspect-wrap {
+  flex: .9;
+  min-height: 260px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  padding: 10px;
+}
+.merged-inspect-wrap.is-empty {
+  flex: 0 0 170px;
+  min-height: 170px;
+}
+.inspect-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.inspect-panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.inspect-panel-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.inspect-panel-kpis {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.inspect-panel-kpis span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-input);
+}
 .inspect-scope-bar { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-shrink: 0; }
 .inspect-scope-label { color: var(--text-muted); }
 .inspect-scope-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; }

@@ -124,7 +124,7 @@ async def get_sw_topology(
 
 @router.get("/api/sw/endpoint-topn")
 async def get_sw_endpoint_topn(
-    hours:      int           = Query(24),
+    hours:      float         = Query(24, gt=0),
     top_n:      int           = Query(20),
     start_time: Optional[str] = Query(None),
     end_time:   Optional[str] = Query(None),

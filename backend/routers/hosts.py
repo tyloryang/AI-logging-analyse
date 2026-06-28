@@ -34,6 +34,7 @@ from state import (
     get_user_allowed_groups,
     load_user_groups, save_user_groups,
 )
+from ssh_utils import ssh_connect_options
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1285,9 +1286,9 @@ async def _ssh_sync(host: dict) -> dict:
     if not password:
         raise ValueError("主机未配置 SSH 密码，请先在编辑页面填写 SSH 密码或关联凭证")
 
-    connect_kwargs = dict(
+    connect_kwargs = ssh_connect_options(
         host=ip, port=port, username=username, password=password,
-        known_hosts=None, connect_timeout=_HOST_SYNC_SSH_CONNECT_TIMEOUT,
+        connect_timeout=_HOST_SYNC_SSH_CONNECT_TIMEOUT,
     )
 
     async with asyncssh.connect(**connect_kwargs) as conn:
@@ -1674,12 +1675,13 @@ async def _ssh_run(host: dict, command: str, timeout: float):
 
     ip, username, port, password = _resolve_host_ssh_auth(host)
     return await asyncssh.connect(
-        host=ip,
-        port=port,
-        username=username,
-        password=password,
-        known_hosts=None,
-        connect_timeout=_HOST_SYNC_SSH_CONNECT_TIMEOUT,
+        **ssh_connect_options(
+            host=ip,
+            port=port,
+            username=username,
+            password=password,
+            connect_timeout=_HOST_SYNC_SSH_CONNECT_TIMEOUT,
+        )
     )
 
 
@@ -1723,6 +1725,22 @@ _find_java() {{
   fi
   if [ -n "$jhome" ] && [ -x "$jhome/bin/java" ]; then echo "$jhome/bin/java"; return; fi
   if [ -n "$jhome" ] && [ -x "$jhome/jre/bin/java" ]; then echo "$jhome/jre/bin/java"; return; fi
+  if [ -n "$jhome" ] && [ "${{jhome#/}}" != "$jhome" ]; then
+    if [ -x "/proc/{pid}/root$jhome/bin/java" ]; then echo "/proc/{pid}/root$jhome/bin/java"; return; fi
+    if [ -x "/proc/{pid}/root$jhome/jre/bin/java" ]; then echo "/proc/{pid}/root$jhome/jre/bin/java"; return; fi
+  fi
+  local proc_path old_ifs dir candidate
+  proc_path=$(cat /proc/{pid}/environ 2>/dev/null | tr '\0' '\n' | grep '^PATH=' | cut -d= -f2-)
+  if [ -n "$proc_path" ]; then
+    old_ifs="$IFS"; IFS=:
+    for dir in $proc_path; do
+      [ -z "$dir" ] && continue
+      candidate="$dir/java"
+      if [ -x "$candidate" ]; then readlink -f "$candidate" 2>/dev/null || echo "$candidate"; IFS="$old_ifs"; return; fi
+      if [ "${{dir#/}}" != "$dir" ] && [ -x "/proc/{pid}/root$dir/java" ]; then echo "/proc/{pid}/root$dir/java"; IFS="$old_ifs"; return; fi
+    done
+    IFS="$old_ifs"
+  fi
   # 6. 常见安装路径（覆盖容器/物理机/云主机常见目录）
   for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java \\
            /opt/jdk*/bin/java /opt/java/*/bin/java /opt/jdk/*/bin/java \\
@@ -1745,6 +1763,7 @@ _find_java() {{
   echo "[diag] /proc/{pid}/cmdline first arg -> ${{cmd0:-空}}" >&2
   echo "[diag] ps args first token -> ${{ps_cmd:-空}}" >&2
   echo "[diag] JAVA_HOME from env -> ${{jhome:-空}}" >&2
+  echo "[diag] PATH from target env -> ${{proc_path:-空}}" >&2
   echo ""
 }}
 
@@ -1779,10 +1798,10 @@ JAVA=$(_find_java)
 if [ -z "$JAVA" ]; then
   echo "" >&2
   echo "未找到 java 命令。请确认：" >&2
-  echo "  1) 目标主机已安装 JDK（不能只有 JRE，Arthas 需要 tools.jar）" >&2
+  echo "  1) 目标主机已安装可执行 java；JDK8 建议完整 JDK（tools.jar），Java 9+ 不需要 tools.jar" >&2
   echo "  2) PID {pid} 仍存活" >&2
   echo "  3) SSH 用户对 /proc/{pid}/exe 有读权限（同用户或 root）" >&2
-  echo "  4) 或在系统 PATH/JAVA_HOME 中配置 java" >&2
+  echo "  4) 或在系统 PATH、目标进程 PATH、JAVA_HOME 中配置 java" >&2
   echo "  上方 [diag] 输出包含诊断信息" >&2
   exit 2
 fi
@@ -1846,6 +1865,22 @@ _find_java() {{
   fi
   if [ -n "$jhome" ] && [ -x "$jhome/bin/java" ]; then echo "$jhome/bin/java"; return; fi
   if [ -n "$jhome" ] && [ -x "$jhome/jre/bin/java" ]; then echo "$jhome/jre/bin/java"; return; fi
+  if [ -n "$jhome" ] && [ "${{jhome#/}}" != "$jhome" ]; then
+    if [ -x "/proc/{pid}/root$jhome/bin/java" ]; then echo "/proc/{pid}/root$jhome/bin/java"; return; fi
+    if [ -x "/proc/{pid}/root$jhome/jre/bin/java" ]; then echo "/proc/{pid}/root$jhome/jre/bin/java"; return; fi
+  fi
+  local proc_path old_ifs dir candidate
+  proc_path=$(cat /proc/{pid}/environ 2>/dev/null | tr '\0' '\n' | grep '^PATH=' | cut -d= -f2-)
+  if [ -n "$proc_path" ]; then
+    old_ifs="$IFS"; IFS=:
+    for dir in $proc_path; do
+      [ -z "$dir" ] && continue
+      candidate="$dir/java"
+      if [ -x "$candidate" ]; then readlink -f "$candidate" 2>/dev/null || echo "$candidate"; IFS="$old_ifs"; return; fi
+      if [ "${{dir#/}}" != "$dir" ] && [ -x "/proc/{pid}/root$dir/java" ]; then echo "/proc/{pid}/root$dir/java"; IFS="$old_ifs"; return; fi
+    done
+    IFS="$old_ifs"
+  fi
   for p in /usr/local/java/bin/java /usr/lib/jvm/*/bin/java /opt/jdk*/bin/java /opt/java/*/bin/java; do
     [ -x "$p" ] && {{ readlink -f "$p" 2>/dev/null || echo "$p"; return; }}
   done
@@ -1854,7 +1889,7 @@ _find_java() {{
 JAVA=$(_find_java)
 if [ -z "$JAVA" ]; then
   echo "" >&2
-  echo "未找到 java 命令。请确认目标主机已安装 JDK 且 PID {pid} 存活。" >&2
+  echo "未找到 java 命令。请确认目标主机已安装可执行 java 且 PID {pid} 存活。" >&2
   echo "上方 [diag] 输出包含 PATH / /proc/{pid}/exe / cmdline 等诊断信息" >&2
   exit 2
 fi

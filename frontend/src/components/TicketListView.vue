@@ -83,6 +83,26 @@
             <textarea v-if="field.type==='textarea'" v-model="form.extra[field.key]" class="form-textarea" :placeholder="field.placeholder"></textarea>
             <input v-else v-model="form.extra[field.key]" class="form-input" :placeholder="field.placeholder" />
           </div>
+          <div v-if="ticketType === 'sql'" class="sql-precheck">
+            <div class="audit-head">
+              <div>
+                <strong>SQL 风险预检</strong>
+                <span>提交前识别高危语句、缺少 WHERE、结构变更等风险</span>
+              </div>
+              <button class="btn-ghost" @click="runSqlPrecheck" :disabled="prechecking || !sqlText.trim()">
+                {{ prechecking ? '预检中…' : '立即预检' }}
+              </button>
+            </div>
+            <div v-if="sqlPrecheck" class="audit-result" :class="sqlPrecheck.risk_level">
+              <span class="risk-badge" :class="sqlPrecheck.risk_level">{{ riskLabel(sqlPrecheck.risk_level) }}</span>
+              <span class="audit-score">评分 {{ sqlPrecheck.score }} / {{ sqlPrecheck.statement_count }} 条语句</span>
+              <ul>
+                <li v-for="item in sqlPrecheck.findings" :key="item.rule + item.message">
+                  {{ item.message }}
+                </li>
+              </ul>
+            </div>
+          </div>
           <div class="form-row">
             <label>描述</label>
             <textarea v-model="form.description" class="form-textarea" placeholder="详细描述..."></textarea>
@@ -106,8 +126,17 @@
         </div>
         <div class="modal-body">
           <p class="desc-text">{{ activeTicket.description || '（无描述）' }}</p>
+          <div v-if="activeTicket.extra?.sql_audit" class="audit-result detail-audit" :class="activeTicket.extra.sql_audit.risk_level">
+            <span class="risk-badge" :class="activeTicket.extra.sql_audit.risk_level">{{ riskLabel(activeTicket.extra.sql_audit.risk_level) }}</span>
+            <span class="audit-score">SQL 预检评分 {{ activeTicket.extra.sql_audit.score }}</span>
+            <ul>
+              <li v-for="item in activeTicket.extra.sql_audit.findings" :key="item.rule + item.message">
+                {{ item.message }}
+              </li>
+            </ul>
+          </div>
           <div v-if="activeTicket.extra && Object.keys(activeTicket.extra).length" class="extra-section">
-            <div v-for="(v, k) in activeTicket.extra" :key="k" class="extra-row">
+            <div v-for="[k, v] in visibleExtra(activeTicket.extra)" :key="k" class="extra-row">
               <span class="extra-key">{{ k }}</span>
               <span>{{ v }}</span>
             </div>
@@ -152,12 +181,16 @@ const showCreate   = ref(false)
 const creating     = ref(false)
 const activeTicket = ref(null)
 const filterStatus = ref('')
+const prechecking  = ref(false)
+const sqlPrecheck  = ref(null)
 
 const form = ref({ title: '', priority: 'normal', assignee: '', description: '', extra: {} })
 
 const filteredTickets = computed(() =>
   filterStatus.value ? tickets.value.filter(t => t.status === filterStatus.value) : tickets.value
 )
+
+const sqlText = computed(() => String(form.value.extra?.sql || ''))
 
 function countByStatus(s) {
   return s ? tickets.value.filter(t => t.status === s).length : tickets.value.length
@@ -173,14 +206,35 @@ async function fetchTickets() {
 function openCreate() {
   form.value = { title: '', priority: 'normal', assignee: '', description: '', extra: {} }
   props.config.extraFields?.forEach(f => { form.value.extra[f.key] = '' })
+  sqlPrecheck.value = null
   showCreate.value = true
+}
+
+async function runSqlPrecheck() {
+  if (props.ticketType !== 'sql') return null
+  if (!sqlText.value.trim()) return null
+  prechecking.value = true
+  try {
+    sqlPrecheck.value = await api.precheckSqlTicket({ sql: sqlText.value })
+    return sqlPrecheck.value
+  } catch (e) {
+    alert(`SQL 预检失败: ${e}`)
+    return null
+  } finally {
+    prechecking.value = false
+  }
 }
 
 async function submitCreate() {
   if (!form.value.title) return
   creating.value = true
   try {
-    await api.createTicket({ type: props.ticketType, title: form.value.title, priority: form.value.priority, assignee: form.value.assignee, description: form.value.description, extra: form.value.extra })
+    const extra = { ...form.value.extra }
+    if (props.ticketType === 'sql') {
+      const audit = sqlPrecheck.value || await runSqlPrecheck()
+      if (audit) extra.sql_audit = audit
+    }
+    await api.createTicket({ type: props.ticketType, title: form.value.title, priority: form.value.priority, assignee: form.value.assignee, description: form.value.description, extra })
     showCreate.value = false
     await fetchTickets()
   } catch (e) { alert(`提交失败: ${e}`) }
@@ -195,6 +249,14 @@ async function done(t)    { await api.doneTicket(t.id); await fetchTickets() }
 async function del(t)     { if (!confirm('确认删除？')) return; await api.deleteTicket(t.id); await fetchTickets() }
 
 function fmtTime(ts) { return ts ? ts.replace('T', ' ').replace('Z', '').slice(0, 16) : '—' }
+
+function riskLabel(level) {
+  return { low: '低风险', medium: '中风险', high: '高风险', critical: '严重风险' }[level] || level || '未知'
+}
+
+function visibleExtra(extra) {
+  return Object.entries(extra || {}).filter(([key]) => key !== 'sql_audit')
+}
 
 onMounted(fetchTickets)
 </script>
@@ -322,6 +384,43 @@ onMounted(fetchTickets)
 .form-input  { background: var(--ticket-surface); border: 1px solid var(--ticket-border-strong); border-radius: 8px; color: var(--ticket-text); padding: 7px 10px; font-size: 12px; outline: none; }
 .form-textarea { background: var(--ticket-surface); border: 1px solid var(--ticket-border-strong); border-radius: 8px; color: var(--ticket-text); padding: 7px 10px; font-size: 12px; outline: none; resize: vertical; min-height: 70px; }
 .form-input:focus, .form-textarea:focus { border-color: var(--accent, #0969da); box-shadow: 0 0 0 3px rgba(9,105,218,0.12); }
+
+.sql-precheck {
+  border: 1px solid var(--ticket-border);
+  background: var(--ticket-surface-soft);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+.audit-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.audit-head strong { display: block; font-size: 12px; color: var(--ticket-text); }
+.audit-head span { display: block; font-size: 11px; color: var(--ticket-text-muted); margin-top: 2px; }
+.audit-result {
+  margin-top: 10px;
+  border: 1px solid var(--ticket-border);
+  border-radius: 9px;
+  padding: 9px 10px;
+  background: #fff;
+}
+.audit-result.high,
+.audit-result.critical { border-color: rgba(248,81,73,.35); background: rgba(248,81,73,.05); }
+.audit-result.medium { border-color: rgba(210,153,34,.35); background: rgba(210,153,34,.06); }
+.audit-result.low { border-color: rgba(63,185,80,.26); background: rgba(63,185,80,.05); }
+.risk-badge {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  margin-right: 8px;
+}
+.risk-badge.low { background: rgba(63,185,80,.12); color: #2f8f46; }
+.risk-badge.medium { background: rgba(210,153,34,.14); color: #a66f00; }
+.risk-badge.high,
+.risk-badge.critical { background: rgba(248,81,73,.14); color: #cf222e; }
+.audit-score { font-size: 11px; color: var(--ticket-text-muted); }
+.audit-result ul { margin: 8px 0 0; padding-left: 18px; color: var(--ticket-text); font-size: 11.5px; line-height: 1.6; }
+.detail-audit { margin-bottom: 12px; }
 
 .desc-text { font-size: 12.5px; color: var(--ticket-text-muted); margin-bottom: 12px; white-space: pre-wrap; }
 .extra-section { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
