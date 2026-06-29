@@ -29,7 +29,7 @@
             <option v-for="opt in AUTO_REFRESH_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.short }}</option>
           </select>
         </div>
-        <span v-if="lastFetchedAt" class="cache-stamp" :title="`数据缓存时间 ${new Date(lastFetchedAt).toLocaleString()}`">
+        <span v-if="lastFetchedAt" class="cache-stamp" :title="`当前缓存时间 ${new Date(lastFetchedAt).toLocaleString()}，手动刷新或开启自动刷新可更新`">
           ⏱ {{ lastFetchedText }}
         </span>
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="openEditCluster">编辑</button>
@@ -38,7 +38,7 @@
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeClusterId" @click="openCreateResource" title="从 YAML 创建资源">
           + 新建
         </button>
-        <button class="btn-refresh" @click="refreshAll" :disabled="loading || !activeClusterId" title="跳过缓存强制重拉">
+        <button class="btn-refresh" @click="refreshAll({ clusters: true })" :disabled="loading || !activeClusterId" title="跳过缓存强制重拉">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <polyline points="23 4 23 10 17 10" />
             <polyline points="1 20 1 14 7 14" />
@@ -1247,13 +1247,18 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
             容器终端
             <span class="exec-meta">{{ execMeta.pod }}</span>
-            <span v-if="execMeta.container" class="exec-meta dim">/ {{ execMeta.container }}</span>
+            <span v-if="execContainer" class="exec-meta dim">/ {{ execContainer }}</span>
           </div>
-          <div class="exec-controls">
-            <select v-model="execContainer" class="exec-select" @change="restartExec" :disabled="execConnected">
+          <div class="exec-controls" @mousedown.stop @click.stop @keydown.stop>
+            <select
+              v-model="execContainer"
+              class="exec-select"
+              :disabled="!execMeta.containers.length"
+              @change="handleExecSelectionChange"
+            >
               <option v-for="c in execMeta.containers" :key="c.name" :value="c.name">{{ c.name }}</option>
             </select>
-            <select v-model="execShell" class="exec-select" :disabled="execConnected">
+            <select v-model="execShell" class="exec-select" @change="handleExecSelectionChange">
               <option value="/bin/sh">sh</option>
               <option value="/bin/bash">bash</option>
             </select>
@@ -1408,8 +1413,9 @@ defineOptions({ name: 'Containers' })
 
 // ── 模块级缓存（跨组件实例存活；keep-alive 失效或首次实例化都能复用）
 // key: `${clusterId}|${namespace}`  value: { summary, namespaces, pods, ..., lastFetchedAt }
+// 缓存默认常驻；手动刷新、自动刷新、集群/资源变更时才强制重新拉取。
 const _resourceCache = new Map()
-const CACHE_TTL_MS = 30_000   // 30 秒内 hit cache 直接返回，超过自动 miss
+let _clustersCache = null
 const AUTO_REFRESH_OPTIONS = [
   { value: 'off', label: '关闭',  short: '关',  sec: 0 },
   { value: '30',  label: '30 秒', short: '30s', sec: 30 },
@@ -2727,9 +2733,15 @@ async function deleteSingleResource(kind, row) {
   }
 }
 
-async function loadClusters() {
+async function loadClusters(force = false) {
   try {
-    clusters.value = await api.k8sClusters()
+    if (!force && Array.isArray(_clustersCache)) {
+      clusters.value = _clustersCache
+    } else {
+      const data = await api.k8sClusters()
+      _clustersCache = Array.isArray(data) ? data : []
+      clusters.value = _clustersCache
+    }
     if (!clusters.value.length) {
       activeClusterId.value = ''
       resetData()
@@ -2762,7 +2774,7 @@ function _applyCachedPayload(payload) {
 
 // fetchAll(opts)
 //   opts.force = true  → 跳过缓存强制重拉（手动「刷新」按钮 / 自动 timer）
-//   默认走缓存：命中 TTL 内的缓存就直接渲染，否则才发请求
+//   默认走缓存：命中当前集群/命名空间缓存就直接渲染，不因时间自动过期
 //   兼容旧调用：参数若为 Event（select.change 等），按非 force 处理
 async function fetchAll(opts) {
   const force = (opts && opts.force === true) === true
@@ -2776,7 +2788,7 @@ async function fetchAll(opts) {
 
   if (!force) {
     const cached = _resourceCache.get(key)
-    if (cached && Date.now() - cached.lastFetchedAt < CACHE_TTL_MS) {
+    if (cached) {
       _applyCachedPayload(cached)
       return
     }
@@ -2823,7 +2835,10 @@ async function fetchAll(opts) {
 }
 
 // 用户主动刷新（按钮 / timer）：跳过缓存
-function refreshAll() {
+async function refreshAll(opts = {}) {
+  if (opts?.clusters === true) {
+    await loadClusters(true)
+  }
   return fetchAll({ force: true })
 }
 
@@ -3113,7 +3128,7 @@ async function saveCluster() {
     for (const key of Array.from(_resourceCache.keys())) {
       if (key.startsWith(`${saved.id}|`)) _resourceCache.delete(key)
     }
-    await loadClusters()
+    await loadClusters(true)
     activeClusterId.value = saved.id
     activeNs.value = ''
     closeClusterModal()
@@ -3136,7 +3151,7 @@ async function setDefaultCluster(cluster) {
     return
   }
   try {
-    await loadClusters()
+    await loadClusters(true)
     activeClusterId.value = saved.id
     activeNs.value = ''
     await fetchAll()
@@ -3165,7 +3180,7 @@ async function removeCluster() {
     return
   }
   try {
-    await loadClusters()
+    await loadClusters(true)
     activeNs.value = ''
     await fetchAll()
     clusterTestResult.value = true
@@ -3420,6 +3435,12 @@ function _destroyExec() {
   execConnecting.value = false
 }
 
+function _focusExecTerm() {
+  const active = document.activeElement
+  if (active?.closest?.('.exec-controls')) return
+  _execTerm?.focus()
+}
+
 async function openExecModal(pod) {
   execMeta.pod       = pod.name
   execMeta.namespace = pod.namespace
@@ -3442,6 +3463,11 @@ async function restartExec() {
   await _startExec()
 }
 
+async function handleExecSelectionChange() {
+  if (!showExecModal.value) return
+  await restartExec()
+}
+
 async function _startExec() {
   if (!execTermEl.value) return
   execConnecting.value = true
@@ -3457,7 +3483,7 @@ async function _startExec() {
   _execTerm.open(execTermEl.value)
   await nextTick()
   _execFitAddon.fit()
-  _execTerm.focus()   // ← 必须：让终端获取键盘焦点，否则无法输入
+  _focusExecTerm()
 
   _execResizeOb = new ResizeObserver(() => {
     requestAnimationFrame(() => {
@@ -3478,22 +3504,29 @@ async function _startExec() {
     container:  cont,
     shell:      execShell.value,
   })
-  _execWs = new WebSocket(`${proto}://${location.host}/api/k8s/exec?${qs}`)
+  const ws = new WebSocket(`${proto}://${location.host}/api/k8s/exec?${qs}`)
+  _execWs = ws
 
-  _execWs.onopen = () => {
+  ws.onopen = () => {
+    if (_execWs !== ws) return
     execConnected.value  = true
     execConnecting.value = false
     const d = _execFitAddon?.proposeDimensions?.()
-    if (d) _execWs.send(`\x1b[RESIZE:${d.cols},${d.rows}]`)
-    _execTerm?.focus()   // ← WS 建立后再次 focus，确保可以立即输入
+    if (d) ws.send(`\x1b[RESIZE:${d.cols},${d.rows}]`)
+    _focusExecTerm()
   }
-  _execWs.onmessage = (e) => _execTerm?.write(e.data)
-  _execWs.onclose   = () => {
+  ws.onmessage = (e) => {
+    if (_execWs !== ws) return
+    _execTerm?.write(e.data)
+  }
+  ws.onclose   = () => {
+    if (_execWs !== ws) return
     execConnected.value  = false
     execConnecting.value = false
     _execTerm?.writeln('\r\n\x1b[90m连接已断开\x1b[0m')
   }
-  _execWs.onerror   = () => {
+  ws.onerror   = () => {
+    if (_execWs !== ws) return
     execConnected.value  = false
     execConnecting.value = false
     _execTerm?.writeln('\r\n\x1b[31mWebSocket 连接错误\x1b[0m')
@@ -5033,6 +5066,8 @@ onBeforeUnmount(() => { _destroyExec() })
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 20;
 }
 .exec-select {
   padding: 4px 8px;
@@ -5059,10 +5094,12 @@ onBeforeUnmount(() => { _destroyExec() })
 .exec-btn-sm.close { color: #f85149; border-color: rgba(248, 81, 73, 0.3); }
 .exec-btn-sm.close:hover { background: rgba(248, 81, 73, 0.12); }
 .exec-term-wrap {
+  position: relative;
   flex: 1;
   min-height: 0;
   padding: 4px 0 0 4px;
   cursor: text;
+  z-index: 1;
 }
 .exec-term-wrap :deep(.xterm) { height: 100%; }
 .exec-term-wrap :deep(.xterm-viewport) { overflow-y: auto !important; }
@@ -5072,7 +5109,7 @@ onBeforeUnmount(() => { _destroyExec() })
   opacity: 0 !important;
   left: 0 !important;
   top: 0 !important;
-  z-index: 10 !important;
+  z-index: 1 !important;
   pointer-events: auto !important;
 }
 .exec-term-wrap :deep(.xterm-screen) { cursor: text; }
