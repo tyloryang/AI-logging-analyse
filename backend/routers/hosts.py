@@ -1825,6 +1825,31 @@ fi
 echo "使用 Java: $JAVA"
 echo "使用 JAVA_HOME: $JAVA_HOME"
 
+# 容器内 java 路径形如 /proc/<pid>/root/...，宿主机动态链接器找不到 libjli.so，
+# 需要把容器内 JDK 的 lib 目录加入 LD_LIBRARY_PATH（兼容 JDK8/JDK11+ 多种布局）。
+case "$JAVA" in
+  /proc/*/root/*)
+    java_proc_prefix=$(echo "$JAVA" | sed -E 's|(^/proc/[0-9]+/root)/.*|\\1|')
+    if [ -n "$JAVA_HOME" ]; then
+      jh_in_container="$JAVA_HOME"
+    else
+      jh_in_container=$(dirname "$(dirname "${{JAVA#$java_proc_prefix}}")")
+    fi
+    ld_extra=""
+    for sub in lib lib/jli lib/server lib/amd64 lib/amd64/jli lib/amd64/server \
+               jre/lib jre/lib/amd64 jre/lib/amd64/jli jre/lib/amd64/server; do
+      candidate="$java_proc_prefix$jh_in_container/$sub"
+      if [ -d "$candidate" ]; then
+        ld_extra="$ld_extra:$candidate"
+      fi
+    done
+    if [ -n "$ld_extra" ]; then
+      export LD_LIBRARY_PATH="${{ld_extra#:}}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+      echo "使用 LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+    fi
+    ;;
+esac
+
 _download_file() {{
   local url="$1"
   local output="$2"
@@ -2654,6 +2679,9 @@ async def export_inspect_excel(req: InspectExcelRequest):
         s1(3, "正常主机",     summary.get("normal", 0))
         s1(4, "警告主机",     summary.get("warning", 0))
         s1(5, "严重主机",     summary.get("critical", 0))
+        s1(6, "已获取指标主机", summary.get("metrics_updated_count", 0))
+        s1(7, "SSH/Python兜底主机", summary.get("metrics_fallback_count", 0))
+        s1(8, "未获取指标主机", summary.get("metrics_missing_count", 0))
 
         issue_cnt: dict[str, int] = {}
         for r in results:
@@ -2662,9 +2690,9 @@ async def export_inspect_excel(req: InspectExcelRequest):
                     issue_cnt[c.get("item", "未知")] = issue_cnt.get(c.get("item", "未知"), 0) + 1
         top_issues = sorted(issue_cnt.items(), key=lambda x: x[1], reverse=True)[:8]
 
-        ws1.cell(row=7, column=1, value="高频异常项").font = Font(bold=True, size=10)
-        header_row(ws1, ["异常检查项", "影响主机数"], row=8)
-        for i, (item, cnt) in enumerate(top_issues, 9):
+        ws1.cell(row=10, column=1, value="高频异常项").font = Font(bold=True, size=10)
+        header_row(ws1, ["异常检查项", "影响主机数"], row=11)
+        for i, (item, cnt) in enumerate(top_issues, 12):
             ws1.cell(row=i, column=1, value=item).border    = tborder()
             ws1.cell(row=i, column=2, value=cnt).border     = tborder()
             ws1.cell(row=i, column=1).font      = Font(size=9)
@@ -2672,7 +2700,7 @@ async def export_inspect_excel(req: InspectExcelRequest):
             ws1.cell(row=i, column=1).alignment = Alignment(vertical="center")
             ws1.cell(row=i, column=2).alignment = Alignment(horizontal="center", vertical="center")
 
-        ai_start = 9 + len(top_issues) + 2
+        ai_start = 12 + len(top_issues) + 2
         ws1.cell(row=ai_start, column=1, value="AI 分析总结").font = Font(bold=True, size=10)
         if ai_text:
             c           = ws1.cell(row=ai_start + 1, column=1, value=ai_text)
@@ -2684,47 +2712,92 @@ async def export_inspect_excel(req: InspectExcelRequest):
 
         ws2 = wb.create_sheet("全部主机明细")
         headers2 = [
-            "主机名", "IP地址", "操作系统", "状态", "巡检结果",
-            "CPU使用率(%)", "CPU核心数", "内存使用率(%)", "内存总量(GB)",
-            "负载(1m)", "负载(5m)", "负载(15m)",
-            "网络收(MB/s)", "网络发(MB/s)", "磁盘读(MB/s)", "磁盘写(MB/s)",
-            "TCP连接数", "TCP TIME_WAIT", "运行时长(天)", "磁盘分区详情",
+            "状态", "主机名", "IP", "系统",
+            "CPU使用率(%)", "CPU核心", "内存使用率(%)", "内存总量(GB)",
+            "负载1m", "负载5m", "负载15m", "运行时长",
+            "磁盘挂载", "磁盘使用率(%)", "磁盘容量(已用/总量GB)",
+            "网络入(MB/s)", "网络出(MB/s)", "磁盘读(MB/s)", "磁盘写(MB/s)",
+            "TCP连接", "TIME_WAIT", "异常项",
         ]
         header_row(ws2, headers2)
-        col_widths(ws2, [18, 16, 22, 10, 10, 14, 10, 14, 14, 10, 10, 10, 14, 14, 14, 14, 12, 14, 12, 40])
+        col_widths(ws2, [10, 18, 16, 22, 14, 10, 14, 14, 10, 10, 10, 14, 14, 14, 18, 14, 14, 14, 14, 12, 12, 36])
         ws2.row_dimensions[1].height = 22
+
+        def fmt(v, decimals=1):
+            return round(v, decimals) if v is not None else "-"
+
+        def number_or_none(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        def highest_partition(partitions: list[dict]) -> dict | None:
+            best = None
+            best_usage = -1.0
+            for pt in partitions or []:
+                usage = number_or_none(pt.get("usage_pct", pt.get("used_pct")))
+                if usage is None:
+                    continue
+                if usage > best_usage:
+                    best = pt
+                    best_usage = usage
+            return best
+
+        def uptime_text(seconds) -> str:
+            seconds_value = number_or_none(seconds)
+            if seconds_value is None or seconds_value < 0:
+                return "-"
+            days = int(seconds_value // 86400)
+            hours = int((seconds_value % 86400) // 3600)
+            minutes = int((seconds_value % 3600) // 60)
+            return f"{days}天{hours}小时{minutes}分钟" if days else f"{hours}小时{minutes}分钟"
+
+        def disk_capacity_text(pt: dict | None) -> str:
+            if not pt:
+                return "-"
+            used = number_or_none(pt.get("used_gb"))
+            total = number_or_none(pt.get("total_gb", pt.get("size_gb")))
+            if used is None and total is None:
+                return "-"
+            if used is None:
+                return f"- / {round(total, 1)}"
+            if total is None:
+                return f"{round(used, 1)} / -"
+            return f"{round(used, 1)} / {round(total, 1)}"
+
+        def issue_text(checks: list[dict]) -> str:
+            abnormal = [c for c in checks or [] if c.get("status") != "normal"]
+            if not abnormal:
+                return "全部正常"
+            return "；".join(
+                f"{c.get('item', '-')}: {c.get('value', '-')}"
+                for c in abnormal
+            )
 
         for ri, h in enumerate(results, 2):
             overall      = h.get("overall", "normal")
             status_label = STATUS_TEXT.get(overall, overall)
 
-            def fmt(v, decimals=1):
-                return round(v, decimals) if v is not None else "-"
-
             m           = h.get("metrics") or {}
-            uptime_days = "-"
-            us = m.get("uptime_seconds")
-            if us is not None:
-                uptime_days = round(us / 86400, 1)
-
             partitions = h.get("partitions") or []
-            disk_text  = "  ".join(
-                f"{pt.get('mountpoint','?')} {pt.get('usage_pct','-')}%"
-                for pt in partitions
-            ) if partitions else "-"
+            disk = highest_partition(partitions)
+            disk_usage = disk.get("usage_pct", disk.get("used_pct")) if disk else None
 
             row_vals = [
-                h.get("hostname", "-"), h.get("ip", "-"), h.get("os", "-"),
-                h.get("state", "-"), status_label,
+                status_label, h.get("hostname", "-"), h.get("ip", "-"), h.get("os", "-"),
                 fmt(m.get("cpu_usage")), h.get("cpu_cores") or "-", fmt(m.get("mem_usage")), fmt(m.get("mem_total_gb") or h.get("memory_gb")),
-                fmt(m.get("load1")), fmt(m.get("load5")), fmt(m.get("load15")),
+                fmt(m.get("load1")), fmt(m.get("load5")), fmt(m.get("load15")), uptime_text(m.get("uptime_seconds")),
+                (disk.get("mountpoint") or disk.get("mount") or "-") if disk else "-",
+                fmt(disk_usage),
+                disk_capacity_text(disk),
                 fmt(m.get("net_recv_mbps")), fmt(m.get("net_send_mbps")), fmt(m.get("disk_read_mbps")), fmt(m.get("disk_write_mbps")),
                 m.get("tcp_estab") if m.get("tcp_estab") is not None else "-",
                 m.get("tcp_tw") if m.get("tcp_tw") is not None else "-",
-                uptime_days, disk_text,
+                issue_text(h.get("checks") or []),
             ]
             for ci, val in enumerate(row_vals, 1):
-                data_cell(ws2, ri, ci, val, overall if ci == 5 else None)
+                data_cell(ws2, ri, ci, val, overall if ci == 1 else None)
             ws2.row_dimensions[ri].height = 16
 
         ws2.freeze_panes = "A2"
