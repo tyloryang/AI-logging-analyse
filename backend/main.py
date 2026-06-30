@@ -30,6 +30,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from db import engine, Base, AsyncSessionLocal
 from auth.router import router as auth_router
@@ -68,6 +69,41 @@ from routers.db_ai import router as db_ai_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("[config] %s=%r is invalid, using %s", name, raw, default)
+        return default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def _gzip_enabled() -> bool:
+    return os.getenv("GZIP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _path_should_skip_gzip(path: str) -> bool:
+    # Starlette 0.38 compresses streaming responses too; skip SSE and downloads.
+    lowered = (path or "").lower()
+    skip_tokens = ("stream", "export", "template", "excel", "download")
+    return any(token in lowered for token in skip_tokens)
+
+
+class SelectiveGZipMiddleware(GZipMiddleware):
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") == "http" and _path_should_skip_gzip(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
 
 
 async def _migrate_add_columns(conn) -> None:
@@ -188,6 +224,12 @@ _cors_origins = [
     for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
     if o.strip()
 ]
+if _gzip_enabled():
+    app.add_middleware(
+        SelectiveGZipMiddleware,
+        minimum_size=_env_int("GZIP_MIN_SIZE", 1024, min_value=0),
+        compresslevel=_env_int("GZIP_COMPRESS_LEVEL", 6, min_value=1, max_value=9),
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,

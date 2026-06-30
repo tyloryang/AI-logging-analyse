@@ -32,51 +32,51 @@
     </div>
 
     <div class="stats-row">
-      <div class="stat-card drillable" :class="{ 'stat-alert': overview.alert_count > 0 }"
+      <div class="stat-card drillable" :class="{ 'stat-alert': hasPositive(overview.alert_count) }"
            @click="goAlerts" title="查看告警历史">
-        <div class="stat-num" :class="{ 'num-alert': overview.alert_count > 0 }">
-          {{ loading ? '--' : overview.alert_count }}
+        <div class="stat-num" :class="{ 'num-alert': hasPositive(overview.alert_count), missing: !hasValue(overview.alert_count) }">
+          {{ loading ? '--' : displayValue(overview.alert_count) }}
         </div>
         <div class="stat-label">告警触发 <span class="drill-arrow">→</span></div>
         <div class="stat-bar alert-bar"></div>
       </div>
-      <div class="stat-card drillable" :class="{ 'stat-warn': overview.error_count > 5 }"
+      <div class="stat-card drillable" :class="{ 'stat-warn': typeof overview.error_count === 'number' && overview.error_count > 5 }"
            @click="goErrorLogs" title="按错误级别查询日志">
-        <div class="stat-num" :class="{ 'num-warn': overview.error_count > 5 }">
-          {{ loading ? '--' : overview.error_count }}
+        <div class="stat-num" :class="{ 'num-warn': typeof overview.error_count === 'number' && overview.error_count > 5, missing: !hasValue(overview.error_count) }">
+          {{ loading ? '--' : displayValue(overview.error_count) }}
         </div>
         <div class="stat-label">服务错误 <span class="drill-arrow">→</span></div>
         <div class="stat-bar error-bar"></div>
       </div>
       <div class="stat-card drillable" @click="goTraces" title="查看接口 RED 仪表盘">
-        <div class="stat-num num-info">{{ loading ? '--' : overview.trace_count }}</div>
+        <div class="stat-num num-info" :class="{ missing: !hasValue(overview.trace_count) }">{{ loading ? '--' : displayValue(overview.trace_count) }}</div>
         <div class="stat-label">Trace 数 <span class="drill-arrow">→</span></div>
         <div class="stat-bar trace-bar"></div>
       </div>
       <div class="stat-card drillable" @click="goGrafana" title="打开 Grafana 看板列表">
-        <div class="stat-num num-success">{{ loading ? '--' : overview.grafana_count }}</div>
+        <div class="stat-num num-success" :class="{ missing: !hasValue(overview.grafana_count) }">{{ loading ? '--' : displayValue(overview.grafana_count) }}</div>
         <div class="stat-label">Grafana 看板 <span class="drill-arrow">→</span></div>
         <div class="stat-bar grafana-bar"></div>
       </div>
       <div class="stat-card drillable stat-resource" @click="goResources" title="查看 CMDB 与容器资源">
-        <div class="stat-num num-resource">{{ loading ? '--' : overview.resource_count }}</div>
+        <div class="stat-num num-resource" :class="{ missing: !hasValue(overview.resource_count) }">{{ loading ? '--' : displayValue(overview.resource_count) }}</div>
         <div class="stat-label">资源数量 <span class="drill-arrow">→</span></div>
-        <div class="stat-sub">{{ overview.resource_summary?.hosts || 0 }} 主机 · {{ overview.resource_summary?.containers || 0 }} 容器资源</div>
+        <div class="stat-sub">{{ displayValue(overview.resource_summary?.hosts) }} 主机 · {{ displayValue(overview.resource_summary?.containers) }} 容器资源</div>
         <div class="stat-bar resource-bar"></div>
       </div>
-      <div class="stat-card drillable" :class="{ 'stat-alert': overview.host_abnormal_alert_count > 0 }"
+      <div class="stat-card drillable" :class="{ 'stat-alert': hasPositive(overview.host_abnormal_alert_count) }"
            @click="goHostAlerts" title="查看主机运行异常告警">
-        <div class="stat-num" :class="{ 'num-alert': overview.host_abnormal_alert_count > 0, 'num-host': overview.host_abnormal_alert_count === 0 }">
-          {{ loading ? '--' : overview.host_abnormal_alert_count }}
+        <div class="stat-num" :class="{ 'num-alert': hasPositive(overview.host_abnormal_alert_count), 'num-host': isZero(overview.host_abnormal_alert_count), missing: !hasValue(overview.host_abnormal_alert_count) }">
+          {{ loading ? '--' : displayValue(overview.host_abnormal_alert_count) }}
         </div>
         <div class="stat-label">主机异常告警 <span class="drill-arrow">→</span></div>
         <div class="stat-sub">活跃主机 / 节点类告警</div>
         <div class="stat-bar host-bar"></div>
       </div>
-      <div class="stat-card drillable stat-container" :class="{ 'stat-warn': overview.container_resource_abnormal_count > 0 }"
+      <div class="stat-card drillable stat-container" :class="{ 'stat-warn': hasPositive(overview.container_resource_abnormal_count) }"
            @click="goContainerIssues" title="查看容器资源异常">
-        <div class="stat-num" :class="{ 'num-warn': overview.container_resource_abnormal_count > 0, 'num-container': overview.container_resource_abnormal_count === 0 }">
-          {{ loading ? '--' : overview.container_resource_abnormal_count }}
+        <div class="stat-num" :class="{ 'num-warn': hasPositive(overview.container_resource_abnormal_count), 'num-container': isZero(overview.container_resource_abnormal_count), missing: !hasValue(overview.container_resource_abnormal_count) }">
+          {{ loading ? '--' : displayValue(overview.container_resource_abnormal_count) }}
         </div>
         <div class="stat-label">容器资源异常 <span class="drill-arrow">→</span></div>
         <div class="stat-sub">Pod / Node / 工作负载</div>
@@ -203,6 +203,10 @@
 
           <div v-if="loading" class="section-loading"><div class="spinner"></div></div>
 
+          <div v-else-if="!sourceFetched('alerts')" class="section-empty">
+            <span>告警数据未获取</span>
+          </div>
+
           <div v-else-if="!overview.recent_alerts?.length" class="section-empty">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <polyline points="20 6 9 17 4 12" />
@@ -259,7 +263,7 @@
                 <div class="topo-label">链路追踪</div>
                 <div class="topo-sub">SkyWalking / OAP</div>
               </div>
-              <div class="topo-count">{{ overview.trace_count || 0 }}</div>
+              <div class="topo-count" :class="{ missing: !hasValue(overview.trace_count) }">{{ displayValue(overview.trace_count) }}</div>
             </RouterLink>
 
             <RouterLink to="/alerts" class="topo-card">
@@ -273,7 +277,7 @@
                 <div class="topo-label">告警中心</div>
                 <div class="topo-sub">Prometheus / Alertmanager</div>
               </div>
-              <div class="topo-count" :class="{ 'count-alert': overview.alert_count > 0 }">{{ overview.alert_count || 0 }}</div>
+              <div class="topo-count" :class="{ 'count-alert': hasPositive(overview.alert_count), missing: !hasValue(overview.alert_count) }">{{ displayValue(overview.alert_count) }}</div>
             </RouterLink>
 
             <RouterLink to="/metrics" class="topo-card">
@@ -286,7 +290,7 @@
                 <div class="topo-label">指标总览</div>
                 <div class="topo-sub">Prometheus 指标</div>
               </div>
-              <div class="topo-count">{{ overview.trace_count || 0 }}</div>
+              <div class="topo-count" :class="{ missing: !hasValue(overview.trace_count) }">{{ displayValue(overview.trace_count) }}</div>
             </RouterLink>
 
             <div class="topo-card topo-grafana" @click="openGrafana">
@@ -302,7 +306,7 @@
                 <div class="topo-label">Grafana 看板</div>
                 <div class="topo-sub">{{ overview.grafana_boards?.length || 0 }} 个看板</div>
               </div>
-              <div class="topo-count num-success">{{ overview.grafana_count || 0 }}</div>
+              <div class="topo-count num-success" :class="{ missing: !hasValue(overview.grafana_count) }">{{ displayValue(overview.grafana_count) }}</div>
             </div>
           </div>
 
@@ -334,6 +338,10 @@
 
           <div v-if="loading" class="section-loading"><div class="spinner"></div></div>
 
+          <div v-else-if="!sourceFetched('skywalking')" class="section-empty">
+            <span>Trace 数据未获取</span>
+          </div>
+
           <div v-else-if="!overview.recent_traces?.length" class="section-empty">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <circle cx="12" cy="5" r="2" />
@@ -356,12 +364,12 @@
             </thead>
             <tbody>
               <tr v-for="t in overview.recent_traces" :key="t.trace_id">
-                <td><span class="svc-tag">{{ t.service || '--' }}</span></td>
+                <td><span class="svc-tag">{{ displayValue(t.service) }}</span></td>
                 <td class="text-muted" style="max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-                  {{ t.endpoint || t.trace_id || '--' }}
+                  {{ displayValue(t.endpoint || t.trace_id) }}
                 </td>
                 <td class="mono" :class="{ 'dur-slow': t.duration > 1000, 'dur-warn': t.duration > 500 && t.duration <= 1000 }">
-                  {{ t.duration ? t.duration + ' ms' : '--' }}
+                  {{ displayDuration(t.duration) }}
                 </td>
                 <td>
                   <span class="trace-status" :class="t.error ? 'error' : 'ok'">
@@ -382,6 +390,31 @@ import { onBeforeUnmount, onMounted, reactive, ref, computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 const router = useRouter()
+const MISSING_TEXT = '未获取'
+
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== ''
+}
+
+function hasPositive(value) {
+  return typeof value === 'number' && value > 0
+}
+
+function isZero(value) {
+  return value === 0
+}
+
+function displayValue(value) {
+  return hasValue(value) ? value : MISSING_TEXT
+}
+
+function displayDuration(value) {
+  return hasValue(value) ? `${value} ms` : MISSING_TEXT
+}
+
+function sourceFetched(key) {
+  return overview.fetch_status?.[key] !== false
+}
 
 // ── KPI 钻取 ──────────────────────────────────────────────────────────────
 function goAlerts()    { router.push('/observability/alerts') }
@@ -396,23 +429,24 @@ import { api } from '../api/index.js'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 
 const loading = ref(false)
-const windowMinutes = ref(60)
+const windowMinutes = ref(10)
 const overview = reactive({
-  alert_count: 0,
-  error_count: 0,
-  trace_count: 0,
-  grafana_count: 0,
-  resource_count: 0,
-  resource_summary: { total: 0, hosts: 0, containers: 0, k8s_available: false },
-  host_abnormal_alert_count: 0,
-  host_resource_summary: { total: 0, abnormal_alerts: 0, abnormal_status: 0 },
-  container_resource_count: 0,
-  container_resource_abnormal_count: 0,
+  alert_count: null,
+  error_count: null,
+  trace_count: null,
+  grafana_count: null,
+  resource_count: null,
+  resource_summary: { total: null, hosts: null, containers: null, k8s_available: false },
+  host_abnormal_alert_count: null,
+  host_resource_summary: { total: null, abnormal_alerts: null, abnormal_status: null },
+  container_resource_count: null,
+  container_resource_abnormal_count: null,
   container_resource_summary: null,
   recent_alerts: [],
   recent_traces: [],
   problem_services: [],
   grafana_boards: [],
+  fetch_status: {},
 })
 
 const aiBoxCollapsed = ref(true)
@@ -725,7 +759,13 @@ onBeforeUnmount(() => {
   font-family: 'Cascadia Code', 'Consolas', 'SF Mono', monospace;
   color: var(--text-primary);
   line-height: 1;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
+}
+
+.stat-num.missing {
+  font-size: 22px;
+  color: var(--text-muted);
+  letter-spacing: 0;
 }
 
 .num-alert {
@@ -1351,6 +1391,11 @@ onBeforeUnmount(() => {
   font-weight: 700;
   color: var(--text-secondary);
   font-family: 'Cascadia Code', 'Consolas', monospace;
+}
+
+.topo-count.missing {
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .count-alert {

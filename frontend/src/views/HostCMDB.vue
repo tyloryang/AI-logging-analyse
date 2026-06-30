@@ -27,6 +27,9 @@
           <button class="tab-btn" :class="{ active: tab === 'cmdb' }" @click="tab = 'cmdb'">
             主机 CMDB <span class="tab-count">{{ hosts.length }}</span>
           </button>
+          <button class="tab-btn" :class="{ active: tab === 'inspect' }" @click="tab = 'inspect'">
+            巡检报告 <span class="tab-count" :class="{ warn: inspectSummary.critical > 0 }">{{ inspectResults.length || inspectSummary.total || 0 }}</span>
+          </button>
           <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
             分组管理 <span class="tab-count">{{ groups.length }}</span>
           </button>
@@ -71,7 +74,7 @@
           <span v-else>↺</span> 刷新
         </button>
         <!-- CMDB 内联巡检操作 -->
-        <template v-if="tab === 'cmdb'">
+        <template v-if="tab === 'inspect'">
           <div class="filter-group" title="巡检范围">
             <span class="filter-icon">🎯</span>
             <select v-model="inspectGroupId" class="filter-select" :disabled="inspecting">
@@ -251,7 +254,7 @@
 
     <!-- 巡检报告：与主机 CMDB 合并展示 -->
     <div
-      v-show="tab === 'cmdb'"
+      v-show="tab === 'inspect'"
       class="inspect-wrap merged-inspect-wrap"
       :class="{ 'is-empty': !inspectResults.length && !inspecting && !inspectError }"
     >
@@ -264,6 +267,7 @@
           <span>正常 {{ inspectSummary.normal }}</span>
           <span>警告 {{ inspectSummary.warning }}</span>
           <span>严重 {{ inspectSummary.critical }}</span>
+          <span>指标 {{ inspectSummary.metrics_updated_count || 0 }}</span>
         </div>
       </div>
       <div v-if="inspecting" class="empty-state"><div class="spinner"></div><p>巡检中，请稍候...</p></div>
@@ -280,7 +284,7 @@
           <span class="inspect-scope-badge" :class="inspectSummary.group_id ? 'group' : 'all'">
             {{ inspectSummary.group_name || '全部主机' }}
           </span>
-          <span class="inspect-scope-stat">共 {{ inspectSummary.total }} 台 · 正常 {{ inspectSummary.normal }} · 警告 {{ inspectSummary.warning }} · 严重 {{ inspectSummary.critical }}</span>
+          <span class="inspect-scope-stat">共 {{ inspectSummary.total }} 台 · 正常 {{ inspectSummary.normal }} · 警告 {{ inspectSummary.warning }} · 严重 {{ inspectSummary.critical }} · 已更新指标 {{ inspectSummary.metrics_updated_count || 0 }} 台 · 兜底 {{ inspectSummary.metrics_fallback_count || 0 }} 台 · 未获取 {{ inspectSummary.metrics_missing_count || 0 }} 台</span>
         </div>
         <div v-if="inspectNotifyMessage" class="inspect-notify-msg" :class="inspectNotifyStatus">{{ inspectNotifyMessage }}</div>
         <div v-if="inspectAiSummary || inspectAiStreaming" class="inspect-ai-card" :class="{ streaming: inspectAiStreaming }">
@@ -437,7 +441,7 @@
     </div><!-- /content-main -->
 
     <!-- 右侧详情面板 -->
-    <div v-if="selectedHost" class="detail-panel">
+    <div v-if="tab === 'cmdb' && selectedHost" class="detail-panel">
       <div class="detail-header">
         <div class="detail-tabs">
           <button class="detail-tab" :class="{ active: detailTab === 'info' }" @click="detailTab='info'">信息</button>
@@ -1040,11 +1044,19 @@ const sortedHosts = computed(() => {
   return list
 })
 
+function refreshSelectedHostFromList() {
+  if (!selectedHost.value) return
+  const current = selectedHost.value
+  const fresh = hosts.value.find(item => item.id === current.id || (current.ip && item.ip === current.ip))
+  if (fresh) selectedHost.value = fresh
+}
+
 async function loadHosts() {
   loading.value = true
   try {
     const res = await api.getHosts()
     hosts.value = res.data || []
+    refreshSelectedHostFromList()
   } catch (e) {
     console.error(e)
   } finally {
@@ -1069,8 +1081,7 @@ async function loadCredentials() {
 onMounted(() => {
   // 支持 URL ?tab=xxx 直接进入对应 tab（替代旧 /tools/ssh 路由）
   const q = router.currentRoute.value.query
-  if (q.tab === 'inspect') tab.value = 'cmdb'
-  else if (q.tab && ['ssh', 'groups', 'cmdb'].includes(q.tab)) tab.value = q.tab
+  if (q.tab && ['ssh', 'groups', 'cmdb', 'inspect'].includes(q.tab)) tab.value = q.tab
   if (q.q) search.value = String(q.q)
   if (q.env) envFilter.value = String(q.env)
   if (q.group) groupFilter.value = String(q.group)
@@ -1166,6 +1177,9 @@ function refreshActiveTab() {
   if (tab.value === 'cmdb') {
     loadHosts()
     loadCredentials()
+  } else if (tab.value === 'inspect') {
+    loadHosts()
+    loadGroups()
   } else if (tab.value === 'groups') {
     loadGroups()
     loadHosts()  // 分组上的「主机数」依赖最新 hosts
@@ -1881,7 +1895,18 @@ function openSSH(h) {
 const inspecting         = ref(false)
 const inspectError       = ref('')
 const inspectResults     = ref([])
-const inspectSummary     = reactive({ total: 0, normal: 0, warning: 0, critical: 0, group_id: '', group_name: '' })
+const inspectSummary     = reactive({
+  total: 0,
+  normal: 0,
+  warning: 0,
+  critical: 0,
+  group_id: '',
+  group_name: '',
+  metrics_updated_at: '',
+  metrics_updated_count: 0,
+  metrics_missing_count: 0,
+  metrics_fallback_count: 0,
+})
 const inspectAiSummary   = ref('')
 const inspectAiStreaming  = ref(false)
 const inspectAiFallback  = ref(false)
@@ -2054,15 +2079,33 @@ async function runInspect() {
   inspectResults.value = []
   inspectAiSummary.value = ''
   inspectNotifyMessage.value = ''
+  Object.assign(inspectSummary, {
+    total: 0,
+    normal: 0,
+    warning: 0,
+    critical: 0,
+    group_id: inspectGroupId.value || '',
+    group_name: '',
+    metrics_updated_at: '',
+    metrics_updated_count: 0,
+    metrics_missing_count: 0,
+    metrics_fallback_count: 0,
+  })
   const url = `/api/hosts/inspect${inspectGroupId.value ? `?group_id=${encodeURIComponent(inspectGroupId.value)}` : ''}`
   const es = new EventSource(url)
-  es.onmessage = (e) => {
+  es.onmessage = async (e) => {
     if (e.data === '[DONE]') {
       es.close()
       inspecting.value = false
-      // 巡检后端会把 Prometheus 指标回写到 hosts.json；前端拉一次 hosts
-      // 让 CMDB 列表 / 健康总览 / 主机详情 同步看到最新 cpu / mem / 磁盘
-      loadHosts()
+      await loadHosts()
+      if (inspectSummary.metrics_updated_count > 0) {
+        inspectNotifyStatus.value = 'ok'
+        const fallback = inspectSummary.metrics_fallback_count ? `，其中 ${inspectSummary.metrics_fallback_count} 台使用 SSH/Python 兜底` : ''
+        inspectNotifyMessage.value = `已自动获取并更新 ${inspectSummary.metrics_updated_count} 台服务器指标${fallback}`
+      } else if (inspectResults.value.length) {
+        inspectNotifyStatus.value = 'err'
+        inspectNotifyMessage.value = '未获取到服务器指标，请检查 Prometheus / node_exporter 配置'
+      }
       return
     }
     try {
@@ -2376,7 +2419,7 @@ async function deleteGroup(g) {
 .content-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: 10px; }
 
 /* 表格 */
-.cmdb-tab-wrap { flex: 1.15; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.cmdb-tab-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
 .host-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .host-table thead { position: sticky; top: 0; z-index: 2; }
@@ -2568,16 +2611,15 @@ async function deleteGroup(g) {
 /* 巡检 */
 .inspect-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: 10px; }
 .merged-inspect-wrap {
-  flex: .9;
-  min-height: 260px;
+  flex: 1;
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-card);
   padding: 10px;
 }
 .merged-inspect-wrap.is-empty {
-  flex: 0 0 170px;
-  min-height: 170px;
+  min-height: 0;
 }
 .inspect-panel-head {
   display: flex;

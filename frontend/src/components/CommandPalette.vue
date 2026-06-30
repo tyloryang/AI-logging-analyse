@@ -68,7 +68,7 @@ const listEl  = ref(null)
 const NAV_ITEMS = [
   { id: 'go-dashboard',   category: 'nav', label: '仪表盘',           sub: '/',          icon: '◐', to: '/' },
   { id: 'go-cmdb',        category: 'nav', label: '主机 CMDB',        sub: '/cmdb',      icon: '🗂', to: '/cmdb' },
-  { id: 'go-cmdb-inspect',category: 'nav', label: '主机巡检',         sub: '/cmdb', icon: '🔍', to: '/cmdb' },
+  { id: 'go-cmdb-inspect',category: 'nav', label: '主机巡检',         sub: '/cmdb?tab=inspect', icon: '🔍', to: '/cmdb?tab=inspect' },
   { id: 'go-cmdb-groups', category: 'nav', label: '分组管理',         sub: '/cmdb?tab=groups',  icon: '📁', to: '/cmdb?tab=groups' },
   { id: 'go-cmdb-ssh',    category: 'nav', label: 'SSH 终端',         sub: '/cmdb?tab=ssh',     icon: '⌨', to: '/cmdb?tab=ssh' },
   { id: 'go-containers',  category: 'nav', label: '容器管理',         sub: '/containers',  icon: '◰', to: '/containers' },

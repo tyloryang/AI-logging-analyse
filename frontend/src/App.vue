@@ -18,11 +18,12 @@
 </template>
 
 <script setup>
+import { computed, defineAsyncComponent } from 'vue'
 import Sidebar from './components/Sidebar.vue'
-import AIOpsAssistantFloat from './components/AIOpsAssistantFloat.vue'
-import CommandPalette from './components/CommandPalette.vue'
-import { computed } from 'vue'
 import { useAuthStore } from './stores/auth.js'
+
+const AIOpsAssistantFloat = defineAsyncComponent(() => import('./components/AIOpsAssistantFloat.vue'))
+const CommandPalette = defineAsyncComponent(() => import('./components/CommandPalette.vue'))
 
 const authStore = useAuthStore()
 const canUseAgent = computed(() => authStore.can('agent', 'view'))

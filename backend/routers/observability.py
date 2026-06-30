@@ -32,6 +32,9 @@ _overview_locks: dict[int, asyncio.Lock] = {}
 _DEFAULT_OVERVIEW_MINUTES = 10
 _MAX_WINDOW_MINUTES = 24 * 60
 _RCA_SUMMARY_MAX_AGE_HOURS = 24
+_OVERVIEW_PART_TIMEOUT_SECONDS = 3.0
+_OVERVIEW_RESOURCE_TIMEOUT_SECONDS = 4.0
+_OVERVIEW_PROBLEM_TIMEOUT_SECONDS = 2.0
 
 
 def _normalize_problem_severity(value: str | None) -> str:
@@ -243,7 +246,7 @@ def _format_window_text(window_minutes: int) -> str:
 
 # ── 辅助：从 Loki 获取各服务错误数 ─────────────────────────────────────────
 
-async def _get_loki_error_count(hours: float = 1) -> tuple[int, list[dict]]:
+async def _get_loki_error_count(hours: float = 1, *, raise_on_error: bool = False) -> tuple[int, list[dict]]:
     """返回 (total_error_count, [{service, count}]) """
     try:
         counts = await loki.count_errors_by_service_fast(hours=hours)
@@ -256,12 +259,14 @@ async def _get_loki_error_count(hours: float = 1) -> tuple[int, list[dict]]:
         return total, breakdown
     except Exception as e:
         logger.warning("[obs] Loki error count failed: %s", e)
+        if raise_on_error:
+            raise
         return 0, []
 
 
 # ── 辅助：从 SkyWalking 获取 Trace 数 ──────────────────────────────────────
 
-async def _get_sw_trace_count(hours: float = 1) -> tuple[int, list[dict]]:
+async def _get_sw_trace_count(hours: float = 1, *, raise_on_error: bool = False) -> tuple[int, list[dict]]:
     """返回 (trace_count, recent_traces)"""
     try:
         result = await sw_client.get_traces(hours=hours, page=1, page_size=10)
@@ -280,6 +285,8 @@ async def _get_sw_trace_count(hours: float = 1) -> tuple[int, list[dict]]:
         return total, recent
     except Exception as e:
         logger.warning("[obs] SkyWalking trace count failed: %s", e)
+        if raise_on_error:
+            raise
         return 0, []
 
 
@@ -497,16 +504,17 @@ async def _get_resource_health_summary() -> dict:
     k8s_summary = await _get_k8s_resource_health_summary()
     host_count = len(hosts)
     host_status_abnormal = sum(1 for host in hosts if _host_status_is_abnormal(host))
-    container_resource_count = _to_int(k8s_summary.get("resource_count"))
-    container_abnormal_count = _to_int(k8s_summary.get("abnormal_count"))
-    resource_count = host_count + container_resource_count
+    k8s_available = bool(k8s_summary.get("available"))
+    container_resource_count = _to_int(k8s_summary.get("resource_count")) if k8s_available else None
+    container_abnormal_count = _to_int(k8s_summary.get("abnormal_count")) if k8s_available else None
+    resource_count = host_count + container_resource_count if container_resource_count is not None else None
     return {
         "resource_count": resource_count,
         "resource_summary": {
             "total": resource_count,
             "hosts": host_count,
             "containers": container_resource_count,
-            "k8s_available": bool(k8s_summary.get("available")),
+            "k8s_available": k8s_available,
         },
         "host_abnormal_alert_count": len(host_alerts),
         "host_resource_summary": {
@@ -520,7 +528,7 @@ async def _get_resource_health_summary() -> dict:
     }
 
 
-async def _get_alert_count() -> tuple[int, list[dict]]:
+async def _get_alert_count(*, raise_on_error: bool = False) -> tuple[int, list[dict]]:
     """返回 (active_alert_count, recent_alerts)，直接读 AIOps 告警存储。"""
     try:
         active = _load_active_alert_groups(limit=200)
@@ -541,10 +549,47 @@ async def _get_alert_count() -> tuple[int, list[dict]]:
         return len(active), recent
     except Exception as e:
         logger.warning("[obs] Alert count failed: %s", e)
+        if raise_on_error:
+            raise
         return 0, []
 
 
 # ── 辅助：构造有问题的服务列表（根因中心数据） ─────────────────────────────
+
+async def _safe_overview_part(name: str, coro, *, timeout: float = _OVERVIEW_PART_TIMEOUT_SECONDS):
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("[obs] overview %s timed out after %.1fs", name, timeout)
+    except Exception as e:
+        logger.warning("[obs] overview %s failed: %s", name, e)
+    return None
+
+
+def _missing_resource_health() -> dict:
+    return {
+        "resource_count": None,
+        "resource_summary": {
+            "total": None,
+            "hosts": None,
+            "containers": None,
+            "k8s_available": False,
+            "unavailable": True,
+        },
+        "host_abnormal_alert_count": None,
+        "host_resource_summary": {
+            "total": None,
+            "abnormal_alerts": None,
+            "abnormal_status": None,
+        },
+        "container_resource_count": None,
+        "container_resource_abnormal_count": None,
+        "container_resource_summary": {
+            "available": False,
+            "error": "not_fetched",
+        },
+    }
+
 
 async def _get_problem_services_legacy(
     error_breakdown: list[dict],
@@ -694,22 +739,37 @@ async def get_overview(
         if cached is not None:
             return cached
 
-        (alert_count, recent_alerts), \
-        (error_count, error_breakdown), \
-        (trace_count, recent_traces), \
-        resource_health = await asyncio.gather(
-            _get_alert_count(),
-            _get_loki_error_count(window_hours),
-            _get_sw_trace_count(window_hours),
-            _get_resource_health_summary(),
+        alert_part, error_part, trace_part, resource_health_part = await asyncio.gather(
+            _safe_overview_part("alerts", _get_alert_count(raise_on_error=True)),
+            _safe_overview_part("loki", _get_loki_error_count(window_hours, raise_on_error=True)),
+            _safe_overview_part("skywalking", _get_sw_trace_count(window_hours, raise_on_error=True)),
+            _safe_overview_part(
+                "resources",
+                _get_resource_health_summary(),
+                timeout=_OVERVIEW_RESOURCE_TIMEOUT_SECONDS,
+            ),
         )
 
-        problem_services = await _get_problem_services(
-            error_breakdown,
-            recent_alerts,
-            window_label=window_label,
-        )
+        alert_count, recent_alerts = alert_part if alert_part is not None else (None, [])
+        error_count, error_breakdown = error_part if error_part is not None else (None, [])
+        trace_count, recent_traces = trace_part if trace_part is not None else (None, [])
+        resource_health = resource_health_part if resource_health_part is not None else _missing_resource_health()
+
+        problem_services = []
+        if alert_part is not None or error_part is not None:
+            problem_services = await _safe_overview_part(
+                "problem_services",
+                _get_problem_services(error_breakdown, recent_alerts, window_label=window_label),
+                timeout=_OVERVIEW_PROBLEM_TIMEOUT_SECONDS,
+            ) or []
         grafana_boards = _build_grafana_boards()
+        fetch_status = {
+            "alerts": alert_part is not None,
+            "loki": error_part is not None,
+            "skywalking": trace_part is not None,
+            "resources": resource_health_part is not None,
+            "k8s": bool(resource_health.get("resource_summary", {}).get("k8s_available")),
+        }
 
         payload = {
             "alert_count": alert_count,
@@ -727,9 +787,11 @@ async def get_overview(
             "grafana_boards": grafana_boards,
             "grafana_url": os.getenv("GRAFANA_URL", "").strip().rstrip("/"),
             "error_breakdown": error_breakdown,
+            "fetch_status": fetch_status,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        _overview_cache[cache_key] = payload
+        if all(fetch_status[key] for key in ("alerts", "loki", "skywalking", "resources")):
+            _overview_cache[cache_key] = payload
         return payload
 
 

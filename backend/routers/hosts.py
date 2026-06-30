@@ -67,6 +67,7 @@ def _env_float(name: str, default: float) -> float:
 
 _HOST_SYNC_SSH_CONNECT_TIMEOUT = _env_float("HOST_SYNC_SSH_CONNECT_TIMEOUT", 12.0)
 _HOST_SYNC_SSH_COMMAND_TIMEOUT = _env_float("HOST_SYNC_SSH_COMMAND_TIMEOUT", 20.0)
+_HOST_INSPECT_FALLBACK_CONCURRENCY = max(1, int(_env_float("HOST_INSPECT_FALLBACK_CONCURRENCY", 5.0)))
 
 # ── 主机 CRUD ──────────────────────────────────────────────────────────────────
 
@@ -1135,7 +1136,9 @@ CPU_USAGE=$(awk -v a="$CPU_A" -v b="$CPU_B" 'BEGIN{
   if(dt>0) printf "%.1f", (dt-di)*100/dt; else print "";
 }')
 MEM_USAGE=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{if(t>0) printf "%.1f", (t-a)*100/t; else print ""}' /proc/meminfo 2>/dev/null)
+LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null)
 LOAD5=$(awk '{print $2}' /proc/loadavg 2>/dev/null)
+LOAD15=$(awk '{print $3}' /proc/loadavg 2>/dev/null)
 UPTIME_SECONDS=$(awk '{printf "%.0f", $1}' /proc/uptime 2>/dev/null)
 NET_RX_BPS=$(awk -v a="$NET_A" -v b="$NET_B" 'BEGIN{split(a,x); split(b,y); v=y[1]-x[1]; print v>0?v:0}')
 NET_TX_BPS=$(awk -v a="$NET_A" -v b="$NET_B" 'BEGIN{split(a,x); split(b,y); v=y[2]-x[2]; print v>0?v:0}')
@@ -1160,7 +1163,9 @@ echo "DISK_KB=${DISK_KB}"
 echo "HOSTNAME=${HN}"
 echo "CPU_USAGE_PCT=${CPU_USAGE}"
 echo "MEM_USAGE_PCT=${MEM_USAGE}"
+echo "LOAD1=${LOAD1}"
 echo "LOAD5=${LOAD5}"
+echo "LOAD15=${LOAD15}"
 echo "UPTIME_SECONDS=${UPTIME_SECONDS}"
 echo "DISK_IO_READ_BPS=${DIO_READ_BPS}"
 echo "DISK_IO_WRITE_BPS=${DIO_WRITE_BPS}"
@@ -1327,10 +1332,18 @@ async def _ssh_sync(host: dict) -> dict:
             value = _to_float(line[14:])
             if value is not None:
                 info["memory_usage_pct"] = value
+        elif line.startswith("LOAD1="):
+            value = _to_float(line[6:])
+            if value is not None:
+                info["load1"] = value
         elif line.startswith("LOAD5="):
             value = _to_float(line[6:])
             if value is not None:
                 info["load5"] = value
+        elif line.startswith("LOAD15="):
+            value = _to_float(line[7:])
+            if value is not None:
+                info["load15"] = value
         elif line.startswith("UPTIME_SECONDS="):
             value = _to_int(line[15:])
             if value is not None:
@@ -1730,7 +1743,7 @@ _find_java() {{
     if [ -x "/proc/{pid}/root$jhome/jre/bin/java" ]; then echo "/proc/{pid}/root$jhome/jre/bin/java"; return; fi
   fi
   local proc_path old_ifs dir candidate
-  proc_path=$(cat /proc/{pid}/environ 2>/dev/null | tr '\0' '\n' | grep '^PATH=' | cut -d= -f2-)
+  proc_path=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^PATH=' | cut -d= -f2-)
   if [ -n "$proc_path" ]; then
     old_ifs="$IFS"; IFS=:
     for dir in $proc_path; do
@@ -1870,7 +1883,7 @@ _find_java() {{
     if [ -x "/proc/{pid}/root$jhome/jre/bin/java" ]; then echo "/proc/{pid}/root$jhome/jre/bin/java"; return; fi
   fi
   local proc_path old_ifs dir candidate
-  proc_path=$(cat /proc/{pid}/environ 2>/dev/null | tr '\0' '\n' | grep '^PATH=' | cut -d= -f2-)
+  proc_path=$(cat /proc/{pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^PATH=' | cut -d= -f2-)
   if [ -n "$proc_path" ]; then
     old_ifs="$IFS"; IFS=:
     for dir in $proc_path; do
@@ -2139,6 +2152,154 @@ def _cmdb_instances_for_group(group_id: str) -> tuple[list[str], str]:
     return instances, group_name
 
 
+def _metric_float(metrics: dict, key: str) -> float | None:
+    raw = metrics.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metric_int(metrics: dict, key: str) -> int | None:
+    value = _metric_float(metrics, key)
+    return int(value) if value is not None else None
+
+
+def _inspection_severity(status: str) -> int:
+    return {"critical": 2, "warning": 1, "normal": 0}.get(status, 0)
+
+
+def _inspection_overall(checks: list[dict]) -> str:
+    worst = max((_inspection_severity(c.get("status", "")) for c in checks), default=0)
+    return "critical" if worst >= 2 else "warning" if worst == 1 else "normal"
+
+
+def _bps_to_mib_per_sec(value) -> float | None:
+    try:
+        return round(float(value) / (1024 * 1024), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sync_info_to_inspection_result(host: dict, info: dict) -> dict | None:
+    """把 SSH/Python 兜底采集结果转成巡检报告结构。"""
+    metrics: dict = {}
+
+    mapping = {
+        "cpu_usage_pct": "cpu_usage",
+        "memory_usage_pct": "mem_usage",
+        "memory_gb": "mem_total_gb",
+        "load1": "load1",
+        "load5": "load5",
+        "load15": "load15",
+        "uptime_seconds": "uptime_seconds",
+        "tcp_connections": "tcp_estab",
+        "tcp_time_wait": "tcp_tw",
+    }
+    for src, dst in mapping.items():
+        value = info.get(src)
+        if value is not None:
+            metrics[dst] = value
+
+    byte_rate_mapping = {
+        "network_rx_bps": "net_recv_mbps",
+        "network_tx_bps": "net_send_mbps",
+        "disk_io_read_bps": "disk_read_mbps",
+        "disk_io_write_bps": "disk_write_mbps",
+    }
+    for src, dst in byte_rate_mapping.items():
+        value = _bps_to_mib_per_sec(info.get(src))
+        if value is not None:
+            metrics[dst] = value
+
+    partitions: list[dict] = []
+    for p in info.get("disk_usage") or []:
+        mount = p.get("mount") or p.get("mountpoint") or ""
+        if not mount:
+            continue
+        used_pct = p.get("used_pct")
+        if used_pct is None:
+            continue
+        partitions.append({
+            "mountpoint": mount,
+            "mount": mount,
+            "fstype": p.get("fstype", ""),
+            "total_gb": p.get("size_gb") or p.get("total_gb") or 0,
+            "used_gb": p.get("used_gb") or 0,
+            "avail_gb": p.get("avail_gb") or 0,
+            "usage_pct": used_pct,
+            "used_pct": used_pct,
+        })
+
+    if not metrics and not partitions:
+        return None
+
+    cpu_cores = info.get("cpu_cores") or host.get("cpu_cores") or 4
+    try:
+        checks = prom._build_checks(metrics, int(cpu_cores or 4), partitions)
+    except Exception:
+        checks = []
+    checks.append({
+        "item": "指标来源",
+        "value": "SSH/Python 兜底采集",
+        "status": "normal",
+        "threshold": "Prometheus 无数据时自动兜底",
+    })
+
+    ip = host.get("ip", "")
+    return {
+        "instance": f"{ip}:ssh",
+        "ip": ip,
+        "hostname": info.get("hostname") or host.get("hostname") or ip,
+        "os": info.get("os_version") or host.get("os_version", ""),
+        "os_version": info.get("os_version") or host.get("os_version", ""),
+        "cpu_cores": info.get("cpu_cores") or host.get("cpu_cores"),
+        "memory_gb": info.get("memory_gb") or host.get("memory_gb"),
+        "disk_gb": info.get("disk_gb") or host.get("disk_gb"),
+        "job": "ssh-python-fallback",
+        "state": "fallback",
+        "group": host.get("group", ""),
+        "env": host.get("env", ""),
+        "overall": _inspection_overall(checks),
+        "checks": checks,
+        "metrics": metrics,
+        "partitions": partitions,
+        "metrics_source": "ssh_python",
+    }
+
+
+async def _collect_inspection_fallbacks(hosts: list[dict]) -> dict[str, dict]:
+    """Prometheus 缺失时，通过后端 Python 并发 SSH 到主机采集指标兜底。"""
+    if not hosts:
+        return {}
+
+    sem = asyncio.Semaphore(_HOST_INSPECT_FALLBACK_CONCURRENCY)
+
+    async def _one(host: dict) -> tuple[str, dict]:
+        ip = host.get("ip", "")
+        async with sem:
+            try:
+                info = await _ssh_sync(host)
+                result = _sync_info_to_inspection_result(host, info)
+                if result:
+                    return ip, {"ok": True, "result": result}
+                return ip, {"ok": False, "error": "SSH 连接成功，但未采集到服务器指标"}
+            except Exception as exc:
+                return ip, {"ok": False, "error": _ssh_error_msg(exc, host)}
+
+    pairs = await asyncio.gather(*(_one(h) for h in hosts), return_exceptions=True)
+    collected: dict[str, dict] = {}
+    for item in pairs:
+        if isinstance(item, Exception):
+            continue
+        ip, payload = item
+        if ip:
+            collected[ip] = payload
+    return collected
+
+
 @router.get("/api/hosts/inspect")
 async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
     """巡检主机 — 以 CMDB 为基准，有 Prometheus 指标的正常巡检，无指标的标记为离线。"""
@@ -2177,6 +2338,9 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                 if ip:
                     prom_map[ip] = r
 
+            missing_prom_hosts = [h for h in target_hosts if h.get("ip") not in prom_map]
+            fallback_map = await _collect_inspection_fallbacks(missing_prom_hosts)
+
             # 合并：CMDB 主机为基准
             results = []
             for h in target_hosts:
@@ -2192,7 +2356,10 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                     r["group"]    = h.get("group", "")
                     r["env"]      = h.get("env", "")
                     results.append(r)
+                elif fallback_map.get(ip, {}).get("ok") and fallback_map[ip].get("result"):
+                    results.append(fallback_map[ip]["result"])
                 else:
+                    fallback_error = fallback_map.get(ip, {}).get("error", "")
                     # 无 Prometheus 数据：以"无数据"状态显示，确保主机出现在报告中
                     results.append({
                         "instance": f"{ip}:9100",
@@ -2212,9 +2379,15 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                             "value":     "无指标",
                             "status":    "warning",
                             "threshold": "需要安装 node_exporter 或检查 Prometheus 配置",
+                        }, {
+                            "item":      "SSH/Python 兜底",
+                            "value":     fallback_error or "未获取到指标",
+                            "status":    "warning",
+                            "threshold": "请检查 SSH 凭证、网络连通性和目标主机 Python/shell 环境",
                         }],
                         "metrics":    {},
                         "partitions": [],
+                        "metrics_source": "missing",
                     })
 
             # 把 Prometheus 指标回写到 hosts.json，让 CMDB 列表 / 健康总览 / 卡片墙
@@ -2222,31 +2395,76 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
             now = _NOW()
             hosts_by_ip = {h.get("ip"): h for h in all_hosts if h.get("ip")}
             mutated = False
+            metrics_updated_count = 0
             for r in results:
                 host = hosts_by_ip.get(r.get("ip"))
                 if not host:
                     continue
+                host_changed = False
                 m = r.get("metrics") or {}
-                if "cpu_usage" in m:
-                    host["cpu_usage_pct"] = round(float(m["cpu_usage"]), 1)
-                    mutated = True
-                if "mem_usage" in m:
-                    host["memory_usage_pct"] = round(float(m["mem_usage"]), 1)
-                    mutated = True
-                if "load5" in m:
-                    host["load5"] = round(float(m["load5"]), 2)
-                    mutated = True
-                if "load1" in m: host["load1"] = round(float(m["load1"]), 2); mutated = True
-                if "load15" in m: host["load15"] = round(float(m["load15"]), 2); mutated = True
-                if "uptime_seconds" in m:
-                    host["uptime_seconds"] = int(m["uptime_seconds"])
-                    host["uptime_text"] = _format_uptime(int(m["uptime_seconds"]))
-                    mutated = True
-                if "tcp_estab" in m: host["tcp_connections"] = int(m["tcp_estab"]); mutated = True
-                if "tcp_tw" in m: host["tcp_time_wait"] = int(m["tcp_tw"]); mutated = True
-                if "net_recv_mbps" in m: host["network_rx_bps"] = int(float(m["net_recv_mbps"]) * 1024 * 1024 / 8); mutated = True
-                if "net_send_mbps" in m: host["network_tx_bps"] = int(float(m["net_send_mbps"]) * 1024 * 1024 / 8); mutated = True
-                # 磁盘：把巡检返回的 partitions 转成 hosts 标准的 disk_usage 结构
+
+                if r.get("metrics_source") == "ssh_python":
+                    for src, dst in (
+                        ("hostname", "hostname"),
+                        ("os_version", "os_version"),
+                        ("cpu_cores", "cpu_cores"),
+                        ("memory_gb", "memory_gb"),
+                        ("disk_gb", "disk_gb"),
+                    ):
+                        value = r.get(src)
+                        if value not in (None, ""):
+                            host[dst] = value
+                            host_changed = True
+
+                cpu_usage = _metric_float(m, "cpu_usage")
+                if cpu_usage is not None:
+                    host["cpu_usage_pct"] = round(cpu_usage, 1)
+                    host_changed = True
+                mem_usage = _metric_float(m, "mem_usage")
+                if mem_usage is not None:
+                    host["memory_usage_pct"] = round(mem_usage, 1)
+                    host_changed = True
+                load5 = _metric_float(m, "load5")
+                if load5 is not None:
+                    host["load5"] = round(load5, 2)
+                    host_changed = True
+                load1 = _metric_float(m, "load1")
+                if load1 is not None:
+                    host["load1"] = round(load1, 2)
+                    host_changed = True
+                load15 = _metric_float(m, "load15")
+                if load15 is not None:
+                    host["load15"] = round(load15, 2)
+                    host_changed = True
+                uptime_seconds = _metric_int(m, "uptime_seconds")
+                if uptime_seconds is not None:
+                    host["uptime_seconds"] = uptime_seconds
+                    host["uptime_text"] = _format_uptime(uptime_seconds)
+                    host_changed = True
+                tcp_estab = _metric_int(m, "tcp_estab")
+                if tcp_estab is not None:
+                    host["tcp_connections"] = tcp_estab
+                    host_changed = True
+                tcp_tw = _metric_int(m, "tcp_tw")
+                if tcp_tw is not None:
+                    host["tcp_time_wait"] = tcp_tw
+                    host_changed = True
+                net_recv = _metric_float(m, "net_recv_mbps")
+                if net_recv is not None:
+                    host["network_rx_bps"] = int(net_recv * 1024 * 1024 / 8)
+                    host_changed = True
+                net_send = _metric_float(m, "net_send_mbps")
+                if net_send is not None:
+                    host["network_tx_bps"] = int(net_send * 1024 * 1024 / 8)
+                    host_changed = True
+                disk_read = _metric_float(m, "disk_read_mbps")
+                if disk_read is not None:
+                    host["disk_io_read_bps"] = int(disk_read * 1024 * 1024 / 8)
+                    host_changed = True
+                disk_write = _metric_float(m, "disk_write_mbps")
+                if disk_write is not None:
+                    host["disk_io_write_bps"] = int(disk_write * 1024 * 1024 / 8)
+                    host_changed = True
                 if r.get("partitions"):
                     host["disk_usage"] = [{
                         "mount": p.get("mountpoint") or p.get("mount") or "",
@@ -2255,10 +2473,12 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                         "avail_gb": round(float(p.get("avail_gb") or 0), 1),
                         "used_pct": round(float(p.get("used_pct") or p.get("usage_pct") or 0), 1),
                     } for p in r["partitions"] if p.get("mountpoint") or p.get("mount")]
-                    mutated = True
-                if mutated:
+                    host_changed = True
+                if host_changed:
                     host["metrics_updated_at"] = now
                     host["last_sync_at"] = now
+                    metrics_updated_count += 1
+                    mutated = True
             if mutated:
                 save_hosts_list(all_hosts)
 
@@ -2273,6 +2493,10 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                 "critical":   sum(1 for r in results if r["overall"] == "critical"),
                 "group_id":   group_id or "",
                 "group_name": group_name,
+                "metrics_updated_at": now if metrics_updated_count else "",
+                "metrics_updated_count": metrics_updated_count,
+                "metrics_missing_count": sum(1 for r in results if not (r.get("metrics") or {})),
+                "metrics_fallback_count": sum(1 for r in results if r.get("metrics_source") == "ssh_python"),
             }
             yield f"data: {json.dumps({'type': 'inspect_data', 'data': results, 'summary': summary}, ensure_ascii=False)}\n\n"
         except Exception as exc:
