@@ -121,13 +121,20 @@
                   >✕</span>
                   <span class="combo-caret" @mousedown.prevent="showLabelValueDropdown = !showLabelValueDropdown">▾</span>
                   <div v-show="showLabelValueDropdown && filteredLabelValues.length" class="combo-dropdown">
+                    <div class="combo-multi-hint">
+                      <span>点击可多选 · 已勾选 <em>{{ pickedLabelValues.length }}</em></span>
+                      <button v-if="pickedLabelValues.length" class="combo-multi-clear" @mousedown.prevent="pickedLabelValues = []">清空勾选</button>
+                    </div>
                     <div
                       v-for="value in filteredLabelValues"
                       :key="value"
-                      class="combo-item"
-                      :class="{ active: value === selectedLabelValue }"
-                      @mousedown.prevent="pickLabelValue(value)"
+                      class="combo-item combo-item-multi"
+                      :class="{ picked: pickedLabelValues.includes(value), active: value === selectedLabelValue }"
+                      @mousedown.prevent="togglePickLabelValue(value)"
                     >
+                      <span class="combo-check" :class="{ on: pickedLabelValues.includes(value) }">
+                        <svg v-if="pickedLabelValues.includes(value)" width="10" height="10" viewBox="0 0 12 12"><path d="M2 6 L5 9 L10 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      </span>
                       <span class="combo-item-text">
                         <mark v-for="(seg, i) in highlight(value, labelValueQuery)" :key="i" :class="{ hl: seg.hit }">{{ seg.t }}</mark>
                       </span>
@@ -141,10 +148,12 @@
 
               <button
                 class="label-dropdown-apply"
-                :disabled="!selectedLabelName || !selectedLabelValue"
-                @click="addActiveLabel(selectedLabelName, selectedLabelValue)"
+                :disabled="!selectedLabelName || (!pickedLabelValues.length && !selectedLabelValue)"
+                @click="addActiveLabelBatch"
+                :title="pickedLabelValues.length ? `批量加入 ${pickedLabelValues.length} 条` : '加入一条'"
               >
-                ＋ 添加条件
+                <span v-if="pickedLabelValues.length > 1">＋ 添加 {{ pickedLabelValues.length }} 条条件</span>
+                <span v-else>＋ 添加条件</span>
               </button>
             </div>
             <div v-else class="label-empty">未发现 Loki 标签</div>
@@ -793,8 +802,10 @@ const showLabelNameDropdown = ref(false)
 const showLabelValueDropdown = ref(false)
 let hideLabelNameTimer = null
 let hideLabelValueTimer = null
-// 多标签条件：数组形式 [{label, value}]，同一 label 只保留最新一条
+// 多标签条件：数组形式 [{label, value}]，同 label 允许多值累加成 regex
 const activeLabelFilters = ref([])
+// 标签值批量勾选缓冲：点击 combo 行 = 切换选中；『＋ 添加 N 条件』按钮一次生成 N 条 chip
+const pickedLabelValues = ref([])
 
 const activeTab      = ref('logs')
 
@@ -952,8 +963,9 @@ function pickLabelName(name) {
   selectedLabelName.value = name
   labelNameQuery.value = name
   showLabelNameDropdown.value = false
-  // 复位标签值搜索并触发加载
+  // 复位标签值搜索 + 清空跨 label 的勾选缓冲，避免把 A 标签的值误加到 B
   labelValueQuery.value = ''
+  pickedLabelValues.value = []
   onLabelDropdownChange()
 }
 function clearLabelName() {
@@ -973,6 +985,23 @@ function pickLabelValue(value) {
   labelValueQuery.value = String(value)
   showLabelValueDropdown.value = false
   onLabelValueDropdownChange()
+}
+
+// 勾选式多选：点行 = 切换 picked（不关闭下拉，支持连续勾多个）
+function togglePickLabelValue(value) {
+  const v = String(value)
+  const list = pickedLabelValues.value
+  const idx = list.indexOf(v)
+  if (idx >= 0) list.splice(idx, 1)
+  else list.push(v)
+  // 同步 selectedLabelValue 为『最近点的』，让 combo-input 显示可用
+  if (list.length) {
+    selectedLabelValue.value = list[list.length - 1]
+    labelValueQuery.value = list[list.length - 1]
+  } else {
+    selectedLabelValue.value = ''
+    labelValueQuery.value = ''
+  }
 }
 function clearLabelValue() {
   selectedLabelValue.value = ''
@@ -1596,10 +1625,11 @@ function addActiveLabel(labelName, value, opts = {}) {
   const list = activeLabelFilters.value
   // 同 label+value 才去重；同 label 不同 value 累加（生成 label=~"a|b|c" regex）
   if (list.some(x => x.label === labelName && x.value === val)) {
-    // 已存在则不重复添加，仅清值输入方便再挑
-    labelValueQuery.value = ''
-    selectedLabelValue.value = ''
-    showLabelValueDropdown.value = false
+    if (!opts.silent) {
+      labelValueQuery.value = ''
+      selectedLabelValue.value = ''
+      showLabelValueDropdown.value = false
+    }
     return
   }
   list.push({ label: labelName, value: val })
@@ -1607,12 +1637,33 @@ function addActiveLabel(labelName, value, opts = {}) {
   selectedGroupLabel.value = labelName
   selectedGroupValue.value = val
   if (groupBy.value !== labelName) groupBy.value = labelName
-  // 关下拉 + 清值输入，让用户能继续加下一条（保留标签名，方便同 label 多值连加）
-  showLabelNameDropdown.value = false
+  if (!opts.silent) {
+    showLabelNameDropdown.value = false
+    showLabelValueDropdown.value = false
+    labelValueQuery.value = ''
+    selectedLabelValue.value = ''
+  }
+  if (!opts.skipRefresh) refreshActiveData()
+}
+
+// 批量：若有勾选值，用勾选值集合；否则回退到单值 selectedLabelValue
+function addActiveLabelBatch() {
+  if (!selectedLabelName.value) return
+  const list = pickedLabelValues.value.length
+    ? [...pickedLabelValues.value]
+    : (selectedLabelValue.value ? [selectedLabelValue.value] : [])
+  if (!list.length) return
+  list.forEach((v, i) => {
+    addActiveLabel(selectedLabelName.value, v, {
+      silent: true,
+      skipRefresh: i < list.length - 1,
+    })
+  })
+  // 一轮结束后清空勾选缓冲 + 关下拉
+  pickedLabelValues.value = []
   showLabelValueDropdown.value = false
   labelValueQuery.value = ''
   selectedLabelValue.value = ''
-  if (!opts.skipRefresh) refreshActiveData()
 }
 
 function removeActiveLabel(idx) {
@@ -2246,6 +2297,53 @@ onBeforeUnmount(() => {
   font-size: 10px;
   color: var(--text-muted);
   opacity: .8;
+}
+
+/* 勾选式多选：每行前的复选圆点 + 头部提示条 */
+.combo-multi-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  margin-bottom: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  border-bottom: 1px dashed var(--border);
+}
+.combo-multi-hint em {
+  color: var(--accent, #818cf8);
+  font-style: normal;
+  font-weight: 600;
+  padding: 0 2px;
+}
+.combo-multi-clear {
+  background: transparent;
+  border: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+.combo-multi-clear:hover { color: var(--error, #f85149); }
+.combo-item-multi { gap: 8px; }
+.combo-check {
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  width: 14px; height: 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 3px;
+  color: transparent;
+  flex-shrink: 0;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.combo-check.on {
+  background: var(--accent, #818cf8);
+  border-color: var(--accent, #818cf8);
+  color: #fff;
+}
+.combo-item.picked {
+  background: rgba(129,140,248,.10);
+  color: var(--accent, #818cf8);
 }
 .combo-empty {
   position: absolute;
