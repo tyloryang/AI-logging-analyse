@@ -174,7 +174,6 @@ const MENU = [
     id: 'obs', icon: 'obs', label: '可观测性',
     children: [
       { label: '统一观测台', to: '/observability/unified' },
-      { label: '可视化',   to: '/observability/visualization', module: 'metrics' },
       { label: '指标查询',   to: '/observability/metrics-query', module: 'metrics' },
       { label: '日志中心',   to: '/observability/logs-query',    module: 'log' },
       { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },

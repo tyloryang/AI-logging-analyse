@@ -1,6 +1,11 @@
 import unittest
 
-from routers.events import _normalize_external_event
+from routers.events import (
+    _EVENT_ERROR_KEYWORDS,
+    _event_matches_error_keywords,
+    _normalize_external_event,
+    _resolve_error_keywords,
+)
 
 
 class EventIngestNormalizeCase(unittest.TestCase):
@@ -33,6 +38,21 @@ class EventIngestNormalizeCase(unittest.TestCase):
         self.assertEqual(event["id"], "external-custom-evt-1")
         self.assertEqual(event["labels"]["system"], "checkout")
         self.assertEqual(event["severity"], "warning")
+
+    def test_event_error_keywords_include_java_exception_filters(self):
+        self.assertIn("NullPointerException", _EVENT_ERROR_KEYWORDS)
+        self.assertIn("OutOfMlemoryError", _EVENT_ERROR_KEYWORDS)
+        self.assertIn("IllegalAAccessException", _EVENT_ERROR_KEYWORDS)
+
+    def test_event_error_keyword_aliases_match_common_spellings(self):
+        memory_keywords = _resolve_error_keywords("OutOfMlemoryError")
+        access_keywords = _resolve_error_keywords("IllegalAAccessException")
+        bounds_keywords = _resolve_error_keywords("ArrayIndexOutOfBoundException")
+
+        self.assertTrue(_event_matches_error_keywords("java.lang.OutOfMemoryError: heap", memory_keywords))
+        self.assertTrue(_event_matches_error_keywords("java.lang.IllegalAccessException", access_keywords))
+        self.assertTrue(_event_matches_error_keywords("java.lang.ArrayIndexOutOfBoundsException", bounds_keywords))
+        self.assertFalse(_event_matches_error_keywords("plain error without java exception", memory_keywords))
 
 
 if __name__ == "__main__":

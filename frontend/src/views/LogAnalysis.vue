@@ -63,15 +63,17 @@
             <div v-if="labelCatalog.length" class="label-dropdown-panel">
               <!-- 标签名（可搜索 combobox） -->
               <div class="label-select-field">
-                <span>标签名</span>
+                <span>标签名 <em class="hint-inline">可键入 label=v1,v2 回车秒加</em></span>
                 <div class="combo" :class="{ open: showLabelNameDropdown }">
                   <input
+                    ref="labelNameInputRef"
                     class="combo-input"
                     v-model="labelNameQuery"
-                    :placeholder="selectedLabelName ? '' : '搜索标签，如 app / namespace'"
+                    :placeholder="selectedLabelName ? '' : '如 app / namespace，或 namespace=aiops,prod'"
                     @focus="showLabelNameDropdown = true"
                     @input="showLabelNameDropdown = true"
                     @keydown.esc="showLabelNameDropdown = false"
+                    @keyup.enter="onLabelNameEnter"
                     @blur="hideLabelNameLater"
                   />
                   <span
@@ -99,18 +101,20 @@
                 </div>
               </div>
 
-              <!-- 标签值（可搜索 combobox） -->
+              <!-- 标签值（点即加，无需二次确认） -->
               <div class="label-select-field">
-                <span>标签值</span>
+                <span>标签值 <em class="hint-inline">点即加芯片；逗号分隔可批量</em></span>
                 <div class="combo" :class="{ open: showLabelValueDropdown, disabled: !selectedLabelName || loadingLabelValueMap[selectedLabelName] }">
                   <input
+                    ref="labelValueInputRef"
                     class="combo-input"
                     v-model="labelValueQuery"
-                    :placeholder="loadingLabelValueMap[selectedLabelName] ? '加载中...' : (selectedLabelValue ? '' : '搜索标签值')"
+                    :placeholder="loadingLabelValueMap[selectedLabelName] ? '加载中...' : '选值或输入 aiops,kube-system 回车批量加'"
                     :disabled="!selectedLabelName || loadingLabelValueMap[selectedLabelName]"
                     @focus="showLabelValueDropdown = true"
                     @input="showLabelValueDropdown = true"
                     @keydown.esc="showLabelValueDropdown = false"
+                    @keyup.enter="onLabelValueEnter"
                     @blur="hideLabelValueLater"
                   />
                   <span
@@ -121,23 +125,21 @@
                   >✕</span>
                   <span class="combo-caret" @mousedown.prevent="showLabelValueDropdown = !showLabelValueDropdown">▾</span>
                   <div v-show="showLabelValueDropdown && filteredLabelValues.length" class="combo-dropdown">
-                    <div class="combo-multi-hint">
-                      <span>点击可多选 · 已勾选 <em>{{ pickedLabelValues.length }}</em></span>
-                      <button v-if="pickedLabelValues.length" class="combo-multi-clear" @mousedown.prevent="pickedLabelValues = []">清空勾选</button>
+                    <div class="combo-multi-hint quick-hint">
+                      <span>💡 点击立即添加芯片，下拉不关</span>
                     </div>
                     <div
                       v-for="value in filteredLabelValues"
                       :key="value"
-                      class="combo-item combo-item-multi"
-                      :class="{ picked: pickedLabelValues.includes(value), active: value === selectedLabelValue }"
-                      @mousedown.prevent="togglePickLabelValue(value)"
+                      class="combo-item"
+                      :class="{ chipped: hasChip(selectedLabelName, value) }"
+                      :title="hasChip(selectedLabelName, value) ? '已加入过滤，点击可移除' : '点击加入过滤条件'"
+                      @mousedown.prevent="quickAddLabelValue(value)"
                     >
-                      <span class="combo-check" :class="{ on: pickedLabelValues.includes(value) }">
-                        <svg v-if="pickedLabelValues.includes(value)" width="10" height="10" viewBox="0 0 12 12"><path d="M2 6 L5 9 L10 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                      </span>
                       <span class="combo-item-text">
                         <mark v-for="(seg, i) in highlight(value, labelValueQuery)" :key="i" :class="{ hl: seg.hit }">{{ seg.t }}</mark>
                       </span>
+                      <span class="combo-item-meta" v-if="hasChip(selectedLabelName, value)">✓ 已加</span>
                     </div>
                   </div>
                   <div v-show="showLabelValueDropdown && !filteredLabelValues.length && !loadingLabelValueMap[selectedLabelName]" class="combo-empty">
@@ -146,15 +148,9 @@
                 </div>
               </div>
 
-              <button
-                class="label-dropdown-apply"
-                :disabled="!selectedLabelName || (!pickedLabelValues.length && !selectedLabelValue)"
-                @click="addActiveLabelBatch"
-                :title="pickedLabelValues.length ? `批量加入 ${pickedLabelValues.length} 条` : '加入一条'"
-              >
-                <span v-if="pickedLabelValues.length > 1">＋ 添加 {{ pickedLabelValues.length }} 条条件</span>
-                <span v-else>＋ 添加条件</span>
-              </button>
+              <div v-if="selectedLabelName && !activeLabelFilters.length" class="label-flow-tip">
+                💡 直接点值即可，多选就连续点
+              </div>
             </div>
             <div v-else class="label-empty">未发现 Loki 标签</div>
           </template>
@@ -804,8 +800,11 @@ let hideLabelNameTimer = null
 let hideLabelValueTimer = null
 // 多标签条件：数组形式 [{label, value}]，同 label 允许多值累加成 regex
 const activeLabelFilters = ref([])
-// 标签值批量勾选缓冲：点击 combo 行 = 切换选中；『＋ 添加 N 条件』按钮一次生成 N 条 chip
+// 标签值批量勾选缓冲：保留 API 以兼容旧代码，但 UI 已换成『点即加』
 const pickedLabelValues = ref([])
+// DOM refs：选完标签名自动 focus 值输入框，省一次点击
+const labelNameInputRef = ref(null)
+const labelValueInputRef = ref(null)
 
 const activeTab      = ref('logs')
 
@@ -967,6 +966,82 @@ function pickLabelName(name) {
   labelValueQuery.value = ''
   pickedLabelValues.value = []
   onLabelDropdownChange()
+  // 智能串联：选完标签名 → 自动 focus 值输入框，用户直接选值即可（省一步）
+  nextTick(() => {
+    labelValueInputRef.value?.focus?.()
+    showLabelValueDropdown.value = true
+  })
+}
+
+// 标签名输入框回车：支持 `label=val1,val2` 一次性生成多条 chip
+function onLabelNameEnter() {
+  const raw = (labelNameQuery.value || '').trim()
+  if (!raw) return
+  // 快捷格式：包含 = 直接解析
+  if (raw.includes('=')) {
+    const [k, ...rest] = raw.split('=')
+    const key = k.trim()
+    const valsRaw = rest.join('=').trim()
+    if (!key || !valsRaw) return
+    const vals = valsRaw.split(',').map(s => s.trim()).filter(Boolean)
+    if (!vals.length) return
+    vals.forEach((v, i) => addActiveLabel(key, v, {
+      silent: true, skipRefresh: i < vals.length - 1,
+    }))
+    // 加完清空输入
+    labelNameQuery.value = ''
+    labelValueQuery.value = ''
+    selectedLabelName.value = key
+    selectedLabelValue.value = ''
+    showLabelNameDropdown.value = false
+    return
+  }
+  // 无 = 时：如果搜到唯一标签名，自动选中它
+  const matches = filteredLabels.value
+  if (matches.length === 1) {
+    pickLabelName(matches[0].name)
+  }
+}
+
+// 值输入框回车：把当前搜索词（支持逗号分隔）作为值批量加入
+function onLabelValueEnter() {
+  if (!selectedLabelName.value) return
+  const raw = (labelValueQuery.value || '').trim()
+  if (!raw) return
+  const vals = raw.split(',').map(s => s.trim()).filter(Boolean)
+  vals.forEach((v, i) => addActiveLabel(selectedLabelName.value, v, {
+    silent: true, skipRefresh: i < vals.length - 1,
+  }))
+  labelValueQuery.value = ''
+  selectedLabelValue.value = ''
+  // 保持下拉打开，方便继续加
+}
+
+// 点击下拉里某个值 = 立即加/移除 chip（切换态）
+function quickAddLabelValue(value) {
+  if (!selectedLabelName.value) return
+  const v = String(value)
+  const idx = activeLabelFilters.value.findIndex(
+    x => x.label === selectedLabelName.value && x.value === v,
+  )
+  if (idx >= 0) {
+    // 二次点击 = 移除
+    removeActiveLabel(idx)
+  } else {
+    addActiveLabel(selectedLabelName.value, v, { silent: true })
+    labelValueQuery.value = ''
+    refreshActiveData()
+  }
+  // 保持下拉打开 + 值输入框继续聚焦，方便连续操作
+  clearTimeout(hideLabelValueTimer)
+  showLabelValueDropdown.value = true
+  nextTick(() => labelValueInputRef.value?.focus?.())
+}
+
+function hasChip(label, value) {
+  if (!label || value === '' || value == null) return false
+  const v = String(value)
+  return activeLabelFilters.value.some(x => x.label === label && x.value === v)
 }
 function clearLabelName() {
   selectedLabelName.value = ''
@@ -2344,6 +2419,35 @@ onBeforeUnmount(() => {
 .combo-item.picked {
   background: rgba(129,140,248,.10);
   color: var(--accent, #818cf8);
+}
+
+/* 点即加：已加值行的视觉反馈（更淡的紫底 + ✓已加 徽标） */
+.combo-item.chipped {
+  background: rgba(129,140,248,.08);
+}
+.combo-item.chipped .combo-item-meta {
+  color: var(--accent, #818cf8);
+  font-weight: 600;
+  opacity: 1;
+}
+.quick-hint {
+  color: #38bdf8;
+  border-color: rgba(56,189,248,.35);
+}
+.hint-inline {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+.label-flow-tip {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(129,140,248,.06);
+  border: 1px dashed rgba(129,140,248,.28);
 }
 .combo-empty {
   position: absolute;

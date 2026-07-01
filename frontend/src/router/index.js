@@ -46,7 +46,6 @@ const routes = [
   // ── 8. 可观测性 ───────────────────────────────────────────────
   { path: '/observability/unified',  component: () => import('../views/ObsUnifiedView.vue'), name: 'obs-unified' },
   { path: '/observability/overview', component: () => import('../views/Dashboard.vue'),      name: 'obs-overview' },
-  { path: '/observability/visualization', component: () => import('../views/ObservabilityVisualizationView.vue'), name: 'obs-visualization', meta: { module: 'metrics' } },
   { path: '/observability/metrics-query', component: () => import('../views/MetricsQueryView.vue'), name: 'obs-metrics-query', meta: { module: 'metrics' } },
   { path: '/observability/logs-query', component: () => import('../views/LogsQueryView.vue'), name: 'obs-logs-query', meta: { module: 'log' } },
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },

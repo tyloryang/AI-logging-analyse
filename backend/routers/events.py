@@ -22,6 +22,19 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 _SEVERITY_ORDER = {"critical": 0, "error": 1, "warning": 2, "info": 3}
 _stats_cache: TTLCache = TTLCache(maxsize=1, ttl=30)
 _EXTERNAL_EVENTS_FILE = Path(__file__).parent.parent / "data" / "events_external.json"
+_EVENT_ERROR_KEYWORD_ALIASES: dict[str, tuple[str, ...]] = {
+    "NullPointerException": ("NullPointerException",),
+    "ArrayIndexOutOfBoundException": ("ArrayIndexOutOfBoundException", "ArrayIndexOutOfBoundsException"),
+    "OutOfMlemoryError": ("OutOfMlemoryError", "OutOfMemoryError"),
+    "IllegalArgumentException": ("IllegalArgumentException",),
+    "NumberFormatException": ("NumberFormatException",),
+    "TypeNotPresentException": ("TypeNotPresentException",),
+    "ClassNotFoundException": ("ClassNotFoundException",),
+    "IllegalAAccessException": ("IllegalAAccessException", "IllegalAccessException"),
+    "NoSuchMethodException": ("NoSuchMethodException",),
+    "NoSuchFieldException": ("NoSuchFieldException",),
+}
+_EVENT_ERROR_KEYWORDS = tuple(_EVENT_ERROR_KEYWORD_ALIASES.keys())
 _EXTERNAL_SOURCES = [
     {"code": "jenkins", "name": "Jenkins", "auth": "webhook", "description": "构建开始、成功、失败、回滚和部署流水线事件"},
     {"code": "gitlab", "name": "GitLab", "auth": "webhook", "description": "push、merge request、tag、pipeline 和 deployment 事件"},
@@ -29,6 +42,23 @@ _EXTERNAL_SOURCES = [
     {"code": "jira", "name": "Jira", "auth": "webhook", "description": "issue 创建、流转、发布关联和故障工单事件"},
     {"code": "custom", "name": "自定义事件源", "auth": "webhook", "description": "内部系统按统一事件规范写入事件墙"},
 ]
+
+
+def _resolve_error_keywords(keyword: str = "") -> list[str]:
+    raw = (keyword or "").strip()
+    if not raw:
+        return []
+    for canonical, aliases in _EVENT_ERROR_KEYWORD_ALIASES.items():
+        if raw == canonical or raw in aliases:
+            return list(aliases)
+    return [raw]
+
+
+def _event_matches_error_keywords(message: Any, keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+    text = str(message or "").lower()
+    return any(keyword.lower() in text for keyword in keywords)
 
 
 def _now_ts() -> str:
@@ -193,6 +223,7 @@ async def event_sources():
             {"code": "loki", "name": "Loki", "description": "error logs"},
         ],
         "external": _EXTERNAL_SOURCES,
+        "error_keywords": list(_EVENT_ERROR_KEYWORDS),
         "ingest_endpoint": "/api/events/ingest/{source}",
         "auth": "X-Event-Token or Authorization: Bearer <token>" if token_required else "disabled in current environment",
     }
@@ -226,6 +257,7 @@ async def list_events(
     hours: int = Query(24, ge=1, le=168),
     severity: str = Query("", description="critical/error/warning/info，空=全部"),
     source: str = Query("", description="prometheus/loki，空=全部"),
+    error_keyword: str = Query("", description="Loki 错误事件关键字过滤，空=全部"),
     limit: int = Query(200, ge=1, le=500),
 ):
     """聚合 Prometheus 告警 + Loki 错误日志，返回统一事件列表。"""
@@ -258,8 +290,19 @@ async def list_events(
     # ── Loki error logs ───────────────────────────────────────────────
     if not source or source == "loki":
         try:
-            logs = await loki.query_logs(service="", hours=hours, limit=limit, level="error")
+            error_keywords = _resolve_error_keywords(error_keyword)
+            logs = await loki.query_logs(
+                service="",
+                hours=hours,
+                limit=limit,
+                level="error",
+                keywords=error_keywords or None,
+                keyword_mode="or",
+            )
             for log in logs:
+                message = log.get("message", "")
+                if not _event_matches_error_keywords(message, error_keywords):
+                    continue
                 ts = log.get("timestamp", _now_ts())
                 if isinstance(ts, datetime):
                     ts = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -268,10 +311,10 @@ async def list_events(
                     "source":   "loki",
                     "severity": "error",
                     "title":    f"[错误] {log.get('service', '未知服务')}",
-                    "message":  str(log.get("message", ""))[:300],
+                    "message":  str(message)[:300],
                     "service":  log.get("service", ""),
                     "instance": "",
-                    "labels":   {"level": "error", "service": log.get("service", "")},
+                    "labels":   {"level": "error", "service": log.get("service", ""), "error_keyword": error_keyword or ""},
                     "time":     ts if isinstance(ts, str) else _now_ts(),
                     "status":   "active",
                 })

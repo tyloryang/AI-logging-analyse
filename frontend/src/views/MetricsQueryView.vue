@@ -61,18 +61,41 @@
           <table>
             <thead>
               <tr>
-                <th>Metric</th>
+                <th class="metric-col">Metric</th>
                 <th>Labels</th>
                 <th>最新值</th>
                 <th>点数</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in seriesRows" :key="row.id">
-                <td>{{ row.metricName }}</td>
-                <td><code>{{ row.labels }}</code></td>
-                <td><strong>{{ row.lastValue }}</strong></td>
-                <td>{{ row.count }}</td>
+              <tr v-for="row in seriesRows" :key="row.id" :class="{ expanded: isSeriesExpanded(row) }">
+                <td class="metric-cell">
+                  <button class="row-toggle" @click.stop="toggleSeriesRow(row)">
+                    {{ isSeriesExpanded(row) ? '收起' : '展开' }}
+                  </button>
+                  <code class="metric-name" :title="row.metricFull">
+                    {{ isSeriesExpanded(row) ? row.metricFull : row.metricName }}
+                  </code>
+                </td>
+                <td class="labels-cell">
+                  <template v-if="row.labelEntries.length">
+                    <div class="label-chip-list" :class="{ expanded: isSeriesExpanded(row) }">
+                      <span v-for="label in visibleLabels(row)" :key="`${row.id}-${label.key}`" class="label-chip">
+                        <b>{{ label.key }}</b><code>{{ label.value }}</code>
+                      </span>
+                    </div>
+                    <button
+                      v-if="row.labelEntries.length > LABEL_COLLAPSE_LIMIT"
+                      class="inline-toggle"
+                      @click.stop="toggleSeriesRow(row)"
+                    >
+                      {{ isSeriesExpanded(row) ? '收起标签' : `还有 ${row.labelEntries.length - LABEL_COLLAPSE_LIMIT} 个` }}
+                    </button>
+                  </template>
+                  <span v-else class="muted">-</span>
+                </td>
+                <td class="value-cell"><strong>{{ row.lastValue }}</strong></td>
+                <td class="count-cell">{{ row.count }}</td>
               </tr>
             </tbody>
           </table>
@@ -192,11 +215,13 @@ const loadingMetrics = ref(false)
 const querying = ref(false)
 const error = ref('')
 const result = ref(null)
+const expandedSeries = ref(new Set())
 const collapsed = ref({
   query: true,
   templates: true,
   metrics: true,
 })
+const LABEL_COLLAPSE_LIMIT = 3
 
 const filteredTemplates = computed(() => templates)
 const visibleMetricNames = computed(() => {
@@ -212,13 +237,18 @@ const seriesRows = computed(() => {
     const last = values[values.length - 1] || []
     const metric = item.metric || {}
     const metricName = metric.__name__ || promql.value.split(/[({\s]/)[0] || `series_${index + 1}`
-    const labels = Object.entries(metric)
+    const labelEntries = Object.entries(metric)
       .filter(([key]) => key !== '__name__')
-      .map(([key, value]) => `${key}="${value}"`)
+      .map(([key, value]) => ({ key, value: String(value) }))
+    const labels = labelEntries
+      .map(({ key, value }) => `${key}="${value}"`)
       .join(', ')
+    const metricFull = labels ? `${metricName}{${labels}}` : metricName
     return {
       id: `${metricName}-${index}`,
       metricName,
+      metricFull,
+      labelEntries,
       labels: labels || '-',
       values,
       lastValue: formatNumber(last[1]),
@@ -286,6 +316,21 @@ function togglePanel(key) {
   collapsed.value[key] = !collapsed.value[key]
 }
 
+function isSeriesExpanded(row) {
+  return expandedSeries.value.has(row.id)
+}
+
+function toggleSeriesRow(row) {
+  const next = new Set(expandedSeries.value)
+  if (next.has(row.id)) next.delete(row.id)
+  else next.add(row.id)
+  expandedSeries.value = next
+}
+
+function visibleLabels(row) {
+  return isSeriesExpanded(row) ? row.labelEntries : row.labelEntries.slice(0, LABEL_COLLAPSE_LIMIT)
+}
+
 async function loadMetricNames() {
   loadingMetrics.value = true
   try {
@@ -305,6 +350,7 @@ async function runQuery() {
     return
   }
   querying.value = true
+  expandedSeries.value = new Set()
   try {
     if (mode.value === 'instant') {
       result.value = await api.prometheusQuery({ query: promql.value.trim() })
@@ -637,6 +683,7 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  table-layout: fixed;
 }
 th,
 td {
@@ -650,9 +697,102 @@ th {
   background: var(--bg-base);
   font-weight: 600;
 }
-td code {
+.metric-col {
+  width: 30%;
+}
+.metric-cell {
+  min-width: 0;
+}
+.metric-cell,
+.labels-cell {
   color: var(--text-secondary);
+}
+.metric-name {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+tr.expanded .metric-name {
+  white-space: normal;
+  overflow: visible;
   word-break: break-all;
+}
+.row-toggle,
+.inline-toggle {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-base);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+.row-toggle {
+  padding: 4px 8px;
+}
+.inline-toggle {
+  margin-top: 6px;
+  padding: 3px 8px;
+}
+.row-toggle:hover,
+.inline-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.label-chip-list {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  max-width: 100%;
+  overflow: hidden;
+}
+.label-chip-list.expanded {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+.label-chip {
+  min-width: 0;
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-base);
+  padding: 3px 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.label-chip b {
+  flex-shrink: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.label-chip code {
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.label-chip-list.expanded .label-chip {
+  max-width: 100%;
+}
+.label-chip-list.expanded .label-chip code {
+  white-space: normal;
+  word-break: break-all;
+}
+.value-cell,
+.count-cell {
+  width: 96px;
+  white-space: nowrap;
+}
+.muted {
+  color: var(--text-muted);
 }
 .spinner,
 .spinner-sm {

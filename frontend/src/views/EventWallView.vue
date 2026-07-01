@@ -23,6 +23,10 @@
           <option value="jira">Jira</option>
           <option value="custom">Custom</option>
         </select>
+        <select v-model="filterErrorKeyword" class="filter-select keyword-select">
+          <option value="">全部错误关键字</option>
+          <option v-for="keyword in ERROR_KEYWORDS" :key="keyword" :value="keyword">{{ keyword }}</option>
+        </select>
         <select v-model="hours" class="filter-select">
           <option :value="1">最近 1h</option>
           <option :value="6">最近 6h</option>
@@ -135,8 +139,21 @@ const events      = ref([])
 const loading     = ref(false)
 const filterSev   = ref('')
 const filterSource = ref('')
+const filterErrorKeyword = ref('')
 const hours       = ref(24)
 const activeEvent = ref(null)
+const ERROR_KEYWORDS = [
+  'NullPointerException',
+  'ArrayIndexOutOfBoundException',
+  'OutOfMlemoryError',
+  'IllegalArgumentException',
+  'NumberFormatException',
+  'TypeNotPresentException',
+  'ClassNotFoundException',
+  'IllegalAAccessException',
+  'NoSuchMethodException',
+  'NoSuchFieldException',
+]
 
 const filteredEvents = computed(() => {
   let list = events.value
@@ -152,7 +169,11 @@ function statCount(sev) {
 async function fetchEvents() {
   loading.value = true
   try {
-    events.value = await api.listEvents({ hours: hours.value, limit: 300 })
+    events.value = await api.listEvents({
+      hours: hours.value,
+      limit: 300,
+      error_keyword: filterErrorKeyword.value || undefined,
+    })
   } catch { events.value = [] }
   finally { loading.value = false }
 }
@@ -164,6 +185,7 @@ function fmtTime(ts) {
 
 let _timer = null
 watch(hours, fetchEvents)
+watch(filterErrorKeyword, fetchEvents)
 onMounted(() => { fetchEvents(); _timer = setInterval(fetchEvents, 30000) })
 onUnmounted(() => clearInterval(_timer))
 </script>
@@ -198,6 +220,7 @@ onUnmounted(() => clearInterval(_timer))
   font-size: 12px;
   cursor: pointer;
 }
+.keyword-select { max-width: 240px; }
 .btn-ghost {
   display: flex;
   align-items: center;
