@@ -37,6 +37,7 @@ _SUMMARY_LOCKS: dict[str, asyncio.Lock] = {}
 # ─── 资源列表缓存（首次实时拉，之后 TTL 内复用，force=true 跳过缓存）──────────
 # 优先 Redis（共享缓存，多副本一致），无 Redis 时降级到本地 TTLCache。
 _RES_TTL_SEC = int(os.getenv("K8S_RES_CACHE_TTL", "30"))
+_K8S_CLIENT_POOL_SIZE = int(os.getenv("K8S_CLIENT_POOL_SIZE", "16"))
 _RES_LOCAL_CACHE: TTLCache = TTLCache(maxsize=256, ttl=_RES_TTL_SEC)
 _RES_LOCKS: dict[str, asyncio.Lock] = {}
 
@@ -576,8 +577,8 @@ def _get_api_client(cluster_id: str | None = None):
     ssl_ctx = _build_seclevel0_ssl_context(cfg)
 
     api_client.rest_client.pool_manager = urllib3.PoolManager(
-        num_pools=4,
-        maxsize=4,
+        num_pools=_K8S_CLIENT_POOL_SIZE,
+        maxsize=_K8S_CLIENT_POOL_SIZE,
         ssl_context=ssl_ctx,
         cert_reqs="CERT_NONE",
     )
@@ -589,6 +590,17 @@ def _get_batch_client(cluster_id: str | None = None):
     from kubernetes import client
 
     return client.BatchV1Api(_get_api_client(cluster_id))
+
+
+def _get_all_clients(cluster_id: str | None = None):
+    from kubernetes import client
+
+    api_client = _get_api_client(cluster_id)
+    return (
+        client.CoreV1Api(api_client),
+        client.AppsV1Api(api_client),
+        client.BatchV1Api(api_client),
+    )
 
 
 def _user_allowed_cluster_ids(user: User) -> list[str] | None:
@@ -686,6 +698,340 @@ def _job_status(item) -> str:
     if item.status.succeeded:
         return "Complete"
     return "Pending"
+
+
+class _K8sItems:
+    def __init__(self, items=None):
+        self.items = list(items or [])
+
+
+def _response_items(response) -> list:
+    return list(getattr(response, "items", None) or [])
+
+
+def _serialize_namespaces(ns_items: list) -> list[dict]:
+    return [
+        {
+            "name": ns.metadata.name,
+            "status": ns.status.phase or "Active",
+            "age": _safe_age(ns.metadata.creation_timestamp),
+            "labels": ns.metadata.labels or {},
+        }
+        for ns in ns_items
+    ]
+
+
+def _serialize_pod_items(pod_items: list) -> list[dict]:
+    result = []
+    for pod in pod_items:
+        status = _pod_status(pod)
+        containers = [
+            {
+                "name": c.name, "image": c.image, "ready": False, "restarts": 0,
+                "last_restart_reason": None,
+                "last_restart_time": None,
+                "last_restart_exit_code": None,
+                "waiting_reason": None,
+            }
+            for c in (pod.spec.containers or [])
+        ]
+        if pod.status.container_statuses:
+            for cs in pod.status.container_statuses:
+                for c in containers:
+                    if c["name"] != cs.name:
+                        continue
+                    c["ready"] = cs.ready or False
+                    c["restarts"] = cs.restart_count or 0
+                    last_state = getattr(cs, "last_state", None)
+                    terminated = getattr(last_state, "terminated", None) if last_state else None
+                    if terminated is not None:
+                        c["last_restart_reason"] = terminated.reason or None
+                        c["last_restart_exit_code"] = (
+                            terminated.exit_code
+                            if terminated.exit_code is not None else None
+                        )
+                        finished_at = getattr(terminated, "finished_at", None)
+                        if finished_at:
+                            c["last_restart_time"] = finished_at.isoformat() if hasattr(finished_at, "isoformat") else str(finished_at)
+                    cur_state = getattr(cs, "state", None)
+                    waiting = getattr(cur_state, "waiting", None) if cur_state else None
+                    if waiting is not None and waiting.reason:
+                        c["waiting_reason"] = waiting.reason
+
+        with_restart = [c for c in containers if c["restarts"] > 0 and c["last_restart_reason"]]
+        if with_restart:
+            primary = max(with_restart, key=lambda c: c["restarts"])
+            pod_last_reason = primary["last_restart_reason"]
+            pod_last_time = primary["last_restart_time"]
+            pod_last_exit = primary["last_restart_exit_code"]
+            pod_last_container = primary["name"]
+        else:
+            first_waiting = next((c for c in containers if c["waiting_reason"]), None)
+            pod_last_reason = first_waiting["waiting_reason"] if first_waiting else None
+            pod_last_time = None
+            pod_last_exit = None
+            pod_last_container = first_waiting["name"] if first_waiting else None
+
+        result.append(
+            {
+                "name": pod.metadata.name,
+                "namespace": pod.metadata.namespace,
+                "status": status,
+                "statusClass": _phase_class(status),
+                "node": pod.spec.node_name or "",
+                "host_ip": pod.status.host_ip or "",
+                "ip": pod.status.pod_ip or "",
+                "containers": containers,
+                "restarts": sum(c["restarts"] for c in containers),
+                "last_restart_reason": pod_last_reason,
+                "last_restart_time": pod_last_time,
+                "last_restart_exit_code": pod_last_exit,
+                "last_restart_container": pod_last_container,
+                "age": _safe_age(pod.metadata.creation_timestamp),
+            }
+        )
+    return result
+
+
+def _serialize_deployments(dep_items: list, pod_index: list[dict]) -> list[dict]:
+    result = []
+    for item in dep_items:
+        desired = item.spec.replicas or 0
+        ready = item.status.ready_replicas or 0
+        updated = item.status.updated_replicas or 0
+        avail = item.status.available_replicas or 0
+        ok = ready == desired and desired > 0
+        status = "Ready" if ok else ("Progressing" if updated < desired else "Degraded")
+        result.append(
+            {
+                "name": item.metadata.name,
+                "namespace": item.metadata.namespace,
+                "desired": desired,
+                "ready": ready,
+                "updated": updated,
+                "available": avail,
+                "status": status,
+                "statusClass": _phase_class(status),
+                "age": _safe_age(item.metadata.creation_timestamp),
+                "images": [c.image for c in (item.spec.template.spec.containers or [])],
+                "node_list": _nodes_by_selector(
+                    pod_index, item.metadata.namespace, _resource_selector_labels(item),
+                ),
+            }
+        )
+    return result
+
+
+def _serialize_daemonsets(items: list, pod_index: list[dict]) -> list[dict]:
+    result = []
+    for item in items:
+        desired = item.status.desired_number_scheduled or 0
+        ready = item.status.number_ready or 0
+        updated = item.status.updated_number_scheduled or 0
+        available = item.status.number_available or 0
+        current = item.status.current_number_scheduled or 0
+        status = _workload_status(ready, desired, updated)
+        result.append(
+            {
+                "name": item.metadata.name,
+                "namespace": item.metadata.namespace,
+                "desired": desired,
+                "current": current,
+                "ready": ready,
+                "updated": updated,
+                "available": available,
+                "status": status,
+                "statusClass": _phase_class(status),
+                "age": _safe_age(item.metadata.creation_timestamp),
+                "images": _container_images(item.spec.template),
+                "node_list": _nodes_by_owner(
+                    pod_index, item.metadata.namespace, "DaemonSet", item.metadata.name,
+                ),
+            }
+        )
+    return result
+
+
+def _serialize_statefulsets(items: list, pod_index: list[dict]) -> list[dict]:
+    result = []
+    for item in items:
+        desired = item.spec.replicas or 0
+        ready = item.status.ready_replicas or 0
+        current = item.status.current_replicas or 0
+        updated = item.status.updated_replicas or 0
+        status = _workload_status(ready, desired, updated)
+        result.append(
+            {
+                "name": item.metadata.name,
+                "namespace": item.metadata.namespace,
+                "desired": desired,
+                "ready": ready,
+                "current": current,
+                "updated": updated,
+                "status": status,
+                "statusClass": _phase_class(status),
+                "age": _safe_age(item.metadata.creation_timestamp),
+                "images": _container_images(item.spec.template),
+                "node_list": _nodes_by_owner(
+                    pod_index, item.metadata.namespace, "StatefulSet", item.metadata.name,
+                ),
+            }
+        )
+    return result
+
+
+def _serialize_jobs(items: list, pod_index: list[dict]) -> list[dict]:
+    result = []
+    for item in items:
+        status = _job_status(item)
+        result.append(
+            {
+                "name": item.metadata.name,
+                "namespace": item.metadata.namespace,
+                "status": status,
+                "statusClass": _phase_class(status),
+                "completions": item.spec.completions or 0,
+                "parallelism": item.spec.parallelism or 0,
+                "active": item.status.active or 0,
+                "succeeded": item.status.succeeded or 0,
+                "failed": item.status.failed or 0,
+                "age": _safe_age(item.metadata.creation_timestamp),
+                "images": _container_images(item.spec.template),
+                "node_list": _nodes_by_owner(
+                    pod_index, item.metadata.namespace, "Job", item.metadata.name,
+                ),
+            }
+        )
+    return result
+
+
+def _serialize_cronjobs(items: list, pod_index: list[dict]) -> list[dict]:
+    result = []
+    for item in items:
+        active_refs = item.status.active or []
+        suspend = bool(item.spec.suspend)
+        status = "Suspended" if suspend else ("Active" if active_refs else "Idle")
+        last_successful = getattr(item.status, "last_successful_time", None)
+        result.append(
+            {
+                "name": item.metadata.name,
+                "namespace": item.metadata.namespace,
+                "schedule": item.spec.schedule or "",
+                "suspend": suspend,
+                "active": len(active_refs),
+                "activeJobs": [ref.name for ref in active_refs if ref.name],
+                "lastScheduleTime": _safe_age(item.status.last_schedule_time),
+                "lastSuccessfulTime": _safe_age(last_successful),
+                "status": status,
+                "statusClass": _phase_class(status),
+                "age": _safe_age(item.metadata.creation_timestamp),
+                "node_list": _nodes_by_owner(
+                    pod_index, item.metadata.namespace, "Job", item.metadata.name, prefix=True,
+                ),
+            }
+        )
+    return result
+
+
+def _serialize_services(svc_items: list, endpoint_items: list, pod_index: list[dict]) -> list[dict]:
+    name_to_ip = _node_ip_map(pod_index)
+    ep_nodes: dict[tuple[str, str], list[dict]] = {}
+    for ep in endpoint_items:
+        nodes_seen: dict[str, dict] = {}
+        for subset in (ep.subsets or []):
+            for addr in (subset.addresses or []):
+                node_name = getattr(addr, "node_name", None) or ""
+                if not node_name:
+                    continue
+                nodes_seen.setdefault(node_name, {
+                    "name": node_name,
+                    "ip": name_to_ip.get(node_name, ""),
+                })
+        ep_nodes[(ep.metadata.namespace, ep.metadata.name)] = sorted(
+            nodes_seen.values(), key=lambda x: (x["ip"] or "", x["name"])
+        )
+
+    result = []
+    for item in svc_items:
+        ports = []
+        for port in (item.spec.ports or []):
+            entry = f"{port.port}"
+            if port.node_port:
+                entry += f":{port.node_port}"
+            if port.protocol and port.protocol != "TCP":
+                entry += f"/{port.protocol}"
+            ports.append(entry)
+        result.append({
+            "name": item.metadata.name,
+            "namespace": item.metadata.namespace,
+            "type": item.spec.type or "ClusterIP",
+            "clusterIP": item.spec.cluster_ip or "",
+            "externalIP": ", ".join(item.spec.external_i_ps or []) or (
+                item.status.load_balancer.ingress[0].ip
+                if item.status.load_balancer and item.status.load_balancer.ingress
+                else ""
+            ),
+            "ports": ports,
+            "age": _safe_age(item.metadata.creation_timestamp),
+            "node_list": ep_nodes.get((item.metadata.namespace, item.metadata.name), []),
+        })
+    return result
+
+
+def _serialize_configmaps(items: list, pod_index: list[dict]) -> list[dict]:
+    result = []
+    for item in items:
+        data_keys = list((item.data or {}).keys()) + list((item.binary_data or {}).keys())
+        size = sum(len(v or "") for v in (item.data or {}).values()) + sum(
+            len(v or "") for v in (item.binary_data or {}).values()
+        )
+        result.append(
+            {
+                "name": item.metadata.name,
+                "namespace": item.metadata.namespace,
+                "keys": data_keys,
+                "keyCount": len(data_keys),
+                "size": size,
+                "age": _safe_age(item.metadata.creation_timestamp),
+                "node_list": _nodes_by_configmap(
+                    pod_index, item.metadata.namespace, item.metadata.name,
+                ),
+            }
+        )
+    return result
+
+
+def _serialize_nodes(node_items: list) -> list[dict]:
+    result = []
+    for item in node_items:
+        ready = "Unknown"
+        for cond in (item.status.conditions or []):
+            if cond.type == "Ready":
+                ready = "Ready" if cond.status == "True" else "NotReady"
+        info = item.status.node_info or {}
+        internal_ip = next(
+            (a.address for a in (item.status.addresses or []) if a.type == "InternalIP"),
+            "",
+        )
+        result.append(
+            {
+                "name": item.metadata.name,
+                "internal_ip": internal_ip,
+                "status": ready,
+                "statusClass": _phase_class(ready),
+                "roles": ", ".join(
+                    key.split("/")[-1]
+                    for key in (item.metadata.labels or {})
+                    if key.startswith("node-role.kubernetes.io/")
+                )
+                or "worker",
+                "version": getattr(info, "kubelet_version", ""),
+                "os": getattr(info, "os_image", ""),
+                "arch": getattr(info, "architecture", ""),
+                "age": _safe_age(item.metadata.creation_timestamp),
+            }
+        )
+    return result
 
 
 def _fetch_core_summary_resources(cluster_id: str):
@@ -2592,8 +2938,9 @@ async def list_pods(
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         async def _load():
-            v1, _ = _get_client(cluster["id"])
-            return await _list_pods_impl(v1, namespace)
+            # 走 raw Pod 共享缓存：同一次页面打开的其他 list_* 也会复用这份数据
+            pods = await _get_pods_raw(cluster["id"], namespace)
+            return await asyncio.to_thread(_serialize_pod_items, pods.items)
         return await _list_with_cache("pods", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_pods failed: %s", exc)
@@ -2601,85 +2948,13 @@ async def list_pods(
 
 
 async def _list_pods_impl(v1, namespace: str):
+    """保留旧签名（仅在少数辅助场景直接传 v1 时用到）。"""
     try:
         if namespace:
             pods = await asyncio.to_thread(v1.list_namespaced_pod, namespace)
         else:
             pods = await asyncio.to_thread(v1.list_pod_for_all_namespaces)
-        result = []
-        for pod in pods.items:
-            status = _pod_status(pod)
-            containers = [
-                {
-                    "name": c.name, "image": c.image, "ready": False, "restarts": 0,
-                    # 上次终止信息（来自 lastState.terminated）
-                    "last_restart_reason": None,
-                    "last_restart_time": None,
-                    "last_restart_exit_code": None,
-                    # 当前 waiting 原因（如 CrashLoopBackOff / ImagePullBackOff）
-                    "waiting_reason": None,
-                }
-                for c in (pod.spec.containers or [])
-            ]
-            if pod.status.container_statuses:
-                for cs in pod.status.container_statuses:
-                    for c in containers:
-                        if c["name"] != cs.name:
-                            continue
-                        c["ready"] = cs.ready or False
-                        c["restarts"] = cs.restart_count or 0
-                        # 上次终止状态：containerStatuses[*].lastState.terminated
-                        last_state = getattr(cs, "last_state", None)
-                        terminated = getattr(last_state, "terminated", None) if last_state else None
-                        if terminated is not None:
-                            c["last_restart_reason"] = terminated.reason or None
-                            c["last_restart_exit_code"] = (
-                                terminated.exit_code
-                                if terminated.exit_code is not None else None
-                            )
-                            finished_at = getattr(terminated, "finished_at", None)
-                            if finished_at:
-                                c["last_restart_time"] = finished_at.isoformat() if hasattr(finished_at, "isoformat") else str(finished_at)
-                        # 当前 waiting 原因（用于补充 CrashLoopBackOff 这类）
-                        cur_state = getattr(cs, "state", None)
-                        waiting = getattr(cur_state, "waiting", None) if cur_state else None
-                        if waiting is not None and waiting.reason:
-                            c["waiting_reason"] = waiting.reason
-
-            # Pod 级汇总：取重启最多的 container 的 last_restart_reason；都为 0 时取首个 waiting_reason
-            with_restart = [c for c in containers if c["restarts"] > 0 and c["last_restart_reason"]]
-            if with_restart:
-                primary = max(with_restart, key=lambda c: c["restarts"])
-                pod_last_reason = primary["last_restart_reason"]
-                pod_last_time = primary["last_restart_time"]
-                pod_last_exit = primary["last_restart_exit_code"]
-                pod_last_container = primary["name"]
-            else:
-                first_waiting = next((c for c in containers if c["waiting_reason"]), None)
-                pod_last_reason = first_waiting["waiting_reason"] if first_waiting else None
-                pod_last_time = None
-                pod_last_exit = None
-                pod_last_container = first_waiting["name"] if first_waiting else None
-
-            result.append(
-                {
-                    "name": pod.metadata.name,
-                    "namespace": pod.metadata.namespace,
-                    "status": status,
-                    "statusClass": _phase_class(status),
-                    "node": pod.spec.node_name or "",
-                    "host_ip": pod.status.host_ip or "",
-                    "ip": pod.status.pod_ip or "",
-                    "containers": containers,
-                    "restarts": sum(c["restarts"] for c in containers),
-                    "last_restart_reason":     pod_last_reason,
-                    "last_restart_time":       pod_last_time,
-                    "last_restart_exit_code":  pod_last_exit,
-                    "last_restart_container":  pod_last_container,
-                    "age": _safe_age(pod.metadata.creation_timestamp),
-                }
-            )
-        return result
+        return _serialize_pod_items(pods.items)
     except Exception as exc:
         logger.warning("[k8s] _list_pods_impl failed: %s", exc)
         raise
@@ -2688,12 +2963,66 @@ async def _list_pods_impl(v1, namespace: str):
 # ── Deployments ───────────────────────────────────────────────────────────────
 
 # ── 资源 → 所在节点索引 ──────────────────────────────────────────────────────
+# 进程内共享缓存：一次页面打开 8+ 个 list_* 端点重复拉全量 Pod 是加载慢的主因。
+# 同时缓存 raw Pod 与派生的 placement index，list_pods 也复用同一份 raw 数据。
+_POD_INDEX_CACHE: TTLCache = TTLCache(maxsize=64, ttl=_RES_TTL_SEC)
+_POD_RAW_CACHE:   TTLCache = TTLCache(maxsize=64, ttl=_RES_TTL_SEC)
+_POD_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _pod_index_cache_key(cluster_id: str, namespace: str) -> str:
+    return f"{cluster_id or 'default'}::{namespace or '_all_'}"
+
+
+async def _get_pods_raw(cluster_id: str, namespace: str = ""):
+    """异步拉全量 Pod 并进程内缓存；同 key 并发只拉一次。返回 V1PodList。"""
+    key = _pod_index_cache_key(cluster_id, namespace)
+    cached = _POD_RAW_CACHE.get(key)
+    if cached is not None:
+        return cached
+    lock = _POD_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        cached = _POD_RAW_CACHE.get(key)
+        if cached is not None:
+            return cached
+        v1, _ = _get_client(cluster_id)
+        if namespace:
+            pods = await asyncio.to_thread(v1.list_namespaced_pod, namespace)
+        else:
+            pods = await asyncio.to_thread(v1.list_pod_for_all_namespaces)
+        _POD_RAW_CACHE[key] = pods
+        return pods
+
+
+async def _get_pod_placement_index(cluster_id: str, namespace: str = "") -> list[dict]:
+    """命中缓存直接返回；miss 时用共享 raw Pod 缓存构建索引，
+    避免『一次页面打开拉 8 次全量 Pod』。"""
+    key = _pod_index_cache_key(cluster_id, namespace)
+    cached = _POD_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    lock = _POD_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        cached = _POD_INDEX_CACHE.get(key)
+        if cached is not None:
+            return cached
+        pods = await _get_pods_raw(cluster_id, namespace)
+        index = await asyncio.to_thread(_build_pod_placement_index_from_items, pods.items)
+        _POD_INDEX_CACHE[key] = index
+        return index
+
 
 def _build_pod_placement_index(v1, namespace: str = "") -> list[dict]:
-    """一次性拉取 Pod 列表，构建『资源 → 所在节点』索引（避免逐资源查询）。"""
+    """一次性拉取 Pod 列表，构建『资源 → 所在节点』索引（避免逐资源查询）。
+    同步实现；在 async 上下文中请调用 _get_pod_placement_index() 走缓存。"""
     pods = v1.list_pod_for_all_namespaces() if not namespace else v1.list_namespaced_pod(namespace)
+    return _build_pod_placement_index_from_items(pods.items)
+
+
+def _build_pod_placement_index_from_items(pod_items: list) -> list[dict]:
+    """基于已有 Pod 对象构建节点索引，供聚合接口避免重复 list pods。"""
     index = []
-    for pod in pods.items:
+    for pod in pod_items:
         owners = {}
         for ref in (pod.metadata.owner_references or []):
             owners[ref.kind] = ref.name
@@ -2786,7 +3115,7 @@ async def list_deployments(
                 deps = await asyncio.to_thread(apps.list_namespaced_deployment, namespace)
             else:
                 deps = await asyncio.to_thread(apps.list_deployment_for_all_namespaces)
-            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
+            pod_index = await _get_pod_placement_index(cluster["id"], namespace)
             result = []
             for item in deps.items:
                 desired = item.spec.replicas or 0
@@ -2837,7 +3166,7 @@ async def list_daemonsets(
                 items = await asyncio.to_thread(apps.list_namespaced_daemon_set, namespace)
             else:
                 items = await asyncio.to_thread(apps.list_daemon_set_for_all_namespaces)
-            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
+            pod_index = await _get_pod_placement_index(cluster["id"], namespace)
             result = []
             for item in items.items:
                 desired = item.status.desired_number_scheduled or 0
@@ -2888,7 +3217,7 @@ async def list_statefulsets(
                 items = await asyncio.to_thread(apps.list_namespaced_stateful_set, namespace)
             else:
                 items = await asyncio.to_thread(apps.list_stateful_set_for_all_namespaces)
-            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
+            pod_index = await _get_pod_placement_index(cluster["id"], namespace)
             result = []
             for item in items.items:
                 desired = item.spec.replicas or 0
@@ -2938,7 +3267,7 @@ async def list_jobs(
                 items = await asyncio.to_thread(batch.list_namespaced_job, namespace)
             else:
                 items = await asyncio.to_thread(batch.list_job_for_all_namespaces)
-            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
+            pod_index = await _get_pod_placement_index(cluster["id"], namespace)
             result = []
             for item in items.items:
                 status = _job_status(item)
@@ -2985,7 +3314,7 @@ async def list_cronjobs(
                 items = await asyncio.to_thread(batch.list_namespaced_cron_job, namespace)
             else:
                 items = await asyncio.to_thread(batch.list_cron_job_for_all_namespaces)
-            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
+            pod_index = await _get_pod_placement_index(cluster["id"], namespace)
             result = []
             for item in items.items:
                 active_refs = item.status.active or []
@@ -3037,7 +3366,7 @@ async def list_services(
                 svcs = await asyncio.to_thread(v1.list_service_for_all_namespaces)
 
             # Endpoints → 后端 Pod 所在节点
-            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
+            pod_index = await _get_pod_placement_index(cluster["id"], namespace)
             name_to_ip = _node_ip_map(pod_index)
             ep_nodes: dict[tuple[str, str], list[dict]] = {}
             try:
@@ -3111,7 +3440,7 @@ async def list_configmaps(
             else:
                 cm_resp = await asyncio.to_thread(v1.list_config_map_for_all_namespaces)
             items = cm_resp.items
-            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
+            pod_index = await _get_pod_placement_index(cluster["id"], namespace)
             result = []
             for item in items:
                 data_keys = list((item.data or {}).keys()) + list((item.binary_data or {}).keys())
@@ -3186,6 +3515,106 @@ async def list_nodes(
         return await _list_with_cache("nodes", cluster["id"], "", force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_nodes failed: %s", exc)
+        raise HTTPException(502, f"k8s 连接失败: {exc}")
+
+
+# ── Overview ─────────────────────────────────────────────────────────────────
+
+async def _overview_call(name: str, fn):
+    try:
+        return name, await asyncio.to_thread(fn), None
+    except Exception as exc:
+        logger.warning("[k8s] overview %s failed: %s", name, exc)
+        return name, None, str(exc)
+
+
+def _ns_or_all(namespace: str, all_fn, ns_fn):
+    return ns_fn(namespace) if namespace else all_fn()
+
+
+async def _build_overview_payload(cluster: dict, namespace: str) -> dict:
+    v1, apps, batch = await asyncio.to_thread(_get_all_clients, cluster["id"])
+    calls = {
+        "pods": lambda: _ns_or_all(namespace, v1.list_pod_for_all_namespaces, v1.list_namespaced_pod),
+        "namespaces": v1.list_namespace,
+        "nodes": v1.list_node,
+        "deployments": lambda: _ns_or_all(namespace, apps.list_deployment_for_all_namespaces, apps.list_namespaced_deployment),
+        "daemonSets": lambda: _ns_or_all(namespace, apps.list_daemon_set_for_all_namespaces, apps.list_namespaced_daemon_set),
+        "statefulSets": lambda: _ns_or_all(namespace, apps.list_stateful_set_for_all_namespaces, apps.list_namespaced_stateful_set),
+        "jobs": lambda: _ns_or_all(namespace, batch.list_job_for_all_namespaces, batch.list_namespaced_job),
+        "cronJobs": lambda: _ns_or_all(namespace, batch.list_cron_job_for_all_namespaces, batch.list_namespaced_cron_job),
+        "services": lambda: _ns_or_all(namespace, v1.list_service_for_all_namespaces, v1.list_namespaced_service),
+        "configMaps": lambda: _ns_or_all(namespace, v1.list_config_map_for_all_namespaces, v1.list_namespaced_config_map),
+        "endpoints": lambda: _ns_or_all(namespace, v1.list_endpoints_for_all_namespaces, v1.list_namespaced_endpoints),
+    }
+    results = await asyncio.gather(*[_overview_call(name, fn) for name, fn in calls.items()])
+
+    raw: dict[str, object] = {}
+    errors: dict[str, str] = {}
+    for name, value, err in results:
+        if err:
+            errors[name] = err
+        raw[name] = value
+
+    if len(errors) == len(calls):
+        first_error = next(iter(errors.values()), "未知错误")
+        raise RuntimeError(first_error)
+
+    pods = _response_items(raw.get("pods"))
+    namespaces = _response_items(raw.get("namespaces"))
+    nodes = _response_items(raw.get("nodes"))
+    deployments = _response_items(raw.get("deployments"))
+    daemonsets = _response_items(raw.get("daemonSets"))
+    statefulsets = _response_items(raw.get("statefulSets"))
+    jobs = _response_items(raw.get("jobs"))
+    cronjobs = _response_items(raw.get("cronJobs"))
+    services = _response_items(raw.get("services"))
+    configmaps = _response_items(raw.get("configMaps"))
+    endpoints = _response_items(raw.get("endpoints"))
+    pod_index = await asyncio.to_thread(_build_pod_placement_index_from_items, pods)
+
+    payload = {
+        "summary": _build_cluster_summary_payload(
+            cluster,
+            _K8sItems(pods),
+            _K8sItems(deployments),
+            _K8sItems(daemonsets),
+            _K8sItems(statefulsets),
+            _K8sItems(jobs),
+            _K8sItems(cronjobs),
+            _K8sItems(nodes),
+        ),
+        "namespaces": _serialize_namespaces(namespaces),
+        "pods": _serialize_pod_items(pods),
+        "deployments": _serialize_deployments(deployments, pod_index),
+        "daemonSets": _serialize_daemonsets(daemonsets, pod_index),
+        "statefulSets": _serialize_statefulsets(statefulsets, pod_index),
+        "jobs": _serialize_jobs(jobs, pod_index),
+        "cronJobs": _serialize_cronjobs(cronjobs, pod_index),
+        "services": _serialize_services(services, endpoints, pod_index),
+        "configMaps": _serialize_configmaps(configmaps, pod_index),
+        "nodes": _serialize_nodes(nodes),
+        "errors": errors,
+    }
+    return payload
+
+
+@router.get("/overview")
+async def cluster_overview(
+    namespace: str = Query("", description="命名空间，空=全部"),
+    cluster_id: str = Query("", description="集群 ID"),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
+    user: User = Depends(current_user),
+):
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+
+        async def _load():
+            return await _build_overview_payload(cluster, namespace)
+
+        return await _list_with_cache("overview", cluster["id"], namespace, force, _load)
+    except Exception as exc:
+        logger.warning("[k8s] overview failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")
 
 
