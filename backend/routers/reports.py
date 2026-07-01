@@ -633,10 +633,13 @@ async def download_inspect_report_excel(report_id: str):
         s1_row(5, "正常主机",     summary_d.get("normal", 0))
         s1_row(6, "警告主机",     summary_d.get("warning", 0))
         s1_row(7, "严重主机",     summary_d.get("critical", 0))
+        s1_row(8, "已获取指标主机", summary_d.get("metrics_updated_count", 0))
+        s1_row(9, "SSH/Python兜底主机", summary_d.get("metrics_fallback_count", 0))
+        s1_row(10, "未获取指标主机", summary_d.get("metrics_missing_count", 0))
 
-        ws1.cell(row=9, column=1, value="高频异常项").font = Font(bold=True, size=10)
-        write_header_row(ws1, ["异常检查项", "影响主机数"], row=10)
-        for i, issue in enumerate(top_issues, 11):
+        ws1.cell(row=12, column=1, value="高频异常项").font = Font(bold=True, size=10)
+        write_header_row(ws1, ["异常检查项", "影响主机数"], row=13)
+        for i, issue in enumerate(top_issues, 14):
             ws1.cell(row=i, column=1, value=issue.get("item", "")).border    = thin_border()
             ws1.cell(row=i, column=2, value=issue.get("count", 0)).border    = thin_border()
             ws1.cell(row=i, column=1).font      = Font(size=9)
@@ -644,7 +647,7 @@ async def download_inspect_report_excel(report_id: str):
             ws1.cell(row=i, column=1).alignment = Alignment(vertical="center")
             ws1.cell(row=i, column=2).alignment = Alignment(horizontal="center", vertical="center")
 
-        ai_start = 11 + len(top_issues) + 2
+        ai_start = 14 + len(top_issues) + 2
         ws1.cell(row=ai_start, column=1, value="AI 分析总结").font = Font(bold=True, size=10)
         if ai_text:
             c           = ws1.cell(row=ai_start + 1, column=1, value=ai_text)
@@ -660,42 +663,91 @@ async def download_inspect_report_excel(report_id: str):
         # Sheet 2: 全部主机明细
         ws2 = wb.create_sheet("全部主机明细")
         headers2 = [
-            "主机名", "IP地址", "操作系统", "状态", "巡检结果",
-            "CPU使用率(%)", "内存使用率(%)", "内存总量(GB)",
-            "负载(5m)", "网络收(Mbps)", "网络发(Mbps)",
-            "TCP连接数", "运行时长(天)", "磁盘分区详情",
+            "状态", "主机名", "IP", "系统",
+            "CPU使用率(%)", "CPU核心", "内存使用率(%)", "内存总量(GB)",
+            "负载1m", "负载5m", "负载15m", "运行时长",
+            "磁盘挂载", "磁盘使用率(%)", "磁盘容量(已用/总量GB)",
+            "网络入(MB/s)", "网络出(MB/s)", "磁盘读(MB/s)", "磁盘写(MB/s)",
+            "TCP连接", "TIME_WAIT", "异常项",
         ]
         write_header_row(ws2, headers2)
-        set_col_widths(ws2, [18, 16, 22, 10, 10, 14, 14, 14, 10, 14, 14, 12, 12, 40])
+        set_col_widths(ws2, [10, 18, 16, 22, 14, 10, 14, 14, 10, 10, 10, 14, 14, 14, 18, 14, 14, 14, 14, 12, 12, 36])
         ws2.row_dimensions[1].height = 22
+
+        def fmt(v, decimals=1):
+            return round(v, decimals) if v is not None else "-"
+
+        def number_or_none(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        def highest_partition(partitions: list[dict]) -> dict | None:
+            best = None
+            best_usage = -1.0
+            for pt in partitions or []:
+                usage = number_or_none(pt.get("usage_pct", pt.get("used_pct")))
+                if usage is None:
+                    continue
+                if usage > best_usage:
+                    best = pt
+                    best_usage = usage
+            return best
+
+        def uptime_text(seconds) -> str:
+            seconds_value = number_or_none(seconds)
+            if seconds_value is None or seconds_value < 0:
+                return "-"
+            days = int(seconds_value // 86400)
+            hours = int((seconds_value % 86400) // 3600)
+            minutes = int((seconds_value % 3600) // 60)
+            return f"{days}天{hours}小时{minutes}分钟" if days else f"{hours}小时{minutes}分钟"
+
+        def disk_capacity_text(pt: dict | None) -> str:
+            if not pt:
+                return "-"
+            used = number_or_none(pt.get("used_gb"))
+            total = number_or_none(pt.get("total_gb", pt.get("size_gb")))
+            if used is None and total is None:
+                return "-"
+            if used is None:
+                return f"- / {round(total, 1)}"
+            if total is None:
+                return f"{round(used, 1)} / -"
+            return f"{round(used, 1)} / {round(total, 1)}"
+
+        def issue_text(checks: list[dict]) -> str:
+            abnormal = [c for c in checks or [] if c.get("status") != "normal"]
+            if not abnormal:
+                return "全部正常"
+            return "；".join(
+                f"{c.get('item', '-')}: {c.get('value', '-')}"
+                for c in abnormal
+            )
 
         for ri, h in enumerate(all_hosts, 2):
             overall      = h.get("overall", "normal")
             status_label = STATUS_TEXT.get(overall, overall)
 
-            def fmt(v, decimals=1):
-                return round(v, decimals) if v is not None else "-"
-
-            uptime_days = "-"
-            us = h.get("uptime_s")
-            if us is not None:
-                uptime_days = round(us / 86400, 1)
-
             partitions = h.get("partitions") or []
-            disk_text  = "  ".join(
-                f"{pt.get('mountpoint','?')} {pt.get('usage_pct','-')}%"
-                for pt in partitions
-            ) if partitions else "-"
+            disk = highest_partition(partitions)
+            disk_usage = disk.get("usage_pct", disk.get("used_pct")) if disk else None
 
             row_vals = [
-                h.get("hostname", "-"), h.get("ip", "-"), h.get("os", "-"),
-                h.get("state", "-"), status_label,
-                fmt(h.get("cpu_pct")), fmt(h.get("mem_pct")), fmt(h.get("mem_total")),
-                fmt(h.get("load5")), fmt(h.get("net_recv")), fmt(h.get("net_send")),
-                h.get("tcp_estab") or "-", uptime_days, disk_text,
+                status_label, h.get("hostname", "-"), h.get("ip", "-"), h.get("os", "-"),
+                fmt(h.get("cpu_pct")), h.get("cpu_cores") or "-", fmt(h.get("mem_pct")), fmt(h.get("mem_total")),
+                fmt(h.get("load1")), fmt(h.get("load5")), fmt(h.get("load15")), uptime_text(h.get("uptime_s")),
+                (disk.get("mountpoint") or disk.get("mount") or "-") if disk else "-",
+                fmt(disk_usage),
+                disk_capacity_text(disk),
+                fmt(h.get("net_recv")), fmt(h.get("net_send")), fmt(h.get("disk_read")), fmt(h.get("disk_write")),
+                h.get("tcp_estab") if h.get("tcp_estab") is not None else "-",
+                h.get("tcp_tw") if h.get("tcp_tw") is not None else "-",
+                issue_text(h.get("checks") or []),
             ]
             for ci, val in enumerate(row_vals, 1):
-                st = overall if ci == 5 else None
+                st = overall if ci == 1 else None
                 write_data_cell(ws2, ri, ci, val, st)
             ws2.row_dimensions[ri].height = 16
 

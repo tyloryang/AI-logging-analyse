@@ -74,7 +74,7 @@ def _extract_result_ip(result: dict) -> str:
     return (result.get("ip") or result.get("instance", "").split(":")[0]).strip()
 
 
-def _build_missing_host_result(host: dict) -> dict:
+def _build_missing_host_result(host: dict, fallback_error: str = "") -> dict:
     ip = (host.get("ip") or "").strip()
     return {
         "instance": f"{ip}:9100",
@@ -85,15 +85,21 @@ def _build_missing_host_result(host: dict) -> dict:
         "state": "missing",
         "group": host.get("group", ""),
         "env": host.get("env", ""),
-        "overall": "critical",
+        "overall": "warning",
         "checks": [{
-            "item": "Prometheus 监控",
-            "value": "未发现该主机监控数据",
-            "status": "critical",
-            "threshold": "应存在可抓取 target",
+            "item": "Prometheus 数据",
+            "value": "无指标",
+            "status": "warning",
+            "threshold": "需要安装 node_exporter 或检查 Prometheus 配置",
+        }, {
+            "item": "SSH/Python 兜底",
+            "value": fallback_error or "未获取到指标",
+            "status": "warning",
+            "threshold": "请检查 SSH 凭证、网络连通性和目标主机 Python/shell 环境",
         }],
         "metrics": {},
         "partitions": [],
+        "metrics_source": "missing",
     }
 
 
@@ -110,20 +116,29 @@ def _build_host_brief(result: dict) -> dict:
         "env":        result.get("env", ""),
         "overall":    result.get("overall", "normal"),
         "cpu_pct":    metrics.get("cpu_usage"),
+        "cpu_cores":  result.get("cpu_cores"),
         "mem_pct":    metrics.get("mem_usage"),
-        "mem_total":  metrics.get("mem_total_gb"),
+        "mem_total":  metrics.get("mem_total_gb") or result.get("memory_gb"),
+        "load1":      metrics.get("load1"),
         "load5":      metrics.get("load5"),
+        "load15":     metrics.get("load15"),
         "net_recv":   metrics.get("net_recv_mbps"),
         "net_send":   metrics.get("net_send_mbps"),
+        "disk_read":  metrics.get("disk_read_mbps"),
+        "disk_write": metrics.get("disk_write_mbps"),
         "tcp_estab":  metrics.get("tcp_estab"),
+        "tcp_tw":     metrics.get("tcp_tw"),
         "uptime_s":   metrics.get("uptime_seconds"),
         "checks":     result.get("checks", []),
         "partitions": result.get("partitions", []),
+        "metrics_source": result.get("metrics_source", "prometheus"),
     }
 
 
-def _build_scope_note(cmdb_total: int, extra_count: int) -> str:
+def _build_scope_note(cmdb_total: int, extra_count: int, fallback_count: int = 0) -> str:
     note = f"统计口径：按 CMDB 主机 {cmdb_total} 台统计，正常/警告/严重数量均以 CMDB 主机为基准。"
+    if fallback_count:
+        note += f" Prometheus 无指标时已对 {fallback_count} 台主机执行 SSH/Python 兜底采集。"
     if extra_count:
         note += f" Prometheus 额外发现 {extra_count} 个非 CMDB 实例（通常为容器 IP 或临时节点），已单独列出且不计入上方统计。"
     return note
@@ -143,12 +158,8 @@ async def collect_inspect_data(
         wanted_ips = {str(item).split(":")[0].strip() for item in instances if str(item).strip()}
         target_hosts = [host for host in target_hosts if (host.get("ip") or "").strip() in wanted_ips]
 
-    inspect_instances = None
-    if group_id or instances is not None:
-        inspect_instances = [f"{host['ip']}:9100" for host in target_hosts if host.get("ip")]
-
     try:
-        prom_results = await prom.inspect_hosts(instances=inspect_instances)
+        prom_results = await prom.inspect_hosts(instances=None)
     except Exception as e:
         logger.warning("[report_builder] 巡检数据获取失败: %s", e)
         prom_results = []
@@ -158,6 +169,16 @@ async def collect_inspect_data(
         ip = _extract_result_ip(result)
         if ip and ip not in prom_map:
             prom_map[ip] = result
+
+    missing_hosts = [host for host in target_hosts if (host.get("ip") or "").strip() not in prom_map]
+    fallback_map: dict[str, dict] = {}
+    if missing_hosts:
+        try:
+            from routers.hosts import _collect_inspection_fallbacks
+
+            fallback_map = await _collect_inspection_fallbacks(missing_hosts)
+        except Exception as e:
+            logger.warning("[report_builder] SSH/Python 兜底采集失败: %s", e)
 
     results: list[dict] = []
     cmdb_ips = {(host.get("ip") or "").strip() for host in target_hosts if host.get("ip")}
@@ -169,11 +190,18 @@ async def collect_inspect_data(
             merged = dict(prom_map[ip])
             merged["hostname"] = host.get("hostname") or merged.get("hostname") or ip
             merged["os"] = host.get("os_version") or merged.get("os") or host.get("platform", "")
+            merged["cpu_cores"] = host.get("cpu_cores") or merged.get("cpu_cores")
+            merged["memory_gb"] = host.get("memory_gb") or merged.get("memory_gb")
+            merged["disk_gb"] = host.get("disk_gb") or merged.get("disk_gb")
             merged["group"] = host.get("group", "")
             merged["env"] = host.get("env", "")
+            merged["metrics_source"] = merged.get("metrics_source", "prometheus")
             results.append(merged)
+        elif fallback_map.get(ip, {}).get("ok") and fallback_map[ip].get("result"):
+            results.append(fallback_map[ip]["result"])
         else:
-            results.append(_build_missing_host_result(host))
+            fallback_error = fallback_map.get(ip, {}).get("error", "")
+            results.append(_build_missing_host_result(host, fallback_error=fallback_error))
 
     extra_prometheus_hosts: list[dict] = []
     if not group_id and instances is None:
@@ -209,10 +237,17 @@ async def collect_inspect_data(
         "cmdb_total": len(results),
         "prometheus_extra_count": len(extra_prometheus_hosts),
         "scope": "cmdb",
+        "metrics_updated_count": sum(1 for r in results if r.get("metrics") or r.get("partitions")),
+        "metrics_fallback_count": sum(1 for r in results if r.get("metrics_source") == "ssh_python"),
+        "metrics_missing_count": sum(1 for r in results if not (r.get("metrics") or r.get("partitions"))),
     }
     if group_name:
         summary["group_name"] = group_name
-    summary["scope_note"] = _build_scope_note(summary["cmdb_total"], summary["prometheus_extra_count"])
+    summary["scope_note"] = _build_scope_note(
+        summary["cmdb_total"],
+        summary["prometheus_extra_count"],
+        summary["metrics_fallback_count"],
+    )
 
     issue_cnt: dict[str, int] = {}
     for r in results:

@@ -2520,7 +2520,7 @@ async def inspect_all_hosts(group_id: Optional[str] = Query(None)):
                 "group_name": group_name,
                 "metrics_updated_at": now if metrics_updated_count else "",
                 "metrics_updated_count": metrics_updated_count,
-                "metrics_missing_count": sum(1 for r in results if not (r.get("metrics") or {})),
+                "metrics_missing_count": sum(1 for r in results if not (r.get("metrics") or r.get("partitions"))),
                 "metrics_fallback_count": sum(1 for r in results if r.get("metrics_source") == "ssh_python"),
             }
             yield f"data: {json.dumps({'type': 'inspect_data', 'data': results, 'summary': summary}, ensure_ascii=False)}\n\n"

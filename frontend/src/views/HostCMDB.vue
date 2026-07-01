@@ -261,7 +261,7 @@
       <div class="inspect-panel-head">
         <div>
           <div class="inspect-panel-title">巡检报告</div>
-          <div class="inspect-panel-sub">基于 CMDB 主机和 Prometheus node_exporter 指标生成</div>
+          <div class="inspect-panel-sub">基于 CMDB 主机和 Prometheus node_exporter 指标生成；无指标时自动连接服务器兜底获取状态</div>
         </div>
         <div v-if="inspectResults.length" class="inspect-panel-kpis">
           <span>正常 {{ inspectSummary.normal }}</span>
@@ -276,7 +276,7 @@
         <button class="btn btn-outline" style="margin-top:10px" @click="runInspect">重试</button>
       </div>
       <div v-else-if="!inspectResults.length" class="empty-state">
-        <span class="icon">🔍</span><p>点击「执行巡检」开始<br><small style="color:var(--text-muted)">巡检依赖 Prometheus node_exporter 指标</small></p>
+        <span class="icon">🔍</span><p>点击「执行巡检」开始<br><small style="color:var(--text-muted)">优先使用 Prometheus，缺失时 SSH/Python 兜底采集</small></p>
       </div>
       <div v-else style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0">
         <div class="inspect-scope-bar">
