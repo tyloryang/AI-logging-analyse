@@ -288,28 +288,55 @@ async def query_loki_range(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+def _split_csv(raw: Optional[str]) -> list[str]:
+    """把逗号分隔字符串切成去空的列表；None 返回 []。"""
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item and item.strip()]
+
+
 @router.get("/api/logs")
 async def get_logs(
-    service: Optional[str] = Query(None, description="服务名称"),
+    service: Optional[str] = Query(None, description="单个服务名（旧参数，与 services 合并）"),
+    services: Optional[str] = Query(None, description="多个服务名，逗号分隔，如 svc-a,svc-b"),
     hours: float = Query(24, gt=0, description="查询时长（小时，支持小数）"),
     limit: int = Query(200, le=1000, description="每页条数（游标分页）"),
     level: Optional[str] = Query(None, description="日志级别过滤: error/warn/info"),
-    keyword: Optional[str] = Query(None, description="关键字过滤（不区分大小写）"),
+    keyword: Optional[str] = Query(None, description="单个关键字（旧参数，与 keywords 合并）"),
+    keywords: Optional[str] = Query(None, description="多个关键字，逗号分隔"),
+    keyword_mode: str = Query("and", description="多关键字组合：and=全部命中 / or=任一命中"),
+    exclude_keywords: Optional[str] = Query(None, description="排除关键字，逗号分隔"),
     group_label: Optional[str] = Query(None, description="额外的 Loki 分组标签名"),
     group_value: Optional[str] = Query(None, description="额外的 Loki 分组标签值"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式，如 2024-01-01T00:00"),
     end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式，如 2024-01-01T23:59"),
     cursor_ns: Optional[int] = Query(None, description="游标：上一页最旧条目的纳秒时间戳，续页时传入"),
 ):
-    """查询日志（游标分页，每页 limit 条，不超过 Loki 4MB 响应限制）"""
+    """查询日志（游标分页，每页 limit 条，不超过 Loki 4MB 响应限制）
+
+    - 多服务：`services=svc-a,svc-b` 生成 `{app=~"svc-a|svc-b"}`，一次查跨服务日志。
+    - 多关键字 AND（默认）：`keywords=error,timeout` 生成 `|~ "error" |~ "timeout"`。
+    - 多关键字 OR：加 `keyword_mode=or` → `|~ "(error|timeout)"`。
+    - 排除：`exclude_keywords=health,ping` → `!~ "health" !~ "ping"`。
+    """
+    svc_list = _split_csv(services)
+    kw_list = _split_csv(keywords)
+    ex_list = _split_csv(exclude_keywords)
+    mode = (keyword_mode or "and").lower()
+    if mode not in ("and", "or"):
+        mode = "and"
     try:
         result = await loki.query_logs_page(
             service=service,
+            services=svc_list or None,
             hours=hours,
             page_size=limit,
             cursor_ns=cursor_ns,
             level=level or None,
             keyword=keyword or None,
+            keywords=kw_list or None,
+            keyword_mode=mode,
+            exclude_keywords=ex_list or None,
             group_label=group_label,
             group_value=group_value,
             start_ns=_parse_time_ns(start_time),
@@ -321,6 +348,10 @@ async def get_logs(
             "next_cursor_ns": result["next_cursor_ns"],
             "total": len(result["data"]),
             "service": service,
+            "services": svc_list,
+            "keywords": kw_list,
+            "keyword_mode": mode,
+            "exclude_keywords": ex_list,
             "hours": hours,
         }
     except Exception as e:

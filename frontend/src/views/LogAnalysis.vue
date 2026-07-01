@@ -122,20 +122,60 @@
             />
             <button v-if="keyword" class="kw-clear" @click="clearKeyword">✕</button>
           </div>
-          <!-- 多条件本地过滤（仅日志流 tab；每个 chip 一条规则，AND 组合；- 前缀 = 排除） -->
-          <div v-if="activeTab === 'logs'" class="multi-filter-wrap" title="多条件本地过滤：输入回车成条件；- 前缀=排除；点击 chip 可切换包含/排除">
+          <!-- 多服务选择（可跨服务同时查，等价 Loki app=~"a|b|c"） -->
+          <div v-if="activeTab !== 'trace'" class="multi-filter-wrap svc-multi" title="多服务筛选：输入服务名回车加入，可选多个跨服务查看总体调用">
+            <span class="kw-icon">≡</span>
+            <span
+              v-for="(svc, i) in selectedServices"
+              :key="'svc-'+i"
+              class="filter-chip include svc-chip"
+              title="点击删除"
+            >
+              <span class="chip-prefix">◈</span>
+              <span class="chip-text">{{ svc }}</span>
+              <span class="chip-remove" @click.stop="removeServiceChip(i)" title="删除服务">✕</span>
+            </span>
+            <input
+              v-model="serviceChipInput"
+              list="svc-datalist"
+              class="kw-input multi-input"
+              :placeholder="selectedServices.length ? '再加服务...' : '服务名 (回车加入；可选多个)'"
+              @keyup.enter="addServiceChip"
+              @keydown.backspace="onServiceChipBackspace"
+            />
+            <datalist id="svc-datalist">
+              <option v-for="s in allServicesList" :key="s" :value="s" />
+            </datalist>
+            <button v-if="selectedServices.length" class="kw-clear" @click="selectedServices = []; selectedService = ''; onParamChange()" title="清空全部服务">✕</button>
+          </div>
+
+          <!-- 多条件关键字过滤（服务端 Loki 查询：AND/OR 可切；- 前缀=排除） -->
+          <div v-if="activeTab === 'logs'" class="multi-filter-wrap" title="多关键字：回车加入；- 前缀=排除；点 chip 切包含/排除；同时推到 Loki 服务端查询">
             <span class="kw-icon">⊕</span>
+            <!-- AND / OR 切换 -->
+            <div class="kw-mode-switch" title="AND=同时命中所有关键字；OR=命中任一即可">
+              <button
+                class="kw-mode-btn"
+                :class="{ active: keywordMode === 'and' }"
+                @click="keywordMode = 'and'; onParamChange()"
+              >AND</button>
+              <button
+                class="kw-mode-btn"
+                :class="{ active: keywordMode === 'or' }"
+                @click="keywordMode = 'or'; onParamChange()"
+              >OR</button>
+            </div>
             <span
               v-for="(chip, i) in localKeywords"
               :key="i"
               class="filter-chip"
               :class="chip.exclude ? 'exclude' : 'include'"
-              @click="toggleChipExclude(i)"
+              @click="toggleChipExclude(i); onParamChange()"
               :title="chip.exclude ? '排除（点击切回包含）' : '包含（点击切为排除）'"
             >
               <span class="chip-prefix">{{ chip.exclude ? '−' : '+' }}</span>
               <span class="chip-text">{{ chip.text }}</span>
-              <span class="chip-remove" @click.stop="removeChip(i)" title="删除条件">✕</span>
+              <span class="chip-remove" @click.stop="removeChip(i); onParamChange()" title="删除条件">✕</span>
             </span>
             <input
               v-model="localKeywordInput"
@@ -144,7 +184,7 @@
               @keyup.enter="addChipFromInput"
               @keydown.backspace="onMultiInputBackspace"
             />
-            <button v-if="localKeywords.length" class="kw-clear" @click="localKeywords = []" title="清空全部条件">✕</button>
+            <button v-if="localKeywords.length" class="kw-clear" @click="localKeywords = []; onParamChange()" title="清空全部条件">✕</button>
           </div>
 
           <!-- 日志流专有控件 -->
@@ -690,9 +730,14 @@ const customStart = ref('')
 const customEnd   = ref('')
 
 // 关键字搜索
-const keyword      = ref('')         // 后端关键字（重查 Loki）
-const localKeywords     = ref([])    // 本地多条件过滤：[{ text, exclude }] AND 组合
+const keyword      = ref('')         // 后端单关键字（旧参数，仍保留）
+const localKeywords     = ref([])    // 多条件过滤：[{ text, exclude }] AND/OR，同时推到 Loki 服务端
 const localKeywordInput = ref('')    // 多条件输入框临时状态
+const keywordMode  = ref('and')      // 多关键字组合模式 and/or
+// 多服务：LogAnalysis 支持一次查多个服务的日志（跨服务调用链排障用）
+const selectedServices  = ref([])    // 已选服务列表 chip
+const serviceChipInput  = ref('')    // 服务 chip 输入临时状态
+const allServicesList   = ref([])    // 服务名下拉候选（datalist）
 let   searchTimer  = null
 
 function addChipFromInput() {
@@ -709,6 +754,52 @@ function addChipFromInput() {
   }
   localKeywords.value.push({ text, exclude })
   localKeywordInput.value = ''
+  onParamChange()
+}
+
+function addServiceChip() {
+  const raw = (serviceChipInput.value || '').trim()
+  if (!raw) return
+  if (selectedServices.value.includes(raw)) { serviceChipInput.value = ''; return }
+  selectedServices.value.push(raw)
+  serviceChipInput.value = ''
+  // 单值 selectedService 保持与首个已选服务同步，便于跳转/URL 兼容
+  if (selectedServices.value.length === 1) selectedService.value = raw
+  onParamChange()
+}
+
+function removeServiceChip(i) {
+  selectedServices.value.splice(i, 1)
+  if (!selectedServices.value.length && selectedService.value) selectedService.value = ''
+  else if (selectedServices.value.length) selectedService.value = selectedServices.value[0]
+  onParamChange()
+}
+
+function onServiceChipBackspace() {
+  if (serviceChipInput.value === '' && selectedServices.value.length) {
+    selectedServices.value.pop()
+    onParamChange()
+  }
+}
+
+// 组装本页所有请求都要带的多条件参数（服务/关键字/排除/模式）
+function multiFilterParams() {
+  const p = {}
+  const svcs = selectedServices.value
+  if (svcs.length > 1) p.services = svcs.join(',')
+  else if (svcs.length === 1) p.service = svcs[0]
+  else if (selectedService.value) p.service = selectedService.value
+
+  const inc = localKeywords.value.filter(c => !c.exclude).map(c => c.text)
+  const exc = localKeywords.value.filter(c =>  c.exclude).map(c => c.text)
+  if (inc.length) {
+    p.keywords = inc.join(',')
+    if (inc.length > 1) p.keyword_mode = keywordMode.value
+  } else if (keyword.value) {
+    p.keyword = keyword.value
+  }
+  if (exc.length) p.exclude_keywords = exc.join(',')
+  return p
 }
 
 function toggleChipExclude(i) {
@@ -1378,10 +1469,9 @@ async function loadLogs() {
   totalLoaded.value = 0
   try {
     const r = await api.getLogs({
-      service:  selectedService.value || undefined,
       level:    levelFilter.value || undefined,
       limit:    200,
-      keyword:  keyword.value || undefined,
+      ...multiFilterParams(),
       ...currentGroupParams(),
       ...timeParams(),
     }, { signal: controller.signal })
@@ -1418,11 +1508,10 @@ async function loadMore() {
   loadingMore.value = true
   try {
     const r = await api.getLogs({
-      service:    selectedService.value || undefined,
       level:      levelFilter.value || undefined,
       limit:      200,
-      keyword:    keyword.value || undefined,
       cursor_ns:  nextCursorNs.value,
+      ...multiFilterParams(),
       ...currentGroupParams(),
       ...timeParams(),
     }, { signal: controller.signal })
@@ -1456,11 +1545,10 @@ async function loadTemplates() {
   tplError.value = ''
   try {
     const r = await api.getTemplates({
-      service:  selectedService.value || undefined,
       limit:    10000,
       top_n:    100,
       level:    tplLevelFilter.value || undefined,
-      keyword:  keyword.value || undefined,
+      ...multiFilterParams(),
       ...currentGroupParams(),
       ...timeParams(),
     }, { signal: controller.signal })
@@ -1623,9 +1711,8 @@ function startTplAIAnalysis() {
   tplAiContent.value = ''
   analyzingTplAI.value = true
   const params = new URLSearchParams({
-    ...(selectedService.value ? { service: selectedService.value } : {}),
+    ...multiFilterParams(),
     ...(tplLevelFilter.value ? { level: tplLevelFilter.value } : {}),
-    ...(keyword.value ? { keyword: keyword.value } : {}),
     ...currentGroupParams(),
   })
   if (timeMode.value === 'custom' && customStart.value && customEnd.value) {
@@ -1653,9 +1740,8 @@ function startAIAnalysis() {
   analyzingAI.value = true
   const params = new URLSearchParams({
     ...timeParams(),
-    ...(selectedService.value ? { service: selectedService.value } : {}),
-    ...(levelFilter.value     ? { level:   levelFilter.value     } : {}),
-    ...(keyword.value         ? { keyword: keyword.value         } : {}),
+    ...multiFilterParams(),
+    ...(levelFilter.value ? { level: levelFilter.value } : {}),
     ...currentGroupParams(),
   })
   streamSSE(
@@ -1679,7 +1765,19 @@ function _applyRouteQuery() {
 
 onMounted(async () => {
   _applyRouteQuery()
+  // 已有 URL ?service=xxx 兼容进 chip
+  if (selectedService.value && !selectedServices.value.length) {
+    selectedServices.value.push(selectedService.value)
+  }
   await loadLabelCatalog()
+  // 预取服务名（供 chip datalist 提示）
+  try {
+    const r = await api.getServices({})
+    const data = r?.data ?? r
+    if (Array.isArray(data)) {
+      allServicesList.value = data.map(s => typeof s === 'string' ? s : (s.name || s.service || '')).filter(Boolean)
+    }
+  } catch {}
   loadLogs()
 })
 
@@ -2079,6 +2177,40 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .chip-remove:hover { opacity: 1; }
+
+/* 服务多选 chip 蓝色系，与关键字 chip 区分 */
+.multi-filter-wrap.svc-multi .kw-icon { color: #38bdf8; }
+.filter-chip.svc-chip {
+  background: rgba(56,189,248,.14);
+  border: 1px solid rgba(56,189,248,.36);
+  color: #38bdf8;
+}
+.filter-chip.svc-chip .chip-prefix { color: #38bdf8; }
+
+/* AND / OR 切换 pill */
+.kw-mode-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.kw-mode-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.kw-mode-btn:hover { color: var(--text-primary); }
+.kw-mode-btn.active {
+  background: var(--accent, #818cf8);
+  color: #fff;
+}
 
 .svc-ns-arrow { font-size: 8px; transition: transform .2s; display: inline-block; }
 .svc-ns-arrow.open { transform: rotate(90deg); }

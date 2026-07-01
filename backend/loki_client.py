@@ -78,14 +78,30 @@ class LokiClient:
         *,
         service_label: str,
         service: Optional[str] = None,
+        services: Optional[list[str]] = None,
         level: Optional[str] = None,
         keyword: Optional[str] = None,
+        keywords: Optional[list[str]] = None,
+        keyword_mode: str = "and",
+        exclude_keywords: Optional[list[str]] = None,
         label_filters: Optional[dict[str, str]] = None,
     ) -> str:
+        # 归一化服务列表：单值 service 兼容旧参数，与 services 合并去重
+        svc_list: list[str] = []
+        if services:
+            svc_list.extend(s for s in services if s and s.strip())
+        if service and service.strip() and service not in svc_list:
+            svc_list.append(service)
+
         selector_parts: list[str] = []
-        if service:
-            escaped_service = self._escape_label_value(service)
-            selector_parts.append(f'{service_label}="{escaped_service}"')
+        if len(svc_list) == 1:
+            selector_parts.append(f'{service_label}="{self._escape_label_value(svc_list[0])}"')
+        elif len(svc_list) > 1:
+            # LogQL regex alternation：{app=~"a|b|c"}
+            joined = "|".join(re.escape(s) for s in svc_list)
+            # 反斜杠需要在 LogQL 字符串里再转义一次
+            joined = joined.replace("\\", "\\\\")
+            selector_parts.append(f'{service_label}=~"{joined}"')
         else:
             selector_parts.append(f'{service_label}=~".+"')
 
@@ -101,9 +117,26 @@ class LokiClient:
         elif level in ("warn", "warning"):
             query += ' |~ "(?i)(warn|warning)"'
 
-        if keyword:
-            safe_kw = re.escape(keyword).replace("\\", "\\\\")
-            query += f' |~ "(?i){safe_kw}"'
+        # 关键字：keywords 列表优先；否则 keyword 单值降级
+        kw_list = [k for k in (keywords or []) if k and k.strip()]
+        if not kw_list and keyword and keyword.strip():
+            kw_list = [keyword.strip()]
+
+        if kw_list:
+            mode = (keyword_mode or "and").lower()
+            if mode == "or" and len(kw_list) > 1:
+                joined = "|".join(re.escape(k).replace("\\", "\\\\") for k in kw_list)
+                query += f' |~ "(?i)({joined})"'
+            else:
+                for kw in kw_list:
+                    safe_kw = re.escape(kw).replace("\\", "\\\\")
+                    query += f' |~ "(?i){safe_kw}"'
+
+        for ex in (exclude_keywords or []):
+            if not ex or not ex.strip():
+                continue
+            safe_ex = re.escape(ex).replace("\\", "\\\\")
+            query += f' !~ "(?i){safe_ex}"'
 
         return query
 
@@ -330,11 +363,15 @@ class LokiClient:
     async def query_logs_page(
         self,
         service: Optional[str] = None,
+        services: Optional[list[str]] = None,
         hours: float = 24,
         page_size: int = 200,
         cursor_ns: Optional[int] = None,
         level: Optional[str] = None,
         keyword: Optional[str] = None,
+        keywords: Optional[list[str]] = None,
+        keyword_mode: str = "and",
+        exclude_keywords: Optional[list[str]] = None,
         start_ns: Optional[int] = None,
         end_ns: Optional[int] = None,
         group_label: Optional[str] = None,
@@ -368,8 +405,12 @@ class LokiClient:
         query = self._build_log_query(
             service_label=svc_label,
             service=service,
+            services=services,
             level=level,
             keyword=keyword,
+            keywords=keywords,
+            keyword_mode=keyword_mode,
+            exclude_keywords=exclude_keywords,
             label_filters=label_filters or None,
         )
 
@@ -392,10 +433,14 @@ class LokiClient:
     async def query_logs(
         self,
         service: Optional[str] = None,
+        services: Optional[list[str]] = None,
         hours: float = 24,
         limit: int = 5000,
         level: Optional[str] = None,
         keyword: Optional[str] = None,
+        keywords: Optional[list[str]] = None,
+        keyword_mode: str = "and",
+        exclude_keywords: Optional[list[str]] = None,
         start_ns: Optional[int] = None,
         end_ns: Optional[int] = None,
         use_scan_timeout: bool = False,
@@ -429,8 +474,12 @@ class LokiClient:
         query = self._build_log_query(
             service_label=svc_label,
             service=service,
+            services=services,
             level=level,
             keyword=keyword,
+            keywords=keywords,
+            keyword_mode=keyword_mode,
+            exclude_keywords=exclude_keywords,
             label_filters=label_filters or None,
         )
 
