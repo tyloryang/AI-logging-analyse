@@ -51,26 +51,84 @@
               <button @click="clearLabelFilter">清除</button>
             </div>
             <div v-if="labelCatalog.length" class="label-dropdown-panel">
-              <label class="label-select-field">
+              <!-- 标签名（可搜索 combobox） -->
+              <div class="label-select-field">
                 <span>标签名</span>
-                <select v-model="selectedLabelName" @change="onLabelDropdownChange">
-                  <option value="">请选择 Loki 标签</option>
-                  <option v-for="item in labelCatalog" :key="item.name" :value="item.name">
-                    {{ item.name }} · {{ labelRoleText(item) }}
-                  </option>
-                </select>
-              </label>
-              <label class="label-select-field">
+                <div class="combo" :class="{ open: showLabelNameDropdown }">
+                  <input
+                    class="combo-input"
+                    v-model="labelNameQuery"
+                    :placeholder="selectedLabelName ? '' : '搜索标签，如 app / namespace'"
+                    @focus="showLabelNameDropdown = true"
+                    @input="showLabelNameDropdown = true"
+                    @keydown.esc="showLabelNameDropdown = false"
+                    @blur="hideLabelNameLater"
+                  />
+                  <span
+                    v-if="selectedLabelName || labelNameQuery"
+                    class="combo-clear"
+                    @mousedown.prevent="clearLabelName"
+                    title="清空"
+                  >✕</span>
+                  <span class="combo-caret" @mousedown.prevent="showLabelNameDropdown = !showLabelNameDropdown">▾</span>
+                  <div v-show="showLabelNameDropdown && filteredLabels.length" class="combo-dropdown">
+                    <div
+                      v-for="item in filteredLabels"
+                      :key="item.name"
+                      class="combo-item"
+                      :class="{ active: item.name === selectedLabelName }"
+                      @mousedown.prevent="pickLabelName(item.name)"
+                    >
+                      <span class="combo-item-text">
+                        <mark v-for="(seg, i) in highlight(item.name, labelNameQuery)" :key="i" :class="{ hl: seg.hit }">{{ seg.t }}</mark>
+                      </span>
+                      <span class="combo-item-meta">{{ labelRoleText(item) }}</span>
+                    </div>
+                  </div>
+                  <div v-show="showLabelNameDropdown && !filteredLabels.length" class="combo-empty">未匹配到标签名</div>
+                </div>
+              </div>
+
+              <!-- 标签值（可搜索 combobox） -->
+              <div class="label-select-field">
                 <span>标签值</span>
-                <select
-                  v-model="selectedLabelValue"
-                  :disabled="!selectedLabelName || loadingLabelValueMap[selectedLabelName]"
-                  @change="onLabelValueDropdownChange"
-                >
-                  <option value="">{{ loadingLabelValueMap[selectedLabelName] ? '加载中...' : '请选择标签值' }}</option>
-                  <option v-for="value in selectedLabelValues" :key="value" :value="value">{{ value }}</option>
-                </select>
-              </label>
+                <div class="combo" :class="{ open: showLabelValueDropdown, disabled: !selectedLabelName || loadingLabelValueMap[selectedLabelName] }">
+                  <input
+                    class="combo-input"
+                    v-model="labelValueQuery"
+                    :placeholder="loadingLabelValueMap[selectedLabelName] ? '加载中...' : (selectedLabelValue ? '' : '搜索标签值')"
+                    :disabled="!selectedLabelName || loadingLabelValueMap[selectedLabelName]"
+                    @focus="showLabelValueDropdown = true"
+                    @input="showLabelValueDropdown = true"
+                    @keydown.esc="showLabelValueDropdown = false"
+                    @blur="hideLabelValueLater"
+                  />
+                  <span
+                    v-if="selectedLabelValue || labelValueQuery"
+                    class="combo-clear"
+                    @mousedown.prevent="clearLabelValue"
+                    title="清空"
+                  >✕</span>
+                  <span class="combo-caret" @mousedown.prevent="showLabelValueDropdown = !showLabelValueDropdown">▾</span>
+                  <div v-show="showLabelValueDropdown && filteredLabelValues.length" class="combo-dropdown">
+                    <div
+                      v-for="value in filteredLabelValues"
+                      :key="value"
+                      class="combo-item"
+                      :class="{ active: value === selectedLabelValue }"
+                      @mousedown.prevent="pickLabelValue(value)"
+                    >
+                      <span class="combo-item-text">
+                        <mark v-for="(seg, i) in highlight(value, labelValueQuery)" :key="i" :class="{ hl: seg.hit }">{{ seg.t }}</mark>
+                      </span>
+                    </div>
+                  </div>
+                  <div v-show="showLabelValueDropdown && !filteredLabelValues.length && !loadingLabelValueMap[selectedLabelName]" class="combo-empty">
+                    {{ selectedLabelValues.length ? '未匹配到值' : '当前标签暂无样例值' }}
+                  </div>
+                </div>
+              </div>
+
               <button
                 class="label-dropdown-apply"
                 :disabled="!selectedLabelName || !selectedLabelValue"
@@ -78,9 +136,6 @@
               >
                 筛选
               </button>
-              <div v-if="selectedLabelName && !loadingLabelValueMap[selectedLabelName] && !selectedLabelValues.length" class="label-empty">
-                当前标签暂无样例值
-              </div>
             </div>
             <div v-else class="label-empty">未发现 Loki 标签</div>
           </template>
@@ -702,7 +757,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api, streamSSE } from '../api/index.js'
 
 // ── 公共状态 ─────────────────────────────
@@ -721,6 +776,13 @@ const labelValueTotals = ref({})
 const loadingLabelValueMap = ref({})
 const selectedLabelName = ref('')
 const selectedLabelValue = ref('')
+// 可搜索下拉：查询词 + 展开状态
+const labelNameQuery = ref('')
+const labelValueQuery = ref('')
+const showLabelNameDropdown = ref(false)
+const showLabelValueDropdown = ref(false)
+let hideLabelNameTimer = null
+let hideLabelValueTimer = null
 
 const activeTab      = ref('logs')
 
@@ -840,6 +902,81 @@ const groupByOptions = computed(() => {
 const selectedLabelValues = computed(() => (
   selectedLabelName.value ? (labelValueMap.value[selectedLabelName.value] || []) : []
 ))
+
+// ── 可搜索下拉过滤（大小写不敏感包含匹配） ──
+function _fuzzyFilter(items, query, textFn) {
+  const q = (query || '').trim().toLowerCase()
+  if (!q) return items
+  return items.filter(it => textFn(it).toLowerCase().includes(q))
+}
+
+const filteredLabels = computed(() => (
+  _fuzzyFilter(labelCatalog.value || [], labelNameQuery.value, it => it.name)
+))
+const filteredLabelValues = computed(() => (
+  _fuzzyFilter(selectedLabelValues.value, labelValueQuery.value, v => String(v))
+))
+
+// 高亮命中片段，切成 [{t, hit}] 数组供 <mark class="hl"> 渲染
+function highlight(text, query) {
+  const str = String(text ?? '')
+  const q = (query || '').trim()
+  if (!q) return [{ t: str, hit: false }]
+  const idx = str.toLowerCase().indexOf(q.toLowerCase())
+  if (idx < 0) return [{ t: str, hit: false }]
+  const out = []
+  if (idx > 0) out.push({ t: str.slice(0, idx), hit: false })
+  out.push({ t: str.slice(idx, idx + q.length), hit: true })
+  if (idx + q.length < str.length) out.push({ t: str.slice(idx + q.length), hit: false })
+  return out
+}
+
+function pickLabelName(name) {
+  selectedLabelName.value = name
+  labelNameQuery.value = name
+  showLabelNameDropdown.value = false
+  // 复位标签值搜索并触发加载
+  labelValueQuery.value = ''
+  onLabelDropdownChange()
+}
+function clearLabelName() {
+  selectedLabelName.value = ''
+  labelNameQuery.value = ''
+  labelValueQuery.value = ''
+  selectedLabelValue.value = ''
+  showLabelNameDropdown.value = true
+}
+function hideLabelNameLater() {
+  clearTimeout(hideLabelNameTimer)
+  hideLabelNameTimer = setTimeout(() => { showLabelNameDropdown.value = false }, 120)
+}
+
+function pickLabelValue(value) {
+  selectedLabelValue.value = value
+  labelValueQuery.value = String(value)
+  showLabelValueDropdown.value = false
+  onLabelValueDropdownChange()
+}
+function clearLabelValue() {
+  selectedLabelValue.value = ''
+  labelValueQuery.value = ''
+  showLabelValueDropdown.value = true
+}
+function hideLabelValueLater() {
+  clearTimeout(hideLabelValueTimer)
+  hideLabelValueTimer = setTimeout(() => { showLabelValueDropdown.value = false }, 120)
+}
+
+// selectedLabelName/Value 被其它路径（onGroupByChange / _applyRouteQuery / loadLabelCatalog）
+// 修改时，同步输入框显示，避免"值已选但输入框为空"的错觉
+watch(selectedLabelName, (v) => {
+  if (v && !labelNameQuery.value) labelNameQuery.value = v
+  else if (!v) labelNameQuery.value = ''
+})
+watch(selectedLabelValue, (v) => {
+  if (v && !labelValueQuery.value) labelValueQuery.value = String(v)
+  else if (!v) labelValueQuery.value = ''
+})
 
 function logServiceName(log) {
   return log?.labels?.app || log?.labels?.job || selectedService.value || '—'
@@ -1430,6 +1567,10 @@ function applyLabelFilter(labelName, value) {
   selectedGroupValue.value = value
   selectedLabelName.value = labelName
   selectedLabelValue.value = value
+  labelNameQuery.value = labelName
+  labelValueQuery.value = String(value ?? '')
+  showLabelNameDropdown.value = false
+  showLabelValueDropdown.value = false
   if (groupBy.value !== labelName) {
     groupBy.value = labelName
   }
@@ -1440,6 +1581,7 @@ function clearLabelFilter() {
   selectedGroupLabel.value = ''
   selectedGroupValue.value = ''
   selectedLabelValue.value = ''
+  labelValueQuery.value = ''
   refreshActiveData()
 }
 
@@ -1963,6 +2105,106 @@ onBeforeUnmount(() => {
 .label-dropdown-apply:disabled {
   opacity: .5;
   cursor: not-allowed;
+}
+
+/* 可搜索下拉 combobox */
+.combo {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-base);
+  transition: border-color .12s, box-shadow .12s;
+}
+.combo.open { border-color: var(--accent, #818cf8); box-shadow: 0 0 0 2px rgba(129,140,248,.15); }
+.combo.disabled { opacity: .5; pointer-events: none; }
+.combo-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 7px 8px;
+  font-size: 12px;
+  outline: none;
+}
+.combo-input::placeholder { color: var(--text-muted); }
+.combo-clear, .combo-caret {
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color .12s;
+}
+.combo-clear:hover, .combo-caret:hover { color: var(--text-primary); }
+.combo-caret { padding-right: 8px; font-size: 10px; }
+.combo-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0; right: 0;
+  z-index: 20;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--bg-card, #1a1a1a);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.28);
+  padding: 4px;
+}
+.combo-item {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background .1s;
+}
+.combo-item:hover { background: var(--bg-hover, rgba(255,255,255,.06)); }
+.combo-item.active {
+  background: rgba(129,140,248,.14);
+  color: var(--accent, #818cf8);
+}
+.combo-item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.combo-item-text mark {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+.combo-item-text mark.hl {
+  background: rgba(129,140,248,.28);
+  color: #fff;
+  font-weight: 600;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.combo-item-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: .8;
+}
+.combo-empty {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0; right: 0;
+  z-index: 20;
+  padding: 12px 10px;
+  background: var(--bg-card, #1a1a1a);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
 }
 .label-group-list {
   display: flex;
