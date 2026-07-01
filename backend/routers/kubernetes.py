@@ -1365,7 +1365,7 @@ async def test_cluster(cluster_id: str, _: User = Depends(require_admin)):
     try:
         cluster = _get_cluster(cluster_id)
         v1, _ = _get_client(cluster_id)
-        nodes = v1.list_node().items
+        nodes = (await asyncio.to_thread(v1.list_node)).items
         node_names = [item.metadata.name for item in nodes]
         auth_info = _detect_kubeconfig_auth(cluster.get("kubeconfig", ""))
         return {
@@ -1405,7 +1405,7 @@ async def resource_detail(
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        resource = _read_k8s_resource(cluster["id"], kind, namespace, name)
+        resource = await asyncio.to_thread(_read_k8s_resource, cluster["id"], kind, namespace, name)
         data = _serialize_k8s_resource(cluster["id"], resource)
         # 同步返回 yaml 字符串, 让前端不必引入 yaml 库
         import yaml as _yaml
@@ -1643,9 +1643,9 @@ async def resource_events(
         v1, _ = _get_client(cluster["id"])
         selector = f"involvedObject.name={name},involvedObject.kind={involved_kind}"
         if namespace:
-            events = v1.list_namespaced_event(namespace=namespace, field_selector=selector, limit=200)
+            events = await asyncio.to_thread(v1.list_namespaced_event, namespace=namespace, field_selector=selector, limit=200)
         else:
-            events = v1.list_event_for_all_namespaces(field_selector=selector, limit=200)
+            events = await asyncio.to_thread(v1.list_event_for_all_namespaces, field_selector=selector, limit=200)
 
         items = []
         for ev in events.items:
@@ -1801,7 +1801,7 @@ async def resource_pods(
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
-        pods = _list_resource_pods(cluster["id"], kind, namespace, name)
+        pods = await asyncio.to_thread(_list_resource_pods, cluster["id"], kind, namespace, name)
         return {
             "kind": _normalize_resource_kind(kind),
             "name": name,
@@ -1828,7 +1828,8 @@ async def pod_logs(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         v1, _ = _get_client(cluster["id"])
         value = max(20, min(int(tail_lines or 200), 2000))
-        logs = v1.read_namespaced_pod_log(
+        logs = await asyncio.to_thread(
+            v1.read_namespaced_pod_log,
             name=pod_name,
             namespace=namespace,
             container=(container or None),
@@ -2275,7 +2276,7 @@ async def k8s_ai_execute(body: K8sAIExecPayload, cluster_id: str = Query("", des
         if body.action == "list":
             return {"ok": True, "action": "list", "hint": f"跳转 UI 查看 {body.kind} 列表即可"}
         elif body.action == "inspect":
-            return _run_cluster_inspect(cid)
+            return await asyncio.to_thread(_run_cluster_inspect, cid)
         elif body.action == "create":
             import yaml as _yaml
             try:
@@ -2564,7 +2565,7 @@ async def list_namespaces(
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         v1, _ = _get_client(cluster["id"])
-        ns_list = v1.list_namespace()
+        ns_list = await asyncio.to_thread(v1.list_namespace)
         return [
             {
                 "name": ns.metadata.name,
@@ -2601,7 +2602,10 @@ async def list_pods(
 
 async def _list_pods_impl(v1, namespace: str):
     try:
-        pods = v1.list_pod_for_all_namespaces() if not namespace else v1.list_namespaced_pod(namespace)
+        if namespace:
+            pods = await asyncio.to_thread(v1.list_namespaced_pod, namespace)
+        else:
+            pods = await asyncio.to_thread(v1.list_pod_for_all_namespaces)
         result = []
         for pod in pods.items:
             status = _pod_status(pod)
@@ -2778,8 +2782,11 @@ async def list_deployments(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         async def _load():
             v1, apps = _get_client(cluster["id"])
-            deps = apps.list_deployment_for_all_namespaces() if not namespace else apps.list_namespaced_deployment(namespace)
-            pod_index = _build_pod_placement_index(v1, namespace)
+            if namespace:
+                deps = await asyncio.to_thread(apps.list_namespaced_deployment, namespace)
+            else:
+                deps = await asyncio.to_thread(apps.list_deployment_for_all_namespaces)
+            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
             result = []
             for item in deps.items:
                 desired = item.spec.replicas or 0
@@ -2826,8 +2833,11 @@ async def list_daemonsets(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         async def _load():
             v1, apps = _get_client(cluster["id"])
-            items = apps.list_daemon_set_for_all_namespaces() if not namespace else apps.list_namespaced_daemon_set(namespace)
-            pod_index = _build_pod_placement_index(v1, namespace)
+            if namespace:
+                items = await asyncio.to_thread(apps.list_namespaced_daemon_set, namespace)
+            else:
+                items = await asyncio.to_thread(apps.list_daemon_set_for_all_namespaces)
+            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
             result = []
             for item in items.items:
                 desired = item.status.desired_number_scheduled or 0
@@ -2874,8 +2884,11 @@ async def list_statefulsets(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         async def _load():
             v1, apps = _get_client(cluster["id"])
-            items = apps.list_stateful_set_for_all_namespaces() if not namespace else apps.list_namespaced_stateful_set(namespace)
-            pod_index = _build_pod_placement_index(v1, namespace)
+            if namespace:
+                items = await asyncio.to_thread(apps.list_namespaced_stateful_set, namespace)
+            else:
+                items = await asyncio.to_thread(apps.list_stateful_set_for_all_namespaces)
+            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
             result = []
             for item in items.items:
                 desired = item.spec.replicas or 0
@@ -2921,8 +2934,11 @@ async def list_jobs(
         async def _load():
             batch = _get_batch_client(cluster["id"])
             v1, _ = _get_client(cluster["id"])
-            items = batch.list_job_for_all_namespaces() if not namespace else batch.list_namespaced_job(namespace)
-            pod_index = _build_pod_placement_index(v1, namespace)
+            if namespace:
+                items = await asyncio.to_thread(batch.list_namespaced_job, namespace)
+            else:
+                items = await asyncio.to_thread(batch.list_job_for_all_namespaces)
+            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
             result = []
             for item in items.items:
                 status = _job_status(item)
@@ -2965,8 +2981,11 @@ async def list_cronjobs(
         async def _load():
             batch = _get_batch_client(cluster["id"])
             v1, _ = _get_client(cluster["id"])
-            items = batch.list_cron_job_for_all_namespaces() if not namespace else batch.list_namespaced_cron_job(namespace)
-            pod_index = _build_pod_placement_index(v1, namespace)
+            if namespace:
+                items = await asyncio.to_thread(batch.list_namespaced_cron_job, namespace)
+            else:
+                items = await asyncio.to_thread(batch.list_cron_job_for_all_namespaces)
+            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
             result = []
             for item in items.items:
                 active_refs = item.status.active or []
@@ -3012,14 +3031,20 @@ async def list_services(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         async def _load():
             v1, _ = _get_client(cluster["id"])
-            svcs = v1.list_service_for_all_namespaces() if not namespace else v1.list_namespaced_service(namespace)
+            if namespace:
+                svcs = await asyncio.to_thread(v1.list_namespaced_service, namespace)
+            else:
+                svcs = await asyncio.to_thread(v1.list_service_for_all_namespaces)
 
             # Endpoints → 后端 Pod 所在节点
-            pod_index = _build_pod_placement_index(v1, namespace)
+            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
             name_to_ip = _node_ip_map(pod_index)
             ep_nodes: dict[tuple[str, str], list[dict]] = {}
             try:
-                eps = v1.list_endpoints_for_all_namespaces() if not namespace else v1.list_namespaced_endpoints(namespace)
+                if namespace:
+                    eps = await asyncio.to_thread(v1.list_namespaced_endpoints, namespace)
+                else:
+                    eps = await asyncio.to_thread(v1.list_endpoints_for_all_namespaces)
                 for ep in eps.items:
                     nodes_seen: dict[str, dict] = {}
                     for subset in (ep.subsets or []):
@@ -3081,12 +3106,12 @@ async def list_configmaps(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         async def _load():
             v1, _ = _get_client(cluster["id"])
-            items = (
-                v1.list_config_map_for_all_namespaces().items
-                if not namespace
-                else v1.list_namespaced_config_map(namespace).items
-            )
-            pod_index = _build_pod_placement_index(v1, namespace)
+            if namespace:
+                cm_resp = await asyncio.to_thread(v1.list_namespaced_config_map, namespace)
+            else:
+                cm_resp = await asyncio.to_thread(v1.list_config_map_for_all_namespaces)
+            items = cm_resp.items
+            pod_index = await asyncio.to_thread(_build_pod_placement_index, v1, namespace)
             result = []
             for item in items:
                 data_keys = list((item.data or {}).keys()) + list((item.binary_data or {}).keys())
@@ -3127,7 +3152,7 @@ async def list_nodes(
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
         async def _load():
             v1, _ = _get_client(cluster["id"])
-            nodes = v1.list_node()
+            nodes = await asyncio.to_thread(v1.list_node)
             result = []
             for item in nodes.items:
                 ready = "Unknown"
