@@ -376,6 +376,7 @@ class LokiClient:
         end_ns: Optional[int] = None,
         group_label: Optional[str] = None,
         group_value: Optional[str] = None,
+        extra_label_filters: Optional[dict[str, str]] = None,
     ) -> dict:
         if _demo_mode():
             import loki_mock
@@ -399,9 +400,16 @@ class LokiClient:
 
         svc_label = await self._detect_service_label()
         label_filters: dict[str, str] = {}
+        # 先合并客户端传入的多标签条件（未知/失效标签会被 loki 拒绝，前端已保证从 catalog 选）
+        if extra_label_filters:
+            for k, v in extra_label_filters.items():
+                if not k or v in (None, ""):
+                    continue
+                resolved = await self._resolve_group_label(k) or k
+                label_filters[resolved] = str(v)
         resolved_group_label = await self._resolve_group_label(group_label)
         if resolved_group_label and group_value:
-            label_filters[resolved_group_label] = group_value
+            label_filters.setdefault(resolved_group_label, group_value)
         query = self._build_log_query(
             service_label=svc_label,
             service=service,
@@ -446,6 +454,7 @@ class LokiClient:
         use_scan_timeout: bool = False,
         group_label: Optional[str] = None,
         group_value: Optional[str] = None,
+        extra_label_filters: Optional[dict[str, str]] = None,
     ) -> list[dict]:
         if _demo_mode():
             import loki_mock
@@ -468,9 +477,15 @@ class LokiClient:
 
         svc_label = await self._detect_service_label()
         label_filters: dict[str, str] = {}
+        if extra_label_filters:
+            for k, v in extra_label_filters.items():
+                if not k or v in (None, ""):
+                    continue
+                resolved = await self._resolve_group_label(k) or k
+                label_filters[resolved] = str(v)
         resolved_group_label = await self._resolve_group_label(group_label)
         if resolved_group_label and group_value:
-            label_filters[resolved_group_label] = group_value
+            label_filters.setdefault(resolved_group_label, group_value)
         query = self._build_log_query(
             service_label=svc_label,
             service=service,

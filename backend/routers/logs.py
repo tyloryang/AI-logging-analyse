@@ -295,6 +295,24 @@ def _split_csv(raw: Optional[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item and item.strip()]
 
 
+def _parse_label_pairs(raw_list: Optional[list[str]]) -> dict[str, str]:
+    """把 ['ns:aiops', 'env:prod'] 解析为 {'ns':'aiops', 'env':'prod'}；
+    冒号后可有空格；同 key 后来居上。"""
+    out: dict[str, str] = {}
+    for item in raw_list or []:
+        if not item:
+            continue
+        if ":" not in item:
+            continue
+        k, _, v = item.partition(":")
+        k = k.strip()
+        v = v.strip()
+        if not k or not v:
+            continue
+        out[k] = v
+    return out
+
+
 @router.get("/api/logs")
 async def get_logs(
     service: Optional[str] = Query(None, description="单个服务名（旧参数，与 services 合并）"),
@@ -306,8 +324,9 @@ async def get_logs(
     keywords: Optional[str] = Query(None, description="多个关键字，逗号分隔"),
     keyword_mode: str = Query("and", description="多关键字组合：and=全部命中 / or=任一命中"),
     exclude_keywords: Optional[str] = Query(None, description="排除关键字，逗号分隔"),
-    group_label: Optional[str] = Query(None, description="额外的 Loki 分组标签名"),
-    group_value: Optional[str] = Query(None, description="额外的 Loki 分组标签值"),
+    labels: list[str] = Query(default_factory=list, description="多标签过滤，每项 label:value，如 labels=namespace:aiops&labels=env:prod"),
+    group_label: Optional[str] = Query(None, description="额外的 Loki 分组标签名（旧参数，与 labels 合并）"),
+    group_value: Optional[str] = Query(None, description="额外的 Loki 分组标签值（旧参数）"),
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式，如 2024-01-01T00:00"),
     end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式，如 2024-01-01T23:59"),
     cursor_ns: Optional[int] = Query(None, description="游标：上一页最旧条目的纳秒时间戳，续页时传入"),
@@ -322,6 +341,7 @@ async def get_logs(
     svc_list = _split_csv(services)
     kw_list = _split_csv(keywords)
     ex_list = _split_csv(exclude_keywords)
+    label_pairs = _parse_label_pairs(labels)
     mode = (keyword_mode or "and").lower()
     if mode not in ("and", "or"):
         mode = "and"
@@ -339,6 +359,7 @@ async def get_logs(
             exclude_keywords=ex_list or None,
             group_label=group_label,
             group_value=group_value,
+            extra_label_filters=label_pairs or None,
             start_ns=_parse_time_ns(start_time),
             end_ns=_parse_time_ns(end_time),
         )
@@ -352,6 +373,7 @@ async def get_logs(
             "keywords": kw_list,
             "keyword_mode": mode,
             "exclude_keywords": ex_list,
+            "labels": label_pairs,
             "hours": hours,
         }
     except Exception as e:

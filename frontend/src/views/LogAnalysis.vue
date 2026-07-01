@@ -46,9 +46,19 @@
             <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
           </div>
           <template v-else>
-            <div v-if="selectedGroupLabel && selectedGroupValue" class="active-label-filter">
-              <span>{{ selectedGroupLabel }}=<em>{{ selectedGroupValue }}</em></span>
-              <button @click="clearLabelFilter">清除</button>
+            <!-- 已加标签条件（chip 列表，AND 组合） -->
+            <div v-if="activeLabelFilters.length" class="active-label-chips" title="所有条件 AND 组合，点 ✕ 单条移除">
+              <span
+                v-for="(item, idx) in activeLabelFilters"
+                :key="item.label + '=' + item.value"
+                class="active-label-chip"
+              >
+                <span class="chip-key">{{ item.label }}</span>
+                <span class="chip-eq">=</span>
+                <span class="chip-val">{{ item.value }}</span>
+                <span class="chip-remove" @click="removeActiveLabel(idx)" title="移除">✕</span>
+              </span>
+              <button class="active-label-clear" @click="clearAllActiveLabels">清空</button>
             </div>
             <div v-if="labelCatalog.length" class="label-dropdown-panel">
               <!-- 标签名（可搜索 combobox） -->
@@ -132,9 +142,9 @@
               <button
                 class="label-dropdown-apply"
                 :disabled="!selectedLabelName || !selectedLabelValue"
-                @click="applyLabelFilter(selectedLabelName, selectedLabelValue)"
+                @click="addActiveLabel(selectedLabelName, selectedLabelValue)"
               >
-                筛选
+                ＋ 添加条件
               </button>
             </div>
             <div v-else class="label-empty">未发现 Loki 标签</div>
@@ -783,6 +793,8 @@ const showLabelNameDropdown = ref(false)
 const showLabelValueDropdown = ref(false)
 let hideLabelNameTimer = null
 let hideLabelValueTimer = null
+// 多标签条件：数组形式 [{label, value}]，同一 label 只保留最新一条
+const activeLabelFilters = ref([])
 
 const activeTab      = ref('logs')
 
@@ -844,7 +856,7 @@ function onServiceChipBackspace() {
   }
 }
 
-// 组装本页所有请求都要带的多条件参数（服务/关键字/排除/模式）
+// 组装本页所有请求都要带的多条件参数（服务/关键字/排除/模式/标签）
 function multiFilterParams() {
   const p = {}
   const svcs = selectedServices.value
@@ -861,6 +873,11 @@ function multiFilterParams() {
     p.keyword = keyword.value
   }
   if (exc.length) p.exclude_keywords = exc.join(',')
+
+  // 多标签条件：axios 收到数组会自动展开成 labels=a:x&labels=b:y
+  if (activeLabelFilters.value.length) {
+    p.labels = activeLabelFilters.value.map(x => `${x.label}:${x.value}`)
+  }
   return p
 }
 
@@ -1563,26 +1580,57 @@ function refreshActiveData() {
 }
 
 function applyLabelFilter(labelName, value) {
-  selectedGroupLabel.value = labelName
-  selectedGroupValue.value = value
+  // 兼容旧调用：直接以一条 chip 的形式生效
   selectedLabelName.value = labelName
   selectedLabelValue.value = value
   labelNameQuery.value = labelName
   labelValueQuery.value = String(value ?? '')
   showLabelNameDropdown.value = false
   showLabelValueDropdown.value = false
-  if (groupBy.value !== labelName) {
-    groupBy.value = labelName
+  addActiveLabel(labelName, value, { skipRefresh: false })
+}
+
+function addActiveLabel(labelName, value, opts = {}) {
+  if (!labelName || value === '' || value == null) return
+  const val = String(value)
+  const list = activeLabelFilters.value
+  const existIdx = list.findIndex(x => x.label === labelName)
+  if (existIdx >= 0) list.splice(existIdx, 1, { label: labelName, value: val })
+  else list.push({ label: labelName, value: val })
+  // 单条 groupBy 联动（保持原有分组统计能力）
+  selectedGroupLabel.value = labelName
+  selectedGroupValue.value = val
+  if (groupBy.value !== labelName) groupBy.value = labelName
+  // 关下拉 + 清值输入，让用户能继续加下一条（保留标签名）
+  showLabelNameDropdown.value = false
+  showLabelValueDropdown.value = false
+  labelValueQuery.value = ''
+  selectedLabelValue.value = ''
+  if (!opts.skipRefresh) refreshActiveData()
+}
+
+function removeActiveLabel(idx) {
+  activeLabelFilters.value.splice(idx, 1)
+  if (activeLabelFilters.value.length) {
+    const last = activeLabelFilters.value[activeLabelFilters.value.length - 1]
+    selectedGroupLabel.value = last.label
+    selectedGroupValue.value = last.value
+  } else {
+    selectedGroupLabel.value = ''
+    selectedGroupValue.value = ''
   }
   refreshActiveData()
 }
 
-function clearLabelFilter() {
+function clearAllActiveLabels() {
+  activeLabelFilters.value = []
   selectedGroupLabel.value = ''
   selectedGroupValue.value = ''
-  selectedLabelValue.value = ''
-  labelValueQuery.value = ''
   refreshActiveData()
+}
+
+function clearLabelFilter() {
+  clearAllActiveLabels()
 }
 
 function onGroupByChange() {
@@ -2206,6 +2254,52 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
   text-align: center;
 }
+
+/* 多标签条件 chip 列表（已加的过滤条件） */
+.active-label-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  margin-bottom: 6px;
+  background: var(--bg-hover, rgba(255,255,255,.03));
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+}
+.active-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(129,140,248,.14);
+  border: 1px solid rgba(129,140,248,.36);
+  color: var(--accent, #818cf8);
+  font-size: 11px;
+  font-family: 'Cascadia Code','Consolas',monospace;
+  line-height: 1.4;
+}
+.active-label-chip .chip-key { font-weight: 600; }
+.active-label-chip .chip-eq  { opacity: .6; }
+.active-label-chip .chip-val { color: var(--text-primary); }
+.active-label-chip .chip-remove {
+  margin-left: 3px;
+  padding: 0 3px;
+  font-size: 10px;
+  opacity: .55;
+  cursor: pointer;
+}
+.active-label-chip .chip-remove:hover { opacity: 1; }
+.active-label-clear {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: auto;
+}
+.active-label-clear:hover { color: var(--error, #f85149); }
 .label-group-list {
   display: flex;
   flex-direction: column;

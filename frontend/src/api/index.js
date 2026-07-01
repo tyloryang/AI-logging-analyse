@@ -1,6 +1,20 @@
 import axios from 'axios'
 
-const http = axios.create({ baseURL: '/api', timeout: 120000 })
+// 数组按 FastAPI 期望的 `?labels=a&labels=b` 序列化（默认 axios 会输出 labels[]=a）
+function serializeParams(params) {
+  const usp = new URLSearchParams()
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v === undefined || v === null || v === '') continue
+    if (Array.isArray(v)) v.forEach(x => { if (x !== undefined && x !== null && x !== '') usp.append(k, x) })
+    else usp.append(k, v)
+  }
+  return usp.toString()
+}
+const http = axios.create({
+  baseURL: '/api',
+  timeout: 120000,
+  paramsSerializer: { serialize: serializeParams },
+})
 
 http.interceptors.response.use(
   r => r.data,
