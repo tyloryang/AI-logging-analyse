@@ -295,21 +295,22 @@ def _split_csv(raw: Optional[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item and item.strip()]
 
 
-def _parse_label_pairs(raw_list: Optional[list[str]]) -> dict[str, str]:
-    """把 ['ns:aiops', 'env:prod'] 解析为 {'ns':'aiops', 'env':'prod'}；
-    冒号后可有空格；同 key 后来居上。"""
-    out: dict[str, str] = {}
+def _parse_label_pairs(raw_list: Optional[list[str]]) -> dict[str, list[str]]:
+    """把 ['ns:aiops', 'ns:kube-system', 'env:prod'] 解析为
+    {'ns':['aiops','kube-system'], 'env':['prod']}；
+    冒号后可有空格；同 key 值累加去重，最终由 LogQL builder 决定单值/regex。"""
+    out: dict[str, list[str]] = {}
     for item in raw_list or []:
-        if not item:
-            continue
-        if ":" not in item:
+        if not item or ":" not in item:
             continue
         k, _, v = item.partition(":")
         k = k.strip()
         v = v.strip()
         if not k or not v:
             continue
-        out[k] = v
+        lst = out.setdefault(k, [])
+        if v not in lst:
+            lst.append(v)
     return out
 
 

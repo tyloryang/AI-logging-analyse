@@ -1594,14 +1594,20 @@ function addActiveLabel(labelName, value, opts = {}) {
   if (!labelName || value === '' || value == null) return
   const val = String(value)
   const list = activeLabelFilters.value
-  const existIdx = list.findIndex(x => x.label === labelName)
-  if (existIdx >= 0) list.splice(existIdx, 1, { label: labelName, value: val })
-  else list.push({ label: labelName, value: val })
+  // 同 label+value 才去重；同 label 不同 value 累加（生成 label=~"a|b|c" regex）
+  if (list.some(x => x.label === labelName && x.value === val)) {
+    // 已存在则不重复添加，仅清值输入方便再挑
+    labelValueQuery.value = ''
+    selectedLabelValue.value = ''
+    showLabelValueDropdown.value = false
+    return
+  }
+  list.push({ label: labelName, value: val })
   // 单条 groupBy 联动（保持原有分组统计能力）
   selectedGroupLabel.value = labelName
   selectedGroupValue.value = val
   if (groupBy.value !== labelName) groupBy.value = labelName
-  // 关下拉 + 清值输入，让用户能继续加下一条（保留标签名）
+  // 关下拉 + 清值输入，让用户能继续加下一条（保留标签名，方便同 label 多值连加）
   showLabelNameDropdown.value = false
   showLabelValueDropdown.value = false
   labelValueQuery.value = ''

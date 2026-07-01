@@ -106,9 +106,23 @@ class LokiClient:
             selector_parts.append(f'{service_label}=~".+"')
 
         for label, value in (label_filters or {}).items():
-            if not label or value in (None, ""):
+            if not label:
                 continue
-            selector_parts.append(f'{label}="{self._escape_label_value(str(value))}"')
+            # 支持三种输入：str / list[str]
+            # 单值 → label="v"；多值 → label=~"a|b|c"
+            if isinstance(value, (list, tuple, set)):
+                vals = [str(v) for v in value if v not in (None, "")]
+            elif value in (None, ""):
+                continue
+            else:
+                vals = [str(value)]
+            if not vals:
+                continue
+            if len(vals) == 1:
+                selector_parts.append(f'{label}="{self._escape_label_value(vals[0])}"')
+            else:
+                joined = "|".join(re.escape(v) for v in vals).replace("\\", "\\\\")
+                selector_parts.append(f'{label}=~"{joined}"')
 
         query = "{" + ",".join(selector_parts) + "}"
 
@@ -399,17 +413,17 @@ class LokiClient:
         e_ns = (cursor_ns - 1) if cursor_ns is not None else (end_ns if end_ns is not None else now_ns)
 
         svc_label = await self._detect_service_label()
-        label_filters: dict[str, str] = {}
-        # 先合并客户端传入的多标签条件（未知/失效标签会被 loki 拒绝，前端已保证从 catalog 选）
+        # value 可以是 str 或 list[str]；builder 内部会决定 = 或 =~ 生成
+        label_filters: dict[str, object] = {}
         if extra_label_filters:
             for k, v in extra_label_filters.items():
-                if not k or v in (None, ""):
+                if not k or v in (None, "", []):
                     continue
                 resolved = await self._resolve_group_label(k) or k
-                label_filters[resolved] = str(v)
+                label_filters[resolved] = v
         resolved_group_label = await self._resolve_group_label(group_label)
-        if resolved_group_label and group_value:
-            label_filters.setdefault(resolved_group_label, group_value)
+        if resolved_group_label and group_value and resolved_group_label not in label_filters:
+            label_filters[resolved_group_label] = group_value
         query = self._build_log_query(
             service_label=svc_label,
             service=service,
