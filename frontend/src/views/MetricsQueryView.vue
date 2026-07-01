@@ -14,79 +14,6 @@
       </div>
     </header>
 
-    <main class="query-grid">
-      <section class="panel query-panel">
-        <div class="panel-head">
-          <div>
-            <h2>PromQL</h2>
-            <span>支持区间查询和即时查询</span>
-          </div>
-          <div class="mode-toggle">
-            <button :class="{ active: mode === 'range' }" @click="mode = 'range'">区间</button>
-            <button :class="{ active: mode === 'instant' }" @click="mode = 'instant'">即时</button>
-          </div>
-        </div>
-
-        <textarea v-model="promql" rows="5" spellcheck="false" placeholder='up 或 sum(rate(http_requests_total[5m])) by (service)'></textarea>
-
-        <div class="control-grid">
-          <label>
-            <span>时间范围</span>
-            <select v-model="range">
-              <option value="5m">最近 5 分钟</option>
-              <option value="15m">最近 15 分钟</option>
-              <option value="30m">最近 30 分钟</option>
-              <option value="1h">最近 1 小时</option>
-              <option value="6h">最近 6 小时</option>
-              <option value="24h">最近 24 小时</option>
-            </select>
-          </label>
-          <label>
-            <span>步长</span>
-            <select v-model.number="step">
-              <option :value="15">15 秒</option>
-              <option :value="30">30 秒</option>
-              <option :value="60">1 分钟</option>
-              <option :value="300">5 分钟</option>
-            </select>
-          </label>
-        </div>
-
-        <div v-if="error" class="error-box">{{ error }}</div>
-
-        <div class="template-section">
-          <div class="section-title">常用 PromQL</div>
-          <div class="template-list">
-            <button
-              v-for="tpl in filteredTemplates"
-              :key="tpl.name"
-              class="template-card"
-              @click="applyTemplate(tpl)"
-            >
-              <strong>{{ tpl.name }}</strong>
-              <span>{{ tpl.desc }}</span>
-              <code>{{ tpl.query }}</code>
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <aside class="panel explorer-panel">
-        <div class="panel-head">
-          <div>
-            <h2>指标检索</h2>
-            <span>{{ metricNames.length }} 个指标名</span>
-          </div>
-        </div>
-        <input v-model.trim="metricSearch" placeholder="过滤指标名" />
-        <div class="metric-list">
-          <button v-for="name in visibleMetricNames" :key="name" @click="promql = name">
-            {{ name }}
-          </button>
-        </div>
-      </aside>
-    </main>
-
     <section class="panel result-panel">
       <div class="result-head">
         <div>
@@ -99,6 +26,8 @@
           <span>步长 {{ result?.step || step }}s</span>
         </div>
       </div>
+
+      <div v-if="error" class="error-box">{{ error }}</div>
 
       <div v-if="querying" class="empty">
         <span class="spinner"></span>
@@ -150,6 +79,92 @@
         </div>
       </template>
     </section>
+
+    <main class="accordion-stack">
+      <section class="panel accordion-panel">
+        <button class="accordion-head" @click="togglePanel('query')">
+          <span class="accordion-title">
+            <strong>PromQL 查询配置</strong>
+            <small>{{ queryConfigSummary }}</small>
+          </span>
+          <span class="accordion-icon">{{ collapsed.query ? '展开' : '收起' }}</span>
+        </button>
+        <div v-show="!collapsed.query" class="accordion-body query-body">
+          <textarea v-model="promql" rows="4" spellcheck="false" placeholder='up 或 sum(rate(http_requests_total[5m])) by (service)'></textarea>
+          <div class="control-grid">
+            <label>
+              <span>查询类型</span>
+              <div class="mode-toggle">
+                <button :class="{ active: mode === 'range' }" @click="mode = 'range'">区间查询</button>
+                <button :class="{ active: mode === 'instant' }" @click="mode = 'instant'">即时查询</button>
+              </div>
+            </label>
+            <label>
+              <span>时间范围</span>
+              <select v-model="range" :disabled="mode === 'instant'">
+                <option value="5m">最近 5 分钟</option>
+                <option value="15m">最近 15 分钟</option>
+                <option value="30m">最近 30 分钟</option>
+                <option value="1h">最近 1 小时</option>
+                <option value="6h">最近 6 小时</option>
+                <option value="24h">最近 24 小时</option>
+              </select>
+            </label>
+            <label>
+              <span>步长</span>
+              <select v-model.number="step" :disabled="mode === 'instant'">
+                <option :value="15">15 秒</option>
+                <option :value="30">30 秒</option>
+                <option :value="60">1 分钟</option>
+                <option :value="300">5 分钟</option>
+              </select>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel accordion-panel">
+        <button class="accordion-head" @click="togglePanel('templates')">
+          <span class="accordion-title">
+            <strong>常用 PromQL</strong>
+            <small>{{ filteredTemplates.length }} 个模板，点击后写入查询语句</small>
+          </span>
+          <span class="accordion-icon">{{ collapsed.templates ? '展开' : '收起' }}</span>
+        </button>
+        <div v-show="!collapsed.templates" class="accordion-body">
+          <div class="template-list">
+            <button
+              v-for="tpl in filteredTemplates"
+              :key="tpl.name"
+              class="template-card"
+              @click="applyTemplate(tpl)"
+            >
+              <strong>{{ tpl.name }}</strong>
+              <span>{{ tpl.desc }}</span>
+              <code>{{ tpl.query }}</code>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel accordion-panel">
+        <button class="accordion-head" @click="togglePanel('metrics')">
+          <span class="accordion-title">
+            <strong>指标检索</strong>
+            <small>{{ metricNames.length }} 个指标名，可展开过滤选择</small>
+          </span>
+          <span class="accordion-icon">{{ collapsed.metrics ? '展开' : '收起' }}</span>
+        </button>
+        <div v-show="!collapsed.metrics" class="accordion-body metric-body">
+          <input v-model.trim="metricSearch" placeholder="过滤指标名" />
+          <div class="metric-list">
+            <button v-for="name in visibleMetricNames" :key="name" @click="promql = name">
+              {{ name }}
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
 </template>
 
@@ -177,6 +192,11 @@ const loadingMetrics = ref(false)
 const querying = ref(false)
 const error = ref('')
 const result = ref(null)
+const collapsed = ref({
+  query: true,
+  templates: true,
+  metrics: true,
+})
 
 const filteredTemplates = computed(() => templates)
 const visibleMetricNames = computed(() => {
@@ -235,6 +255,12 @@ const resultMeta = computed(() => {
   return `${result.value.query || promql.value} · ${mode.value === 'range' ? range.value : 'instant'}`
 })
 
+const queryConfigSummary = computed(() => {
+  const query = promql.value.trim() || '未填写 PromQL'
+  const modeText = mode.value === 'range' ? `区间 · ${range.value} · ${step.value}s` : '即时'
+  return `${modeText} · ${query}`
+})
+
 function rangeSeconds(value) {
   const unit = value.slice(-1)
   const amount = Number(value.slice(0, -1)) || 1
@@ -253,6 +279,11 @@ function formatNumber(value) {
 
 function applyTemplate(tpl) {
   promql.value = tpl.query
+  collapsed.value.query = false
+}
+
+function togglePanel(key) {
+  collapsed.value[key] = !collapsed.value[key]
 }
 
 async function loadMetricNames() {
@@ -311,7 +342,6 @@ onMounted(() => {
 }
 .page-header,
 .actions,
-.panel-head,
 .result-head,
 .pill-row,
 .mode-toggle,
@@ -354,18 +384,12 @@ p,
 .btn-outline {
   border-color: var(--border);
 }
-.query-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 14px;
-}
 .panel {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
 }
-.panel-head,
 .result-head {
   align-items: flex-start;
   justify-content: space-between;
@@ -380,8 +404,10 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 3px;
+  width: 100%;
 }
 .mode-toggle button {
+  flex: 1;
   border: 0;
   border-radius: 5px;
   background: transparent;
@@ -404,13 +430,17 @@ select {
   padding: 9px 10px;
   outline: none;
 }
+select:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
 textarea,
 code {
   font-family: var(--font-mono);
 }
 .control-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: minmax(240px, 1.2fr) repeat(2, minmax(180px, .9fr));
   gap: 10px;
   margin-top: 10px;
 }
@@ -428,9 +458,6 @@ label span,
   color: var(--error);
   border-radius: 7px;
   padding: 8px 10px;
-}
-.template-section {
-  margin-top: 14px;
 }
 .template-list {
   display: grid;
@@ -466,14 +493,8 @@ label span,
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.explorer-panel {
-  min-height: 430px;
-  display: flex;
-  flex-direction: column;
-}
 .metric-list {
-  flex: 1;
-  min-height: 0;
+  max-height: 260px;
   overflow: auto;
   margin-top: 10px;
   display: flex;
@@ -497,7 +518,64 @@ label span,
   color: var(--text-primary);
 }
 .result-panel {
-  margin-top: 14px;
+  margin-top: 0;
+}
+.accordion-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.accordion-panel {
+  padding: 0;
+  overflow: hidden;
+}
+.accordion-head {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.accordion-head:hover {
+  background: var(--bg-hover);
+}
+.accordion-title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.accordion-title strong {
+  font-size: 14px;
+}
+.accordion-title small {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.accordion-icon {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.accordion-body {
+  border-top: 1px solid var(--border);
+  padding: 12px 14px 14px;
+}
+.query-body textarea {
+  min-height: 92px;
+  resize: vertical;
 }
 .pill-row {
   flex-wrap: wrap;
@@ -528,7 +606,7 @@ label span,
 }
 svg {
   width: 100%;
-  height: 240px;
+  height: 320px;
 }
 .axis {
   stroke: var(--border);
@@ -590,7 +668,6 @@ td code {
   to { transform: rotate(360deg); }
 }
 @media (max-width: 1050px) {
-  .query-grid,
   .control-grid {
     grid-template-columns: 1fr;
   }
