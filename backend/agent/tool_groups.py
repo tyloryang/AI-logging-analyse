@@ -74,6 +74,7 @@ DOMAIN_TOOLS: dict[str, list[str]] = {
         "jenkins_get_failed_jobs",
         "jenkins_diagnose_build",
         "jenkins_retry_last_build",
+        "jenkins_analyze_failures",
     ],
     "ssh": [
         "execute_ssh_command",

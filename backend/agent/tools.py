@@ -51,6 +51,7 @@ from .tool_modules.elasticsearch import (  # noqa: F401
     es_search,
 )
 from .tool_modules.jenkins import (  # noqa: F401
+    jenkins_analyze_failures,
     jenkins_build_job,
     jenkins_cancel_queue_item,
     jenkins_diagnose_build,
@@ -154,6 +155,7 @@ ALL_TOOLS = [
     jenkins_get_failed_jobs,
     jenkins_diagnose_build,
     jenkins_retry_last_build,
+    jenkins_analyze_failures,
     # SSH 命令执行
     execute_ssh_command,
 ]

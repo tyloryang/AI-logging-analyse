@@ -78,6 +78,7 @@ TOOL_RISK: dict[str, ToolRisk] = {
     "jenkins_get_test_results": ToolRisk.READ,
     "jenkins_get_failed_jobs": ToolRisk.READ,        # 一键筛失败任务，只读
     "jenkins_diagnose_build": ToolRisk.READ,         # 日志+根因分析，只读
+    "jenkins_analyze_failures": ToolRisk.READ,       # 一句话出完整报告，只读
     "jenkins_build_job": ToolRisk.WRITE_HIGH,        # 触发构建 = 业务变更
     "jenkins_retry_last_build": ToolRisk.WRITE_HIGH, # 同参数重跑构建
     "jenkins_cancel_queue_item": ToolRisk.WRITE_LOW, # 取消队列可回滚

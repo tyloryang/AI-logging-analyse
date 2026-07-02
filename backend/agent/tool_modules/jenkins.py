@@ -195,70 +195,152 @@ async def jenkins_get_test_results(job: str, build: str = "lastBuild") -> str:
 # ── 高层复合工具：一次调用完成『排查失败 → 诊断日志 → 精准恢复』 ─────────────
 # AI 遇到「Jenkins 有哪些失败任务 / 为什么挂了 / 怎么修」类问题时，优先走这 3 个。
 
-# 常见错误关键字 → 分类 + 建议动作
+# ── 根因识别规则（v2：25 类别 + 优先级 + 建议下一步调用哪些工具） ─────────────
+# 字段：(pattern, kind, priority, title, advice, follow_up_tools)
+# priority：分数越高越"根本"（编译错 > 网络抖 > 中止）；命中多个时高分先
+# follow_up_tools：AI 该继续调的原子工具名称提示（跨模块联动）
 _ERROR_PATTERNS = [
-    # 编译/构建
+    # ── 编译/构建（priority=9，最根本） ─────────────────────────────
     (r"(?i)compilation failed|BUILD FAILED|error: (cannot find symbol|package .* does not exist)",
-     "compile", "代码编译失败", "检查代码语法 / 依赖版本；查看提交历史找到引入错误的 commit 后修复或回滚"),
-    (r"(?i)npm ERR!|yarn error|ELIFECYCLE",
-     "npm_build", "Node.js 构建失败", "对齐 package-lock.json 与 node 版本；检查依赖是否已发布；必要时 npm cache clean"),
-    (r"(?i)ImportError|ModuleNotFoundError|python\.egg-info.*failed",
-     "python_dep", "Python 依赖缺失", "校对 requirements.txt / pyproject.toml；确认虚拟环境激活；网络能通 PyPI 镜像"),
-    (r"(?i)Could not resolve dependencies|Failed to collect dependencies|no valid.*artifact",
-     "maven_dep", "Maven/Gradle 依赖解析失败", "检查私服连接 / settings.xml；跑一次 mvn -U 强制刷新；核对 pom.xml 版本号"),
-    # 测试
-    (r"(?i)test.*FAILED|assertion.*failed|Tests run: \d+, Failures: [1-9]|junit.*failure",
-     "test", "单元测试挂了", "跑 jenkins_get_test_results 查具体失败用例；本地复现后修 assertion / mock"),
-    # 部署 / K8s / Docker
-    (r"(?i)ImagePullBackOff|ErrImagePull|manifest unknown|denied.*docker",
-     "image_pull", "镜像拉取失败", "检查镜像 tag 是否已推送 / imagePullSecret / 仓库地址；重跑推送再触发"),
+     "compile", 9, "代码编译失败",
+     "检查代码语法 / 依赖版本；查看提交历史找到引入错误的 commit 后修复或回滚", []),
+    (r"(?i)npm ERR!|yarn error|ELIFECYCLE|error Command failed with exit code",
+     "npm_build", 9, "Node.js 构建失败",
+     "对齐 package-lock.json 与 node 版本；检查依赖是否已发布；必要时 npm cache clean --force", []),
+    (r"(?i)ImportError|ModuleNotFoundError|(python\.egg-info.*failed)|error: subprocess-exited-with-error",
+     "python_dep", 9, "Python 依赖缺失/构建失败",
+     "校对 requirements.txt / pyproject.toml；确认虚拟环境激活；网络能通 PyPI 镜像", []),
+    (r"(?i)Could not resolve dependencies|Failed to collect dependencies|no valid.*artifact|Could not find artifact",
+     "maven_dep", 9, "Maven/Gradle 依赖解析失败",
+     "检查私服连接 / settings.xml；跑一次 mvn -U 强制刷新；核对 pom.xml 版本号", []),
+    (r"(?i)go: cannot find module|go: module .* not found|go build.*failed|package .* is not in GOROOT",
+     "go_build", 9, "Go 构建失败",
+     "go mod tidy 后重跑；检查 GOPROXY；确认 go.mod 里的 replace 指令未失效", []),
+    (r"(?i)error\[E\d+\]:|cargo build.*failed|could not compile.*because|error: could not find",
+     "rust_build", 9, "Rust 构建失败",
+     "cargo clean && cargo build 重跑；核对 Cargo.toml 里的 features 与 edition", []),
+    # ── 容器镜像/仓库（priority=8） ─────────────────────────────
+    (r"(?i)ImagePullBackOff|ErrImagePull|manifest unknown|denied.*docker|pull access denied",
+     "image_pull", 8, "镜像拉取失败",
+     "检查镜像 tag 是否已推送 / imagePullSecret / 仓库地址；重跑推送再触发",
+     ["get_k8s_events", "get_k8s_pods"]),
+    (r"(?i)failed to push|denied: requested access to the resource is denied|error: unauthorized: access denied",
+     "image_push", 8, "镜像推送失败",
+     "检查 registry 登录凭证 / repo push 权限；确认 tag 命名规范符合仓库策略", []),
+    (r"(?i)(kaniko|buildah).*(error|failed|unable)|error building image|docker build.*(error|failed)|Step \d+/\d+ : .*\n.*error",
+     "docker_build", 8, "Docker/Kaniko 镜像构建失败",
+     "Dockerfile 每行前置查错；确认 base image 存在；build context 大小是否超限", []),
+    # ── K8s 部署（priority=8） ─────────────────────────────
     (r"(?i)kubectl.*(error|refused|forbidden)|The connection to the server .* was refused",
-     "k8s_conn", "K8s API 不可达", "kubectl cluster-info 检查连通；kubeconfig token 是否过期"),
-    (r"(?i)deploy.*timed?[- ]?out|rollout.*progressing|readiness probe failed",
-     "deploy_timeout", "部署超时（探针未就绪）", "看 Pod events / readinessProbe 配置；应用启动慢考虑扩 timeout"),
-    # 基础设施
-    (r"(?i)connection refused|no route to host|network is unreachable",
-     "network", "网络不通", "从 Jenkins 节点 telnet / curl 目标 → 排查防火墙 / DNS / VPN"),
-    (r"(?i)OutOfMemoryError|Killed process|OOMKilled|Cannot allocate memory",
-     "oom", "内存不足 / OOM", "调大 JVM -Xmx / Pod resources.limits.memory；或找内存泄漏"),
-    (r"(?i)No space left on device|disk.*full|inode.*used up",
-     "disk", "磁盘/inode 打满", "df -h + du -sh 找大目录清理；构建缓存可 clean workspace"),
-    (r"(?i)Permission denied|EACCES|Access is denied|forbidden \(403\)",
-     "perm", "权限不足", "检查执行用户 / SSH key / API Token / K8s RBAC"),
-    # SCM
-    (r"(?i)Could not read from remote repository|GitException|Repository not found",
-     "git", "Git 拉代码失败", "检查 credentials / branch 是否存在 / 代理设置"),
-    # Jenkins 自身
-    (r"(?i)Jenkins is (going )?to shut down|slave.*disconnected|node.*offline|executor.*busy",
-     "jenkins_infra", "Jenkins 节点/执行器异常", "看节点状态；必要时重启 agent 或分配到其它 label"),
-    # 超时
-    (r"(?i)aborted.*took .* > .*|timed? out after|Build step .* marked build as failure",
-     "abort_timeout", "构建被中止/超时", "看是否有人手动中止；调整 build timeout；分析卡在哪一步"),
+     "k8s_conn", 8, "K8s API 不可达",
+     "kubectl cluster-info 检查连通；kubeconfig token 是否过期",
+     ["get_k8s_events"]),
+    (r"(?i)deploy.*timed?[- ]?out|rollout.*progressing|readiness probe failed|liveness probe failed",
+     "deploy_timeout", 8, "部署超时（探针未就绪）",
+     "看 Pod events / readinessProbe 配置；应用启动慢考虑扩 timeout",
+     ["get_k8s_events", "get_k8s_pods"]),
+    (r"(?i)helm.*(error|failed)|Error: UPGRADE FAILED|release.*not found",
+     "helm", 8, "Helm 部署失败",
+     "helm status / helm history 看上一次成功版本；必要时 rollback",
+     ["get_k8s_events"]),
+    # ── 测试 & 质量门禁（priority=7） ─────────────────────────────
+    (r"(?i)Tests? run: \d+, (Failures|Errors): [1-9]|assertion.*failed|junit.*failure|jest.*failed",
+     "test", 7, "单元测试挂了",
+     "调 jenkins_get_test_results 查具体失败用例；本地复现后修 assertion / mock",
+     ["jenkins_get_test_results"]),
+    (r"(?i)e2e.*failed|cypress.*failed|playwright.*failed|selenium.*(exception|timeout)",
+     "e2e", 7, "端到端测试失败",
+     "查测试报告截图和 trace；用例可能对环境敏感，检查测试环境稳定性",
+     ["jenkins_get_test_results"]),
+    (r"(?i)sonar.*quality gate.*failed|coverage.*below|violations found",
+     "quality_gate", 7, "SonarQube 质量门禁未过",
+     "看 Sonar 报告；补充测试覆盖率 / 修复代码 smell；或临时改分支的门禁阈值", []),
+    # ── SCM（priority=7） ─────────────────────────────
+    (r"(?i)Could not read from remote repository|GitException|Repository not found|fatal:.*ssh|Host key verification failed",
+     "git", 7, "Git 拉代码失败",
+     "检查 credentials / branch 是否存在 / 代理设置；known_hosts 是否有目标 host key", []),
+    # ── 基础设施（priority=6） ─────────────────────────────
+    (r"(?i)connection refused|no route to host|network is unreachable|dns.*(fail|timeout)",
+     "network", 6, "网络不通",
+     "从 Jenkins 节点 telnet / curl 目标 → 排查防火墙 / DNS / VPN", []),
+    (r"(?i)OutOfMemoryError|Killed process|OOMKilled|Cannot allocate memory|out of memory",
+     "oom", 6, "内存不足 / OOM",
+     "调大 JVM -Xmx / Pod resources.limits.memory；或找内存泄漏",
+     ["get_k8s_events"]),
+    (r"(?i)No space left on device|disk.*full|inode.*used up|Not enough disk space",
+     "disk", 6, "磁盘/inode 打满",
+     "df -h + du -sh 找大目录清理；构建缓存可 clean workspace", []),
+    (r"(?i)Permission denied|EACCES|Access is denied|forbidden \(403\)|401 Unauthorized",
+     "perm", 6, "权限不足",
+     "检查执行用户 / SSH key / API Token / K8s RBAC", []),
+    # ── 通知类（priority=4，非阻断） ─────────────────────────────
+    (r"(?i)slack.*(fail|error)|feishu.*(fail|error)|webhook.*(fail|400|500)",
+     "notify", 4, "通知发送失败",
+     "非核心错误，检查通知机器人 URL/Token；构建本身可能已成功", []),
+    # ── 基础设施上传（priority=5） ─────────────────────────────
+    (r"(?i)Nexus.*(fail|401|403)|Artifactory.*(fail|401|403)|Failed to deploy artifacts",
+     "nexus_up", 5, "私服上传失败",
+     "检查 deploy 凭证；确认 GAV 未重复；私服磁盘/quota 是否够", []),
+    # ── Jenkins 自身 / Pipeline 脚本（priority=5） ─────────────────
+    (r"(?i)Jenkins is (going )?to shut down|slave.*disconnected|node.*offline|Node .* is offline",
+     "jenkins_infra", 5, "Jenkins 节点/执行器异常",
+     "看节点状态；必要时重启 agent 或分配到其它 label", []),
+    (r"(?i)WorkflowScript.*error|groovy\.lang\..*Exception|Jenkinsfile.*(syntax|error)",
+     "pipeline_syntax", 5, "Pipeline 脚本语法错",
+     "Jenkinsfile 里的 Groovy 语法有问题；用 Replay 定位失败行", []),
+    # ── IaC（priority=5） ─────────────────────────────
+    (r"(?i)ansible.*fail|fatal:.*FAILED!|TASK .* failed|Play recap.*(unreachable|failed)",
+     "ansible", 5, "Ansible 任务失败",
+     "看 msg / stderr；检查 inventory 主机可达；vault password 是否正确", []),
+    (r"(?i)terraform.*error|Error: .*terraform|Refreshing state.*failed",
+     "terraform", 5, "Terraform 执行失败",
+     "看 tfstate 与实际资源是否 drift；plan 重跑；必要时手动 taint 资源", []),
+    # ── 超时（priority=3，最"表象"） ─────────────────────────────
+    (r"(?i)aborted.*took .* > .*|timed? out after|Build step .* marked build as failure|took longer than",
+     "abort_timeout", 3, "构建被中止/超时",
+     "看是否有人手动中止；调整 build timeout；分析卡在哪一步", []),
 ]
 
 
-def _analyze_log(log: str, limit: int = 8) -> list[dict]:
-    """扫日志识别错误类别 + 关键行摘录。返回按出现顺序去重的错误分类列表。"""
+def _analyze_log(log: str, limit: int = 8, context_lines: int = 2) -> list[dict]:
+    """扫日志识别错误类别，返回：
+        [{kind, priority, title, advice, line, context, follow_up_tools, hits}]
+    按 priority 降序 → 命中次数降序排序。
+    - line：命中所在行
+    - context：前后 context_lines 行拼接
+    - hits：这类错误在日志里出现的总次数（越多越确定）
+    """
     import re
-    findings: list[dict] = []
-    seen: set[str] = set()
-    for pattern, kind, title, advice in _ERROR_PATTERNS:
-        m = re.search(pattern, log)
-        if not m:
+    findings: dict[str, dict] = {}
+    for pattern, kind, priority, title, advice, follow_ups in _ERROR_PATTERNS:
+        matches = list(re.finditer(pattern, log))
+        if not matches:
             continue
-        if kind in seen:
-            continue
-        seen.add(kind)
-        # 定位该匹配所在行 + 上下 1 行
-        start = log.rfind("\n", 0, m.start()) + 1
-        end = log.find("\n", m.end())
-        if end < 0:
-            end = len(log)
-        snippet = log[start:end].strip()[:220]
-        findings.append({"kind": kind, "title": title, "advice": advice, "line": snippet})
-        if len(findings) >= limit:
-            break
-    return findings
+        m = matches[0]
+        # 定位该匹配所在行 + 上下 context_lines 行
+        line_start = log.rfind("\n", 0, m.start()) + 1
+        line_end = log.find("\n", m.end())
+        if line_end < 0:
+            line_end = len(log)
+        # 前面 N 行
+        before = log[:line_start].rstrip("\n").split("\n")[-context_lines:] if line_start else []
+        # 后面 N 行
+        tail = log[line_end:].lstrip("\n").split("\n")[:context_lines] if line_end < len(log) else []
+        line = log[line_start:line_end].strip()[:220]
+        ctx_lines = [x.rstrip() for x in before + [line] + tail if x.strip()]
+        findings[kind] = {
+            "kind": kind,
+            "priority": priority,
+            "title": title,
+            "advice": advice,
+            "line": line,
+            "context": "\n".join(ctx_lines)[:600],
+            "follow_up_tools": follow_ups,
+            "hits": len(matches),
+        }
+    # 排序：priority 高 → hits 多 → 先命中
+    ranked = sorted(findings.values(), key=lambda x: (-x["priority"], -x["hits"]))
+    return ranked[:limit]
 
 
 @tool
@@ -341,19 +423,39 @@ async def jenkins_diagnose_build(job: str, build: str = "lastBuild", log_lines: 
 
         out.append("### 【关键结果】")
         if findings:
-            for f in findings:
-                out.append(f"- **{f['title']}**（`{f['kind']}`）")
-                out.append(f"  日志片段：`{f['line']}`")
+            for idx, f in enumerate(findings, 1):
+                hits_tag = f" ×{f['hits']}" if f['hits'] > 1 else ""
+                out.append(f"**{idx}. {f['title']}**（`{f['kind']}` · 优先级 {f['priority']}/9{hits_tag}）")
+                out.append(f"日志上下文：")
+                out.append(f"```")
+                out.append(f["context"] or f["line"])
+                out.append(f"```")
         else:
-            out.append("- 未匹配到常见错误模式，日志末尾片段：")
+            out.append("未匹配到常见错误模式，日志末尾片段：")
             tail = "\n".join(log.splitlines()[-15:]) if log else "(日志为空)"
             out.append(f"```\n{tail[:800]}\n```")
         out.append("")
 
         out.append("### 【建议下一步】")
         if findings:
+            follow_up_set: list[str] = []
             for f in findings:
-                out.append(f"- {f['title']} → {f['advice']}")
+                out.append(f"- **{f['title']}** → {f['advice']}")
+                for tool_name in f.get("follow_up_tools", []):
+                    if tool_name not in follow_up_set:
+                        follow_up_set.append(tool_name)
+            # 跨模块联动：建议 AI 调用哪些工具补更多信息
+            if follow_up_set:
+                out.append("")
+                out.append("**跨模块深挖建议**（识别到的失败类型需要看 Jenkins 之外的数据）：")
+                for tool_name in follow_up_set:
+                    if tool_name == "get_k8s_events":
+                        out.append(f"- 调 `get_k8s_events(namespace='<部署命名空间>')` 拿 Pod events 定位镜像/部署问题")
+                    elif tool_name == "get_k8s_pods":
+                        out.append(f"- 调 `get_k8s_pods(namespace='<部署命名空间>')` 看目标 Pod 状态")
+                    elif tool_name == "jenkins_get_test_results":
+                        out.append(f"- 调 `jenkins_get_test_results(job=\"{job}\", build=\"{info.get('number', build)}\")` 查具体失败测试用例")
+            out.append("")
             out.append(f"- 修复后可调 `jenkins_retry_last_build(job=\"{job}\")` 用同参数重跑；或到 Jenkins UI 手动触发。")
         else:
             out.append("- 无法自动识别；建议人工看完整日志：`jenkins_get_build_logs(job, build, lines=1000)`")
@@ -392,10 +494,125 @@ async def jenkins_retry_last_build(job: str) -> str:
         return f"重跑失败：{e}"
 
 
+@tool
+async def jenkins_analyze_failures(top_n: int = 5, log_lines: int = 300) -> str:
+    """『一句话搞定』：一次调用完成『筛失败 → 逐个诊断 → 汇总报告』。
+
+    top_n=最多诊断前几个失败 Job（默认 5，按优先级排序，避免耗时过长）。
+    log_lines=每个 Job 拉多少行日志（默认 300）。
+    典型用途：用户问『Jenkins 有哪些任务失败？具体日志是什么？什么原因？怎么恢复？』
+    → 直接调这一个，AI 不用多轮 tool call。"""
+    client, err = _jenkins_client()
+    if err:
+        return err
+    try:
+        jobs = await client.get_all_jobs()
+        failed = []
+        for j in jobs:
+            color = (j.get("color") or "").split("_")[0]
+            if color not in ("red", "aborted", "yellow"):
+                continue
+            lb = j.get("lastBuild") or {}
+            failed.append({
+                "name": j["name"],
+                "color": color,
+                "number": lb.get("number"),
+                "result": lb.get("result", color.upper()),
+            })
+        if not failed:
+            return f"✅ 当前所有 {len(jobs)} 个 Job 最近一次构建都成功，无失败任务需处理。"
+
+        # 只对前 top_n 个做深度诊断（保护耗时）
+        to_diagnose = failed[:top_n]
+        report = [f"# Jenkins 失败任务分析报告", ""]
+        report.append(f"## 📊 概览")
+        report.append(f"- 总 Job 数：{len(jobs)}")
+        report.append(f"- 失败/异常 Job：{len(failed)}")
+        report.append(f"- 本次深度诊断：前 {len(to_diagnose)} 个（按 Jenkins 顺序）")
+        report.append("")
+
+        # 简短清单（全部失败 Job）
+        report.append(f"## 📋 失败清单")
+        for f in failed:
+            emoji = {"red": "❌", "aborted": "⏹", "yellow": "⚠️"}.get(f["color"], "❌")
+            build_ref = f"#{f['number']}" if f["number"] else "-"
+            marker = " ← 诊断中" if f in to_diagnose else ""
+            report.append(f"- {emoji} **{f['name']}** {build_ref} → {f['result']}{marker}")
+        report.append("")
+
+        # 逐个诊断
+        report.append(f"## 🔬 深度诊断")
+        agg_root_causes: dict[str, int] = {}  # 全局根因分布
+        cross_module_hints: set[str] = set()
+        for f in to_diagnose:
+            job_name = f["name"]
+            report.append("")
+            report.append(f"---")
+            try:
+                info = await client.get_build_info(job_name, "lastBuild")
+                log = await client.get_build_logs(job_name, "lastBuild", log_lines) or ""
+                findings = _analyze_log(log)
+                result = info.get("result") or "进行中"
+                duration_s = info.get("duration", 0) // 1000
+                emoji = {"SUCCESS": "✅", "FAILURE": "❌", "UNSTABLE": "⚠️", "ABORTED": "⏹"}.get(result, "•")
+
+                report.append(f"### {emoji} {job_name} #{info.get('number', '?')}  →  **{result}** · 耗时 {duration_s}s")
+
+                if findings:
+                    for idx, fd in enumerate(findings[:3], 1):  # 每 Job 只显示 Top3 根因，避免报告过长
+                        agg_root_causes[fd["title"]] = agg_root_causes.get(fd["title"], 0) + 1
+                        for tool_name in fd.get("follow_up_tools", []):
+                            cross_module_hints.add(tool_name)
+                        hits_tag = f" ×{fd['hits']}" if fd["hits"] > 1 else ""
+                        report.append(f"- **根因 {idx}**：{fd['title']}（`{fd['kind']}`·优先级 {fd['priority']}/9{hits_tag}）")
+                        report.append(f"  日志片段：`{fd['line']}`")
+                        report.append(f"  💡 修复建议：{fd['advice']}")
+                else:
+                    tail = "\n".join(log.splitlines()[-6:]) if log else "(日志为空)"
+                    report.append(f"- 未识别到已知错误模式，日志尾部：")
+                    report.append(f"  ```")
+                    report.append(f"  {tail[:400]}")
+                    report.append(f"  ```")
+            except Exception as e:
+                report.append(f"### ❌ {job_name} 诊断失败：{e}")
+
+        # 全局根因分布
+        if agg_root_causes:
+            report.append("")
+            report.append(f"## 📈 根因分布")
+            for title, count in sorted(agg_root_causes.items(), key=lambda x: -x[1]):
+                report.append(f"- **{title}**：{count} 个 Job 命中")
+
+        # 跨模块建议
+        if cross_module_hints:
+            report.append("")
+            report.append(f"## 🔗 跨模块深挖")
+            for tool_name in cross_module_hints:
+                if tool_name == "get_k8s_events":
+                    report.append(f"- 部分失败涉及 K8s → 建议调 `get_k8s_events(namespace='<命名空间>')` 拿 Pod events")
+                elif tool_name == "get_k8s_pods":
+                    report.append(f"- 建议调 `get_k8s_pods(namespace='<命名空间>')` 看目标 Pod 状态")
+                elif tool_name == "jenkins_get_test_results":
+                    report.append(f"- 存在测试失败 → 对具体 Job 调 `jenkins_get_test_results(job, build)` 查失败用例")
+
+        # 精准恢复
+        report.append("")
+        report.append(f"## 🎯 精准恢复")
+        report.append(f"- 修复根本原因后，用 `jenkins_retry_last_build(job=\"<Job名>\")` 用原参数重跑（写操作需二次确认）")
+        report.append(f"- 若某 Job 需要深度诊断，调 `jenkins_diagnose_build(job=\"<Job名>\", log_lines=1000)` 拉更多日志")
+        if len(failed) > top_n:
+            report.append(f"- 未纳入本次诊断的 {len(failed) - top_n} 个失败 Job，可指定 top_n 参数扩大范围")
+
+        return "\n".join(report)
+    except Exception as e:
+        return f"分析失败：{e}"
+
+
 __all__ = [
     "jenkins_get_all_jobs", "jenkins_search_jobs", "jenkins_build_job",
     "jenkins_get_build_info", "jenkins_get_build_logs", "jenkins_get_running_builds",
     "jenkins_get_queue", "jenkins_cancel_queue_item", "jenkins_get_test_results",
     # 高层复合工具
     "jenkins_get_failed_jobs", "jenkins_diagnose_build", "jenkins_retry_last_build",
+    "jenkins_analyze_failures",
 ]
