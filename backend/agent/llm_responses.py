@@ -69,7 +69,17 @@ class ResponsesApiChatModel(BaseChatModel):
     # ── 消息格式转换 ──────────────────────────────────────────────────
     @staticmethod
     def _to_input(messages: List[BaseMessage]) -> List[dict]:
-        """将 LangChain 消息转为 Responses API input 列表"""
+        """将 LangChain 消息转为 Responses API input 列表。
+
+        Responses API 要求 function_call / function_call_output 的 call_id
+        非空字符串；某些 OpenAI 兼容代理（qwen / deepseek gateway 等）
+        会把 id 字段命名成 tool_call_id 或返回空串，这里做兜底：
+        - AIMessage.tool_calls 里 id 为空 → 跳过该 tool_call（避免 400）
+        - ToolMessage.tool_call_id 为空 → 跳过该输出（避免 400）
+        """
+        import logging as _lg
+        _logger = _lg.getLogger(__name__)
+
         result = []
         for msg in messages:
             if isinstance(msg, SystemMessage):
@@ -80,18 +90,29 @@ class ResponsesApiChatModel(BaseChatModel):
                 # 先输出文本部分（若有）
                 if msg.content:
                     result.append({"role": "assistant", "content": str(msg.content)})
-                # 再输出 function_call 条目
+                # 再输出 function_call 条目（call_id 空的直接丢弃，避免 400）
                 for tc in (msg.tool_calls or []):
+                    cid = (tc.get("id") or "").strip() if isinstance(tc, dict) else ""
+                    if not cid:
+                        _logger.warning(
+                            "[llm_responses] 丢弃 call_id 为空的 tool_call: name=%s",
+                            tc.get("name") if isinstance(tc, dict) else "?",
+                        )
+                        continue
                     result.append({
                         "type": "function_call",
-                        "call_id": tc["id"],
+                        "call_id": cid,
                         "name": tc["name"],
-                        "arguments": json.dumps(tc["args"], ensure_ascii=False),
+                        "arguments": json.dumps(tc.get("args", {}), ensure_ascii=False),
                     })
             elif isinstance(msg, ToolMessage):
+                cid = (getattr(msg, "tool_call_id", "") or "").strip()
+                if not cid:
+                    _logger.warning("[llm_responses] 丢弃 tool_call_id 为空的 ToolMessage")
+                    continue
                 result.append({
                     "type": "function_call_output",
-                    "call_id": msg.tool_call_id,
+                    "call_id": cid,
                     "output": str(msg.content),
                 })
         return result
@@ -133,8 +154,13 @@ class ResponsesApiChatModel(BaseChatModel):
                     args = json.loads(args_raw)
                 except Exception:
                     args = {}
+                # 兼容代理：优先 call_id，回退 id
+                cid = (getattr(item, "call_id", None) or getattr(item, "id", None) or "").strip()
+                if not cid:
+                    import uuid as _uuid
+                    cid = f"call_{_uuid.uuid4().hex[:12]}"
                 tool_calls.append({
-                    "id": item.call_id,
+                    "id": cid,
                     "name": item.name,
                     "args": args,
                     "type": "tool_call",
@@ -181,7 +207,11 @@ class ResponsesApiChatModel(BaseChatModel):
             elif etype == "response.output_item.added":
                 item = getattr(event, "item", None)
                 if item and getattr(item, "type", "") == "function_call":
-                    cid = item.call_id
+                    # 兼容代理：优先 call_id，回退 id，最终生成占位
+                    cid = (getattr(item, "call_id", None) or getattr(item, "id", None) or "").strip()
+                    if not cid:
+                        import uuid as _uuid
+                        cid = f"call_{_uuid.uuid4().hex[:12]}"
                     tool_calls_acc[cid] = {
                         "id": cid,
                         "name": item.name,
@@ -190,10 +220,15 @@ class ResponsesApiChatModel(BaseChatModel):
 
             # 工具调用参数流
             elif etype == "response.function_call_arguments.delta":
-                cid = getattr(event, "call_id", "")
+                cid = getattr(event, "call_id", None) or getattr(event, "item_id", None) or ""
+                cid = str(cid).strip()
                 delta = getattr(event, "delta", "")
-                if cid in tool_calls_acc:
+                if cid and cid in tool_calls_acc:
                     tool_calls_acc[cid]["args_str"] += delta
+                elif tool_calls_acc:
+                    # 代理没回传 call_id 时把 delta 追加到最近的一个（单工具场景常见）
+                    last_cid = next(reversed(tool_calls_acc))
+                    tool_calls_acc[last_cid]["args_str"] += delta
 
         # 流结束后，若有工具调用，发送最终 chunk（携带 tool_call_chunks）
         if tool_calls_acc:
