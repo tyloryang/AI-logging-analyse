@@ -285,7 +285,9 @@ def _es_base_url() -> str:
     return "http://192.168.9.226:9200"
 
 
-# ── Jenkins client 构造（读 data/jenkins.json 或 env）─────────────────────────
+# ── Jenkins client 构造 ────────────────────────────────────────────────────
+# data/jenkins.json 现在存的是多实例列表 [{id,name,url,username,token,default}]
+# 兼容三种数据形态：list（多实例）/ dict（旧单实例）/ 空；三者都退化不到再走 env。
 
 def _jenkins_client():
     from jenkins_client import JenkinsClient
@@ -293,15 +295,27 @@ def _jenkins_client():
     from json_snapshot_store import read_json_file
 
     cfg_file = Path(__file__).resolve().parent.parent.parent / "data" / "jenkins.json"
-    cfg = {}
-    data = read_json_file(cfg_file, default={})
-    if isinstance(data, dict):
-        cfg = data
-    url = cfg.get("url") or os.getenv("JENKINS_URL", "")
-    username = cfg.get("username") or os.getenv("JENKINS_USERNAME", "")
-    token = cfg.get("token") or os.getenv("JENKINS_TOKEN", "")
+    data = read_json_file(cfg_file, default=None)
+
+    inst = None
+    if isinstance(data, list) and data:
+        # 优先 default=True 的实例，否则用第一个
+        inst = next((x for x in data if isinstance(x, dict) and x.get("default")), None) or data[0]
+    elif isinstance(data, dict) and data.get("url"):
+        # 兼容旧单对象格式
+        inst = data
+
+    if inst and isinstance(inst, dict):
+        url      = (inst.get("url") or "").strip()
+        username = (inst.get("username") or "").strip()
+        token    = (inst.get("token") or "").strip()
+    else:
+        url      = os.getenv("JENKINS_URL", "").strip()
+        username = os.getenv("JENKINS_USERNAME", "").strip()
+        token    = os.getenv("JENKINS_TOKEN", "").strip()
+
     if not url:
-        return None, "Jenkins 未配置，请在系统设置中填写 Jenkins URL、用户名和 API Token"
+        return None, "Jenkins 未配置，请到「CI/CD → Jenkins」页添加实例（填 URL / 用户名 / API Token 后保存并勾选『设为默认』）"
     return JenkinsClient(url, username, token), None
 
 
