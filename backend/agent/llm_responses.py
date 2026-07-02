@@ -115,7 +115,44 @@ class ResponsesApiChatModel(BaseChatModel):
                     "call_id": cid,
                     "output": str(msg.content),
                 })
-        return result
+
+        # ── 一致性清理：Responses API 要求 function_call 与 function_call_output
+        #    严格配对；LangGraph 中断/工具报错时可能只留下一半，这里剔除孤儿避免 400。
+        call_ids = {
+            item.get("call_id")
+            for item in result
+            if item.get("type") == "function_call" and item.get("call_id")
+        }
+        output_ids = {
+            item.get("call_id")
+            for item in result
+            if item.get("type") == "function_call_output" and item.get("call_id")
+        }
+        orphans = (call_ids ^ output_ids)
+        if orphans:
+            _logger.warning(
+                "[llm_responses] 剔除 %d 个孤儿 function_call/output，call_id=%s",
+                len(orphans), list(orphans)[:5],
+            )
+            result = [
+                item for item in result
+                if item.get("type") not in ("function_call", "function_call_output")
+                or item.get("call_id") not in orphans
+            ]
+
+        # 每项都最终校验：function_call / function_call_output 必须有非空 call_id
+        cleaned = []
+        for idx, item in enumerate(result):
+            itype = item.get("type")
+            if itype in ("function_call", "function_call_output"):
+                if not (item.get("call_id") or "").strip():
+                    _logger.error(
+                        "[llm_responses] 意外发现 %s 缺 call_id，input[%d] 已丢弃 payload=%s",
+                        itype, idx, item,
+                    )
+                    continue
+            cleaned.append(item)
+        return cleaned
 
     # ── 同步生成（供内部 fallback，实际走 async）─────────────────────
     def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
@@ -138,6 +175,16 @@ class ResponsesApiChatModel(BaseChatModel):
         }
         if self._bound_tools:
             req["tools"] = self._bound_tools
+
+        # 调试日志：打印 input 各项 type + call_id 摘要，便于排查 400
+        import logging as _lg
+        _dbg = _lg.getLogger(__name__)
+        if _dbg.isEnabledFor(_lg.DEBUG):
+            summary = [
+                {"i": i, "type": x.get("type") or x.get("role"), "call_id": x.get("call_id"), "name": x.get("name")}
+                for i, x in enumerate(inp)
+            ]
+            _dbg.debug("[llm_responses] Responses input=%s", summary)
 
         resp = await client.responses.create(**req)
 
@@ -189,6 +236,16 @@ class ResponsesApiChatModel(BaseChatModel):
         }
         if self._bound_tools:
             req["tools"] = self._bound_tools
+
+        # 调试日志：同上
+        import logging as _lg
+        _dbg = _lg.getLogger(__name__)
+        if _dbg.isEnabledFor(_lg.DEBUG):
+            summary = [
+                {"i": i, "type": x.get("type") or x.get("role"), "call_id": x.get("call_id"), "name": x.get("name")}
+                for i, x in enumerate(inp)
+            ]
+            _dbg.debug("[llm_responses] Responses stream input=%s", summary)
 
         # 在流结束后再发送工具调用 chunk
         tool_calls_acc: dict[str, dict] = {}   # call_id -> {id, name, args_str}
