@@ -53,12 +53,15 @@ from .tool_modules.elasticsearch import (  # noqa: F401
 from .tool_modules.jenkins import (  # noqa: F401
     jenkins_build_job,
     jenkins_cancel_queue_item,
+    jenkins_diagnose_build,
     jenkins_get_all_jobs,
     jenkins_get_build_info,
     jenkins_get_build_logs,
+    jenkins_get_failed_jobs,
     jenkins_get_queue,
     jenkins_get_running_builds,
     jenkins_get_test_results,
+    jenkins_retry_last_build,
     jenkins_search_jobs,
 )
 from .tool_modules.k8s import (  # noqa: F401
@@ -94,6 +97,7 @@ from .tool_modules.middleware import (  # noqa: F401
     get_middleware_instances,
     get_middleware_summary,
 )
+from .tool_modules.platform import get_platform_overview  # noqa: F401
 from .tool_modules.report import export_report_pdf  # noqa: F401
 from .tool_modules.ssh import execute_ssh_command  # noqa: F401
 from .tool_modules.web import (  # noqa: F401
@@ -103,6 +107,7 @@ from .tool_modules.web import (  # noqa: F401
 
 # ── 聚合：所有可见工具（顺序与重构前一致）─────────────────────────────────────
 ALL_TOOLS = [
+    get_platform_overview,
     recall_similar_incidents,
     firecrawl_search_web,
     firecrawl_scrape_url,
@@ -145,6 +150,10 @@ ALL_TOOLS = [
     jenkins_get_queue,
     jenkins_cancel_queue_item,
     jenkins_get_test_results,
+    # Jenkins 高层复合工具（诊断链路专用）
+    jenkins_get_failed_jobs,
+    jenkins_diagnose_build,
+    jenkins_retry_last_build,
     # SSH 命令执行
     execute_ssh_command,
 ]

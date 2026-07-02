@@ -30,6 +30,8 @@ class ToolRisk(str, Enum):
 # tool_name → ToolRisk
 # 名称来自 backend/agent/tools.py 的 @tool 装饰器函数名
 TOOL_RISK: dict[str, ToolRisk] = {
+    # ── 平台自身信息（只读）──
+    "get_platform_overview": ToolRisk.READ,
     # ── 日志类（全读）──
     "query_error_logs": ToolRisk.READ,
     "count_errors_by_service": ToolRisk.READ,
@@ -74,7 +76,10 @@ TOOL_RISK: dict[str, ToolRisk] = {
     "jenkins_get_running_builds": ToolRisk.READ,
     "jenkins_get_queue": ToolRisk.READ,
     "jenkins_get_test_results": ToolRisk.READ,
+    "jenkins_get_failed_jobs": ToolRisk.READ,        # 一键筛失败任务，只读
+    "jenkins_diagnose_build": ToolRisk.READ,         # 日志+根因分析，只读
     "jenkins_build_job": ToolRisk.WRITE_HIGH,        # 触发构建 = 业务变更
+    "jenkins_retry_last_build": ToolRisk.WRITE_HIGH, # 同参数重跑构建
     "jenkins_cancel_queue_item": ToolRisk.WRITE_LOW, # 取消队列可回滚
     # ── SSH 命令执行（已有内置黑名单，但 OS 命令仍归 HIGH）──
     "execute_ssh_command": ToolRisk.WRITE_HIGH,

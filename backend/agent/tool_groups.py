@@ -20,6 +20,9 @@ DOMAIN_TOOLS: dict[str, list[str]] = {
         "query_recent_logs",
         "get_services_list",
     ],
+    "platform": [
+        "get_platform_overview",
+    ],
     "metrics": [
         "get_host_metrics",
         "inspect_all_hosts",
@@ -68,6 +71,9 @@ DOMAIN_TOOLS: dict[str, list[str]] = {
         "jenkins_get_test_results",
         "jenkins_build_job",
         "jenkins_cancel_queue_item",
+        "jenkins_get_failed_jobs",
+        "jenkins_diagnose_build",
+        "jenkins_retry_last_build",
     ],
     "ssh": [
         "execute_ssh_command",
