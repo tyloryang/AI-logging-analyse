@@ -1,0 +1,11 @@
+.git
+.gitignore
+node_modules
+npm-debug.log
+docs/images
+test
+web-console/.env
+web-console/data
+web-console/workspace
+web-console/codex-home
+**/*.log

@@ -1,0 +1,27 @@
+services:
+  codex-wechat-web:
+    container_name: codex-wechat-web
+    image: codex-wechat-web:latest
+    build:
+      context: ..
+      dockerfile: web-console/Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ./.env
+    environment:
+      PORT: 8080
+      CODEX_WORKSPACE: /workspace
+      CLAUDE_WECHAT_CHANNEL_DATA_DIR: /data/wechat
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_ORGANIZATION: ${OPENAI_ORGANIZATION:-}
+      OPENAI_PROJECT: ${OPENAI_PROJECT:-}
+      WECHAT_ILINK_BASE_URL: ${WECHAT_ILINK_BASE_URL:-https://ilinkai.weixin.qq.com}
+      MAX_LOG_LINES: ${MAX_LOG_LINES:-500}
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    volumes:
+      - "${HOST_DATA_DIR:-./data}:/data"
+      - "${HOST_WORKSPACE_DIR:-./workspace}:/workspace"
+      - "${HOST_CODEX_HOME_DIR:-./codex-home}:/root/.codex"

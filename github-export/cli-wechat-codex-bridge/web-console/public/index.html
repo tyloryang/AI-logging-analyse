@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex × 微信接入控制台</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: #121933;
+        --panel-2: #182246;
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #eef2ff;
+        --muted: #9ca3af;
+        --green: #22c55e;
+        --yellow: #f59e0b;
+        --red: #ef4444;
+        --blue: #60a5fa;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        background: radial-gradient(circle at top, #182246 0%, var(--bg) 55%);
+        color: var(--text);
+      }
+      .container { max-width: 1180px; margin: 0 auto; padding: 32px 20px 48px; }
+      h1 { margin: 0 0 10px; font-size: 32px; }
+      .subtitle { margin: 0; color: var(--muted); line-height: 1.65; }
+      .hero { display: grid; gap: 16px; margin-bottom: 28px; }
+      .notice {
+        padding: 14px 16px; background: rgba(245, 158, 11, 0.12); color: #fde68a;
+        border: 1px solid rgba(245, 158, 11, 0.24); border-radius: 14px;
+      }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+      .card {
+        background: linear-gradient(180deg, rgba(24, 34, 70, 0.92), rgba(18, 25, 51, 0.94));
+        border: 1px solid var(--border); border-radius: 18px; padding: 20px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+      }
+      .card h2 { margin: 0 0 10px; font-size: 20px; }
+      .card p { color: var(--muted); line-height: 1.7; }
+      .field { display: grid; gap: 8px; margin-bottom: 14px; }
+      label { font-size: 14px; color: #cbd5e1; }
+      input {
+        width: 100%; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(4, 9, 24, 0.55); color: var(--text); padding: 12px 14px; outline: none;
+      }
+      input:focus { border-color: rgba(96, 165, 250, 0.7); }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+      button {
+        border: 0; border-radius: 12px; padding: 12px 16px; font-weight: 600; cursor: pointer;
+      }
+      button.primary { background: var(--blue); color: #081120; }
+      button.secondary { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+      button.danger { background: rgba(239, 68, 68, 0.18); color: #fecaca; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .status-row, .meta-list { display: grid; gap: 10px; margin-top: 14px; }
+      .pill {
+        display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px;
+        font-size: 13px; width: fit-content;
+      }
+      .pill.ok { background: rgba(34, 197, 94, 0.14); color: #bbf7d0; }
+      .pill.warn { background: rgba(245, 158, 11, 0.14); color: #fde68a; }
+      .pill.error { background: rgba(239, 68, 68, 0.14); color: #fecaca; }
+      .qr-box { margin-top: 12px; display: grid; justify-items: center; gap: 12px; }
+      .qr-box img { width: min(100%, 280px); background: white; border-radius: 16px; padding: 12px; }
+      .qr-link {
+        width: 100%; padding: 12px; border-radius: 12px; background: rgba(4, 9, 24, 0.55);
+        color: #93c5fd; text-decoration: none; overflow-wrap: anywhere;
+      }
+      pre {
+        margin: 0; background: rgba(4, 9, 24, 0.6); border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.06); padding: 16px; min-height: 320px;
+        overflow: auto; color: #dbeafe; line-height: 1.55; white-space: pre-wrap;
+      }
+      .footnote { margin-top: 14px; color: var(--muted); font-size: 13px; }
+      .inline-code {
+        font-family: Consolas, monospace; background: rgba(255, 255, 255, 0.08);
+        padding: 2px 7px; border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <section class="hero">
+        <div>
+          <h1>Codex × 微信接入控制台</h1>
+          <p class="subtitle">
+            这个页面负责完成二维码登录、凭据落盘、以及 Docker 容器内
+            <span class="inline-code">Codex + CLI-WeChat-Bridge</span>
+            的启动与停止。聊天仍然发生在微信里，不在这个页面里渲染。
+          </p>
+        </div>
+        <div class="notice">
+          这是一个管理页，不是公网多租户产品。上线前请至少放到受保护的内网、VPN 或反向代理鉴权之后。
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>1. 当前状态</h2>
+          <p>显示微信凭据状态、当前工作目录，以及桥接服务是否已经在容器内运行。</p>
+          <div class="status-row">
+            <div id="credential-pill" class="pill warn">正在读取状态…</div>
+            <div id="session-pill" class="pill warn">正在读取会话…</div>
+          </div>
+          <div class="meta-list" id="meta-list"></div>
+        </article>
+
+        <article class="card">
+          <h2>2. 微信扫码登录</h2>
+          <p>点击“生成二维码”后，用微信扫码。页面会自动轮询状态，扫码确认成功后自动写入容器内凭据文件。</p>
+          <div class="actions">
+            <button id="generate-qr" class="primary">生成二维码</button>
+            <button id="refresh-status" class="secondary">刷新状态</button>
+          </div>
+          <div class="qr-box" id="qr-box" hidden>
+            <img id="qr-image" alt="微信二维码" />
+            <a id="qr-link" class="qr-link" href="#" target="_blank" rel="noreferrer noopener"></a>
+            <div id="qr-status" class="pill warn">等待扫码…</div>
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>3. 启动 Codex 接入</h2>
+          <p>填写容器内工作目录，然后点击启动。后台会先启动 bridge，再拉起 companion，并将微信消息转入 Codex。</p>
+          <div class="field">
+            <label for="cwd">工作目录（容器内路径）</label>
+            <input id="cwd" placeholder="/workspace" />
+          </div>
+          <div class="field">
+            <label for="profile">Codex Profile（可选）</label>
+            <input id="profile" placeholder="例如：work" />
+          </div>
+          <div class="actions">
+            <button id="start-session" class="primary">启动接入</button>
+            <button id="stop-session" class="danger">停止接入</button>
+          </div>
+          <p class="footnote">启动成功后，去微信里直接给桥接机器人发消息即可。</p>
+        </article>
+      </section>
+
+      <section class="card" style="margin-top: 18px;">
+        <h2>4. 实时日志</h2>
+        <p>显示 bridge、companion、以及容器内 Codex 的合并日志，便于排查二维码、凭据或启动问题。</p>
+        <div class="actions" style="margin-bottom: 12px;">
+          <button id="refresh-logs" class="secondary">刷新日志</button>
+        </div>
+        <pre id="logs">正在加载日志…</pre>
+      </section>
+    </div>
+
+    <script>
+      const state = { currentQr: null, qrPollTimer: null, statusTimer: null, logsTimer: null };
+      const el = {
+        credentialPill: document.getElementById("credential-pill"),
+        sessionPill: document.getElementById("session-pill"),
+        metaList: document.getElementById("meta-list"),
+        qrBox: document.getElementById("qr-box"),
+        qrImage: document.getElementById("qr-image"),
+        qrLink: document.getElementById("qr-link"),
+        qrStatus: document.getElementById("qr-status"),
+        cwd: document.getElementById("cwd"),
+        profile: document.getElementById("profile"),
+        logs: document.getElementById("logs"),
+        generateQr: document.getElementById("generate-qr"),
+        refreshStatus: document.getElementById("refresh-status"),
+        startSession: document.getElementById("start-session"),
+        stopSession: document.getElementById("stop-session"),
+        refreshLogs: document.getElementById("refresh-logs"),
+      };
+
+      function setPill(target, text, kind) {
+        target.className = `pill ${kind}`;
+        target.textContent = text;
+      }
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+          ...options,
+        });
+        const text = await response.text();
+        const data = text ? JSON.parse(text) : {};
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+      }
+
+      function renderMeta(data) {
+        const credential = data.credential || {};
+        const session = data.session || {};
+        const items = [
+          ["凭据文件", credential.file || "未配置"],
+          ["当前账号", credential.accountIdMasked || "未登录"],
+          ["微信用户", credential.userIdMasked || "未登录"],
+          ["保存时间", credential.savedAt || "未登录"],
+          ["工作目录", session.cwd || data.defaultWorkspace || "/workspace"],
+          ["Bridge PID", session.bridgePid || "未启动"],
+          ["Companion PID", session.companionPid || "未启动"],
+        ];
+        el.metaList.innerHTML = items
+          .map(([label, value]) => `<div><strong>${label}：</strong>${value}</div>`)
+          .join("");
+      }
+
+      async function refreshConfig() {
+        const data = await api("/api/config");
+        renderMeta(data);
+        if (!el.cwd.value) el.cwd.value = data.session?.cwd || data.defaultWorkspace || "/workspace";
+        if (!el.profile.value && data.session?.profile) el.profile.value = data.session.profile;
+        setPill(el.credentialPill, data.credential?.exists ? "微信凭据已就绪" : "尚未完成微信登录", data.credential?.exists ? "ok" : "warn");
+        const ready = data.session?.ready;
+        const running = data.session?.running;
+        setPill(el.sessionPill, ready ? "Codex 接入运行中" : running ? "服务启动中" : "服务未启动", ready ? "ok" : running ? "warn" : "error");
+      }
+
+      async function refreshLogs() {
+        const data = await api("/api/logs?lines=220");
+        el.logs.textContent = (data.lines || []).join("\n") || "暂无日志。";
+      }
+
+      async function pollQrStatus() {
+        if (!state.currentQr) return;
+        const data = await api(`/api/qrcode/${encodeURIComponent(state.currentQr.qrcode)}/status`);
+        const mapping = {
+          wait: ["等待扫码…", "warn"],
+          scaned: ["已扫码，请在微信里确认授权", "warn"],
+          confirmed: ["扫码成功，凭据已保存", "ok"],
+          expired: ["二维码已过期，请重新生成", "error"],
+        };
+        const [text, kind] = mapping[data.status] || [`未知状态：${data.status}`, "warn"];
+        setPill(el.qrStatus, text, kind);
+        if (data.confirmed || data.status === "expired") {
+          clearInterval(state.qrPollTimer);
+          state.qrPollTimer = null;
+          await refreshConfig();
+        }
+      }
+
+      async function generateQr() {
+        const data = await api("/api/qrcode", { method: "POST", body: JSON.stringify({}) });
+        state.currentQr = data;
+        el.qrBox.hidden = false;
+        el.qrImage.src = data.qrcodeImageUrl;
+        el.qrLink.href = data.scanUrl;
+        el.qrLink.textContent = data.scanUrl;
+        setPill(el.qrStatus, "二维码已生成，请尽快扫码", "warn");
+        if (state.qrPollTimer) clearInterval(state.qrPollTimer);
+        state.qrPollTimer = setInterval(() => {
+          pollQrStatus().catch((error) => setPill(el.qrStatus, error.message, "error"));
+        }, 2500);
+      }
+
+      async function startSession() {
+        el.startSession.disabled = true;
+        try {
+          await api("/api/session/start", {
+            method: "POST",
+            body: JSON.stringify({ cwd: el.cwd.value.trim(), profile: el.profile.value.trim() || undefined }),
+          });
+          await refreshConfig();
+          await refreshLogs();
+        } finally {
+          el.startSession.disabled = false;
+        }
+      }
+
+      async function stopSession() {
+        el.stopSession.disabled = true;
+        try {
+          await api("/api/session/stop", { method: "POST", body: JSON.stringify({}) });
+          await refreshConfig();
+          await refreshLogs();
+        } finally {
+          el.stopSession.disabled = false;
+        }
+      }
+
+      el.generateQr.addEventListener("click", () => generateQr().catch((error) => {
+        setPill(el.qrStatus, error.message, "error");
+        el.qrBox.hidden = false;
+      }));
+      el.refreshStatus.addEventListener("click", () => refreshConfig().catch((error) => alert(error.message)));
+      el.startSession.addEventListener("click", () => startSession().catch((error) => alert(error.message)));
+      el.stopSession.addEventListener("click", () => stopSession().catch((error) => alert(error.message)));
+      el.refreshLogs.addEventListener("click", () => refreshLogs().catch((error) => alert(error.message)));
+
+      async function bootstrap() {
+        await refreshConfig();
+        await refreshLogs();
+        state.statusTimer = setInterval(() => refreshConfig().catch(() => {}), 6000);
+        state.logsTimer = setInterval(() => refreshLogs().catch(() => {}), 5000);
+      }
+
+      bootstrap().catch((error) => alert(error.message));
+    </script>
+  </body>
+</html>

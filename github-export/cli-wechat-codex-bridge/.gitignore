@@ -1,0 +1,13 @@
+node_modules/
+.claude/
+~/
+log.md
+.codex-app-schema/
+.codex-app-ts/
+tmp-codex-*.log
+plan/
+architecture/
+web-console/.env
+web-console/data/
+web-console/workspace/
+web-console/codex-home/

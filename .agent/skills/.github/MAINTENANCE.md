@@ -1,0 +1,366 @@
+# 🛠️ Repository Maintenance Guide (V5)
+
+> **"If it's not documented, it's broken."**
+
+This guide details the exact procedures for maintaining `antigravity-awesome-skills`.
+It covers the **Quality Bar**, **Documentation Consistency**, and **Release Workflows**.
+
+**Maintainer shortcuts:** [Merge a PR](#b-when-you-merge-a-pr-step-by-step) · [Reopen & merge a closed PR](#if-a-pr-was-closed-after-local-integration-reopen-and-merge) · [Post-merge & contributors](#c-post-merge-routine-must-do-before-a-release) · [Close issues](#when-to-close-an-issue) · [Create a release](#4-release-workflow)
+
+---
+
+## 0. 🤖 Agent Protocol (THE BIBLE)
+
+**AGENTS MUST READ AND FOLLOW THIS SECTION BEFORE MARKING ANY TASK AS COMPLETE.**
+
+There are 3 things that usually fail/get forgotten. **DO NOT FORGET THEM:**
+
+### 1. 📤 ALWAYS PUSH (Non-Negotiable)
+
+Committing is NOT enough. You must PUSH to the remote.
+
+- **BAD**: `git commit -m "feat: new skill"` (User sees nothing)
+- **GOOD**: `git commit -m "..." && git push origin main`
+
+### 2. 🔄 SYNC GENERATED FILES (Avoid CI Drift)
+
+If you touch **any of these**:
+
+- `skills/` (add/remove/modify skills)
+- the **Full Skill Registry** section of `README.md`
+- **counts/claims** about the number of skills (`1,200+ Agentic Skills...`, `(1,200+/1,200+)`, etc.)
+
+…then you **MUST** run the Validation Chain **BEFORE** committing.
+
+- Running `npm run chain` is **NOT optional**.
+- Running `npm run catalog` is **NOT optional**.
+
+If CI fails with:
+
+> `❌ Detected uncommitted changes produced by registry/readme/catalog scripts.`
+
+it means you **did not run or commit** the Validation Chain correctly.
+
+### 3. 📝 EVIDENCE OF WORK
+
+- You must create/update `walkthrough.md` or `CHANGELOG.md` to document what changed.
+- If you made something new, **link it** in the artifacts.
+
+### 4. 🚫 NO BRANCHES
+
+- **ALWAYS use the `main` branch.**
+- NEVER create feature branches (e.g., `feat/new-skill`).
+- We commit directly to `main` to keep history linear and simple.
+
+---
+
+## 1. 🚦 Daily Maintenance Routine
+
+### A. Validation Chain
+
+Before ANY commit that adds/modifies skills, run the chain:
+
+1.  **Validate, index, and update readme**:
+
+    ```bash
+    npm run chain
+    ```
+
+    _Must return 0 errors for new skills._
+
+2.  **Build catalog**:
+
+    ```bash
+    npm run catalog
+    ```
+
+3.  **COMMIT GENERATED FILES**:
+    ```bash
+    git add README.md skills_index.json data/catalog.json data/bundles.json data/aliases.json CATALOG.md
+    git commit -m "chore: sync generated files"
+    ```
+    > 🔴 **CRITICAL**: If you skip this, CI will fail with "Detected uncommitted changes".
+    > See [`docs/maintainers/ci-drift-fix.md`](../docs/maintainers/ci-drift-fix.md) for details.
+
+### B. When You Merge a PR (Step-by-Step)
+
+> **Agent instruction (when analyzing or handling PRs):** Always merge accepted PRs via GitHub (**Squash and merge**). Never integrate locally and then close the PR. If a PR is closed but its changes were integrated locally, reopen it and follow [Reopen & merge](#if-a-pr-was-closed-after-local-integration-reopen-and-merge) so it ends up **Merged**. Contributors must get credit.
+
+**Before merging:**
+
+1.  **CI is green** — Validation, reference checks, tests, and generated artifact steps passed (see [`.github/workflows/ci.yml`](workflows/ci.yml)).
+2.  **No drift** — PR does not introduce uncommitted generated-file changes; if the "Check for Uncommitted Drift" step failed, ask the author to run `npm run chain` and `npm run catalog` and commit the result.
+3.  **Quality Bar** — PR description confirms the [Quality Bar Checklist](.github/PULL_REQUEST_TEMPLATE.md) (metadata, risk label, credits if applicable).
+4.  **Issue link** — If the PR fixes an issue, the PR description should contain `Closes #N` or `Fixes #N` so GitHub auto-closes the issue on merge.
+
+**How you merge:**
+
+- **Always merge via GitHub** so the PR shows as **Merged** and the contributor gets credit. Use **"Squash and merge"**. Do **not** integrate locally and then close the PR — that would show "Closed" and the contributor would not get proper attribution.
+- **If the PR has merge conflicts:** Resolve them **on the PR branch** (you or the contributor: merge `main` into the PR branch, fix conflicts, run `npm run chain` and `npm run catalog` if needed, push). Then use **"Squash and merge"** on GitHub. Full steps: [docs/maintainers/merging-prs.md](../docs/maintainers/merging-prs.md).
+- **Rare exception:** Only if merging via GitHub is not possible, you may integrate locally and close the PR; in that case you **must** add a Co-authored-by line to the commit and explain in a comment. Prefer to avoid this so PRs are always **Merged**.
+
+**If a PR was closed after local integration (reopen and merge):**
+
+If a PR was integrated via local squash and then **closed** (so it shows "Closed" instead of "Merged"), you can still give the contributor credit by reopening it and merging it on GitHub. The merge can be effectively "empty" (no new diff vs `main`); what matters is that the PR ends up **Merged**.
+
+1.  **Reopen the PR** on GitHub (Reopen button on the closed PR page), or: `gh pr reopen <PR_NUMBER>`.
+2.  **Fetch the PR branch** (the branch lives on the contributor's fork):
+    ```bash
+    git fetch origin pull/<PR_NUMBER>/head:pr-<PR_NUMBER>-tmp
+    git checkout pr-<PR_NUMBER>-tmp
+    ```
+3.  **Merge `main` into it** and resolve conflicts:
+    ```bash
+    git merge origin/main -m "chore: merge main to resolve conflicts"
+    ```
+    For conflicts in generated/registry files (`README.md`, `CATALOG.md`, `data/catalog.json`, etc.), keep **main's version**:  
+    `git checkout --theirs README.md CATALOG.md data/catalog.json` (and any other conflicted files), then `git add` them.
+4.  **Commit the merge** (if not already done):  
+    `git commit -m "chore: merge main to resolve conflicts" --no-edit`
+5.  **Push to the contributor's fork.** Add their fork as a remote if needed (replace `USER` and `BRANCH` with the PR head owner and branch from the PR page):
+    ```bash
+    git remote add <user>-fork https://github.com/<USER>/antigravity-awesome-skills.git
+    git push <user>-fork pr-<PR_NUMBER>-tmp:<BRANCH>
+    ```
+    This works if the contributor enabled **"Allow edits from maintainers"** (or you have push access). If push is denied, ask the contributor to merge `main` into their branch and push; then you use "Squash and merge" on GitHub.
+6.  **Merge the PR on GitHub:**  
+    `gh pr merge <PR_NUMBER> --squash`  
+    The PR will show as **Merged** and the contributor will get credit.
+7.  **Switch back to `main`:**  
+    `git checkout main`
+
+We used this flow for PRs [#220](https://github.com/sickn33/antigravity-awesome-skills/pull/220), [#224](https://github.com/sickn33/antigravity-awesome-skills/pull/224), and [#225](https://github.com/sickn33/antigravity-awesome-skills/pull/225) after they had been integrated locally and closed.
+
+**Right after merging:**
+
+1.  **If the PR had `Closes #N`** — The issue is closed automatically; no extra action.
+2.  **If an issue was fixed but not linked** — Close it manually and add a comment, e.g.:
+    ```text
+    Fixed in #<PR_NUMBER>. Shipped in release vX.Y.Z.
+    ```
+3.  **Single PR or small batch** — Optionally run the full Post-Merge Routine below. For a single, trivial PR you can defer it to the next release prep.
+
+### C. Post-Merge Routine (Must Do Before a Release)
+
+After you have merged several PRs or before cutting a release:
+
+1.  **Sync Contributors List**:
+    - Run: `git shortlog -sn --all`
+    - Update `## Repo Contributors` in README.md.
+
+2.  **Verify Table of Contents**:
+    - Ensure all new headers have clean anchors.
+    - **NO EMOJIS** in H2 headers.
+
+3.  **Prepare for release** — Draft the release and tag when ready (see [§4 Release Workflow](#4-release-workflow) below).
+
+---
+
+## 2. 📝 Documentation "Pixel Perfect" Rules
+
+We discovered several consistency issues during V4 development. Follow these rules STRICTLY.
+
+### A. Table of Contents (TOC) Anchors
+
+GitHub's anchor generation breaks if headers have emojis.
+
+- **BAD**: `## 🚀 New Here?` -> Anchor: `#--new-here` (Broken)
+- **GOOD**: `## New Here?` -> Anchor: `#new-here` (Clean)
+
+**Rule**: **NEVER put emojis in H2 (`##`) headers.** Put them in the text below if needed.
+
+### B. The "Trinity" of Docs
+
+If you update installation instructions or tool compatibility, you MUST update all 3 files:
+
+1.  `README.md` (Source of Truth)
+2.  `docs/users/getting-started.md` (Beginner Guide)
+3.  `docs/users/faq.md` (Troubleshooting)
+
+_Common pitfall: Updating the clone URL in README but leaving an old one in FAQ._
+
+### C. Statistics Consistency (CRITICAL)
+
+If you add/remove skills, you **MUST** ensure generated counts and user-facing claims stay aligned.
+
+Locations to check:
+
+1.  `README.md`
+2.  `package.json` description
+3.  `skills_index.json` and generated catalog artifacts
+4.  Any user docs that deliberately hardcode counts
+
+### D. Credits Policy (Who goes where?)
+
+- **Credits & Sources**: Use this for **External Repos**.
+  - _Rule_: "I extracted skills from this link you sent me." -> Add to `## Credits & Sources`.
+- **Repo Contributors**: Use this for **Pull Requests**.
+  - _Rule_: "This user sent a PR." -> Add to `## Repo Contributors`.
+
+### E. Badges & Links
+
+- **Antigravity Badge**: Must point to `https://github.com/sickn33/antigravity-awesome-skills`, NOT `anthropics/antigravity`.
+- **License**: Ensure the link points to `LICENSE` file.
+
+### F. Workflows Consistency (NEW in V5)
+
+If you touch any Workflows-related artifact, keep all workflow surfaces in sync:
+
+1. `docs/users/workflows.md` (human-readable playbooks)
+2. `data/workflows.json` (machine-readable schema)
+3. `skills/antigravity-workflows/SKILL.md` (orchestration entrypoint)
+
+Rules:
+
+- Every workflow id referenced in docs must exist in `data/workflows.json`.
+- If you add/remove a workflow step category, update prompt examples accordingly.
+- If a workflow references optional skills not yet merged (example: `go-playwright`), mark them explicitly as **optional** in docs.
+- If workflow onboarding text is changed, update the docs trinity:
+  - `README.md`
+  - `docs/users/getting-started.md`
+  - `docs/users/faq.md`
+
+---
+
+## 3. 🛡️ Governance & Quality Bar
+
+### A. The 5-Point Quality Check
+
+Reject any PR that fails this:
+
+1.  **Metadata**: Has `name`, `description`?
+2.  **Safety**: `risk: offensive` used for red-team tools?
+3.  **Clarity**: Does it say _when_ to use it?
+4.  **Examples**: Copy-pasteable code blocks?
+5.  **Limitations / Safety Notes**: Edge cases and risk boundaries are stated clearly.
+
+### B. Risk Labels (V4)
+
+- ⚪ **Safe**: Default.
+- 🔴 **Risk**: Destructive/Security tools. MUST have `[Authorized Use Only]` warning.
+- 🟣 **Official**: Vendor mirrors only.
+
+---
+
+## 4. 🚀 Release Workflow
+
+When cutting a new version, follow the maintainer playbook in [`docs/maintainers/release-process.md`](../docs/maintainers/release-process.md).
+
+**Release checklist (order matters):**  
+Operational verification → Changelog → Bump `package.json` (and README if needed) → Commit & push → Create GitHub Release with tag matching `package.json` → npm publish (manual or via CI) → Close remaining linked issues.
+
+---
+
+1.  **Run release verification**:
+    ```bash
+    npm run validate
+    npm run validate:references
+    npm run sync:all
+    npm run test
+    npm run app:build
+    ```
+    Optional diagnostic pass:
+    ```bash
+    npm run validate:strict
+    ```
+2.  **Update Changelog**: Add the new release section to `CHANGELOG.md`.
+3.  **Bump Version**:
+    - Update `package.json` → `"version": "X.Y.Z"` (source of truth for npm).
+    - Update version header in `README.md` if it displays the number.
+    - One-liner: `npm version patch` (or `minor`/`major`) — bumps `package.json` and creates a git tag; then amend if you need to tag after release.
+4.  **Create GitHub Release** (REQUIRED):
+
+    > ⚠️ **CRITICAL**: Pushing a tag (`git push --tags`) is NOT enough. You must create a **GitHub Release Object** for it to appear in the sidebar and trigger the NPM publish workflow.
+
+    Use the GitHub CLI:
+
+    ```bash
+    # Prepare release notes (copy the new section from CHANGELOG.md into docs/maintainers/release-process.md, or use CHANGELOG excerpt)
+    # Then create the tag AND the release page (tag must match package.json version, e.g. v4.1.0)
+    gh release create v4.0.0 --title "v4.0.0 - [Theme Name]" --notes-file docs/maintainers/release-process.md
+    ```
+
+    **Important:** The release tag must match `package.json`'s version. The [Publish to npm](workflows/publish-npm.yml) workflow runs on **Release published** and will run `npm publish`; npm rejects republishing the same version.
+
+    _Or create the release manually via GitHub UI > Releases > Draft a new release, then publish._
+
+5.  **Publish to npm** (so `npx antigravity-awesome-skills` works):
+    - **Option A (manual):** From repo root, with npm logged in and 2FA/token set up:
+      ```bash
+      npm publish
+      ```
+      You cannot republish the same version; always bump `package.json` before publishing.
+    - **Option B (CI):** On GitHub, create a **Release** (tag e.g. `v4.6.1`). The workflow [Publish to npm](.github/workflows/publish-npm.yml) runs on **Release published** and runs `npm publish` if the repo secret `NPM_TOKEN` is set (npm → Access Tokens → Granular token with Publish, then add as repo secret `NPM_TOKEN`).
+
+6.  **Close linked issue(s)**:
+    - Issues that had `Closes #N` / `Fixes #N` in a merged PR are already closed.
+    - For any issue that was fixed by the release but not auto-closed, close it manually and add a comment, e.g.:
+      ```bash
+      gh issue close <ID> --comment "Shipped in vX.Y.Z. See CHANGELOG.md and release notes."
+      ```
+
+### When to Close an Issue
+
+| Situation                                                | Action                                                                                         |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| PR merges and PR body contains `Closes #N` or `Fixes #N` | GitHub closes the issue automatically.                                                         |
+| PR merges but did not reference the issue                | After merge, close manually: `gh issue close N --comment "Fixed in #<PR>. Shipped in vX.Y.Z."` |
+| Fix/feature shipped in a release, no PR referenced       | Close with: `gh issue close N --comment "Shipped in vX.Y.Z. See CHANGELOG."`                   |
+
+### 📋 Changelog Entry Template
+
+Each new release section in `CHANGELOG.md` should follow [Keep a Changelog](https://keepachangelog.com/) and this structure:
+
+```markdown
+## [X.Y.Z] - YYYY-MM-DD - "[Theme Name]"
+
+> **[One-line catchy summary of the release]**
+
+[Brief 2-3 sentence intro about the release's impact]
+
+## 🚀 New Skills
+
+### [Emoji] [Skill Name](skills/skill-name/)
+
+**[Bold high-level benefit]**
+[Description of what it does]
+
+- **Key Feature 1**: [Detail]
+- **Key Feature 2**: [Detail]
+
+> **Try it:** `(User Prompt) ...`
+
+---
+
+## 📦 Improvements
+
+- **Registry Update**: Now tracking [N] skills.
+- **[Component]**: [Change detail]
+
+## 👥 Credits
+
+A huge shoutout to our community contributors:
+
+- **@username** for `skill-name`
+- **@username** for `fix-name`
+
+---
+
+_Upgrade now: `git pull origin main` to fetch the latest skills._
+```
+
+---
+
+## 5. 🚨 Emergency Fixes
+
+If a skill is found to be harmful or broken:
+
+1.  **Move to broken folder** (don't detect): `mv skills/bad-skill skills/.broken/`
+2.  **Or Add Warning**: Add `> [!WARNING]` to the top of `SKILL.md`.
+3.  **Push Immediately**.
+
+---
+
+## 6. 📁 Data directory note
+
+`data/package.json` exists for historical reasons; the build and catalog scripts run from the repo root and use root `node_modules`. You can ignore or remove `data/package.json` and `data/node_modules` if present.

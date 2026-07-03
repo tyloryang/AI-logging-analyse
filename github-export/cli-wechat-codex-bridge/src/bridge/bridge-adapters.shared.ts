@@ -1,0 +1,1528 @@
+﻿import fs from "node:fs";
+import path from "node:path";
+import net from "node:net";
+import { fileURLToPath } from "node:url";
+import { spawn as spawnChild, spawnSync } from "node:child_process";
+import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn as spawnPty } from "node-pty";
+import type { IPty } from "node-pty";
+
+import {
+  attachLocalCompanionMessageListener,
+  buildLocalCompanionToken,
+  clearLocalCompanionEndpoint,
+  sendLocalCompanionMessage,
+  writeLocalCompanionEndpoint,
+  type LocalCompanionCommand,
+  type LocalCompanionEndpoint,
+  type LocalCompanionMessage,
+} from "../companion/local-companion-link.ts";
+import { ensureWorkspaceChannelDir } from "../wechat/channel-config.ts";
+import {
+  buildClaudeFailureMessage,
+  buildClaudeHookSettings,
+  buildClaudePermissionDecisionHookOutput,
+  buildClaudePermissionApprovalRequest,
+  extractClaudeResumeConversationId,
+  findInjectedClaudePromptIndex,
+  normalizeClaudeAssistantMessage,
+  parseClaudeHookPayload,
+  type ClaudeHookPayload,
+  type PendingInjectedClaudePrompt,
+} from "./claude-hooks.ts";
+import type {
+  ApprovalRequest,
+  BridgeAdapter,
+  BridgeAdapterKind,
+  BridgeLifecycleMode,
+  BridgeNoticeLevel,
+  BridgeResumeSessionCandidate,
+  BridgeResumeThreadCandidate,
+  BridgeAdapterState,
+  BridgeEvent,
+  BridgeThreadSwitchReason,
+  BridgeThreadSwitchSource,
+  BridgeTurnOrigin,
+} from "./bridge-types.ts";
+import {
+  detectCliApproval,
+  isHighRiskShellCommand,
+  normalizeOutput,
+  nowIso,
+  truncatePreview,
+} from "./bridge-utils.ts";
+
+export type AdapterOptions = {
+  kind: BridgeAdapterKind;
+  command: string;
+  cwd: string;
+  profile?: string;
+  lifecycle?: BridgeLifecycleMode;
+  initialSharedSessionId?: string;
+  initialSharedThreadId?: string;
+  initialResumeConversationId?: string;
+  initialTranscriptPath?: string;
+  renderMode?: "embedded" | "panel" | "companion";
+};
+
+export type EventSink = (event: BridgeEvent) => void;
+
+export type SpawnTarget = {
+  file: string;
+  args: string[];
+};
+
+export type ResolveSpawnTargetOptions = {
+  env?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  forwardArgs?: string[];
+};
+
+export type CodexRpcRequestId = string | number;
+
+export type CodexRpcPendingRequest = {
+  method: string;
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+};
+
+export type CodexQueuedNotification = {
+  method: string;
+  params: Record<string, unknown>;
+};
+
+export type CodexPendingApprovalRequest = {
+  requestId: CodexRpcRequestId;
+  method: "item/commandExecution/requestApproval" | "item/fileChange/requestApproval";
+  threadId: string;
+  turnId: string;
+  origin: BridgeTurnOrigin;
+};
+
+export type CodexActiveTurn = {
+  threadId: string;
+  turnId: string;
+  origin: BridgeTurnOrigin;
+};
+
+export type CodexSessionMeta = {
+  id?: string;
+  timestamp?: string;
+  cwd?: string;
+  source?: string | { custom?: string };
+  originator?: string;
+};
+
+export type CodexSessionSummary = {
+  threadId: string;
+  title: string;
+  lastUpdatedAt: string;
+  source?: string;
+  filePath: string;
+};
+
+export type CodexRecentSessionFile = {
+  threadId: string;
+  filePath: string;
+  modifiedAtMs: number;
+};
+
+export type ClaudePendingHookApproval = {
+  requestId: string;
+  socket: net.Socket;
+};
+
+export const DEFAULT_COLS = 120;
+export const DEFAULT_ROWS = 30;
+export const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+export const WINDOWS_DIRECT_EXECUTABLE_EXTENSIONS = [".exe", ".cmd", ".bat", ".com"];
+export const WINDOWS_POWERSHELL_EXTENSION = ".ps1";
+export const CODEX_SESSION_POLL_INTERVAL_MS = 500;
+export const CODEX_SESSION_MATCH_WINDOW_MS = 30_000;
+export const CODEX_SESSION_FALLBACK_SCAN_INTERVAL_MS = 5_000;
+export const CODEX_THREAD_SIGNAL_TTL_MS = 30_000;
+export const CODEX_RECENT_SESSION_KEY_LIMIT = 64;
+export const INTERRUPT_SETTLE_DELAY_MS = 1_500;
+export const CODEX_FINAL_REPLY_SETTLE_DELAY_MS = 1_000;
+export const CODEX_STARTUP_WARMUP_MS = 1_200;
+export const CODEX_APP_SERVER_HOST = "127.0.0.1";
+export const CODEX_APP_SERVER_READY_TIMEOUT_MS = 10_000;
+export const CODEX_APP_SERVER_LOG_LIMIT = 12_000;
+export const CODEX_RPC_CONNECT_RETRY_MS = 150;
+export const CODEX_RPC_RECONNECT_TIMEOUT_MS = 5_000;
+export const CODEX_SESSION_LOCAL_MIRROR_FALLBACK_WINDOW_MS = 15_000;
+export const LOCAL_COMPANION_RECONNECT_GRACE_MS = 15_000;
+export const CLAUDE_HOOK_LISTEN_HOST = "127.0.0.1";
+export const CLAUDE_HELP_PROBE_TIMEOUT_MS = 5_000;
+export const CLAUDE_WECHAT_WORKING_NOTICE_DELAY_MS = 12_000;
+export const DEFAULT_UNIX_SHELL_CANDIDATES = ["pwsh", "bash", "zsh", "sh"] as const;
+export const POSIX_SHELL_NAMES = new Set(["bash", "zsh", "sh", "dash", "ksh"]);
+export const CLAUDE_FLAG_SUPPORT_CACHE = new Map<string, boolean>();
+export const OPENCODE_SERVER_HOST = "127.0.0.1";
+export const OPENCODE_SERVER_READY_TIMEOUT_MS = 10_000;
+export const OPENCODE_SSE_RECONNECT_DELAY_MS = 2_000;
+export const OPENCODE_SESSION_IDLE_SETTLE_MS = 1_500;
+export const OPENCODE_WECHAT_WORKING_NOTICE_DELAY_MS = 12_000;
+
+export type ShellRuntimeFamily = "powershell" | "posix";
+
+export type ShellRuntime = {
+  family: ShellRuntimeFamily;
+  launchArgs: string[];
+};
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function getCodexRpcRequestId(value: unknown): CodexRpcRequestId | null {
+  return typeof value === "string" || typeof value === "number" ? value : null;
+}
+
+export function getNotificationThreadId(params: unknown): string | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+
+  if (typeof params.threadId === "string") {
+    return params.threadId;
+  }
+
+  if (isRecord(params.thread) && typeof params.thread.id === "string") {
+    return params.thread.id;
+  }
+
+  return null;
+}
+
+export function getNotificationTurnId(params: unknown): string | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+
+  if (typeof params.turnId === "string") {
+    return params.turnId;
+  }
+
+  if (isRecord(params.turn) && typeof params.turn.id === "string") {
+    return params.turn.id;
+  }
+
+  return null;
+}
+
+export function describeUnknownError(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
+}
+
+export function normalizeCodexRpcError(error: unknown): string {
+  if (isRecord(error)) {
+    const message =
+      typeof error.message === "string"
+        ? error.message
+        : typeof error.code === "number"
+          ? `RPC error ${error.code}`
+          : "";
+    const data =
+      typeof error.data === "string"
+        ? error.data
+        : typeof error.details === "string"
+          ? error.details
+          : "";
+    const combined = [message, data].filter(Boolean).join(": ");
+    if (combined) {
+      return combined;
+    }
+  }
+
+  return describeUnknownError(error);
+}
+
+export function getLocalCompanionCommandName(kind: BridgeAdapterKind): string {
+  switch (kind) {
+    case "codex":
+      return "wechat-codex";
+    case "claude":
+      return "wechat-claude";
+    case "opencode":
+      return "wechat-opencode";
+    default:
+      return "local companion";
+  }
+}
+
+export function getSharedSessionIdFromAdapterState(state: BridgeAdapterState): string | undefined {
+  return state.sharedSessionId ?? state.sharedThreadId;
+}
+
+export function quoteWindowsCommandArg(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export function quotePosixCommandArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function isRecentIsoTimestamp(timestamp: string, maxAgeMs: number): boolean {
+  const parsedMs = Date.parse(timestamp);
+  if (!Number.isFinite(parsedMs)) {
+    return false;
+  }
+  return parsedMs >= Date.now() - maxAgeMs;
+}
+
+export function coerceWebSocketMessageData(data: unknown): string | null {
+  if (typeof data === "string") {
+    return data;
+  }
+
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString("utf8");
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
+  }
+
+  return null;
+}
+
+export function buildCodexCliArgs(
+  remoteUrl: string,
+  options: {
+    profile?: string;
+    inlineMode?: boolean;
+    resumeThreadId?: string;
+  } = {},
+): string[] {
+  const args: string[] = [];
+
+  if (options.resumeThreadId) {
+    args.push("resume", options.resumeThreadId);
+  }
+
+  args.push("--enable", "tui_app_server", "--remote", remoteUrl);
+
+  if (options.inlineMode) {
+    args.push("--no-alt-screen");
+  }
+
+  if (options.profile) {
+    args.push("--profile", options.profile);
+  }
+
+  return args;
+}
+
+export function hasClaudeNoAltScreenOption(helpText: string): boolean {
+  return helpText.includes("--no-alt-screen");
+}
+
+export function buildClaudeCliArgs(options: {
+  settingsFilePath: string;
+  resumeConversationId?: string | null;
+  profile?: string;
+  includeNoAltScreen?: boolean;
+}): string[] {
+  const args: string[] = [];
+  if (options.includeNoAltScreen) {
+    args.push("--no-alt-screen");
+  }
+  args.push("--settings", options.settingsFilePath);
+  if (options.resumeConversationId) {
+    args.push("--resume", options.resumeConversationId);
+  }
+  if (options.profile) {
+    args.push("--profile", options.profile);
+  }
+  return args;
+}
+
+export function isClaudeInvalidResumeError(text: string): boolean {
+  const normalized = normalizeOutput(text);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("No conversation found with session ID:") ||
+    normalized.includes("No conversation found with session name:") ||
+    normalized.includes("No conversation found with session:")
+  );
+}
+
+export function shouldIncludeClaudeNoAltScreen(command: string): boolean {
+  let spawnTarget: SpawnTarget;
+  try {
+    spawnTarget = resolveSpawnTarget(command, "claude");
+  } catch {
+    return false;
+  }
+
+  const cacheKey = `${spawnTarget.file}\u0000${spawnTarget.args.join("\u0000")}`;
+  const cached = CLAUDE_FLAG_SUPPORT_CACHE.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  let supported = false;
+  try {
+    const probe = spawnSync(spawnTarget.file, [...spawnTarget.args, "--help"], {
+      cwd: process.cwd(),
+      env: buildCliEnvironment("claude"),
+      encoding: "utf8",
+      timeout: CLAUDE_HELP_PROBE_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    const output = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;
+    supported = hasClaudeNoAltScreenOption(output);
+  } catch {
+    supported = false;
+  }
+
+  CLAUDE_FLAG_SUPPORT_CACHE.set(cacheKey, supported);
+  return supported;
+}
+
+export function buildCodexApprovalRequest(
+  method: string,
+  params: unknown,
+): ApprovalRequest | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+
+  if (method === "item/commandExecution/requestApproval") {
+    const command = typeof params.command === "string" ? params.command : "";
+    const cwd = typeof params.cwd === "string" ? params.cwd : "";
+    const reason = typeof params.reason === "string" ? params.reason : "";
+    const preview =
+      command && cwd
+        ? `${command} (${cwd})`
+        : command || reason || "Command execution approval requested.";
+
+    return {
+      source: "cli",
+      summary: reason
+        ? `Codex needs approval before running a command: ${truncatePreview(reason, 160)}`
+        : "Codex needs approval before running a command.",
+      commandPreview: truncatePreview(preview, 180),
+    };
+  }
+
+  if (method === "item/fileChange/requestApproval") {
+    const grantRoot = typeof params.grantRoot === "string" ? params.grantRoot : "";
+    const reason = typeof params.reason === "string" ? params.reason : "";
+    const preview = grantRoot || reason || "File change approval requested.";
+
+    return {
+      source: "cli",
+      summary: reason
+        ? `Codex needs approval before applying a file change: ${truncatePreview(reason, 160)}`
+        : "Codex needs approval before applying a file change.",
+      commandPreview: truncatePreview(preview, 180),
+    };
+  }
+
+  return null;
+}
+
+export function extractCodexFinalTextFromItem(item: unknown): string | null {
+  if (!isRecord(item) || item.type !== "agentMessage" || item.phase !== "final_answer") {
+    return null;
+  }
+
+  const text = typeof item.text === "string" ? normalizeOutput(item.text).trim() : "";
+  return text || null;
+}
+
+export function extractCodexUserMessageText(item: unknown): string | null {
+  if (!isRecord(item) || item.type !== "userMessage" || !Array.isArray(item.content)) {
+    return null;
+  }
+
+  const parts = item.content
+    .map((entry) => {
+      if (!isRecord(entry) || typeof entry.type !== "string") {
+        return "";
+      }
+
+      switch (entry.type) {
+        case "text":
+          return typeof entry.text === "string" ? entry.text : "";
+        case "image":
+          return "[image]";
+        case "localImage":
+          return typeof entry.path === "string" ? `[local image: ${entry.path}]` : "[local image]";
+        case "skill":
+          return typeof entry.name === "string" ? `[skill: ${entry.name}]` : "[skill]";
+        case "mention":
+          return typeof entry.name === "string" ? `[mention: ${entry.name}]` : "[mention]";
+        default:
+          return "";
+      }
+    })
+    .filter(Boolean);
+
+  const text = normalizeOutput(parts.join("\n")).trim();
+  return text || null;
+}
+
+export function extractCodexThreadFollowIdFromStatusChanged(params: unknown): string | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+
+  const threadId = getNotificationThreadId(params);
+  if (!threadId) {
+    return null;
+  }
+
+  const status = isRecord(params.status) ? params.status : null;
+  if (!status) {
+    return threadId;
+  }
+
+  const statusType = typeof status.type === "string" ? status.type : "";
+  if (statusType === "notLoaded") {
+    return null;
+  }
+
+  if (statusType === "active" || statusType === "idle" || statusType === "systemError") {
+    return threadId;
+  }
+
+  return threadId;
+}
+
+export function extractCodexThreadStartedThreadId(params: unknown): string | null {
+  if (!isRecord(params) || !isRecord(params.thread)) {
+    return null;
+  }
+
+  return typeof params.thread.id === "string" ? params.thread.id : null;
+}
+
+export function shouldIgnoreCodexSessionReplayEntry(
+  timestamp: unknown,
+  ignoreBeforeMs: number | null,
+): boolean {
+  if (ignoreBeforeMs === null) {
+    return false;
+  }
+  if (typeof timestamp !== "string") {
+    return true;
+  }
+
+  const parsedTimestampMs = Date.parse(timestamp);
+  if (!Number.isFinite(parsedTimestampMs)) {
+    return true;
+  }
+
+  return parsedTimestampMs < ignoreBeforeMs;
+}
+
+export function shouldRecoverCodexStaleBusyState(params: {
+  status: BridgeAdapterState["status"];
+  pendingTurnStart: boolean;
+  hasActiveTurn: boolean;
+  hasPendingApproval: boolean;
+  activeTurnId?: string;
+}): boolean {
+  return (
+    params.status === "busy" &&
+    !params.pendingTurnStart &&
+    !params.hasActiveTurn &&
+    !params.hasPendingApproval &&
+    !params.activeTurnId
+  );
+}
+
+export function shouldAutoCompleteCodexWechatTurnAfterFinalReply(params: {
+  candidateTurnId: string | null;
+  activeTurnId?: string;
+  activeTurnOrigin?: BridgeTurnOrigin;
+  pendingTurnStart: boolean;
+  hasPendingApproval: boolean;
+  hasFinalOutput: boolean;
+  hasCompletedTurn: boolean;
+  lastActivityAtMs: number | null;
+  nowMs: number;
+  settleDelayMs: number;
+}): boolean {
+  return (
+    typeof params.candidateTurnId === "string" &&
+    params.activeTurnId === params.candidateTurnId &&
+    params.activeTurnOrigin === "wechat" &&
+    !params.pendingTurnStart &&
+    !params.hasPendingApproval &&
+    params.hasFinalOutput &&
+    !params.hasCompletedTurn &&
+    typeof params.lastActivityAtMs === "number" &&
+    Number.isFinite(params.lastActivityAtMs) &&
+    params.nowMs - params.lastActivityAtMs >= params.settleDelayMs
+  );
+}
+
+export function getEnvValue(
+  env: Record<string, string | undefined>,
+  key: string,
+): string | undefined {
+  const direct = env[key];
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  const matchedKey = Object.keys(env).find(
+    (candidate) => candidate.toLowerCase() === key.toLowerCase(),
+  );
+  return matchedKey ? env[matchedKey] : undefined;
+}
+
+export function fileExists(filePath: string): boolean {
+  try {
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function isPathLikeCommand(command: string): boolean {
+  return (
+    path.isAbsolute(command) ||
+    command.startsWith(".") ||
+    command.includes("/") ||
+    command.includes("\\")
+  );
+}
+
+export function getWindowsCommandExtensions(
+  env: Record<string, string | undefined>,
+): string[] {
+  const configured = (getEnvValue(env, "PATHEXT") ?? "")
+    .split(";")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+
+  const ordered = [...WINDOWS_DIRECT_EXECUTABLE_EXTENSIONS, "", WINDOWS_POWERSHELL_EXTENSION];
+  for (const extension of configured) {
+    if (!ordered.includes(extension)) {
+      ordered.push(extension);
+    }
+  }
+  return ordered;
+}
+
+export function expandCommandCandidates(
+  command: string,
+  platform: NodeJS.Platform,
+  env: Record<string, string | undefined>,
+): string[] {
+  if (platform !== "win32") {
+    return [command];
+  }
+
+  if (path.extname(command)) {
+    return [command];
+  }
+
+  return getWindowsCommandExtensions(env).map((extension) => `${command}${extension}`);
+}
+
+export function resolvePathLikeCommand(
+  command: string,
+  platform: NodeJS.Platform,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const absoluteCommand = path.resolve(command);
+  for (const candidate of expandCommandCandidates(absoluteCommand, platform, env)) {
+    if (fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+export function findCommandOnPath(
+  command: string,
+  platform: NodeJS.Platform,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const pathEntries = (getEnvValue(env, "PATH") ?? "")
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  const candidates = expandCommandCandidates(command, platform, env);
+  for (const directory of pathEntries) {
+    for (const candidate of candidates) {
+      const candidatePath = path.join(directory, candidate);
+      if (fileExists(candidatePath)) {
+        return candidatePath;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+export function resolveCommandPath(
+  command: string,
+  platform: NodeJS.Platform,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  if (isPathLikeCommand(command)) {
+    return resolvePathLikeCommand(command, platform, env);
+  }
+
+  return findCommandOnPath(command, platform, env);
+}
+
+export function resolveCmdExe(env: Record<string, string | undefined>): string {
+  const systemRoot = getEnvValue(env, "SystemRoot") ?? getEnvValue(env, "SYSTEMROOT");
+  const configured =
+    getEnvValue(env, "ComSpec") ??
+    getEnvValue(env, "COMSPEC") ??
+    (systemRoot ? `${systemRoot.replace(/[\\/]$/, "")}\\System32\\cmd.exe` : undefined);
+
+  return configured || "cmd.exe";
+}
+
+export function quoteForCmd(argument: string): string {
+  if (!argument) {
+    return '""';
+  }
+
+  if (!/[\s"]/u.test(argument)) {
+    return argument;
+  }
+
+  return `"${argument.replace(/"/g, '""')}"`;
+}
+
+export function wrapWithCmdExe(
+  scriptPath: string,
+  extraArgs: string[],
+  env: Record<string, string | undefined>,
+): SpawnTarget {
+  const commandLine = [quoteForCmd(scriptPath), ...extraArgs.map(quoteForCmd)].join(" ");
+  return {
+    file: resolveCmdExe(env),
+    args: ["/d", "/s", "/c", commandLine],
+  };
+}
+
+export function resolveBundledWindowsExe(
+  kind: Extract<BridgeAdapterKind, "codex" | "claude">,
+  launcherPath: string,
+): string | undefined {
+  const launcherDirectory = path.dirname(launcherPath);
+  const openAiDirectory = path.join(launcherDirectory, "node_modules", "@openai");
+  if (!fs.existsSync(openAiDirectory)) {
+    return undefined;
+  }
+
+  const vendorSegments = [
+    "vendor",
+    "x86_64-pc-windows-msvc",
+    kind,
+    `${kind}.exe`,
+  ];
+
+  const directCandidate = path.join(
+    openAiDirectory,
+    `${kind}-win32-x64`,
+    ...vendorSegments,
+  );
+  if (fileExists(directCandidate)) {
+    return directCandidate;
+  }
+
+  const packageCandidate = path.join(
+    openAiDirectory,
+    kind,
+    "node_modules",
+    "@openai",
+    `${kind}-win32-x64`,
+    ...vendorSegments,
+  );
+  if (fileExists(packageCandidate)) {
+    return packageCandidate;
+  }
+
+  const dirEntries = fs.readdirSync(openAiDirectory, { withFileTypes: true });
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(`.${kind}-`)) {
+      continue;
+    }
+
+    const nestedCandidate = path.join(
+      openAiDirectory,
+      entry.name,
+      "node_modules",
+      "@openai",
+      `${kind}-win32-x64`,
+      ...vendorSegments,
+    );
+    if (fileExists(nestedCandidate)) {
+      return nestedCandidate;
+    }
+  }
+
+  return undefined;
+}
+
+export function copyDefinedEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function mergeNoProxyValue(value?: string): string {
+  const requiredHosts = ["127.0.0.1", "localhost", "::1"];
+  const merged = new Set(
+    (value ?? "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+
+  for (const host of requiredHosts) {
+    merged.add(host);
+  }
+
+  return Array.from(merged).join(",");
+}
+
+function applyLoopbackNoProxy(env: Record<string, string>): Record<string, string> {
+  env.NO_PROXY = mergeNoProxyValue(env.NO_PROXY);
+  env.no_proxy = mergeNoProxyValue(env.no_proxy);
+  return env;
+}
+
+export function resolveDefaultAdapterCommand(
+  kind: BridgeAdapterKind,
+  options: {
+    env?: Record<string, string | undefined>;
+    platform?: NodeJS.Platform;
+  } = {},
+): string {
+  const platform = options.platform ?? process.platform;
+  if (kind !== "shell") {
+    return kind;
+  }
+
+  if (platform === "win32") {
+    return "powershell.exe";
+  }
+
+  const env = options.env ?? (process.env as Record<string, string | undefined>);
+  for (const candidate of DEFAULT_UNIX_SHELL_CANDIDATES) {
+    if (resolveCommandPath(candidate, platform, env)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `No default shell executable was found on ${platform}. Tried: ${DEFAULT_UNIX_SHELL_CANDIDATES.join(", ")}. Use --cmd <executable>.`,
+  );
+}
+
+export function buildCliEnvironment(
+  kind: BridgeAdapterKind,
+  options: {
+    env?: Record<string, string | undefined>;
+    platform?: NodeJS.Platform;
+  } = {},
+): Record<string, string> {
+  const sourceEnv = options.env ?? (process.env as Record<string, string | undefined>);
+  const platform = options.platform ?? process.platform;
+
+  if (kind === "codex" || kind === "claude" || kind === "opencode") {
+    if (platform !== "win32") {
+      return applyLoopbackNoProxy({
+        ...copyDefinedEnv(sourceEnv),
+        TERM: sourceEnv.TERM || "xterm-256color",
+      });
+    }
+
+    const env: Record<string, string> = {
+      TERM: sourceEnv.TERM || "xterm-256color",
+    };
+
+    const keys = [
+      "PATH",
+      "PATHEXT",
+      "ComSpec",
+      "COMSPEC",
+      "SystemRoot",
+      "SYSTEMROOT",
+      "USERPROFILE",
+      "HOME",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "TEMP",
+      "TMP",
+      "OS",
+      "ProgramFiles",
+      "ProgramFiles(x86)",
+      "CommonProgramFiles",
+      "CommonProgramFiles(x86)",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "NO_PROXY",
+      "no_proxy",
+    ] as const;
+
+    for (const key of keys) {
+      const value = sourceEnv[key];
+      if (value) {
+        env[key] = value;
+      }
+    }
+
+    if (!env.HOME && env.USERPROFILE) {
+      env.HOME = env.USERPROFILE;
+    }
+
+    return applyLoopbackNoProxy(env);
+  }
+
+  return {
+    ...copyDefinedEnv(sourceEnv),
+    TERM: sourceEnv.TERM || "xterm-256color",
+  };
+}
+
+export function buildPtySpawnOptions(params: {
+  cwd: string;
+  env: Record<string, string>;
+  platform?: NodeJS.Platform;
+}): Parameters<typeof spawnPty>[2] {
+  const options: Parameters<typeof spawnPty>[2] = {
+    name: "xterm-color",
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    cwd: params.cwd,
+    env: params.env,
+  };
+
+  if ((params.platform ?? process.platform) === "win32") {
+    options.useConpty = true;
+  }
+
+  return options;
+}
+
+export function normalizeShellCommandName(command: string): string {
+  return path.parse(path.basename(command)).name.toLowerCase();
+}
+
+export function resolveShellRuntime(
+  command: string,
+  options: {
+    platform?: NodeJS.Platform;
+  } = {},
+): ShellRuntime {
+  const platform = options.platform ?? process.platform;
+  const name = normalizeShellCommandName(command);
+
+  if (name === "powershell" || name === "pwsh") {
+    return {
+      family: "powershell",
+      launchArgs:
+        platform === "win32"
+          ? ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit"]
+          : ["-NoLogo", "-NoProfile", "-NoExit"],
+    };
+  }
+
+  if (POSIX_SHELL_NAMES.has(name)) {
+    return {
+      family: "posix",
+      launchArgs: ["-i"],
+    };
+  }
+
+  throw new Error(
+    `Unsupported shell executable for shell adapter: ${command}. Supported shells: powershell, pwsh, bash, zsh, sh, dash, ksh.`,
+  );
+}
+
+export function escapePowerShellString(text: string): string {
+  return text.replace(/`/g, "``").replace(/"/g, '`"');
+}
+
+export function escapePosixShellString(text: string): string {
+  return `'${text.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+export function buildShellProfileCommand(
+  profilePath: string,
+  family: ShellRuntimeFamily,
+): string {
+  const resolved = path.resolve(profilePath);
+  if (family === "powershell") {
+    return `. "${escapePowerShellString(resolved)}"`;
+  }
+  return `. ${escapePosixShellString(resolved)}`;
+}
+
+export function buildShellInputPayload(
+  text: string,
+  family: ShellRuntimeFamily,
+  completionMarker = "__WECHAT_BRIDGE_DONE__",
+): string {
+  if (family === "powershell") {
+    const encodedCommand = Buffer.from(text, "utf8").toString("base64");
+    const script = [
+      "$__wechatBridgePreviousErrorActionPreference = $ErrorActionPreference",
+      "$ErrorActionPreference = 'Continue'",
+      "$global:LASTEXITCODE = 0",
+      "try {",
+      `  $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${escapePowerShellString(encodedCommand)}"))`,
+      "  $scriptBlock = [scriptblock]::Create($decoded)",
+      "  & $scriptBlock",
+      "} catch {",
+      "  Write-Error $_",
+      "  $global:LASTEXITCODE = 1",
+      "} finally {",
+      "  if (-not ($global:LASTEXITCODE -is [int])) { $global:LASTEXITCODE = 0 }",
+      `  Write-Output "${escapePowerShellString(completionMarker)}:$global:LASTEXITCODE"`,
+      "  $ErrorActionPreference = $__wechatBridgePreviousErrorActionPreference",
+      "}",
+      "",
+    ];
+    return `${script.join("\r")}\r`;
+  }
+
+  const script = [
+    text,
+    "__wechat_bridge_status=$?",
+    `printf '%s:%s\\n' ${escapePosixShellString(completionMarker)} "$__wechat_bridge_status"`,
+    "",
+  ];
+  return `${script.join("\r")}\r`;
+}
+
+export async function reserveLocalPort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, CODEX_APP_SERVER_HOST, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Could not reserve a local app-server port.")));
+        return;
+      }
+
+      const { port } = address;
+      server.close((closeError) => {
+        if (closeError) {
+          reject(closeError);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+export async function waitForTcpPort(
+  host: string,
+  port: number,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = net.connect({ host, port });
+      const finish = (value: boolean) => {
+        socket.removeAllListeners();
+        socket.destroy();
+        resolve(value);
+      };
+
+      socket.once("connect", () => finish(true));
+      socket.once("timeout", () => finish(false));
+      socket.once("error", () => finish(false));
+      socket.setTimeout(500);
+    });
+
+    if (connected) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  throw new Error(`Timed out waiting for app-server on ${host}:${port}.`);
+}
+
+export async function delay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function appendBoundedLog(existing: string, chunk: string): string {
+  const next = existing ? `${existing}${chunk}` : chunk;
+  if (next.length <= CODEX_APP_SERVER_LOG_LIMIT) {
+    return next;
+  }
+  return next.slice(next.length - CODEX_APP_SERVER_LOG_LIMIT);
+}
+
+export function normalizeComparablePath(filePath: string): string {
+  return path.resolve(filePath).replace(/\//g, "\\").toLowerCase();
+}
+
+export function buildCodexSessionDayPath(date: Date): string | null {
+  const homeDirectory = process.env.USERPROFILE ?? process.env.HOME;
+  if (!homeDirectory) {
+    return null;
+  }
+
+  return path.join(
+    homeDirectory,
+    ".codex",
+    "sessions",
+    String(date.getFullYear()),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  );
+}
+
+export function buildCodexSessionsRoot(): string | null {
+  const homeDirectory = process.env.USERPROFILE ?? process.env.HOME;
+  if (!homeDirectory) {
+    return null;
+  }
+
+  return path.join(homeDirectory, ".codex", "sessions");
+}
+
+export function listCodexSessionFilesRecursively(rootDirectory: string): string[] {
+  if (!fs.existsSync(rootDirectory)) {
+    return [];
+  }
+
+  const files: string[] = [];
+  const pending = [rootDirectory];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) {
+      continue;
+    }
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        files.push(entryPath);
+      }
+    }
+  }
+
+  return files;
+}
+
+export function readCodexSessionMeta(filePath: string): CodexSessionMeta | null {
+  try {
+    const firstLine = fs.readFileSync(filePath, "utf8").split(/\r?\n/, 1)[0]?.trim();
+    if (!firstLine) {
+      return null;
+    }
+
+    const parsed = JSON.parse(firstLine) as {
+      type?: string;
+      payload?: CodexSessionMeta;
+    };
+    if (parsed.type !== "session_meta" || !parsed.payload) {
+      return null;
+    }
+
+    return parsed.payload;
+  } catch {
+    return null;
+  }
+}
+
+export function getCodexSessionSource(meta: CodexSessionMeta | null | undefined): string | null {
+  if (!meta) {
+    return null;
+  }
+
+  if (typeof meta.source === "string") {
+    return meta.source;
+  }
+
+  if (isRecord(meta.source) && typeof meta.source.custom === "string") {
+    return meta.source.custom;
+  }
+
+  return null;
+}
+
+export function parseCodexSessionUserMessage(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      type?: string;
+      payload?: {
+        type?: string;
+        message?: string;
+      };
+    };
+    if (parsed.type !== "event_msg" || parsed.payload?.type !== "user_message") {
+      return null;
+    }
+
+    const message =
+      typeof parsed.payload.message === "string"
+        ? normalizeOutput(parsed.payload.message).trim()
+        : "";
+    return message || null;
+  } catch {
+    return null;
+  }
+}
+
+export function summarizeCodexSessionFile(filePath: string): CodexSessionSummary | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const lines = content.split(/\r?\n/).filter(Boolean);
+  const meta = readCodexSessionMeta(filePath);
+  if (!meta?.id || !meta.cwd) {
+    return null;
+  }
+
+  let lastTimestamp = meta.timestamp ?? null;
+  let lastUserMessage: string | null = null;
+  for (const line of lines) {
+    const parsedUserMessage = parseCodexSessionUserMessage(line);
+    if (parsedUserMessage) {
+      lastUserMessage = parsedUserMessage;
+    }
+
+    try {
+      const parsed = JSON.parse(line) as { timestamp?: string };
+      if (typeof parsed.timestamp === "string") {
+        lastTimestamp = parsed.timestamp;
+      }
+    } catch {
+      // Ignore malformed lines while summarizing persisted sessions.
+    }
+  }
+
+  const stats = fs.statSync(filePath);
+  const lastUpdatedAt =
+    lastTimestamp && Number.isFinite(Date.parse(lastTimestamp))
+      ? lastTimestamp
+      : new Date(stats.mtimeMs).toISOString();
+
+  return {
+    threadId: meta.id,
+    title: truncatePreview(lastUserMessage ?? meta.id, 120),
+    lastUpdatedAt,
+    source: getCodexSessionSource(meta) ?? undefined,
+    filePath,
+  };
+}
+
+export function matchesCodexSessionMeta(
+  meta: CodexSessionMeta | null | undefined,
+  options: {
+    cwd: string;
+    startedAtMs: number;
+    threadId?: string;
+    sessionSource?: string;
+  },
+): boolean {
+  if (!meta?.cwd || !meta.id) {
+    return false;
+  }
+
+  if (normalizeComparablePath(meta.cwd) !== normalizeComparablePath(options.cwd)) {
+    return false;
+  }
+
+  if (options.threadId && meta.id !== options.threadId) {
+    return false;
+  }
+
+  const sessionSource = getCodexSessionSource(meta);
+  if (options.sessionSource && sessionSource !== options.sessionSource) {
+    return false;
+  }
+
+  if (options.threadId) {
+    return true;
+  }
+
+  const sessionStartedAtMs = meta.timestamp ? Date.parse(meta.timestamp) : Number.NaN;
+  if (
+    Number.isFinite(sessionStartedAtMs) &&
+    sessionStartedAtMs < options.startedAtMs - CODEX_SESSION_MATCH_WINDOW_MS
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function findCodexSessionFile(
+  cwd: string,
+  startedAtMs: number,
+  options: {
+    threadId?: string;
+    sessionSource?: string;
+  } = {},
+): string | null {
+  if (options.threadId) {
+    const sessionsRoot = buildCodexSessionsRoot();
+    if (!sessionsRoot) {
+      return null;
+    }
+
+    const candidates = listCodexSessionFilesRecursively(sessionsRoot)
+      .map((filePath) => {
+        const meta = readCodexSessionMeta(filePath);
+        if (!matchesCodexSessionMeta(meta, { cwd, startedAtMs, ...options })) {
+          return null;
+        }
+
+        const stats = fs.statSync(filePath);
+        return {
+          filePath,
+          modifiedAtMs: stats.mtimeMs,
+        };
+      })
+      .filter((candidate): candidate is { filePath: string; modifiedAtMs: number } => Boolean(candidate))
+      .sort((left, right) => right.modifiedAtMs - left.modifiedAtMs);
+
+    return candidates[0]?.filePath ?? null;
+  }
+
+  const dayDirectories = [new Date(), new Date(startedAtMs), new Date(startedAtMs - 86_400_000)]
+    .map(buildCodexSessionDayPath)
+    .filter((value): value is string => Boolean(value))
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .filter((directory) => fs.existsSync(directory));
+
+  const candidates: Array<{
+    filePath: string;
+    modifiedAtMs: number;
+    sessionStartedAtMs: number;
+  }> = [];
+
+  for (const directory of dayDirectories) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
+        continue;
+      }
+
+      const filePath = path.join(directory, entry.name);
+      const stats = fs.statSync(filePath);
+      if (stats.mtimeMs < startedAtMs - CODEX_SESSION_MATCH_WINDOW_MS) {
+        continue;
+      }
+
+      const meta = readCodexSessionMeta(filePath);
+      if (!matchesCodexSessionMeta(meta, { cwd, startedAtMs, ...options })) {
+        continue;
+      }
+
+      const sessionStartedAtMs = meta?.timestamp ? Date.parse(meta.timestamp) : Number.NaN;
+      candidates.push({
+        filePath,
+        modifiedAtMs: stats.mtimeMs,
+        sessionStartedAtMs,
+      });
+    }
+  }
+
+  candidates.sort((left, right) => {
+    const leftDistance = Number.isFinite(left.sessionStartedAtMs)
+      ? Math.abs(left.sessionStartedAtMs - startedAtMs)
+      : Number.POSITIVE_INFINITY;
+    const rightDistance = Number.isFinite(right.sessionStartedAtMs)
+      ? Math.abs(right.sessionStartedAtMs - startedAtMs)
+      : Number.POSITIVE_INFINITY;
+
+    if (leftDistance !== rightDistance) {
+      return leftDistance - rightDistance;
+    }
+    return right.modifiedAtMs - left.modifiedAtMs;
+  });
+
+  return candidates[0]?.filePath ?? null;
+}
+
+export function findRecentCodexSessionFileForCwd(
+  cwd: string,
+  startedAtMs: number,
+): CodexRecentSessionFile | null {
+  const sessionsRoot = buildCodexSessionsRoot();
+  if (!sessionsRoot) {
+    return null;
+  }
+
+  const currentCwd = normalizeComparablePath(cwd);
+  let bestCandidate: CodexRecentSessionFile | null = null;
+
+  for (const filePath of listCodexSessionFilesRecursively(sessionsRoot)) {
+    const meta = readCodexSessionMeta(filePath);
+    if (!meta?.id || !meta.cwd || normalizeComparablePath(meta.cwd) !== currentCwd) {
+      continue;
+    }
+
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(filePath);
+    } catch {
+      continue;
+    }
+
+    if (stats.mtimeMs < startedAtMs - CODEX_SESSION_MATCH_WINDOW_MS) {
+      continue;
+    }
+
+    if (!bestCandidate || stats.mtimeMs > bestCandidate.modifiedAtMs) {
+      bestCandidate = {
+        threadId: meta.id,
+        filePath,
+        modifiedAtMs: stats.mtimeMs,
+      };
+    }
+  }
+
+  return bestCandidate;
+}
+
+export function listCodexResumeSessions(
+  cwd: string,
+  limit = 10,
+): BridgeResumeSessionCandidate[] {
+  const sessionsRoot = buildCodexSessionsRoot();
+  if (!sessionsRoot) {
+    return [];
+  }
+
+  const currentCwd = normalizeComparablePath(cwd);
+  const newestByThreadId = new Map<string, CodexSessionSummary>();
+  for (const filePath of listCodexSessionFilesRecursively(sessionsRoot)) {
+    const summary = summarizeCodexSessionFile(filePath);
+    if (!summary) {
+      continue;
+    }
+
+    const meta = readCodexSessionMeta(filePath);
+    if (!meta?.cwd || normalizeComparablePath(meta.cwd) !== currentCwd) {
+      continue;
+    }
+
+    const previous = newestByThreadId.get(summary.threadId);
+    if (!previous || Date.parse(summary.lastUpdatedAt) > Date.parse(previous.lastUpdatedAt)) {
+      newestByThreadId.set(summary.threadId, summary);
+    }
+  }
+
+  return Array.from(newestByThreadId.values())
+    .sort((left, right) => Date.parse(right.lastUpdatedAt) - Date.parse(left.lastUpdatedAt))
+    .slice(0, Math.max(1, limit))
+    .map((summary) => ({
+      sessionId: summary.threadId,
+      threadId: summary.threadId,
+      title: summary.title,
+      lastUpdatedAt: summary.lastUpdatedAt,
+      source: summary.source,
+    }));
+}
+
+export function listCodexResumeThreads(
+  cwd: string,
+  limit = 10,
+): BridgeResumeThreadCandidate[] {
+  return listCodexResumeSessions(cwd, limit);
+}
+
+export function resolveSpawnTarget(
+  command: string,
+  kind: BridgeAdapterKind,
+  options: ResolveSpawnTargetOptions = {},
+): SpawnTarget {
+  const trimmed = command.trim();
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? (process.env as Record<string, string | undefined>);
+  const forwardArgs = options.forwardArgs ?? [];
+
+  if (!trimmed) {
+    return { file: trimmed, args: [...forwardArgs] };
+  }
+
+  const resolved = resolveCommandPath(trimmed, platform, env) ?? trimmed;
+  if (platform !== "win32" || (kind !== "codex" && kind !== "claude" && kind !== "opencode")) {
+    return { file: resolved, args: [...forwardArgs] };
+  }
+
+  const bundledExe =
+    kind === "codex" || kind === "claude"
+      ? resolveBundledWindowsExe(kind, resolved)
+      : undefined;
+  if (bundledExe) {
+    return { file: bundledExe, args: [...forwardArgs] };
+  }
+
+  const extension = path.extname(resolved).toLowerCase();
+  if (WINDOWS_DIRECT_EXECUTABLE_EXTENSIONS.includes(extension)) {
+    if (extension === ".cmd" || extension === ".bat") {
+      return wrapWithCmdExe(resolved, forwardArgs, env);
+    }
+    return { file: resolved, args: [...forwardArgs] };
+  }
+
+  if (extension === WINDOWS_POWERSHELL_EXTENSION) {
+    const siblingCmd = resolved.slice(0, -extension.length) + ".cmd";
+    if (fileExists(siblingCmd)) {
+      return wrapWithCmdExe(siblingCmd, forwardArgs, env);
+    }
+  }
+
+  return { file: resolved, args: [...forwardArgs] };
+}

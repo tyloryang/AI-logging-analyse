@@ -1,0 +1,473 @@
+#!/usr/bin/env bun
+
+import net from "node:net";
+import path from "node:path";
+
+import { createBridgeAdapter } from "../bridge/bridge-adapters.ts";
+import {
+  LOCAL_COMPANION_RECONNECT_GRACE_MS,
+} from "../bridge/bridge-adapters.shared.ts";
+import {
+  attachLocalCompanionMessageListener,
+  readLocalCompanionEndpoint,
+  sendLocalCompanionMessage,
+  type LocalCompanionCloseReason,
+  type LocalCompanionEndpoint,
+  type LocalCompanionMessage,
+} from "./local-companion-link.ts";
+import { migrateLegacyChannelFiles } from "../wechat/channel-config.ts";
+
+export const LOCAL_COMPANION_RECONNECT_RETRY_MS = 250;
+
+function log(adapter: string, message: string): void {
+  process.stderr.write(`[${adapter}-companion] ${message}\n`);
+}
+
+type LocalCompanionCliOptions = {
+  adapter: "codex" | "claude" | "opencode";
+  cwd: string;
+};
+
+function parseCliArgs(argv: string[]): LocalCompanionCliOptions {
+  let adapter: "codex" | "claude" | "opencode" | null = null;
+  let cwd = process.cwd();
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    const next = argv[i + 1];
+
+    if (arg === "--help" || arg === "-h") {
+      process.stdout.write(
+        [
+          "Usage: local-companion --adapter <codex|claude|opencode> [--cwd <path>]",
+          "",
+          'Starts the visible local companion and connects it to the matching running bridge for the current directory.',
+          "",
+        ].join("\n"),
+      );
+      process.exit(0);
+    }
+
+    if (arg === "--adapter") {
+      if (!next || !["codex", "claude", "opencode"].includes(next)) {
+        throw new Error(`Invalid adapter: ${next ?? "(missing)"}`);
+      }
+      adapter = next as "codex" | "claude" | "opencode";
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--cwd") {
+      if (!next) {
+        throw new Error("--cwd requires a value");
+      }
+      cwd = path.resolve(next);
+      i += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  if (!adapter) {
+    throw new Error("Missing required --adapter <codex|claude|opencode>");
+  }
+
+  return { adapter, cwd };
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readMatchingEndpoint(
+  options: LocalCompanionCliOptions,
+): LocalCompanionEndpoint {
+  const endpoint = readLocalCompanionEndpoint(options.cwd);
+  if (!endpoint || endpoint.kind !== options.adapter) {
+    throw new Error(
+      `No active ${options.adapter} bridge endpoint was found for ${options.cwd}. Start "wechat-bridge-${options.adapter}" in that directory first.`,
+    );
+  }
+
+  return endpoint;
+}
+
+export function shouldReconnectLocalCompanion(params: {
+  shuttingDown: boolean;
+  closeReason: LocalCompanionCloseReason | null | undefined;
+}): boolean {
+  return !params.shuttingDown && !params.closeReason;
+}
+
+async function main(): Promise<void> {
+  migrateLegacyChannelFiles((message) => log("local", message));
+  const options = parseCliArgs(process.argv.slice(2));
+  const initialEndpoint = readMatchingEndpoint(options);
+
+  const adapter = createBridgeAdapter({
+    kind: initialEndpoint.kind,
+    command: initialEndpoint.command,
+    cwd: initialEndpoint.cwd,
+    profile: initialEndpoint.profile,
+    initialSharedSessionId:
+      initialEndpoint.sharedSessionId ?? initialEndpoint.sharedThreadId,
+    initialResumeConversationId: initialEndpoint.resumeConversationId,
+    initialTranscriptPath: initialEndpoint.transcriptPath,
+    renderMode: initialEndpoint.kind === "codex" ? "panel" : "companion",
+  });
+
+  let shuttingDown = false;
+  let closeReason: LocalCompanionCloseReason | null = null;
+  let activeSocket: net.Socket | null = null;
+  let detachListener: (() => void) | null = null;
+  let reconnectPromise: Promise<boolean> | null = null;
+
+  const detachActiveSocket = (destroy = false) => {
+    const socket = activeSocket;
+    activeSocket = null;
+    detachListener?.();
+    detachListener = null;
+    if (!socket) {
+      return;
+    }
+
+    socket.removeAllListeners("close");
+    socket.removeAllListeners("error");
+    if (destroy) {
+      try {
+        socket.destroy();
+      } catch {
+        // Best effort cleanup.
+      }
+    }
+  };
+
+  const publishState = () => {
+    if (!activeSocket) {
+      return;
+    }
+
+    sendLocalCompanionMessage(activeSocket, {
+      type: "state",
+      state: adapter.getState(),
+    });
+  };
+
+  const sendResponse = (
+    socket: net.Socket,
+    id: string,
+    ok: boolean,
+    result?: unknown,
+    error?: string,
+  ) => {
+    sendLocalCompanionMessage(socket, {
+      type: "response",
+      id,
+      ok,
+      result,
+      error,
+    });
+  };
+
+  const announceClosing = (
+    reason: LocalCompanionCloseReason,
+    exitCode?: number,
+  ) => {
+    closeReason = reason;
+    if (!activeSocket) {
+      return;
+    }
+    sendLocalCompanionMessage(activeSocket, {
+      type: "closing",
+      reason,
+      exitCode,
+    });
+  };
+
+  const closeCompanion = async (
+    exitCode = 0,
+    reason: LocalCompanionCloseReason = "companion_shutdown",
+  ) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+
+    announceClosing(reason, exitCode);
+    detachActiveSocket(false);
+    try {
+      await adapter.dispose();
+    } catch {
+      // Best effort cleanup.
+    }
+    process.exit(exitCode);
+  };
+
+  const handleBridgeRequest = async (
+    socket: net.Socket,
+    message: Extract<LocalCompanionMessage, { type: "request" }>,
+  ) => {
+    try {
+      switch (message.payload.command) {
+        case "send_input":
+          await adapter.sendInput(message.payload.text);
+          sendResponse(socket, message.id, true);
+          break;
+        case "list_resume_sessions":
+        case "list_resume_threads":
+          sendResponse(
+            socket,
+            message.id,
+            true,
+            await adapter.listResumeSessions(message.payload.limit),
+          );
+          break;
+        case "resume_session":
+          await adapter.resumeSession(message.payload.sessionId);
+          publishState();
+          sendResponse(socket, message.id, true);
+          break;
+        case "resume_thread":
+          await adapter.resumeSession(message.payload.threadId);
+          publishState();
+          sendResponse(socket, message.id, true);
+          break;
+        case "interrupt":
+          sendResponse(socket, message.id, true, await adapter.interrupt());
+          break;
+        case "reset":
+          await adapter.reset();
+          publishState();
+          sendResponse(socket, message.id, true);
+          break;
+        case "resolve_approval":
+          sendResponse(
+            socket,
+            message.id,
+            true,
+            await adapter.resolveApproval(message.payload.action),
+          );
+          break;
+        case "dispose":
+          sendResponse(socket, message.id, true);
+          await closeCompanion(0, "bridge_dispose");
+          break;
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      sendResponse(socket, message.id, false, undefined, text);
+    }
+  };
+
+  const connectToBridge = async (
+    endpoint: LocalCompanionEndpoint,
+  ): Promise<void> => {
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect({
+        host: "127.0.0.1",
+        port: endpoint.port,
+      });
+
+      let settled = false;
+      let helloAcknowledged = false;
+      let localDetach: (() => void) | null = null;
+
+      const fail = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        localDetach?.();
+        localDetach = null;
+        try {
+          socket.destroy();
+        } catch {
+          // Best effort cleanup.
+        }
+        reject(error);
+      };
+
+      socket.once("connect", () => {
+        socket.setNoDelay(true);
+        localDetach = attachLocalCompanionMessageListener(
+          socket,
+          (message: LocalCompanionMessage) => {
+            if (!helloAcknowledged) {
+              if (message.type === "hello_ack") {
+                helloAcknowledged = true;
+                closeReason = null;
+                activeSocket = socket;
+                detachListener = localDetach;
+                if (!settled) {
+                  settled = true;
+                  resolve();
+                }
+              }
+              return;
+            }
+
+            if (message.type !== "request") {
+              return;
+            }
+
+            void handleBridgeRequest(socket, message);
+          },
+        );
+
+        socket.once("close", () => {
+          if (!settled) {
+            fail(
+              new Error(
+                `The ${options.adapter} bridge closed the local companion socket before authentication.`,
+              ),
+            );
+            return;
+          }
+
+          if (activeSocket === socket) {
+            detachActiveSocket(false);
+            void (async () => {
+              if (
+                !shouldReconnectLocalCompanion({
+                  shuttingDown,
+                  closeReason,
+                })
+              ) {
+                return;
+              }
+
+              const reconnected = await reconnectToBridge();
+              if (!reconnected && !shuttingDown) {
+                await closeCompanion(1, "fatal_error");
+              }
+            })();
+          }
+        });
+
+        socket.once("error", (error) => {
+          if (!settled) {
+            fail(
+              error instanceof Error
+                ? error
+                : new Error(String(error)),
+            );
+          }
+        });
+
+        sendLocalCompanionMessage(socket, {
+          type: "hello",
+          token: endpoint.token,
+          companionPid: process.pid,
+        });
+      });
+
+      socket.once("error", (error) => {
+        if (!settled) {
+          fail(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    });
+  };
+
+  const reconnectToBridge = async (): Promise<boolean> => {
+    if (reconnectPromise) {
+      return await reconnectPromise;
+    }
+
+    reconnectPromise = (async () => {
+      const deadline = Date.now() + LOCAL_COMPANION_RECONNECT_GRACE_MS;
+      let lastError = "";
+      log(
+        options.adapter,
+        `Bridge connection dropped unexpectedly. Waiting up to ${Math.ceil(LOCAL_COMPANION_RECONNECT_GRACE_MS / 1000)}s to reconnect...`,
+      );
+
+      while (!shuttingDown && Date.now() < deadline) {
+        try {
+          const nextEndpoint = readMatchingEndpoint(options);
+          await connectToBridge(nextEndpoint);
+          publishState();
+          log(options.adapter, `Reconnected to bridge ${nextEndpoint.instanceId}.`);
+          return true;
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          await delay(LOCAL_COMPANION_RECONNECT_RETRY_MS);
+        }
+      }
+
+      if (lastError) {
+        log(
+          options.adapter,
+          `Bridge reconnection timed out after ${Math.ceil(LOCAL_COMPANION_RECONNECT_GRACE_MS / 1000)}s: ${lastError}`,
+        );
+      } else {
+        log(
+          options.adapter,
+          `Bridge reconnection timed out after ${Math.ceil(LOCAL_COMPANION_RECONNECT_GRACE_MS / 1000)}s.`,
+        );
+      }
+      return false;
+    })();
+
+    try {
+      return await reconnectPromise;
+    } finally {
+      reconnectPromise = null;
+    }
+  };
+
+  adapter.setEventSink((event) => {
+    if (activeSocket) {
+      sendLocalCompanionMessage(activeSocket, {
+        type: "event",
+        event,
+      });
+    }
+    publishState();
+
+    if (event.type === "fatal_error") {
+      void closeCompanion(1, "fatal_error");
+      return;
+    }
+
+    if (event.type === "status" && event.status === "stopped") {
+      void closeCompanion(0, "worker_exit");
+    }
+  });
+
+  const requestSignalShutdown = (signal: string) => {
+    log(options.adapter, `Received ${signal}. Closing local companion.`);
+    void closeCompanion(0, "signal");
+  };
+
+  process.once("SIGINT", () => requestSignalShutdown("SIGINT"));
+  process.once("SIGTERM", () => requestSignalShutdown("SIGTERM"));
+  process.once("SIGHUP", () => requestSignalShutdown("SIGHUP"));
+  if (process.platform === "win32") {
+    process.once("SIGBREAK", () => requestSignalShutdown("SIGBREAK"));
+  }
+
+  await connectToBridge(initialEndpoint);
+  await adapter.start();
+  publishState();
+  log(options.adapter, `Connected to bridge ${initialEndpoint.instanceId}.`);
+}
+
+const isDirectRun = Boolean((import.meta as ImportMeta & { main?: boolean }).main);
+if (isDirectRun) {
+  main().catch((error) => {
+    const adapter = (() => {
+      try {
+        return parseCliArgs(process.argv.slice(2)).adapter;
+      } catch {
+        return "local";
+      }
+    })();
+    log(adapter, error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
