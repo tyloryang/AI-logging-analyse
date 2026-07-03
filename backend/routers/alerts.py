@@ -130,45 +130,111 @@ async def alertmanager_webhook(payload: dict = Body(...)):
     return {"ok": True, "affected_groups": affected, "raw_count": len(raw_alerts)}
 
 
+def _extract_report_section(report: str, keyword: str) -> str:
+    """从 AI 报告里抠出【keyword】段落正文（到下一个【 或 ## 为止）。"""
+    import re
+
+    m = re.search(rf"【{keyword}[^】]*】\s*\n?(.*?)(?=\n\s*(?:#+\s*)?【|\n#{{2,}}\s|\Z)", report, re.S)
+    return m.group(1).strip() if m else ""
+
+
 async def _dispatch_to_aiops_router(alerts: list[dict]) -> None:
-    """把告警作为 human message 派单给 aiops_router Agent，跑一遍 SKILL 剧本。
-    结果暂只 log；后续可存到日报或发飞书。"""
+    """把告警派单给 aiops_router Agent 跑 SKILL 剧本，结果三路分发：
+      ① 挂到告警组 ai_report 字段（告警中心前端可见）
+      ② 写入 Milvus 事件记忆（供 recall_similar_incidents 召回历史案例）
+      ③ 可选推飞书（ALERTS_AI_REPORT_FEISHU=true 且配置了 FEISHU_WEBHOOK）
+    """
+    from datetime import datetime, timezone
+
     from agent.graph import build_graph
     from langchain_core.messages import HumanMessage
+    from services.alert_dedup import _fingerprint, get_group, update_group_status
 
-    try:
-        for alert in alerts[:5]:  # 一次最多派 5 条，避免 LLM 长上下文
-            labels = alert.get("labels", {}) or {}
-            annotations = alert.get("annotations", {}) or {}
-            alertname = labels.get("alertname", "UnknownAlert")
-            severity = labels.get("severity", "warning")
-            summary = annotations.get("summary", "")
-            desc = annotations.get("description", "")
+    for alert in alerts[:5]:  # 一次最多派 5 条，避免 LLM 长上下文
+        labels = alert.get("labels", {}) or {}
+        annotations = alert.get("annotations", {}) or {}
+        alertname = labels.get("alertname", "UnknownAlert")
+        severity = labels.get("severity", "warning")
+        service = labels.get("service", "") or labels.get("job", "")
+        summary = annotations.get("summary", "")
+        desc = annotations.get("description", "")
 
-            # 构造给 aiops_router 的 human message
-            body = (
-                f"[Alertmanager 告警派单]\n"
-                f"- alertname: {alertname}\n"
-                f"- severity: {severity}\n"
-                f"- labels: {labels}\n"
-                f"- summary: {summary}\n"
-                f"- description: {desc}\n\n"
-                f"请按 aiops-router SKILL 流程处理：L1 抽实体 → L2 打域标签 → "
-                f"L3 派单 domain skill → L4 交叉验证 → L5 输出【根因/影响/建议/趋势】。"
-            )
+        body = (
+            f"[Alertmanager 告警派单]\n"
+            f"- alertname: {alertname}\n"
+            f"- severity: {severity}\n"
+            f"- labels: {labels}\n"
+            f"- summary: {summary}\n"
+            f"- description: {desc}\n\n"
+            f"请按 aiops-router SKILL 流程处理：L1 抽实体 → L2 打域标签 → "
+            f"L3 派单 domain skill → L4 交叉验证 → L5 输出【根因/影响/建议/趋势】。"
+        )
 
+        try:
             graph = build_graph(mode="aiops_router")
             result = await graph.ainvoke(
                 {"messages": [HumanMessage(content=body)]},
                 config={"configurable": {"thread_id": f"alert-{alertname}"}},
             )
-            # 取最后一条 AIMessage
+            report = ""
             for msg in reversed(result.get("messages", [])):
-                if getattr(msg, "type", "") == "ai":
-                    logger.info("[aiops_router] alert=%s report=%s", alertname, str(msg.content)[:400])
+                if getattr(msg, "type", "") == "ai" and str(msg.content).strip():
+                    report = str(msg.content).strip()
                     break
-    except Exception as exc:
-        logger.exception("[aiops_router] dispatch failed: %s", exc)
+            if not report:
+                logger.warning("[aiops_router] alert=%s 无 AI 报告输出", alertname)
+                continue
+            logger.info("[aiops_router] alert=%s report_len=%d head=%s",
+                        alertname, len(report), report[:200])
+        except Exception:
+            logger.exception("[aiops_router] alert=%s 分析失败", alertname)
+            continue
+
+        # ① 挂到告警组（告警中心前端直接展示）
+        try:
+            fp = _fingerprint(alert)
+            group = get_group(fp)
+            if group:
+                update_group_status(
+                    fp,
+                    group.get("status", "firing"),
+                    extra_updates={
+                        "ai_report": report[:6000],
+                        "ai_report_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("[aiops_router] 报告挂载告警组失败 alert=%s err=%s", alertname, exc)
+
+        # ② 写事件记忆（Milvus 不可用时 save 内部自动跳过）
+        try:
+            from agent.milvus_memory import get_memory
+
+            await get_memory().save(
+                mode="rca",
+                user_query=f"[告警] {alertname} service={service} severity={severity} {summary}"[:500],
+                full_summary=report[:4000],
+                affected_services=service,
+                root_cause=_extract_report_section(report, "根因")[:500],
+                resolution=_extract_report_section(report, "建议")[:500],
+            )
+        except Exception as exc:
+            logger.warning("[aiops_router] 写事件记忆失败 alert=%s err=%s", alertname, exc)
+
+        # ③ 推飞书（默认关）
+        if os.getenv("ALERTS_AI_REPORT_FEISHU", "false").lower() in ("1", "true", "yes"):
+            webhook = os.getenv("FEISHU_WEBHOOK", "").strip()
+            if webhook:
+                try:
+                    import httpx
+
+                    keyword = os.getenv("FEISHU_KEYWORD", "").strip()
+                    prefix = f"{keyword} " if keyword else ""
+                    text = f"{prefix}🤖 AI 根因分析 | {alertname} ({severity})\n\n{report[:1500]}"
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await client.post(webhook, json={"msg_type": "text", "content": {"text": text}})
+                except Exception as exc:
+                    logger.warning("[aiops_router] 飞书推送失败 alert=%s err=%s", alertname, exc)
 
 
 async def _notify_feishu(group_ids: list[str]) -> None:

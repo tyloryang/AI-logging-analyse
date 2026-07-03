@@ -74,6 +74,16 @@
           <span v-if="group.resolved_at">解决：<span class="mono">{{ fmt(group.resolved_at) }}</span></span>
         </div>
 
+        <!-- AI 根因分析报告（aiops_router 派单结果） -->
+        <div v-if="group.ai_report" class="ai-report-block">
+          <button class="ai-report-toggle" @click="toggleAiReport(group.id)">
+            <span class="ai-report-badge">🤖 AI 根因分析</span>
+            <span class="ai-report-time mono" v-if="group.ai_report_at">{{ fmt(group.ai_report_at) }}</span>
+            <span class="ai-report-arrow">{{ aiReportOpen.has(group.id) ? '▲' : '▼' }}</span>
+          </button>
+          <pre v-if="aiReportOpen.has(group.id)" class="ai-report-body">{{ group.ai_report }}</pre>
+        </div>
+
         <div v-if="group.notify_targets?.length" class="group-routes">
           <span
             v-for="target in group.notify_targets"
@@ -112,6 +122,15 @@ import { useRouter } from 'vue-router'
 import { api } from '../api/index.js'
 
 const router = useRouter()
+
+// AI 报告展开状态（按 group.id）
+const aiReportOpen = ref(new Set())
+function toggleAiReport(id) {
+  const next = new Set(aiReportOpen.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  aiReportOpen.value = next
+}
 
 const TABS = [
   { key: 'all', label: '全部' },
@@ -294,6 +313,41 @@ onMounted(load)
 .group-summary { font-size: 13px; color: var(--text-secondary); }
 .group-meta { display: flex; gap: 16px; font-size: 11px; color: var(--text-muted); }
 .group-routes { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* AI 根因分析报告块 */
+.ai-report-block {
+  border: 1px solid rgba(129,140,248,.3);
+  border-radius: 8px;
+  background: rgba(129,140,248,.05);
+  overflow: hidden;
+}
+.ai-report-toggle {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  background: transparent; border: 0;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.ai-report-badge {
+  font-size: 12px; font-weight: 600;
+  color: var(--accent, #818cf8);
+}
+.ai-report-time { font-size: 11px; color: var(--text-muted); }
+.ai-report-arrow { margin-left: auto; font-size: 10px; color: var(--text-muted); }
+.ai-report-body {
+  margin: 0;
+  padding: 10px 14px;
+  border-top: 1px dashed rgba(129,140,248,.25);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow-y: auto;
+  font-family: inherit;
+}
 .route-chip {
   font-size: 11px; padding: 2px 8px; border-radius: 10px;
   background: rgba(56,139,253,.12); color: var(--accent);
