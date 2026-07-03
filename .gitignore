@@ -60,6 +60,8 @@ logs/
 
 # Local AI / tool state
 .codegraph.bak-*/
+.codegraph/daemon.log
+.codegraph/daemon.pid
 图片模型/
 
 # IDE
