@@ -54,7 +54,24 @@ def mentions_jenkins(text: str) -> bool:
     return any(keyword in lower for keyword in _JENKINS_KEYWORDS)
 
 
+_AIOPS_ROUTER_KEYWORDS = (
+    "告警", "alert", "prometheus", "alertmanager", "根因",
+    "宕机", "挂了", "没数据", "延迟高", "错误率高", "打满",
+    "targetdown", "instancedown", "high latency", "error rate",
+    "oomkilled", "crashloopback", "imagepullbackoff",
+)
+
+
+def mentions_aiops_alert(text: str) -> bool:
+    """匹配『需要 aiops_router 总调度』的关键词。告警 webhook 也应主动传 mode。"""
+    lower = (text or "").lower()
+    return any(kw.lower() in lower for kw in _AIOPS_ROUTER_KEYWORDS)
+
+
 def detect_mode(text: str) -> str:
+    # aiops_router 优先级最高：涉及告警/根因/跨域时统一走总路由
+    if mentions_aiops_alert(text):
+        return "aiops_router"
     if mentions_jenkins(text):
         return "jenkins_ops"
     if mentions_es(text):

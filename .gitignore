@@ -59,11 +59,7 @@ logs/
 .tmp/
 
 # Local AI / tool state
-.agent/
-.claude/
-.codegraph/
 .codegraph.bak-*/
-github-export/
 图片模型/
 
 # IDE

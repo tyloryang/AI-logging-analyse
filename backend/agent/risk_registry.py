@@ -68,6 +68,9 @@ TOOL_RISK: dict[str, ToolRisk] = {
     "list_mcp_tools": ToolRisk.READ,
     "list_k8s_mcp_tools": ToolRisk.READ,
     "list_available_mcps": ToolRisk.READ,
+    # ── Prometheus 直连 ──
+    "promql_query": ToolRisk.READ,
+    "get_metric_history": ToolRisk.READ,
     # ── Jenkins CI/CD ──
     "jenkins_get_all_jobs": ToolRisk.READ,
     "jenkins_search_jobs": ToolRisk.READ,

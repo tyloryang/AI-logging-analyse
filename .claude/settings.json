@@ -1,0 +1,14 @@
+{
+  "enabledPlugins": {
+    "example-skills@anthropic-agent-skills": true,
+    "vue-skills@full-stack-skills": true,
+    "spring-skills@full-stack-skills": true,
+    "dev-utils-skills@full-stack-skills": true,
+    "testing-skills@full-stack-skills": true,
+    "tauri-skills@full-stack-skills": true,
+    "t2ui-skills@full-stack-skills": true,
+    "stitch-skills@full-stack-skills": true,
+    "last30days@last30days-skill": true,
+    "understand-anything@understand-anything": true
+  }
+}

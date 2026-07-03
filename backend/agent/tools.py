@@ -50,6 +50,10 @@ from .tool_modules.elasticsearch import (  # noqa: F401
     es_list_indices,
     es_search,
 )
+from .tool_modules.prometheus import (  # noqa: F401
+    get_metric_history,
+    promql_query,
+)
 from .tool_modules.jenkins import (  # noqa: F401
     jenkins_analyze_failures,
     jenkins_build_job,
@@ -120,6 +124,9 @@ ALL_TOOLS = [
     get_host_metrics,
     inspect_all_hosts,
     query_recent_logs,
+    # Prometheus 直连
+    promql_query,
+    get_metric_history,
     # K8s
     get_k8s_summary,
     get_k8s_pods,

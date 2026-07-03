@@ -122,7 +122,53 @@ async def alertmanager_webhook(payload: dict = Body(...)):
     if affected:
         asyncio.create_task(_notify_feishu(affected))
 
+    # AIOps Router：告警自动派单给 aiops_router Agent 出根因/建议/趋势
+    # 用 ALERTS_TO_AIOPS_ROUTER 环境变量控制（默认关闭，避免线上首次开就爆炸）
+    if os.getenv("ALERTS_TO_AIOPS_ROUTER", "false").lower() in ("1", "true", "yes"):
+        asyncio.create_task(_dispatch_to_aiops_router(enriched_alerts))
+
     return {"ok": True, "affected_groups": affected, "raw_count": len(raw_alerts)}
+
+
+async def _dispatch_to_aiops_router(alerts: list[dict]) -> None:
+    """把告警作为 human message 派单给 aiops_router Agent，跑一遍 SKILL 剧本。
+    结果暂只 log；后续可存到日报或发飞书。"""
+    from agent.graph import build_graph
+    from langchain_core.messages import HumanMessage
+
+    try:
+        for alert in alerts[:5]:  # 一次最多派 5 条，避免 LLM 长上下文
+            labels = alert.get("labels", {}) or {}
+            annotations = alert.get("annotations", {}) or {}
+            alertname = labels.get("alertname", "UnknownAlert")
+            severity = labels.get("severity", "warning")
+            summary = annotations.get("summary", "")
+            desc = annotations.get("description", "")
+
+            # 构造给 aiops_router 的 human message
+            body = (
+                f"[Alertmanager 告警派单]\n"
+                f"- alertname: {alertname}\n"
+                f"- severity: {severity}\n"
+                f"- labels: {labels}\n"
+                f"- summary: {summary}\n"
+                f"- description: {desc}\n\n"
+                f"请按 aiops-router SKILL 流程处理：L1 抽实体 → L2 打域标签 → "
+                f"L3 派单 domain skill → L4 交叉验证 → L5 输出【根因/影响/建议/趋势】。"
+            )
+
+            graph = build_graph(mode="aiops_router")
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(content=body)]},
+                config={"configurable": {"thread_id": f"alert-{alertname}"}},
+            )
+            # 取最后一条 AIMessage
+            for msg in reversed(result.get("messages", [])):
+                if getattr(msg, "type", "") == "ai":
+                    logger.info("[aiops_router] alert=%s report=%s", alertname, str(msg.content)[:400])
+                    break
+    except Exception as exc:
+        logger.exception("[aiops_router] dispatch failed: %s", exc)
 
 
 async def _notify_feishu(group_ids: list[str]) -> None:

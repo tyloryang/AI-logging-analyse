@@ -1,0 +1,2 @@
+# CodeGraph index files are intentionally tracked for this project.
+# The root .gitignore still excludes .codegraph.bak-*/ backup folders.

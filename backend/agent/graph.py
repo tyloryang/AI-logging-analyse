@@ -153,7 +153,50 @@ FOUR_LAYER_THINKING = (
     "④ 经验提炼：「规律：如果[<触发条件>]，则检查[<检查点>]」（可复用运维模式）\n\n"
 )
 
+CHAT_TOOL_SELECTION_GUARD = (
+    "【按需工具策略】\n"
+    "- 先判断用户是否真的需要实时数据；问候、能力咨询、操作说明、概念解释可直接回答，除非用户明确要求查看当前平台配置或实时状态。\n"
+    "- 每轮只调用与用户目标直接相关的最小工具集，通常 0-2 个；不要为了保险同时查日志、主机、K8s、中间件和历史记忆。\n"
+    "- 不要默认串行执行 get_services_list、count_errors_by_service、inspect_all_hosts、get_host_metrics、query_error_logs、get_k8s_summary、get_middleware_summary。\n"
+    "- 只有用户明确要求全局巡检、全平台体检、根因分析、所有异常或跨域状态汇总时，才跨域组合多个领域工具。\n"
+    "- 单域问题只用单域工具：日志问题用日志工具；主机问题用指标/巡检工具；K8s 问题用 K8s 工具；中间件问题用中间件工具；平台能力/配置问题用 get_platform_overview。\n"
+    "- 已经拿到足够回答的信息后立刻总结，不要继续补充无关工具调用。\n\n"
+)
+
+# ── AIOps Router：从 .claude/skills/aiops-router/ 动态拼装 total + domain skill ──
+
+def _load_aiops_router_prompt() -> str:
+    """拼装 aiops_router 的 SYSTEM_PROMPT：读总 SKILL.md + 所有 domain/*.md。
+    这样以后加新 domain 只要放 markdown 就自动生效，不用改代码。"""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent.parent / ".claude" / "skills" / "aiops-router"
+    parts: list[str] = []
+    try:
+        total = (root / "SKILL.md").read_text(encoding="utf-8")
+        # 去掉 YAML frontmatter
+        if total.startswith("---"):
+            _, _, total = total.partition("---\n")
+            _, _, total = total.partition("---\n")
+        parts.append("# ═══════ 总路由 SKILL ═══════\n" + total.strip())
+    except Exception as e:
+        parts.append(f"# 总路由 SKILL 载入失败：{e}\n（fallback 用内嵌规则）")
+
+    domains_dir = root / "domains"
+    if domains_dir.exists():
+        for md in sorted(domains_dir.glob("*.md")):
+            try:
+                content = md.read_text(encoding="utf-8")
+                if content.startswith("---"):
+                    _, _, content = content.partition("---\n")
+                    _, _, content = content.partition("---\n")
+                parts.append(f"\n\n# ═══════ Domain SKILL: {md.stem} ═══════\n" + content.strip())
+            except Exception as e:
+                parts.append(f"\n# Domain {md.stem} 载入失败：{e}")
+    return "\n".join(parts)
+
+
 SYSTEM_PROMPTS = {
+    "aiops_router": _load_aiops_router_prompt(),
     "guided": (
         "你是一个“引导式多轮对话”助手（Wizard）。你的目标不是一次性给出最终答案，"
         "而是通过提问把用户需求拆成可执行的步骤，并一步一步带用户完成。\n\n"
@@ -487,10 +530,9 @@ def _build_mcp_context(mcps: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_graph(mode: str = "chat", checkpointer=None, runtime_overrides: dict | None = None):
-    """构建指定模式的 LangGraph ReAct 图（每次请求构建，轻量）"""
-    # 动态读取真实 MCP 配置，替换提示词中的占位符
-    mcps = _load_enabled_mcps()
+def _build_system_prompt(mode: str, mcps: list[dict] | None = None) -> str:
+    """按模式生成最终 system prompt。普通 chat 必须按需选工具，避免全域固定巡检。"""
+    mcps = mcps or []
     mcp_list_text = _build_mcp_context(mcps)
 
     jenkins_mcp = _find_mcp(mcps, "jenkins")
@@ -514,9 +556,25 @@ def build_graph(mode: str = "chat", checkpointer=None, runtime_overrides: dict |
 
     if mode != "guided":
         system_prompt = REACT_GUIDELINES + system_prompt
-    # 诊断类模式注入四层思考框架
-    if mode in ("rca", "inspect", "chat"):
+    if mode in ("rca", "inspect"):
         system_prompt = FOUR_LAYER_THINKING + system_prompt
+    elif mode == "chat":
+        system_prompt = CHAT_TOOL_SELECTION_GUARD + system_prompt
+    return system_prompt
+
+
+def _with_current_system_prompt(messages: list, system_prompt: str) -> list:
+    """确保每轮都使用当前 prompt，避免 checkpoint 中的旧提示词继续生效。"""
+    if messages and isinstance(messages[0], SystemMessage):
+        return [SystemMessage(content=system_prompt), *messages[1:]]
+    return [SystemMessage(content=system_prompt), *messages]
+
+
+def build_graph(mode: str = "chat", checkpointer=None, runtime_overrides: dict | None = None):
+    """构建指定模式的 LangGraph ReAct 图（每次请求构建，轻量）"""
+    # 动态读取真实 MCP 配置，替换提示词中的占位符
+    mcps = _load_enabled_mcps()
+    system_prompt = _build_system_prompt(mode, mcps)
 
     # 按当前 confirm_mode 裁剪模型可见工具：ask 模式下高风险工具直接不暴露给 LLM
     try:
@@ -537,9 +595,7 @@ def build_graph(mode: str = "chat", checkpointer=None, runtime_overrides: dict |
     tool_node = _build_guarded_tools_node(ALL_TOOLS)
 
     async def agent_node(state: MessagesState):
-        messages = list(state["messages"])
-        if not messages or not isinstance(messages[0], SystemMessage):
-            messages = [SystemMessage(content=system_prompt)] + messages
+        messages = _with_current_system_prompt(list(state["messages"]), system_prompt)
         response = await llm.ainvoke(messages)
         return {"messages": [response]}
 

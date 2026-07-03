@@ -1,0 +1,41 @@
+# 项目自定义代码审查规则
+# 由 .claude/skills/code-review-pdf-report/SKILL.md 读取，作为 /code-review 内置检查项之外的补充。
+# 团队可自行增删这里的条目，不需要修改 skill 本身。
+version: 1
+
+rules:
+  - id: PROJ-001
+    category: security
+    severity: high
+    title: "外部 HTTP 调用必须设置超时"
+    description: >
+      所有对 Loki/Prometheus/SkyWalking/第三方 Webhook 的 httpx/aiohttp 调用
+      必须显式传入 timeout，禁止使用无限等待的默认值。
+    applies_to: ["backend/**/*.py"]
+
+  - id: PROJ-002
+    category: reliability
+    severity: medium
+    title: "敏感配置不得硬编码"
+    description: >
+      Webhook URL、API Key、数据库密码等敏感信息必须来自环境变量或
+      backend/data/*.json 配置文件，不允许直接写死在源码里。
+    applies_to: ["backend/**/*.py"]
+
+  - id: PROJ-003
+    category: maintainability
+    severity: low
+    title: "路由处理函数需要一行 docstring 说明用途"
+    description: >
+      backend/routers/*.py 下新增的 @router.get/post/put/delete 处理函数
+      建议保留一行中文 docstring 说明这个接口做什么。
+    applies_to: ["backend/routers/*.py"]
+
+  - id: PROJ-004
+    category: security
+    severity: critical
+    title: "禁止将用户输入直接拼接进 shell/kubectl 命令"
+    description: >
+      涉及 subprocess/ssh/kubectl 的调用必须用参数列表或 shlex.quote 转义，
+      不允许用 f-string 直接拼接用户可控输入到命令字符串里。
+    applies_to: ["backend/**/*.py", "tools/**/*.py"]
