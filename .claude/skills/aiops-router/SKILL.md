@@ -36,6 +36,11 @@ description: 运维 AIOps 总入口。收到 Prometheus 告警或用户查询后
 | redis/es/kafka 键字或指标 | **middleware.md** |
 | Jenkins Job / build / pipeline | **jenkins.md** |
 | 主机进程/OOM/磁盘/负载 | **cmdb.md** |
+| 5xx/502/504、upstream、QPS、证书 | **nginx.md** |
+| 注册中心掉线、配置不生效、No instance | **nacos.md** |
+| 慢 SQL、连接打满、主从延迟、死锁 | **mysql.md** |
+| 看板 No Data、数据源断连、面板超时 | **grafana.md** |
+| 告警盘点、告警风暴、静默、通知没送达 | **alertmanager.md** |
 
 ### L3 派单 — 用工具执行剧本
 
@@ -46,6 +51,14 @@ description: 运维 AIOps 总入口。收到 Prometheus 告警或用户查询后
 - middleware 域 → 用 `get_middleware_summary` / `es_search` / redis/kafka 工具
 - jenkins 域 → 用 `jenkins_analyze_failures`（一句话搞定）
 - cmdb 域 → 用 `get_host_metrics` / `inspect_all_hosts`
+- nginx / nacos / mysql 域 → SSH 白名单只读命令 + `promql_query` + `codegraph_query`
+- grafana 域 → `promql_query` 复测数据源
+- alertmanager 域 → `get_current_alerts` 盘点告警池
+
+### 代码层根因（跨域通用）
+当任何域把根因追到『应用代码』（某接口慢 / 某异常类爆发 / 某 SQL 是谁发的），
+调 `codegraph_query("<函数名/表名/接口路径>")` 拿源码 + 调用链 + 影响面，
+把建议精确到『改哪个文件哪一行』。
 
 ### L4 交叉验证 — 时间对齐 + 因果推导
 
@@ -85,6 +98,14 @@ description: 运维 AIOps 总入口。收到 Prometheus 告警或用户查询后
 - `domains/prometheus.md`
 - `domains/k8s.md`
 - `domains/logs.md`
-- `domains/middleware.md`
+- `domains/middleware.md`（redis + es + kafka）
 - `domains/jenkins.md`
 - `domains/cmdb.md`
+- `domains/nginx.md`
+- `domains/nacos.md`
+- `domains/mysql.md`
+- `domains/grafana.md`
+- `domains/alertmanager.md`
+
+> 扩展方式：新增域只需在 domains/ 放一个 <域名>.md（frontmatter 带
+> name/description/tools），后端 _load_aiops_router_prompt() 自动拼装生效。

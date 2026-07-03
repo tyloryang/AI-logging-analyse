@@ -71,6 +71,9 @@ TOOL_RISK: dict[str, ToolRisk] = {
     # ── Prometheus 直连 ──
     "promql_query": ToolRisk.READ,
     "get_metric_history": ToolRisk.READ,
+    # ── 告警池 & 代码图谱 ──
+    "get_current_alerts": ToolRisk.READ,
+    "codegraph_query": ToolRisk.READ,
     # ── Jenkins CI/CD ──
     "jenkins_get_all_jobs": ToolRisk.READ,
     "jenkins_search_jobs": ToolRisk.READ,

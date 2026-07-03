@@ -50,6 +50,12 @@ from .tool_modules.elasticsearch import (  # noqa: F401
     es_list_indices,
     es_search,
 )
+from .tool_modules.alerting import (  # noqa: F401
+    get_current_alerts,
+)
+from .tool_modules.codegraph import (  # noqa: F401
+    codegraph_query,
+)
 from .tool_modules.prometheus import (  # noqa: F401
     get_metric_history,
     promql_query,
@@ -127,6 +133,9 @@ ALL_TOOLS = [
     # Prometheus 直连
     promql_query,
     get_metric_history,
+    # 告警池 & 代码图谱
+    get_current_alerts,
+    codegraph_query,
     # K8s
     get_k8s_summary,
     get_k8s_pods,

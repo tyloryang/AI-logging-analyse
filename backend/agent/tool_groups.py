@@ -28,6 +28,8 @@ DOMAIN_TOOLS: dict[str, list[str]] = {
         "inspect_all_hosts",
         "promql_query",
         "get_metric_history",
+        "get_current_alerts",
+        "codegraph_query",
     ],
     "k8s": [
         "get_k8s_summary",
