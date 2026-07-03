@@ -3532,22 +3532,68 @@ def _ns_or_all(namespace: str, all_fn, ns_fn):
     return ns_fn(namespace) if namespace else all_fn()
 
 
-async def _build_overview_payload(cluster: dict, namespace: str) -> dict:
+_OVERVIEW_ALL_SECTIONS = {
+    "summary", "namespaces", "pods", "deployments", "daemonSets",
+    "statefulSets", "jobs", "cronJobs", "services", "configMaps", "nodes",
+}
+_OVERVIEW_CANONICAL = {item.lower(): item for item in _OVERVIEW_ALL_SECTIONS}
+_OVERVIEW_DEPENDENCIES = {
+    "summary": {"pods", "nodes", "deployments", "daemonSets", "statefulSets", "jobs", "cronJobs"},
+    "deployments": {"pods"},
+    "daemonSets": {"pods"},
+    "statefulSets": {"pods"},
+    "jobs": {"pods"},
+    "cronJobs": {"pods"},
+    "services": {"pods"},
+    "configMaps": {"pods"},
+}
+
+
+def _normalize_overview_sections(raw: str | None) -> tuple[set[str], str]:
+    value = str(raw or "").strip()
+    if not value or value.lower() == "all":
+        requested = set(_OVERVIEW_ALL_SECTIONS)
+    else:
+        requested = set()
+        for part in value.split(","):
+            key = part.strip()
+            if not key:
+                continue
+            canonical = _OVERVIEW_CANONICAL.get(key.lower())
+            if canonical:
+                requested.add(canonical)
+        if not requested:
+            requested = set(_OVERVIEW_ALL_SECTIONS)
+    cache_key = "all" if requested == _OVERVIEW_ALL_SECTIONS else ",".join(sorted(requested))
+    return requested, cache_key
+
+
+async def _build_overview_payload(cluster: dict, namespace: str, requested_sections: set[str]) -> dict:
     v1, apps, batch = await asyncio.to_thread(_get_all_clients, cluster["id"])
+    fetch_sections = set(requested_sections)
+    for section in list(requested_sections):
+        fetch_sections.update(_OVERVIEW_DEPENDENCIES.get(section, set()))
+    needs_pod_index = bool(fetch_sections & {
+        "deployments", "daemonSets", "statefulSets", "jobs", "cronJobs", "services", "configMaps",
+    })
     calls = {
-        "pods": lambda: _ns_or_all(namespace, v1.list_pod_for_all_namespaces, v1.list_namespaced_pod),
-        "namespaces": v1.list_namespace,
-        "nodes": v1.list_node,
-        "deployments": lambda: _ns_or_all(namespace, apps.list_deployment_for_all_namespaces, apps.list_namespaced_deployment),
-        "daemonSets": lambda: _ns_or_all(namespace, apps.list_daemon_set_for_all_namespaces, apps.list_namespaced_daemon_set),
-        "statefulSets": lambda: _ns_or_all(namespace, apps.list_stateful_set_for_all_namespaces, apps.list_namespaced_stateful_set),
-        "jobs": lambda: _ns_or_all(namespace, batch.list_job_for_all_namespaces, batch.list_namespaced_job),
-        "cronJobs": lambda: _ns_or_all(namespace, batch.list_cron_job_for_all_namespaces, batch.list_namespaced_cron_job),
-        "services": lambda: _ns_or_all(namespace, v1.list_service_for_all_namespaces, v1.list_namespaced_service),
-        "configMaps": lambda: _ns_or_all(namespace, v1.list_config_map_for_all_namespaces, v1.list_namespaced_config_map),
-        "endpoints": lambda: _ns_or_all(namespace, v1.list_endpoints_for_all_namespaces, v1.list_namespaced_endpoints),
+        "pods": lambda: _ns_or_all(namespace, v1.list_pod_for_all_namespaces, v1.list_namespaced_pod) if "pods" in fetch_sections else None,
+        "namespaces": v1.list_namespace if "namespaces" in fetch_sections else None,
+        "nodes": v1.list_node if "nodes" in fetch_sections else None,
+        "deployments": (lambda: _ns_or_all(namespace, apps.list_deployment_for_all_namespaces, apps.list_namespaced_deployment)) if "deployments" in fetch_sections else None,
+        "daemonSets": (lambda: _ns_or_all(namespace, apps.list_daemon_set_for_all_namespaces, apps.list_namespaced_daemon_set)) if "daemonSets" in fetch_sections else None,
+        "statefulSets": (lambda: _ns_or_all(namespace, apps.list_stateful_set_for_all_namespaces, apps.list_namespaced_stateful_set)) if "statefulSets" in fetch_sections else None,
+        "jobs": (lambda: _ns_or_all(namespace, batch.list_job_for_all_namespaces, batch.list_namespaced_job)) if "jobs" in fetch_sections else None,
+        "cronJobs": (lambda: _ns_or_all(namespace, batch.list_cron_job_for_all_namespaces, batch.list_namespaced_cron_job)) if "cronJobs" in fetch_sections else None,
+        "services": (lambda: _ns_or_all(namespace, v1.list_service_for_all_namespaces, v1.list_namespaced_service)) if "services" in fetch_sections else None,
+        "configMaps": (lambda: _ns_or_all(namespace, v1.list_config_map_for_all_namespaces, v1.list_namespaced_config_map)) if "configMaps" in fetch_sections else None,
+        "endpoints": (lambda: _ns_or_all(namespace, v1.list_endpoints_for_all_namespaces, v1.list_namespaced_endpoints)) if "services" in fetch_sections else None,
     }
-    results = await asyncio.gather(*[_overview_call(name, fn) for name, fn in calls.items()])
+    results = await asyncio.gather(*[
+        _overview_call(name, fn)
+        for name, fn in calls.items()
+        if fn is not None
+    ])
 
     raw: dict[str, object] = {}
     errors: dict[str, str] = {}
@@ -3556,7 +3602,7 @@ async def _build_overview_payload(cluster: dict, namespace: str) -> dict:
             errors[name] = err
         raw[name] = value
 
-    if len(errors) == len(calls):
+    if results and len(errors) == len(results):
         first_error = next(iter(errors.values()), "未知错误")
         raise RuntimeError(first_error)
 
@@ -3571,10 +3617,17 @@ async def _build_overview_payload(cluster: dict, namespace: str) -> dict:
     services = _response_items(raw.get("services"))
     configmaps = _response_items(raw.get("configMaps"))
     endpoints = _response_items(raw.get("endpoints"))
-    pod_index = await asyncio.to_thread(_build_pod_placement_index_from_items, pods)
+    pod_index = []
+    if needs_pod_index:
+        pod_index = await asyncio.to_thread(_build_pod_placement_index_from_items, pods)
+        _POD_INDEX_CACHE[_pod_index_cache_key(cluster["id"], namespace)] = pod_index
 
     payload = {
-        "summary": _build_cluster_summary_payload(
+        "sections": sorted(requested_sections),
+        "errors": errors,
+    }
+    if "summary" in requested_sections:
+        payload["summary"] = _build_cluster_summary_payload(
             cluster,
             _K8sItems(pods),
             _K8sItems(deployments),
@@ -3583,19 +3636,27 @@ async def _build_overview_payload(cluster: dict, namespace: str) -> dict:
             _K8sItems(jobs),
             _K8sItems(cronjobs),
             _K8sItems(nodes),
-        ),
-        "namespaces": _serialize_namespaces(namespaces),
-        "pods": _serialize_pod_items(pods),
-        "deployments": _serialize_deployments(deployments, pod_index),
-        "daemonSets": _serialize_daemonsets(daemonsets, pod_index),
-        "statefulSets": _serialize_statefulsets(statefulsets, pod_index),
-        "jobs": _serialize_jobs(jobs, pod_index),
-        "cronJobs": _serialize_cronjobs(cronjobs, pod_index),
-        "services": _serialize_services(services, endpoints, pod_index),
-        "configMaps": _serialize_configmaps(configmaps, pod_index),
-        "nodes": _serialize_nodes(nodes),
-        "errors": errors,
-    }
+        )
+    if "namespaces" in requested_sections:
+        payload["namespaces"] = _serialize_namespaces(namespaces)
+    if "pods" in requested_sections:
+        payload["pods"] = _serialize_pod_items(pods)
+    if "deployments" in requested_sections:
+        payload["deployments"] = _serialize_deployments(deployments, pod_index)
+    if "daemonSets" in requested_sections:
+        payload["daemonSets"] = _serialize_daemonsets(daemonsets, pod_index)
+    if "statefulSets" in requested_sections:
+        payload["statefulSets"] = _serialize_statefulsets(statefulsets, pod_index)
+    if "jobs" in requested_sections:
+        payload["jobs"] = _serialize_jobs(jobs, pod_index)
+    if "cronJobs" in requested_sections:
+        payload["cronJobs"] = _serialize_cronjobs(cronjobs, pod_index)
+    if "services" in requested_sections:
+        payload["services"] = _serialize_services(services, endpoints, pod_index)
+    if "configMaps" in requested_sections:
+        payload["configMaps"] = _serialize_configmaps(configmaps, pod_index)
+    if "nodes" in requested_sections:
+        payload["nodes"] = _serialize_nodes(nodes)
     return payload
 
 
@@ -3604,15 +3665,17 @@ async def cluster_overview(
     namespace: str = Query("", description="命名空间，空=全部"),
     cluster_id: str = Query("", description="集群 ID"),
     force: bool = Query(False, description="跳过缓存强制刷新"),
+    sections: str = Query("", description="逗号分隔区块，空/all=全量"),
     user: User = Depends(current_user),
 ):
     try:
         cluster = _resolve_cluster_for_user(user, cluster_id or None)
+        requested_sections, section_key = _normalize_overview_sections(sections)
 
         async def _load():
-            return await _build_overview_payload(cluster, namespace)
+            return await _build_overview_payload(cluster, namespace, requested_sections)
 
-        return await _list_with_cache("overview", cluster["id"], namespace, force, _load)
+        return await _list_with_cache(f"overview:{section_key}", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] overview failed: %s", exc)
         raise HTTPException(502, f"k8s 连接失败: {exc}")

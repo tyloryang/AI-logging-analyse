@@ -468,7 +468,21 @@ async function doStream(text) {
       signal:  _abortCtrl.signal,
     })
 
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        window.location.href = '/#/login'
+        throw new Error('登录已过期，请重新登录后再试')
+      }
+
+      let detail = ''
+      try {
+        const data = await resp.clone().json()
+        detail = data?.detail || data?.message || data?.error || ''
+      } catch {
+        try { detail = await resp.text() } catch { detail = '' }
+      }
+      throw new Error(detail ? `HTTP ${resp.status}: ${detail}` : `HTTP ${resp.status}`)
+    }
 
     const reader  = resp.body.getReader()
     const decoder = new TextDecoder()

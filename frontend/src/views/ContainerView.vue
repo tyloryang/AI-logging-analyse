@@ -1416,6 +1416,9 @@ defineOptions({ name: 'Containers' })
 // 缓存默认常驻；手动刷新、自动刷新、集群/资源变更时才强制重新拉取。
 const _resourceCache = new Map()
 let _clustersCache = null
+let _fetchSeq = 0
+let _displayedCacheKey = ''
+const _backgroundOverviewLoads = new Set()
 const AUTO_REFRESH_OPTIONS = [
   { value: 'off', label: '关闭',  short: '关',  sec: 0 },
   { value: '30',  label: '30 秒', short: '30s', sec: 30 },
@@ -1441,6 +1444,22 @@ const TABS = [
   { id: 'configMaps', label: 'ConfigMaps' },
   { id: 'nodes', label: 'Nodes' },
 ]
+const OVERVIEW_SECTIONS = [
+  'summary', 'namespaces', 'pods', 'deployments', 'daemonSets',
+  'statefulSets', 'jobs', 'cronJobs', 'services', 'configMaps', 'nodes',
+]
+const FAST_OVERVIEW_SECTIONS = ['namespaces', 'pods', 'nodes']
+const TAB_TO_SECTION = {
+  pods: 'pods',
+  deployments: 'deployments',
+  daemonSets: 'daemonSets',
+  statefulSets: 'statefulSets',
+  jobs: 'jobs',
+  cronJobs: 'cronJobs',
+  services: 'services',
+  configMaps: 'configMaps',
+  nodes: 'nodes',
+}
 const KIND_LABELS = {
   pod: 'Pod',
   deployment: 'Deployment',
@@ -2672,7 +2691,9 @@ function resetData() {
   jobs.value = []
   cronJobs.value = []
   services.value = []
+  configMaps.value = []
   nodes.value = []
+  lastFetchedAt.value = 0
   closeDetailModal()
   closeLogModal()
 }
@@ -2757,80 +2778,139 @@ async function loadClusters(force = false) {
   }
 }
 
-function _applyCachedPayload(payload) {
-  summary.value      = payload.summary
-  namespaces.value   = payload.namespaces
-  pods.value         = payload.pods
-  deployments.value  = payload.deployments
-  daemonSets.value   = payload.daemonSets
-  statefulSets.value = payload.statefulSets
-  jobs.value         = payload.jobs
-  cronJobs.value     = payload.cronJobs
-  services.value     = payload.services
-  configMaps.value   = payload.configMaps || []
-  nodes.value        = payload.nodes
-  lastFetchedAt.value = payload.lastFetchedAt
+function _sectionSet(payload) {
+  const sections = Array.isArray(payload?.sections) && payload.sections.length
+    ? payload.sections
+    : OVERVIEW_SECTIONS
+  return new Set(sections)
+}
+
+function _mergeSections(...groups) {
+  return Array.from(new Set(groups.flat().filter(Boolean)))
+}
+
+function _snapshotPayload(sections = OVERVIEW_SECTIONS) {
+  return {
+    summary: summary.value,
+    namespaces: namespaces.value,
+    pods: pods.value,
+    deployments: deployments.value,
+    daemonSets: daemonSets.value,
+    statefulSets: statefulSets.value,
+    jobs: jobs.value,
+    cronJobs: cronJobs.value,
+    services: services.value,
+    configMaps: configMaps.value,
+    nodes: nodes.value,
+    sections: _mergeSections(sections),
+    lastFetchedAt: lastFetchedAt.value || Date.now(),
+  }
+}
+
+function _isFullPayload(payload) {
+  const sections = _sectionSet(payload)
+  return OVERVIEW_SECTIONS.every(section => sections.has(section))
+}
+
+function _applyCachedPayload(payload, { merge = false } = {}) {
+  const sections = _sectionSet(payload)
+  const shouldApply = section => !merge || sections.has(section)
+
+  if (shouldApply('summary')) summary.value = payload.summary || null
+  if (shouldApply('namespaces')) namespaces.value = payload.namespaces || []
+  if (shouldApply('pods')) pods.value = payload.pods || []
+  if (shouldApply('deployments')) deployments.value = payload.deployments || []
+  if (shouldApply('daemonSets')) daemonSets.value = payload.daemonSets || []
+  if (shouldApply('statefulSets')) statefulSets.value = payload.statefulSets || []
+  if (shouldApply('jobs')) jobs.value = payload.jobs || []
+  if (shouldApply('cronJobs')) cronJobs.value = payload.cronJobs || []
+  if (shouldApply('services')) services.value = payload.services || []
+  if (shouldApply('configMaps')) configMaps.value = payload.configMaps || []
+  if (shouldApply('nodes')) nodes.value = payload.nodes || []
+  if (payload.lastFetchedAt) lastFetchedAt.value = payload.lastFetchedAt
 }
 
 // fetchAll(opts)
 //   opts.force = true  → 跳过缓存强制重拉（手动「刷新」按钮 / 自动 timer）
 //   默认走缓存：命中当前集群/命名空间缓存就直接渲染，不因时间自动过期
 //   兼容旧调用：参数若为 Event（select.change 等），按非 force 处理
+async function warmFullOverview({ clusterId, ns, force, seq }) {
+  const key = `${clusterId}|${ns}`
+  const loadKey = `${key}|${force ? 'force' : 'cache'}`
+  if (_backgroundOverviewLoads.has(loadKey)) return
+  _backgroundOverviewLoads.add(loadKey)
+  try {
+    const full = await api.k8sOverview(clusterId, ns || undefined, force, 'all')
+    if (seq !== _fetchSeq || clusterId !== activeClusterId.value || ns !== (activeNs.value || '')) return
+    full.lastFetchedAt = Date.now()
+    const cached = _resourceCache.get(key)
+    _applyCachedPayload(full, { merge: true })
+    _displayedCacheKey = key
+    _resourceCache.set(key, _snapshotPayload(_mergeSections(cached?.sections, full.sections || OVERVIEW_SECTIONS)))
+    const errorNames = Object.keys(full?.errors || {})
+    if (errorNames.length) error.value = `部分资源加载失败: ${errorNames.join(', ')}`
+  } catch (e) {
+    if (seq === _fetchSeq && clusterId === activeClusterId.value && ns === (activeNs.value || '')) {
+      error.value = `后台补全失败: ${e}`
+    }
+  } finally {
+    _backgroundOverviewLoads.delete(loadKey)
+  }
+}
+
 async function fetchAll(opts) {
   const force = (opts && opts.force === true) === true
   if (!activeClusterId.value) {
+    _fetchSeq += 1
+    _displayedCacheKey = ''
     resetData()
     return
   }
   const clusterId = activeClusterId.value
   const ns = activeNs.value || ''
   const key = `${clusterId}|${ns}`
+  error.value = ''
 
   if (!force) {
     const cached = _resourceCache.get(key)
     if (cached) {
-      _applyCachedPayload(cached)
+      const seq = ++_fetchSeq
+      loading.value = false
+      _applyCachedPayload(cached, { merge: false })
+      _displayedCacheKey = key
+      if (!_isFullPayload(cached)) {
+        warmFullOverview({ clusterId, ns, force: false, seq })
+      }
       return
     }
   }
 
   loading.value = true
-  error.value = ''
+  const seq = ++_fetchSeq
+  if (_displayedCacheKey !== key) {
+    resetData()
+  }
   try {
     const nsArg = ns || undefined
-    const [sum, nsList, podList, depList, daemonSetList, statefulSetList, jobList, cronJobList, svcList, cmList, nodeList] = await Promise.all([
-      api.k8sSummary(clusterId).catch(() => null),
-      api.k8sNamespaces(clusterId).catch(() => []),
-      api.k8sPods(clusterId, nsArg).catch(() => []),
-      api.k8sDeployments(clusterId, nsArg).catch(() => []),
-      api.k8sDaemonSets(clusterId, nsArg).catch(() => []),
-      api.k8sStatefulSets(clusterId, nsArg).catch(() => []),
-      api.k8sJobs(clusterId, nsArg).catch(() => []),
-      api.k8sCronJobs(clusterId, nsArg).catch(() => []),
-      api.k8sServices(clusterId, nsArg).catch(() => []),
-      api.k8sConfigMaps(clusterId, nsArg).catch(() => []),
-      api.k8sNodes(clusterId).catch(() => []),
-    ])
-    const payload = {
-      summary: sum,
-      namespaces: nsList,
-      pods: podList,
-      deployments: depList,
-      daemonSets: daemonSetList,
-      statefulSets: statefulSetList,
-      jobs: jobList,
-      cronJobs: cronJobList,
-      services: svcList,
-      configMaps: cmList,
-      nodes: nodeList,
-      lastFetchedAt: Date.now(),
+    const overview = await api.k8sOverview(clusterId, nsArg, force, FAST_OVERVIEW_SECTIONS)
+    if (seq !== _fetchSeq || clusterId !== activeClusterId.value || ns !== (activeNs.value || '')) return
+    overview.lastFetchedAt = Date.now()
+    const partialErrors = overview?.errors || {}
+    const errorNames = Object.keys(partialErrors)
+    const cached = _resourceCache.get(key)
+    _applyCachedPayload(overview, { merge: _displayedCacheKey === key })
+    _displayedCacheKey = key
+    _resourceCache.set(key, _snapshotPayload(_mergeSections(force ? [] : cached?.sections, overview.sections || FAST_OVERVIEW_SECTIONS)))
+    loading.value = false
+    if (errorNames.length) {
+      error.value = `部分资源加载失败: ${errorNames.join(', ')}`
     }
-    _resourceCache.set(key, payload)
-    _applyCachedPayload(payload)
+    warmFullOverview({ clusterId, ns, force, seq })
   } catch (e) {
+    if (seq !== _fetchSeq) return
     error.value = `加载失败: ${e}`
   } finally {
-    loading.value = false
+    if (seq === _fetchSeq) loading.value = false
   }
 }
 

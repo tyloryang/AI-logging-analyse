@@ -13,6 +13,7 @@ from agent.risk_registry import (
 class RiskOfCase(unittest.TestCase):
     def test_known_read_tool(self):
         self.assertEqual(risk_of("query_error_logs"), ToolRisk.READ)
+        self.assertEqual(risk_of("get_platform_overview"), ToolRisk.READ)
 
     def test_known_write_high(self):
         self.assertEqual(risk_of("call_mcp_tool"), ToolRisk.WRITE_HIGH)

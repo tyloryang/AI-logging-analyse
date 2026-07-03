@@ -10,6 +10,7 @@ class DomainCompletenessCase(unittest.TestCase):
     def test_read_only_subset(self):
         from agent.tool_groups import ALL_TOOL_NAMES, READ_ONLY_TOOLS
         self.assertTrue(set(READ_ONLY_TOOLS).issubset(set(ALL_TOOL_NAMES)))
+        self.assertIn("get_platform_overview", READ_ONLY_TOOLS)
         self.assertIn("query_error_logs", READ_ONLY_TOOLS)
         self.assertNotIn("call_mcp_tool", READ_ONLY_TOOLS)
         self.assertNotIn("execute_ssh_command", READ_ONLY_TOOLS)

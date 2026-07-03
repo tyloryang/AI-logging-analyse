@@ -199,6 +199,14 @@ export const api = {
   k8sDeleteCluster: (id)               => http.delete(`/k8s/clusters/${id}`),
   k8sSetDefaultCluster: (id)           => http.post(`/k8s/clusters/${id}/default`),
   k8sTestCluster:   (id)               => http.get(`/k8s/clusters/${id}/test`),
+  k8sOverview:      (clusterId, ns, force = false, sections = '') => http.get('/k8s/overview', {
+    params: {
+      ...(clusterId ? { cluster_id: clusterId } : {}),
+      ...(ns ? { namespace: ns } : {}),
+      ...(force ? { force: true } : {}),
+      ...(sections ? { sections: Array.isArray(sections) ? sections.join(',') : sections } : {}),
+    },
+  }),
   k8sSummary:       (clusterId)        => http.get('/k8s/summary',     { params: clusterId ? { cluster_id: clusterId } : {} }),
   k8sNodes:         (clusterId)        => http.get('/k8s/nodes',       { params: clusterId ? { cluster_id: clusterId } : {} }),
   k8sPods:          (clusterId, ns)    => http.get('/k8s/pods',        { params: { ...(clusterId ? { cluster_id: clusterId } : {}), ...(ns ? { namespace: ns } : {}) } }),
