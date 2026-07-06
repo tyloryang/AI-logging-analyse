@@ -150,6 +150,9 @@ export const api = {
   prometheusQuery: (data) => http.post('/observability/metrics/query', data),
   prometheusQueryRange: (data) => http.post('/observability/metrics/query-range', data),
   prometheusLabelValues: (label, params = {}) => http.get(`/observability/metrics/label-values/${encodeURIComponent(label)}`, { params }),
+  httpServerMetricLabels: (params = {}) => http.get('/observability/metrics/http-server/labels', { params }),
+  httpServerMetricLabelValues: (label, params = {}) => http.get(`/observability/metrics/http-server/label-values/${encodeURIComponent(label)}`, { params }),
+  httpServerMetrics: (data) => http.post('/observability/metrics/http-server', data),
   // 知识拓扑
   topologyKnowledge: () => http.get('/topology/knowledge'),
   // Grafana 看板管理
@@ -345,12 +348,22 @@ export const api = {
   knowledgeUpdate:    (id, data) => http.put(`/knowledge/${id}`, data),
   knowledgeDelete:    (id)    => http.delete(`/knowledge/${id}`),
   knowledgeUse:       (id)    => http.post(`/knowledge/${id}/use`),
-  // 服务器安全合规检查
-  complianceChecks:   ()      => http.get('/compliance/checks'),
-  complianceRun:      (hostId) => http.post(`/compliance/hosts/${hostId}/run`),
-  complianceHistory:  (hostId) => http.get(`/compliance/hosts/${hostId}/history`),
-  // 资源成本分析
-  costOverview:       ()      => http.get('/cost/overview'),
+  // 工作流编排
+  workflowSummary:       () => http.get('/workflows/summary'),
+  listWorkflows:         (params = {}) => http.get('/workflows', { params }),
+  getWorkflow:           (id) => http.get(`/workflows/${id}`),
+  createWorkflow:        (data) => http.post('/workflows', data),
+  updateWorkflow:        (id, data) => http.put(`/workflows/${id}`, data),
+  deleteWorkflow:        (id) => http.delete(`/workflows/${id}`),
+  runWorkflow:           (id, data = {}) => http.post(`/workflows/${id}/run`, data),
+  listWorkflowTasks:     (params = {}) => http.get('/tasks', { params }),
+  getWorkflowTask:       (id) => http.get(`/tasks/${id}`),
+  cancelWorkflowTask:    (id) => http.put(`/tasks/${id}/cancel`),
+  listScheduledTasks:    () => http.get('/scheduled-tasks'),
+  createScheduledTask:   (data) => http.post('/scheduled-tasks', data),
+  updateScheduledTask:   (id, data) => http.put(`/scheduled-tasks/${id}`, data),
+  toggleScheduledTask:   (id) => http.post(`/scheduled-tasks/${id}/toggle`),
+  deleteScheduledTask:   (id) => http.delete(`/scheduled-tasks/${id}`),
   // Jenkins CI/CD — 多实例
   jenkinsListInstances:   ()           => http.get('/jenkins/instances'),
   jenkinsCreateInstance:  (data)       => http.post('/jenkins/instances', data),

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/observability", tags=["observability"])
 _overview_cache: TTLCache = TTLCache(maxsize=8, ttl=15)
 _overview_locks: dict[int, asyncio.Lock] = {}
-_DEFAULT_OVERVIEW_MINUTES = 10
+_DEFAULT_OVERVIEW_MINUTES = 1
 _MAX_WINDOW_MINUTES = 24 * 60
 _RCA_SUMMARY_MAX_AGE_HOURS = 24
 _OVERVIEW_PART_TIMEOUT_SECONDS = 3.0
@@ -1102,6 +1102,134 @@ class PrometheusRangeQueryIn(BaseModel):
     step: int = 60
 
 
+class PrometheusLabelFilter(BaseModel):
+    label: str
+    op: str = "="
+    value: str = ""
+
+
+class HttpServerMetricsRequest(BaseModel):
+    metric: str = "http_server_requests_seconds_count"
+    filters: list[PrometheusLabelFilter] = []
+    group_by: list[str] = ["application", "uri", "method"]
+    range_minutes: int = 30
+    step: int = 60
+    rate_window: str = "5m"
+    top_n: int = 20
+
+
+_PROM_LABEL_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
+_PROM_DURATION_RE = re.compile(r"^[1-9][0-9]*(s|m|h|d|w|y)$")
+_HTTP_SERVER_DEFAULT_LABELS = [
+    "application",
+    "app",
+    "service",
+    "job",
+    "uri",
+    "method",
+    "status",
+    "outcome",
+    "exception",
+    "instance",
+    "namespace",
+    "pod",
+]
+
+
+def _validate_metric_name(metric: str) -> str:
+    value = str(metric or "").strip()
+    if not _PROM_LABEL_RE.match(value):
+        raise HTTPException(status_code=400, detail="invalid metric name")
+    return value
+
+
+def _validate_label_name(label: str) -> str:
+    value = str(label or "").strip()
+    if not _PROM_LABEL_RE.match(value) or value == "le":
+        raise HTTPException(status_code=400, detail=f"invalid label name: {label}")
+    return value
+
+
+def _escape_prom_value(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _sanitize_rate_window(value: str) -> str:
+    raw = str(value or "5m").strip()
+    return raw if _PROM_DURATION_RE.match(raw) else "5m"
+
+
+def _label_selector(filters: list[PrometheusLabelFilter] | None, *, extra: str = "") -> str:
+    parts: list[str] = []
+    for item in filters or []:
+        label = _validate_label_name(item.label)
+        op = str(item.op or "=").strip()
+        if op not in {"=", "!=", "=~", "!~"}:
+            raise HTTPException(status_code=400, detail=f"invalid matcher operator: {op}")
+        value = str(item.value or "").strip()
+        if not value:
+            continue
+        parts.append(f'{label}{op}"{_escape_prom_value(value)}"')
+    if extra:
+        parts.append(extra)
+    return "{" + ",".join(parts) + "}" if parts else ""
+
+
+def _sanitize_group_by(labels: list[str] | None) -> list[str]:
+    cleaned: list[str] = []
+    for label in labels or []:
+        value = _validate_label_name(label)
+        if value not in cleaned:
+            cleaned.append(value)
+        if len(cleaned) >= 8:
+            break
+    return cleaned or ["application", "uri", "method"]
+
+
+def _group_clause(labels: list[str]) -> str:
+    return "(" + ",".join(labels) + ")" if labels else ""
+
+
+def _series_key(metric: dict, group_by: list[str]) -> str:
+    return "|".join(f"{label}={metric.get(label, '')}" for label in group_by)
+
+
+def _series_label(metric: dict, group_by: list[str]) -> str:
+    parts = [str(metric.get(label) or "-") for label in group_by if label != "status"]
+    return " / ".join(parts) if parts else "total"
+
+
+def _last_matrix_value(series: dict) -> float | None:
+    values = series.get("values") or []
+    if not values:
+        return None
+    try:
+        v = float(values[-1][1])
+    except Exception:
+        return None
+    # Prometheus 对 histogram_quantile/除零返回 "NaN"/"+Inf"，float() 会得到
+    # nan/inf，JSON 序列化会 500。这里统一清成 None（真实 http_server 数据同样受保护）。
+    if v != v or v in (float("inf"), float("-inf")):
+        return None
+    return v
+
+
+async def _safe_prom_range(query: str, start: float, end: float, step: int) -> list[dict]:
+    try:
+        return await prom.query_range(query, start=start, end=end, step=step, timeout=30)
+    except Exception as exc:
+        logger.warning("[http-server-metrics] query failed: %s query=%s", exc, query[:240])
+        return []
+
+
+async def _safe_prom_instant(query: str) -> list[dict]:
+    try:
+        return await prom.query_instant(query, timeout=20)
+    except Exception as exc:
+        logger.warning("[http-server-metrics] instant query failed: %s query=%s", exc, query[:240])
+        return []
+
+
 @router.post("/metrics/query")
 async def query_prometheus_instant(body: PrometheusInstantQueryIn):
     query = body.query.strip()
@@ -1161,6 +1289,173 @@ async def prometheus_label_values(
         return {"label": label, "data": values[:limit], "total": len(values)}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/metrics/http-server/label-values/{label}")
+async def http_server_label_values(
+    label: str,
+    metric: str = Query("http_server_requests_seconds_count"),
+    limit: int = Query(200, ge=1, le=5000),
+):
+    metric_name = _validate_metric_name(metric)
+    label_name = _validate_label_name(label)
+    query = f"count by ({label_name}) ({metric_name})"
+    try:
+        result = await prom.query_instant(query, timeout=20)
+        values = sorted({
+            str(item.get("metric", {}).get(label_name) or "")
+            for item in result
+            if item.get("metric", {}).get(label_name)
+        })
+        return {"label": label_name, "metric": metric_name, "data": values[:limit], "total": len(values)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/metrics/http-server/labels")
+async def http_server_label_inventory(
+    metric: str = Query("http_server_requests_seconds_count"),
+    limit: int = Query(60, ge=1, le=500),
+):
+    metric_name = _validate_metric_name(metric)
+    labels = []
+    for label in _HTTP_SERVER_DEFAULT_LABELS:
+        query = f"count by ({label}) ({metric_name})"
+        result = await _safe_prom_instant(query)
+        values = sorted({
+            str(item.get("metric", {}).get(label) or "")
+            for item in result
+            if item.get("metric", {}).get(label)
+        })
+        if values:
+            labels.append({"label": label, "values": values[:limit], "total": len(values)})
+    return {"metric": metric_name, "labels": labels}
+
+
+@router.post("/metrics/http-server")
+async def http_server_metrics(body: HttpServerMetricsRequest):
+    metric = _validate_metric_name(body.metric)
+    if not metric.endswith("_count"):
+        raise HTTPException(status_code=400, detail="metric must be a *_count metric")
+
+    group_by = _sanitize_group_by(body.group_by)
+    group = _group_clause(group_by)
+    range_minutes = max(1, min(int(body.range_minutes or 30), 24 * 60))
+    step = max(5, min(int(body.step or 60), 3600))
+    rate_window = _sanitize_rate_window(body.rate_window)
+    top_n = max(1, min(int(body.top_n or 20), 200))
+    end = datetime.now(timezone.utc).timestamp()
+    start = end - range_minutes * 60
+
+    selector = _label_selector(body.filters)
+    error_selector = _label_selector(body.filters, extra='status=~"5.."')
+    sum_metric = metric[:-6] + "_sum"
+    bucket_metric = metric[:-6] + "_bucket"
+    group_without_status = [label for label in group_by if label != "status"]
+    ratio_group = _group_clause(group_without_status or group_by)
+
+    queries = {
+        "request_rate": f"sum by {group} (rate({metric}{selector}[{rate_window}]))",
+        "request_count": f"sum by {group} (increase({metric}{selector}[{range_minutes}m]))",
+        "error_rate": f"sum by {group} (rate({metric}{error_selector}[{rate_window}]))",
+        "error_ratio": (
+            f"sum by {ratio_group} (rate({metric}{error_selector}[{rate_window}])) "
+            f"/ clamp_min(sum by {ratio_group} (rate({metric}{selector}[{rate_window}])), 0.000001) * 100"
+        ),
+        "success_rate": (
+            f"(1 - (sum by {ratio_group} (rate({metric}{error_selector}[{rate_window}])) "
+            f"/ clamp_min(sum by {ratio_group} (rate({metric}{selector}[{rate_window}])), 0.000001))) * 100"
+        ),
+        "avg_latency": (
+            f"sum by {ratio_group} (rate({sum_metric}{selector}[{rate_window}])) "
+            f"/ clamp_min(sum by {ratio_group} (rate({metric}{selector}[{rate_window}])), 0.000001) * 1000"
+        ),
+        "p95_latency": (
+            f"histogram_quantile(0.95, sum by (le,{','.join(group_without_status or group_by)}) "
+            f"(rate({bucket_metric}{selector}[{rate_window}]))) * 1000"
+        ),
+        "p99_latency": (
+            f"histogram_quantile(0.99, sum by (le,{','.join(group_without_status or group_by)}) "
+            f"(rate({bucket_metric}{selector}[{rate_window}]))) * 1000"
+        ),
+    }
+
+    chart_meta = {
+        "request_rate": {"label": "请求速率", "unit": "rps", "precision": 3},
+        "request_count": {"label": "窗口请求量", "unit": "次", "precision": 0},
+        "error_rate": {"label": "错误速率", "unit": "rps", "precision": 3},
+        "error_ratio": {"label": "错误率", "unit": "%", "precision": 2},
+        "success_rate": {"label": "成功率", "unit": "%", "precision": 2},
+        "avg_latency": {"label": "平均耗时", "unit": "ms", "precision": 1},
+        "p95_latency": {"label": "P95", "unit": "ms", "precision": 1},
+        "p99_latency": {"label": "P99", "unit": "ms", "precision": 1},
+    }
+
+    result_lists = await asyncio.gather(*[
+        _safe_prom_range(query, start, end, step)
+        for query in queries.values()
+    ])
+    raw_results = dict(zip(queries.keys(), result_lists))
+
+    charts: list[dict] = []
+    rows_by_key: dict[str, dict] = {}
+    for key, series_list in raw_results.items():
+        meta = chart_meta[key]
+        chart_series = []
+        for index, series in enumerate(series_list):
+            metric_labels = {
+                label: str(series.get("metric", {}).get(label) or "")
+                for label in group_by
+                if series.get("metric", {}).get(label) is not None
+            }
+            row_key = _series_key(metric_labels, group_by)
+            if row_key not in rows_by_key:
+                rows_by_key[row_key] = {
+                    "id": row_key or f"series-{index}",
+                    "name": _series_label(metric_labels, group_by),
+                    "labels": metric_labels,
+                }
+            last_value = _last_matrix_value(series)
+            if last_value is not None:
+                rows_by_key[row_key][key] = last_value
+            chart_series.append({
+                "id": row_key or f"{key}-{index}",
+                "name": _series_label(metric_labels, group_by),
+                "labels": metric_labels,
+                "values": series.get("values") or [],
+                "last": last_value,
+            })
+        chart_series.sort(key=lambda item: item["last"] if item["last"] is not None else -1, reverse=True)
+        charts.append({
+            "key": key,
+            **meta,
+            "query": queries[key],
+            "series": chart_series[:top_n],
+            "series_count": len(chart_series),
+        })
+
+    rows = list(rows_by_key.values())
+    rows.sort(key=lambda item: float(item.get("request_rate") or item.get("request_count") or 0), reverse=True)
+    for item in rows:
+        item["error_ratio"] = float(item.get("error_ratio") or 0)
+        item["success_rate"] = float(item.get("success_rate") or (100 - item["error_ratio"]))
+
+    return {
+        "metric": metric,
+        "sum_metric": sum_metric,
+        "bucket_metric": bucket_metric,
+        "filters": [item.model_dump() for item in body.filters if str(item.value or "").strip()],
+        "group_by": group_by,
+        "range_minutes": range_minutes,
+        "step": step,
+        "rate_window": rate_window,
+        "start": start,
+        "end": end,
+        "charts": charts,
+        "rows": rows[:top_n],
+        "row_count": len(rows),
+        "queries": queries,
+    }
 
 
 @router.get("/grafana/boards")
