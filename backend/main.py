@@ -67,6 +67,7 @@ from routers.topology import router as topology_router
 from routers.cc_haha import router as cc_haha_router
 from routers.db_ai import router as db_ai_router
 from routers.knowledge import router as knowledge_router
+from routers.compliance import router as compliance_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -271,6 +272,7 @@ app.include_router(cc_haha_router)
 app.include_router(topology_router)
 app.include_router(db_ai_router)
 app.include_router(knowledge_router)
+app.include_router(compliance_router)
 
 
 if __name__ == "__main__":

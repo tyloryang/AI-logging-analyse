@@ -19,6 +19,7 @@ const routes = [
   { path: '/hosts/workbench', component: () => import('../views/TaskWorkbenchView.vue'), name: 'host-workbench' },
   { path: '/hosts/cron',   component: () => import('../views/HostCronView.vue'),    name: 'host-cron' },
   { path: '/hosts/apply',  component: () => import('../views/HostApplyView.vue'),   name: 'host-apply' },
+  { path: '/hosts/compliance', component: () => import('../views/ComplianceView.vue'), name: 'host-compliance', meta: { module: 'ssh' } },
 
   // ── 4. 多云管理（已隐藏）─────────────────────────────────────
   // { path: '/cloud', component: () => import('../views/CloudManageView.vue'), name: 'cloud' },

@@ -345,6 +345,10 @@ export const api = {
   knowledgeUpdate:    (id, data) => http.put(`/knowledge/${id}`, data),
   knowledgeDelete:    (id)    => http.delete(`/knowledge/${id}`),
   knowledgeUse:       (id)    => http.post(`/knowledge/${id}/use`),
+  // 服务器安全合规检查
+  complianceChecks:   ()      => http.get('/compliance/checks'),
+  complianceRun:      (hostId) => http.post(`/compliance/hosts/${hostId}/run`),
+  complianceHistory:  (hostId) => http.get(`/compliance/hosts/${hostId}/history`),
   // Jenkins CI/CD — 多实例
   jenkinsListInstances:   ()           => http.get('/jenkins/instances'),
   jenkinsCreateInstance:  (data)       => http.post('/jenkins/instances', data),
