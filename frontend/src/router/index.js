@@ -65,6 +65,7 @@ const routes = [
   { path: '/tools/ssh', redirect: '/cmdb?tab=ssh' },
   { path: '/tools/slowlog', component: () => import('../views/SlowLogView.vue'),    name: 'tools-slowlog', meta: { module: 'slowlog' } },
   { path: '/tools/report',  component: () => import('../views/AnalysisReport.vue'), name: 'tools-report',  meta: { module: 'report' } },
+  { path: '/tools/knowledge', component: () => import('../views/KnowledgeView.vue'), name: 'tools-knowledge' },
   { path: '/tools/metrics', component: () => import('../views/MetricsMonitor.vue'), name: 'tools-metrics', meta: { module: 'metrics' } },
 
   // ── 11. AIOps 智能运维 ────────────────────────────────────────

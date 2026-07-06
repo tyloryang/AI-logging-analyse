@@ -338,6 +338,13 @@ export const api = {
   alertTriggerRca:    (id, data = {}) => http.post(`/alerts/groups/${id}/rca`, data),
   alertUpdateStatus:  (id, data) => http.put(`/alerts/groups/${id}/status`, data),
   alertStats:         ()      => http.get('/alerts/stats'),
+  // 运维知识库
+  knowledgeList:      (params = {}) => http.get('/knowledge', { params }),
+  knowledgeCategories:()      => http.get('/knowledge/categories'),
+  knowledgeCreate:    (data)  => http.post('/knowledge', data),
+  knowledgeUpdate:    (id, data) => http.put(`/knowledge/${id}`, data),
+  knowledgeDelete:    (id)    => http.delete(`/knowledge/${id}`),
+  knowledgeUse:       (id)    => http.post(`/knowledge/${id}/use`),
   // Jenkins CI/CD — 多实例
   jenkinsListInstances:   ()           => http.get('/jenkins/instances'),
   jenkinsCreateInstance:  (data)       => http.post('/jenkins/instances', data),

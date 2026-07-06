@@ -183,6 +183,7 @@ const MENU = [
       { label: '接口 RED',   to: '/observability/api-red', module: 'skywalking' },
       { label: '告警中心',   to: '/observability/alerts',  module: 'alert' },
       { label: '分析报告',   to: '/tools/report',          module: 'report' },
+      { label: '知识库',     to: '/tools/knowledge' },
     ],
   },
   { id: 'events', icon: 'event',  label: '事件墙',   to: '/events' },
