@@ -1,7 +1,8 @@
 <template>
   <router-view v-slot="{ Component, route }">
-    <!-- 公开页面（登录/注册）：全屏无侧边栏 -->
-    <component v-if="route.meta.public" :is="Component" />
+    <!-- 公开页面（登录/注册）/ 全屏页面（监控大屏）：无侧边栏。
+         public 免鉴权；fullscreen 仍走登录守卫，只是布局全屏。 -->
+    <component v-if="route.meta.public || route.meta.fullscreen" :is="Component" />
 
     <!-- 应用页面：侧边栏 + 内容区 -->
     <div v-else class="layout">
