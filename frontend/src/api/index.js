@@ -349,6 +349,8 @@ export const api = {
   complianceChecks:   ()      => http.get('/compliance/checks'),
   complianceRun:      (hostId) => http.post(`/compliance/hosts/${hostId}/run`),
   complianceHistory:  (hostId) => http.get(`/compliance/hosts/${hostId}/history`),
+  // 资源成本分析
+  costOverview:       ()      => http.get('/cost/overview'),
   // Jenkins CI/CD — 多实例
   jenkinsListInstances:   ()           => http.get('/jenkins/instances'),
   jenkinsCreateInstance:  (data)       => http.post('/jenkins/instances', data),
