@@ -67,8 +67,7 @@ from routers.topology import router as topology_router
 from routers.cc_haha import router as cc_haha_router
 from routers.db_ai import router as db_ai_router
 from routers.knowledge import router as knowledge_router
-from routers.compliance import router as compliance_router
-from routers.cost import router as cost_router
+from routers.workflows import router as workflows_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -165,6 +164,15 @@ async def lifespan(app: FastAPI):
         run_group_schedule_job,
         CronTrigger(minute="*"),
         id="group_schedule",
+        replace_existing=True,
+    )
+
+    # 统一 cron tick：Ansible 计划任务 + 工作流定时任务（每分钟检查表达式）
+    from services.cron_ticker import run_cron_tick
+    scheduler.add_job(
+        run_cron_tick,
+        CronTrigger(minute="*"),
+        id="cron_ticker",
         replace_existing=True,
     )
 
@@ -273,8 +281,7 @@ app.include_router(cc_haha_router)
 app.include_router(topology_router)
 app.include_router(db_ai_router)
 app.include_router(knowledge_router)
-app.include_router(compliance_router)
-app.include_router(cost_router)
+app.include_router(workflows_router)
 
 
 if __name__ == "__main__":
