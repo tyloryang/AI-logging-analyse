@@ -498,6 +498,15 @@
             {{ tab.label }}
             <span class="tab-count">{{ tabCount(tab.id) }}</span>
           </button>
+          <button
+            class="tab-btn abnormal-toggle"
+            :class="{ active: onlyAbnormal, 'has-abnormal': abnormalTotal > 0 }"
+            @click="onlyAbnormal = !onlyAbnormal"
+            :title="onlyAbnormal ? '显示全部资源' : '只显示异常资源（Pod 非 Running/未就绪、副本不满、Job 失败、节点 NotReady）'"
+          >
+            ⚠ 只看异常
+            <span class="tab-count" :class="{ alert: abnormalTotal > 0 }">{{ abnormalTotal }}</span>
+          </button>
         </div>
 
         <div v-if="loading" class="loading-row">
@@ -526,7 +535,7 @@
             </thead>
             <tbody>
               <tr v-if="!sortedFilteredPods.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="pod in sortedFilteredPods" :key="pod.namespace + '/' + pod.name"
+              <tr v-for="pod in limitRows(sortedFilteredPods)" :key="pod.namespace + '/' + pod.name"
                   :class="{ 'row-selected': isRowSelected('pod', pod) }">
                 <td class="select-col">
                   <input type="checkbox"
@@ -592,7 +601,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredDeployments.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="deployment in filteredDeployments" :key="deployment.namespace + '/' + deployment.name"
+              <tr v-for="deployment in limitRows(filteredDeployments)" :key="deployment.namespace + '/' + deployment.name"
                   :class="{ 'row-selected': isRowSelected('deployment', deployment) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('deployment', deployment)"
@@ -639,7 +648,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredDaemonSets.length"><td colspan="11" class="empty">暂无数据</td></tr>
-              <tr v-for="daemonSet in filteredDaemonSets" :key="daemonSet.namespace + '/' + daemonSet.name"
+              <tr v-for="daemonSet in limitRows(filteredDaemonSets)" :key="daemonSet.namespace + '/' + daemonSet.name"
                   :class="{ 'row-selected': isRowSelected('daemonset', daemonSet) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('daemonset', daemonSet)"
@@ -681,7 +690,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredStatefulSets.length"><td colspan="11" class="empty">暂无数据</td></tr>
-              <tr v-for="statefulSet in filteredStatefulSets" :key="statefulSet.namespace + '/' + statefulSet.name"
+              <tr v-for="statefulSet in limitRows(filteredStatefulSets)" :key="statefulSet.namespace + '/' + statefulSet.name"
                   :class="{ 'row-selected': isRowSelected('statefulset', statefulSet) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('statefulset', statefulSet)"
@@ -730,7 +739,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredJobs.length"><td colspan="12" class="empty">暂无数据</td></tr>
-              <tr v-for="job in filteredJobs" :key="job.namespace + '/' + job.name"
+              <tr v-for="job in limitRows(filteredJobs)" :key="job.namespace + '/' + job.name"
                   :class="{ 'row-selected': isRowSelected('job', job) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('job', job)"
@@ -770,7 +779,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredCronJobs.length"><td colspan="12" class="empty">暂无数据</td></tr>
-              <tr v-for="cronJob in filteredCronJobs" :key="cronJob.namespace + '/' + cronJob.name"
+              <tr v-for="cronJob in limitRows(filteredCronJobs)" :key="cronJob.namespace + '/' + cronJob.name"
                   :class="{ 'row-selected': isRowSelected('cronjob', cronJob) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('cronjob', cronJob)"
@@ -810,7 +819,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredServices.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="service in filteredServices" :key="service.namespace + '/' + service.name"
+              <tr v-for="service in limitRows(filteredServices)" :key="service.namespace + '/' + service.name"
                   :class="{ 'row-selected': isRowSelected('service', service) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('service', service)"
@@ -846,7 +855,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredConfigMaps.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="cm in filteredConfigMaps" :key="cm.namespace + '/' + cm.name"
+              <tr v-for="cm in limitRows(filteredConfigMaps)" :key="cm.namespace + '/' + cm.name"
                   :class="{ 'row-selected': isRowSelected('configmap', cm) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('configmap', cm)"
@@ -882,7 +891,7 @@
             </thead>
             <tbody>
               <tr v-if="!filteredNodes.length"><td colspan="8" class="empty">暂无数据</td></tr>
-              <tr v-for="node in filteredNodes" :key="node.name">
+              <tr v-for="node in limitRows(filteredNodes)" :key="node.name">
                 <td class="name-cell">{{ node.name }}</td>
                 <td class="mono small node-list-cell">{{ node.internal_ip || '-' }}</td>
                 <td><span class="status-dot" :class="node.statusClass"></span>{{ node.status }}</td>
@@ -898,6 +907,15 @@
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <div v-if="!loading && !showAllRows && currentList.length > ROW_LIMIT" class="row-limit-bar">
+          为保证流畅仅渲染前 {{ ROW_LIMIT }} 行（共 {{ currentList.length }} 行），可搜索或
+          <button @click="showAllRows = true">显示全部</button>
+        </div>
+        <div v-else-if="!loading && showAllRows && currentList.length > ROW_LIMIT" class="row-limit-bar">
+          正在显示全部 {{ currentList.length }} 行
+          <button @click="showAllRows = false">恢复折叠</button>
         </div>
       </section>
     </div>
@@ -1953,35 +1971,70 @@ function nodeSearchParts(item) {
   return (item.node_list || []).flatMap((n) => [n.name, n.ip])
 }
 
+// ── 「只看异常」过滤 + 大列表渲染上限 ────────────────────────────────────
+const onlyAbnormal = ref(false)
+const showAllRows = ref(false)
+const ROW_LIMIT = 150
+
+const POD_OK_STATUS = new Set(['Running', 'Succeeded', 'Completed'])
+
+function isPodAbnormal(pod) {
+  if (!POD_OK_STATUS.has(String(pod.status || ''))) return true
+  // Running 但存在未就绪容器
+  return (pod.containers || []).some((c) => c.ready === false)
+}
+
+function isWorkloadAbnormal(item) {
+  const desired = Number(item.desired ?? 0)
+  return desired > 0 && Number(item.ready ?? 0) < desired
+}
+
+function isJobAbnormal(item) {
+  return Number(item.failed || 0) > 0 || String(item.status || '') === 'Failed'
+}
+
+function isNodeAbnormal(item) {
+  return String(item.status || '') !== 'Ready'
+}
+
+function abnormalPass(enabledCheck) {
+  // onlyAbnormal 关闭时不过滤；开启时按各资源的异常判定过滤
+  return (item) => !onlyAbnormal.value || enabledCheck(item)
+}
+
+function limitRows(list) {
+  return showAllRows.value ? list : list.slice(0, ROW_LIMIT)
+}
+
 const filteredPods = computed(() =>
   pods.value.filter((pod) => matchesSearch([
     pod.name, pod.namespace, pod.status, pod.node, pod.host_ip, pod.ip, pod.restarts,
     ...(pod.containers || []).map((container) => container.name),
-  ]))
+  ])).filter(abnormalPass(isPodAbnormal))
 )
 const filteredDeployments = computed(() =>
   deployments.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.ready, item.desired,
     ...(item.images || []), ...nodeSearchParts(item),
-  ]))
+  ])).filter(abnormalPass(isWorkloadAbnormal))
 )
 const filteredDaemonSets = computed(() =>
   daemonSets.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.ready, item.desired,
     item.current, item.updated, item.available, ...(item.images || []), ...nodeSearchParts(item),
-  ]))
+  ])).filter(abnormalPass(isWorkloadAbnormal))
 )
 const filteredStatefulSets = computed(() =>
   statefulSets.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.ready, item.desired,
     item.current, item.updated, ...(item.images || []), ...nodeSearchParts(item),
-  ]))
+  ])).filter(abnormalPass(isWorkloadAbnormal))
 )
 const filteredJobs = computed(() =>
   jobs.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.status, item.succeeded, item.completions,
     item.parallelism, item.active, item.failed, ...(item.images || []), ...nodeSearchParts(item),
-  ]))
+  ])).filter(abnormalPass(isJobAbnormal))
 )
 const filteredCronJobs = computed(() =>
   cronJobs.value.filter((item) => matchesSearch([
@@ -2002,7 +2055,17 @@ const filteredConfigMaps = computed(() =>
 const filteredNodes = computed(() =>
   nodes.value.filter((item) => matchesSearch([
     item.name, item.internal_ip, item.status, item.roles, item.version, item.os,
-  ]))
+  ])).filter(abnormalPass(isNodeAbnormal))
+)
+
+// 全集群异常总数（不受 onlyAbnormal 影响，供开关徽标展示）
+const abnormalTotal = computed(() =>
+  pods.value.filter(isPodAbnormal).length
+  + deployments.value.filter(isWorkloadAbnormal).length
+  + daemonSets.value.filter(isWorkloadAbnormal).length
+  + statefulSets.value.filter(isWorkloadAbnormal).length
+  + jobs.value.filter(isJobAbnormal).length
+  + nodes.value.filter(isNodeAbnormal).length
 )
 
 function normalizeKind(kind) {
@@ -2545,6 +2608,7 @@ function clearSelection() {
 
 // 切换 tab 时清掉非当前 tab 的选中, 防止跨 tab 混淆
 watch(activeTab, () => {
+  showAllRows.value = false
   const prefix = `${currentKind.value}:`
   const next = new Set()
   for (const k of selectedRows.value) {
@@ -3417,9 +3481,12 @@ function togglePodRestartSort() {
 }
 const sortedFilteredPods = computed(() => {
   const list = filteredPods.value
-  if (!podRestartSortOrder.value) return list
-  const dir = podRestartSortOrder.value === 'desc' ? -1 : 1
-  return [...list].sort((a, b) => dir * ((Number(a.restarts) || 0) - (Number(b.restarts) || 0)))
+  if (podRestartSortOrder.value) {
+    const dir = podRestartSortOrder.value === 'desc' ? -1 : 1
+    return [...list].sort((a, b) => dir * ((Number(a.restarts) || 0) - (Number(b.restarts) || 0)))
+  }
+  // 默认：异常 Pod 置顶（稳定排序，正常 Pod 保持原顺序）
+  return [...list].sort((a, b) => Number(isPodAbnormal(b)) - Number(isPodAbnormal(a)))
 })
 
 // ── 资源关键字搜索统计（替代原 kubeconfig 认证检测）──────────────────────────
@@ -3923,6 +3990,13 @@ onBeforeUnmount(() => { _destroyExec() })
 .tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 .tab-btn.active { background: var(--accent-dim); border-color: var(--border-accent); color: var(--accent); font-weight: 500; }
 .tab-count { font-size: 10px; background: var(--bg-surface); border: 1px solid var(--border); padding: 1px 5px; border-radius: 8px; color: var(--text-secondary); }
+.abnormal-toggle { margin-left: auto; }
+.abnormal-toggle.has-abnormal { color: var(--warning); }
+.abnormal-toggle.active { background: rgba(210, 153, 34, .12); border-color: var(--warning); color: var(--warning); font-weight: 600; }
+.tab-count.alert { background: rgba(248, 81, 73, .12); border-color: rgba(248, 81, 73, .3); color: var(--error); }
+.row-limit-bar { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px; margin-top: 4px; font-size: 12px; color: var(--text-muted); border: 1px dashed var(--border); border-radius: 8px; }
+.row-limit-bar button { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; }
+.row-limit-bar button:hover { opacity: .8; }
 
 .loading-row { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 28px; color: var(--text-muted); }
 .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
