@@ -19,7 +19,7 @@ const routes = [
   { path: '/hosts/workbench', component: () => import('../views/TaskWorkbenchView.vue'), name: 'host-workbench' },
   { path: '/hosts/cron',   component: () => import('../views/HostCronView.vue'),    name: 'host-cron' },
   { path: '/hosts/apply',  component: () => import('../views/HostApplyView.vue'),   name: 'host-apply' },
-  { path: '/hosts/compliance', component: () => import('../views/ComplianceView.vue'), name: 'host-compliance', meta: { module: 'ssh' } },
+  { path: '/workflows', component: () => import('../views/WorkflowView.vue'), name: 'workflows', meta: { module: 'workflow' } },
 
   // ── 4. 多云管理（已隐藏）─────────────────────────────────────
   // { path: '/cloud', component: () => import('../views/CloudManageView.vue'), name: 'cloud' },
@@ -45,17 +45,19 @@ const routes = [
   { path: '/cicd/jenkins', component: () => import('../views/JenkinsView.vue'), name: 'cicd-jenkins' },
 
   // ── 8. 可观测性 ───────────────────────────────────────────────
-  { path: '/observability/unified',  component: () => import('../views/ObsUnifiedView.vue'), name: 'obs-unified' },
   { path: '/observability/overview', component: () => import('../views/Dashboard.vue'),      name: 'obs-overview' },
   { path: '/observability/bigscreen', component: () => import('../views/BigScreenView.vue'), name: 'obs-bigscreen', meta: { fullscreen: true } },
-  { path: '/observability/cost', component: () => import('../views/CostView.vue'), name: 'obs-cost' },
-  { path: '/observability/metrics-query', component: () => import('../views/MetricsQueryView.vue'), name: 'obs-metrics-query', meta: { module: 'metrics' } },
+  // 自定义 PromQL 图表面板（替代 指标查询 / 接口指标·Prom，两者组件文件保留）
+  { path: '/observability/metric-charts', component: () => import('../views/PromChartsView.vue'), name: 'obs-metric-charts', meta: { module: 'metrics' } },
+  { path: '/observability/metrics-query', redirect: '/observability/metric-charts' },
+  { path: '/observability/http-server-metrics', redirect: '/observability/metric-charts' },
   { path: '/observability/logs-query', component: () => import('../views/LogsQueryView.vue'), name: 'obs-logs-query', meta: { module: 'log' } },
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },
   { path: '/observability/logs',     component: () => import('../views/LogAnalysis.vue'),    name: 'obs-logs',     meta: { module: 'log' } },
   { path: '/observability/trace',    component: () => import('../views/SkyWalkingView.vue'), name: 'obs-trace',    meta: { module: 'skywalking' } },
   { path: '/observability/api-red',  component: () => import('../views/ApiRedView.vue'),     name: 'obs-api-red',  meta: { module: 'skywalking' } },
-  { path: '/observability/alerts',   component: () => import('../views/AlertHistory.vue'),   name: 'obs-alerts',   meta: { module: 'alert' } },
+  // AlertHistory 已下线（与 AIOps 告警中心重复），组件文件保留；旧路径重定向到告警中心
+  { path: '/observability/alerts',   redirect: '/aiops/alerts' },
 
   // ── 9. 事件墙 ─────────────────────────────────────────────────
   { path: '/events', component: () => import('../views/EventWallView.vue'), name: 'events' },
@@ -68,10 +70,12 @@ const routes = [
   { path: '/tools/slowlog', component: () => import('../views/SlowLogView.vue'),    name: 'tools-slowlog', meta: { module: 'slowlog' } },
   { path: '/tools/report',  component: () => import('../views/AnalysisReport.vue'), name: 'tools-report',  meta: { module: 'report' } },
   { path: '/tools/knowledge', component: () => import('../views/KnowledgeView.vue'), name: 'tools-knowledge' },
-  { path: '/tools/metrics', component: () => import('../views/MetricsMonitor.vue'), name: 'tools-metrics', meta: { module: 'metrics' } },
+  // MetricsMonitor 已下线（仪表盘/指标图表子集），组件文件保留；旧路径重定向到指标图表
+  { path: '/tools/metrics', redirect: '/observability/metric-charts' },
 
   // ── 11. AIOps 智能运维 ────────────────────────────────────────
-  { path: '/aiops/fault',     component: () => import('../views/FaultDashboardView.vue'), name: 'aiops-fault' },
+  // FaultDashboard 已下线（与监控大屏重复），组件文件保留；旧路径重定向到监控大屏
+  { path: '/aiops/fault',     redirect: '/observability/bigscreen' },
   { path: '/aiops/alerts',    component: () => import('../views/AlertCenterView.vue'),    name: 'aiops-alerts' },
   { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
   { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
@@ -88,9 +92,9 @@ const routes = [
 
   // ── 旧路由兼容重定向 ──────────────────────────────────────────
   { path: '/logs',         redirect: '/observability/logs' },
-  { path: '/metrics',      redirect: '/tools/metrics' },
+  { path: '/metrics',      redirect: '/observability/metric-charts' },
   { path: '/grafana',      redirect: '/observability/grafana' },
-  { path: '/alerts',       redirect: '/observability/alerts' },
+  { path: '/alerts',       redirect: '/aiops/alerts' },
   { path: '/skywalking',   redirect: '/observability/trace' },
   { path: '/hosts/assets', redirect: '/cmdb' },
   { path: '/hosts',        redirect: '/cmdb' },

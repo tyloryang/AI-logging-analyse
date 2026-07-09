@@ -131,7 +131,6 @@ const MENU = [
     id: 'host', icon: 'host', label: '主机中心',
     children: [
       { label: 'CMDB',     to: '/cmdb', module: 'cmdb' },
-      { label: '合规检查', to: '/hosts/compliance', module: 'ssh' },
       { label: '任务工作台', to: '/hosts/workbench' },
       { label: '任务中心', to: '/hosts/tasks' },
       { label: '定时任务', to: '/hosts/cron' },
@@ -165,6 +164,7 @@ const MENU = [
       { label: 'Elasticsearch', to: '/middleware/es' },
     ],
   },
+  { id: 'workflow', icon: 'workflow', label: '工作流', to: '/workflows', module: 'workflow' },
   {
     id: 'cicd', icon: 'cicd', label: 'CI/CD',
     children: [
@@ -174,17 +174,14 @@ const MENU = [
   {
     id: 'obs', icon: 'obs', label: '可观测性',
     children: [
-      { label: '统一观测台', to: '/observability/unified' },
       { label: '监控大屏',   to: '/observability/bigscreen' },
-      { label: '指标查询',   to: '/observability/metrics-query', module: 'metrics' },
+      { label: '指标图表',   to: '/observability/metric-charts', module: 'metrics' },
       { label: '日志中心',   to: '/observability/logs-query',    module: 'log' },
       { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
       { label: '日志分析',   to: '/observability/logs',    module: 'log' },
       { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
-      { label: '接口 RED',   to: '/observability/api-red', module: 'skywalking' },
-      { label: '告警中心',   to: '/observability/alerts',  module: 'alert' },
+      { label: '接口 RED · SW', to: '/observability/api-red', module: 'skywalking' },
       { label: '分析报告',   to: '/tools/report',          module: 'report' },
-      { label: '成本分析',   to: '/observability/cost' },
       { label: '知识库',     to: '/tools/knowledge' },
     ],
   },
@@ -195,13 +192,11 @@ const MENU = [
       { label: '工具概览',   to: '/tools' },
       { label: 'Java 诊断', to: '/tools/java-diagnostics', module: 'ssh' },
       { label: '慢日志分析', to: '/tools/slowlog',  module: 'slowlog' },
-      { label: '指标监控',   to: '/tools/metrics',  module: 'metrics' },
     ],
   },
   {
     id: 'aiops', icon: 'aiops', label: 'AIOps 智能运维',
     children: [
-      { label: '🔴 故障大盘', to: '/aiops/fault' },
       { label: '🔔 告警中心', to: '/aiops/alerts' },
       { label: '🧠 根因分析', to: '/aiops/rca' },
       { label: '📊 异常检测', to: '/aiops/anomaly' },
@@ -226,6 +221,7 @@ const openGroups = reactive({
   ticket:     false,
   container:  false,   // 容器管理（含 K8s 拓扑流图）
   middleware: false,
+  workflow:   false,
   cicd:       false,
   obs:        true,
   tools:      false,
@@ -275,6 +271,7 @@ const ICONS = {
   ticket:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/></svg>`,
   container:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
   middleware: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
+  workflow:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 7.8l2.8 7.4"/><path d="M15.4 7.8l-2.8 7.4"/><path d="M9 6h6"/></svg>`,
   cicd:       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg>`,
   system:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,
   obs:        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,

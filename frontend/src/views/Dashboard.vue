@@ -14,15 +14,16 @@
         </div>
       </div>
       <div class="obs-header-right">
-        <select class="time-select" v-model.number="windowMinutes" @change="loadAll">
+        <select class="time-select" v-model.number="windowMinutes" @change="onWindowChange">
+          <option :value="1">最近 1 分钟</option>
           <option :value="10">最近 10 分钟</option>
           <option :value="30">最近 30 分钟</option>
           <option :value="60">最近 1 小时</option>
           <option :value="360">最近 6 小时</option>
           <option :value="1440">最近 24 小时</option>
         </select>
-        <button class="btn-refresh" @click="loadAll" :disabled="loading" title="刷新">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }">
+        <button class="btn-refresh" @click="forceRefresh" :disabled="refreshing" title="刷新">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: refreshing }">
             <polyline points="23 4 23 10 17 10" />
             <polyline points="1 20 1 14 7 14" />
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
@@ -146,7 +147,7 @@
             <span class="section-dot dot-alert"></span>
             <h2 class="section-title">根因中心</h2>
             <span class="section-count">{{ overview.problem_services?.length || 0 }} 个异常服务</span>
-            <button class="section-link" @click="loadAll">刷新</button>
+            <button class="section-link" @click="forceRefresh">刷新</button>
           </div>
 
           <div v-if="loading" class="section-loading">
@@ -428,8 +429,10 @@ function goServiceLogs(service) { router.push({ path: '/observability/logs', que
 import { api } from '../api/index.js'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 
-const loading = ref(false)
-const windowMinutes = ref(10)
+const hasLoaded = ref(false)      // 是否已有可展示的数据（首次或缓存）
+const refreshing = ref(false)     // 请求进行中（后台刷新不遮挡已有数据）
+const loading = computed(() => refreshing.value && !hasLoaded.value)
+const windowMinutes = ref(1)
 const overview = reactive({
   alert_count: null,
   error_count: null,
@@ -463,6 +466,38 @@ function isRequestCanceled(error) {
   return error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || error?.name === 'AbortError'
 }
 
+// ── sessionStorage 缓存：回到首页秒开，后台静默刷新 ──────────────────────
+const OVERVIEW_CACHE_PREFIX = 'obs-overview:'
+
+function readOverviewCache(minutes) {
+  try {
+    const raw = sessionStorage.getItem(OVERVIEW_CACHE_PREFIX + minutes)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function writeOverviewCache(minutes, data) {
+  try {
+    sessionStorage.setItem(OVERVIEW_CACHE_PREFIX + minutes, JSON.stringify(data))
+  } catch {
+    // 存储满/隐私模式等，忽略
+  }
+}
+
+function applyCachedOverview() {
+  const cached = readOverviewCache(windowMinutes.value)
+  if (cached) {
+    Object.assign(overview, cached)
+    hasLoaded.value = true
+  } else {
+    hasLoaded.value = false
+  }
+  return !!cached
+}
+
 async function fetchAiModel() {
   try {
     const result = await fetchHealthStatus()
@@ -473,31 +508,48 @@ async function fetchAiModel() {
   }
 }
 
-async function loadAll() {
+async function loadAll(options = {}) {
+  const force = options === true || options?.force === true
   const requestId = ++overviewRequestId
   overviewAbortController?.abort()
   const controller = new AbortController()
   overviewAbortController = controller
-  loading.value = true
+  refreshing.value = true
 
   try {
-    const data = await api.observabilityOverview(
-      { minutes: windowMinutes.value },
-      { signal: controller.signal },
-    )
+    const params = { minutes: windowMinutes.value }
+    if (force) params.refresh = true
+    const data = await api.observabilityOverview(params, { signal: controller.signal })
     if (!dashboardMounted || requestId !== overviewRequestId) return
     Object.assign(overview, data)
+    hasLoaded.value = true
+    writeOverviewCache(windowMinutes.value, data)
+    // 命中后端 stale 数据时，稍后自动拉一次新鲜结果（后端已在后台重建）
+    if (data?.stale && !force) {
+      setTimeout(() => {
+        if (dashboardMounted && requestId === overviewRequestId) loadAll()
+      }, 3000)
+    }
   } catch (error) {
     if (isRequestCanceled(error)) return
     console.warn('[obs] 加载总览失败:', error)
   } finally {
     if (requestId === overviewRequestId) {
-      loading.value = false
+      refreshing.value = false
     }
     if (overviewAbortController === controller) {
       overviewAbortController = null
     }
   }
+}
+
+function forceRefresh() {
+  return loadAll({ force: true })
+}
+
+function onWindowChange() {
+  applyCachedOverview()
+  loadAll()
 }
 
 function fmtRcaTime(iso) {
@@ -593,6 +645,7 @@ function renderAnalysis(text) {
 }
 
 onMounted(() => {
+  applyCachedOverview() // 有缓存则立即渲染，避免整页 spinner
   loadAll()
   fetchAiModel()
 })

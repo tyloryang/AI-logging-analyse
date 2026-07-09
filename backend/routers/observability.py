@@ -28,6 +28,9 @@ from skywalking_client import sw_client, check_connectivity as sw_check
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/observability", tags=["observability"])
 _overview_cache: TTLCache = TTLCache(maxsize=8, ttl=15)
+# 最近一次构建结果长期保留：TTL 过期后先秒回旧数据 + 后台刷新（stale-while-revalidate）
+_overview_stale: dict[str, dict] = {}
+_overview_refresh_tasks: dict[str, asyncio.Task] = {}
 _overview_locks: dict[int, asyncio.Lock] = {}
 _DEFAULT_OVERVIEW_MINUTES = 1
 _MAX_WINDOW_MINUTES = 24 * 60
@@ -428,6 +431,34 @@ def _container_abnormal_from_k8s_summary(summary: dict) -> dict:
     }
 
 
+_k8s_summary_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _fetch_and_cache_k8s_summary(cluster: dict) -> dict:
+    """拉取 K8s 摘要并写入 _SUMMARY_CACHE。作为独立 task 运行，
+    即使调用方超时取消，本任务仍继续完成，为下次请求填充缓存。"""
+    from routers import kubernetes as k8s
+
+    core_task = asyncio.to_thread(k8s._fetch_core_summary_resources, cluster["id"])
+    apps_task = asyncio.to_thread(k8s._fetch_apps_summary_resources, cluster["id"])
+    batch_task = asyncio.to_thread(k8s._fetch_batch_summary_resources, cluster["id"])
+    (pods, nodes), \
+    (deps, daemonsets, statefulsets), \
+    (jobs, cronjobs) = await asyncio.gather(core_task, apps_task, batch_task)
+    summary = k8s._build_cluster_summary_payload(
+        cluster,
+        pods,
+        deps,
+        daemonsets,
+        statefulsets,
+        jobs,
+        cronjobs,
+        nodes,
+    )
+    k8s._SUMMARY_CACHE[cluster["id"]] = summary
+    return summary
+
+
 async def _get_k8s_resource_health_summary() -> dict:
     empty = {
         "available": False,
@@ -452,26 +483,12 @@ async def _get_k8s_resource_health_summary() -> dict:
         cache_key = cluster["id"]
         summary = k8s._SUMMARY_CACHE.get(cache_key)
         if summary is None:
-            core_task = asyncio.to_thread(k8s._fetch_core_summary_resources, cluster["id"])
-            apps_task = asyncio.to_thread(k8s._fetch_apps_summary_resources, cluster["id"])
-            batch_task = asyncio.to_thread(k8s._fetch_batch_summary_resources, cluster["id"])
-            (pods, nodes), \
-            (deps, daemonsets, statefulsets), \
-            (jobs, cronjobs) = await asyncio.wait_for(
-                asyncio.gather(core_task, apps_task, batch_task),
-                timeout=8,
-            )
-            summary = k8s._build_cluster_summary_payload(
-                cluster,
-                pods,
-                deps,
-                daemonsets,
-                statefulsets,
-                jobs,
-                cronjobs,
-                nodes,
-            )
-            k8s._SUMMARY_CACHE[cache_key] = summary
+            task = _k8s_summary_tasks.get(cache_key)
+            if task is None or task.done():
+                task = asyncio.create_task(_fetch_and_cache_k8s_summary(cluster))
+                _k8s_summary_tasks[cache_key] = task
+            # shield：外层超时不取消拉取任务，跑完自动进缓存供下次秒回
+            summary = await asyncio.wait_for(asyncio.shield(task), timeout=8)
 
         abnormal = _container_abnormal_from_k8s_summary(summary)
         return {
@@ -494,14 +511,17 @@ async def _get_k8s_resource_health_summary() -> dict:
 
 
 async def _get_resource_health_summary() -> dict:
-    hosts = load_hosts_list()
-    active_alerts = _load_active_alert_groups(limit=500)
+    # 文件读取走线程池避免阻塞事件循环；与 K8s 摘要三路并行
+    hosts, active_alerts, k8s_summary = await asyncio.gather(
+        asyncio.to_thread(load_hosts_list),
+        asyncio.to_thread(_load_active_alert_groups, 500),
+        _get_k8s_resource_health_summary(),
+    )
     host_values = _host_identity_values(hosts)
     host_alerts = [
         group for group in active_alerts
         if _is_host_related_alert(group, host_values)
     ]
-    k8s_summary = await _get_k8s_resource_health_summary()
     host_count = len(hosts)
     host_status_abnormal = sum(1 for host in hosts if _host_status_is_abnormal(host))
     k8s_available = bool(k8s_summary.get("available"))
@@ -531,7 +551,7 @@ async def _get_resource_health_summary() -> dict:
 async def _get_alert_count(*, raise_on_error: bool = False) -> tuple[int, list[dict]]:
     """返回 (active_alert_count, recent_alerts)，直接读 AIOps 告警存储。"""
     try:
-        active = _load_active_alert_groups(limit=200)
+        active = await asyncio.to_thread(_load_active_alert_groups, 200)
         recent = []
         for g in active[:10]:
             recent.append({
@@ -635,6 +655,7 @@ async def _get_problem_services(
     error_breakdown: list[dict],
     recent_alerts: list[dict],
     window_label: str = "1h",
+    recent_rca: list[dict] | None = None,
 ) -> list[dict]:
     service_map: dict[str, dict] = {}
 
@@ -680,7 +701,8 @@ async def _get_problem_services(
         if alert.get("rca_id"):
             service_map[svc]["_rca_ids"].append(alert["rca_id"])
 
-    recent_rca = _load_recent_rca_records()
+    if recent_rca is None:
+        recent_rca = await asyncio.to_thread(_load_recent_rca_records)
     for item in service_map.values():
         matched_rca = _pick_latest_service_rca(item, recent_rca)
         if matched_rca:
@@ -706,10 +728,105 @@ async def _get_problem_services(
 # 端点：GET /api/observability/overview
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _build_overview(window_hours: float, window_minutes: int) -> dict:
+    """实际拉取各数据源并组装 payload（不含缓存逻辑）。"""
+    window_label = _format_window_label(window_minutes)
+    window_text = _format_window_text(window_minutes)
+
+    alert_part, error_part, trace_part, resource_health_part, rca_part = await asyncio.gather(
+        _safe_overview_part("alerts", _get_alert_count(raise_on_error=True)),
+        _safe_overview_part("loki", _get_loki_error_count(window_hours, raise_on_error=True)),
+        _safe_overview_part("skywalking", _get_sw_trace_count(window_hours, raise_on_error=True)),
+        _safe_overview_part(
+            "resources",
+            _get_resource_health_summary(),
+            timeout=_OVERVIEW_RESOURCE_TIMEOUT_SECONDS,
+        ),
+        # RCA 历史提前并行读，problem_services 阶段免二次等待
+        _safe_overview_part("rca_history", asyncio.to_thread(_load_recent_rca_records)),
+    )
+
+    alert_count, recent_alerts = alert_part if alert_part is not None else (None, [])
+    error_count, error_breakdown = error_part if error_part is not None else (None, [])
+    trace_count, recent_traces = trace_part if trace_part is not None else (None, [])
+    resource_health = resource_health_part if resource_health_part is not None else _missing_resource_health()
+
+    problem_services = []
+    if alert_part is not None or error_part is not None:
+        problem_services = await _safe_overview_part(
+            "problem_services",
+            _get_problem_services(
+                error_breakdown,
+                recent_alerts,
+                window_label=window_label,
+                recent_rca=rca_part if rca_part is not None else [],
+            ),
+            timeout=_OVERVIEW_PROBLEM_TIMEOUT_SECONDS,
+        ) or []
+    grafana_boards = _build_grafana_boards()
+    fetch_status = {
+        "alerts": alert_part is not None,
+        "loki": error_part is not None,
+        "skywalking": trace_part is not None,
+        "resources": resource_health_part is not None,
+        "k8s": bool(resource_health.get("resource_summary", {}).get("k8s_available")),
+    }
+
+    return {
+        "alert_count": alert_count,
+        **resource_health,
+        "error_count": error_count,
+        "trace_count": trace_count,
+        "grafana_count": len(grafana_boards),
+        "hours": round(window_hours, 4),
+        "minutes": window_minutes,
+        "window_label": window_label,
+        "window_text": window_text,
+        "recent_alerts": recent_alerts,
+        "recent_traces": recent_traces,
+        "problem_services": problem_services,
+        "grafana_boards": grafana_boards,
+        "grafana_url": os.getenv("GRAFANA_URL", "").strip().rstrip("/"),
+        "error_breakdown": error_breakdown,
+        "fetch_status": fetch_status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _rebuild_overview(cache_key: str, window_hours: float, window_minutes: int, *, force: bool = False) -> dict:
+    """加锁重建总览并写缓存。部分数据源失败也缓存（15s TTL），避免每次请求重复吃满超时。"""
+    lock = _overview_locks.setdefault(window_minutes, asyncio.Lock())
+    async with lock:
+        if not force:
+            cached = _overview_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        payload = await _build_overview(window_hours, window_minutes)
+        _overview_cache[cache_key] = payload
+        _overview_stale[cache_key] = payload
+        return payload
+
+
+def _schedule_overview_refresh(cache_key: str, window_hours: float, window_minutes: int) -> None:
+    """后台刷新（stale-while-revalidate 的 revalidate 半边），同 key 只保留一个在跑。"""
+    task = _overview_refresh_tasks.get(cache_key)
+    if task is not None and not task.done():
+        return
+
+    async def _run():
+        try:
+            await _rebuild_overview(cache_key, window_hours, window_minutes)
+        except Exception as exc:
+            logger.warning("[obs] overview 后台刷新失败: %s", exc)
+
+    _overview_refresh_tasks[cache_key] = asyncio.create_task(_run())
+
+
 @router.get("/overview")
 async def get_overview(
     hours: Optional[int] = Query(None, ge=1, le=24),
     minutes: Optional[int] = Query(None, ge=1, le=_MAX_WINDOW_MINUTES),
+    refresh: bool = Query(False, description="跳过缓存强制重建（手动刷新按钮）"),
 ):
     """
     汇总返回：
@@ -724,75 +841,22 @@ async def get_overview(
       - recent_traces    最近 Trace 列表
       - problem_services 有问题的服务（根因中心）
       - grafana_boards   看板列表
+
+    加载策略：TTL 缓存命中秒回 → 过期但有旧数据则秒回旧数据并后台刷新 → 首次同步构建。
     """
     window_hours, window_minutes = _normalize_window(hours=hours, minutes=minutes)
-    window_label = _format_window_label(window_minutes)
-    window_text = _format_window_text(window_minutes)
     cache_key = f"overview:{window_minutes}"
-    cached = _overview_cache.get(cache_key)
-    if cached is not None:
-        return cached
 
-    lock = _overview_locks.setdefault(window_minutes, asyncio.Lock())
-    async with lock:
+    if not refresh:
         cached = _overview_cache.get(cache_key)
         if cached is not None:
             return cached
+        stale = _overview_stale.get(cache_key)
+        if stale is not None:
+            _schedule_overview_refresh(cache_key, window_hours, window_minutes)
+            return {**stale, "stale": True}
 
-        alert_part, error_part, trace_part, resource_health_part = await asyncio.gather(
-            _safe_overview_part("alerts", _get_alert_count(raise_on_error=True)),
-            _safe_overview_part("loki", _get_loki_error_count(window_hours, raise_on_error=True)),
-            _safe_overview_part("skywalking", _get_sw_trace_count(window_hours, raise_on_error=True)),
-            _safe_overview_part(
-                "resources",
-                _get_resource_health_summary(),
-                timeout=_OVERVIEW_RESOURCE_TIMEOUT_SECONDS,
-            ),
-        )
-
-        alert_count, recent_alerts = alert_part if alert_part is not None else (None, [])
-        error_count, error_breakdown = error_part if error_part is not None else (None, [])
-        trace_count, recent_traces = trace_part if trace_part is not None else (None, [])
-        resource_health = resource_health_part if resource_health_part is not None else _missing_resource_health()
-
-        problem_services = []
-        if alert_part is not None or error_part is not None:
-            problem_services = await _safe_overview_part(
-                "problem_services",
-                _get_problem_services(error_breakdown, recent_alerts, window_label=window_label),
-                timeout=_OVERVIEW_PROBLEM_TIMEOUT_SECONDS,
-            ) or []
-        grafana_boards = _build_grafana_boards()
-        fetch_status = {
-            "alerts": alert_part is not None,
-            "loki": error_part is not None,
-            "skywalking": trace_part is not None,
-            "resources": resource_health_part is not None,
-            "k8s": bool(resource_health.get("resource_summary", {}).get("k8s_available")),
-        }
-
-        payload = {
-            "alert_count": alert_count,
-            **resource_health,
-            "error_count": error_count,
-            "trace_count": trace_count,
-            "grafana_count": len(grafana_boards),
-            "hours": round(window_hours, 4),
-            "minutes": window_minutes,
-            "window_label": window_label,
-            "window_text": window_text,
-            "recent_alerts": recent_alerts,
-            "recent_traces": recent_traces,
-            "problem_services": problem_services,
-            "grafana_boards": grafana_boards,
-            "grafana_url": os.getenv("GRAFANA_URL", "").strip().rstrip("/"),
-            "error_breakdown": error_breakdown,
-            "fetch_status": fetch_status,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if all(fetch_status[key] for key in ("alerts", "loki", "skywalking", "resources")):
-            _overview_cache[cache_key] = payload
-        return payload
+    return await _rebuild_overview(cache_key, window_hours, window_minutes, force=refresh)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1505,6 +1569,87 @@ async def delete_grafana_board(board_id: str):
     settings["grafana_boards"] = customs
     _save_settings(settings)
     return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 自定义 PromQL 图表面板（指标图表页配置持久化）
+# 数据查询走已有 POST /metrics/query-range；这里只存图表定义。
+# ══════════════════════════════════════════════════════════════════════════════
+
+_METRIC_PANELS_FILE = _Path(__file__).resolve().parent.parent / "data" / "metric_panels.json"
+
+_METRIC_PANEL_SEEDS = [
+    {
+        "id": "cpu-usage",
+        "title": "主机 CPU 使用率",
+        "query": '100 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100',
+        "unit": "%",
+        "width": "half",
+    },
+    {
+        "id": "mem-usage",
+        "title": "主机内存使用率",
+        "query": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100",
+        "unit": "%",
+        "width": "half",
+    },
+    {
+        "id": "disk-usage",
+        "title": "根分区磁盘使用率",
+        "query": '100 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} * 100',
+        "unit": "%",
+        "width": "half",
+    },
+    {
+        "id": "load5",
+        "title": "系统负载 load5",
+        "query": "node_load5",
+        "unit": "",
+        "width": "half",
+    },
+]
+
+
+class MetricPanelsPayload(BaseModel):
+    charts: list[dict] = []
+    range_minutes: int = 60
+    step: int = 60
+    refresh_seconds: int = 0
+
+
+@router.get("/metric-panels")
+async def get_metric_panels():
+    data = read_json_file(_METRIC_PANELS_FILE, default=None)
+    if not isinstance(data, dict) or not isinstance(data.get("charts"), list):
+        data = {"charts": _METRIC_PANEL_SEEDS, "range_minutes": 60, "step": 60, "refresh_seconds": 0}
+        write_json_file(_METRIC_PANELS_FILE, data, ensure_parent=True)
+    return data
+
+
+@router.put("/metric-panels")
+async def save_metric_panels(body: MetricPanelsPayload):
+    charts = []
+    for item in body.charts[:60]:
+        if not isinstance(item, dict):
+            continue
+        query = str(item.get("query") or "").strip()
+        if not query:
+            continue
+        charts.append({
+            "id": str(item.get("id") or f"chart-{len(charts)}"),
+            "title": str(item.get("title") or "未命名图表")[:80],
+            "query": query[:2000],
+            "unit": str(item.get("unit") or "")[:20],
+            "width": item.get("width") if item.get("width") in ("half", "full") else "half",
+        })
+    data = {
+        "charts": charts,
+        "range_minutes": max(5, min(int(body.range_minutes or 60), 7 * 24 * 60)),
+        "step": max(10, min(int(body.step or 60), 3600)),
+        "refresh_seconds": max(0, min(int(body.refresh_seconds or 0), 3600)),
+    }
+    write_json_file(_METRIC_PANELS_FILE, data, ensure_parent=True)
+    return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
