@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from copy import deepcopy
@@ -28,6 +29,7 @@ _MAX_LOGS = 300
 _CTX_TIMEOUT = 10.0
 _MAX_RESULTS = 300
 _MAX_CASES = 500
+_MAX_LOG_CONTEXT_ANCHORS = 3
 
 _STATUS_RUNNING = {"pending", "running"}
 _STATUS_FINAL = {"awaiting_confirmation", "confirmed", "needs_review", "error"}
@@ -591,16 +593,77 @@ async def _collect_loki(service: str | None, hours: float, source_labels: dict[s
 
         top = sorted(freq.items(), key=lambda pair: (-pair[1], pair[0]))[:8]
         items = [f"[x{count}] {samples[text]}" for text, count in top]
+        context_items = await _collect_log_context_items(state.loki, logs, service=service, hours=hours)
         summary = f"最近 {hours}h 共抓取 {len(logs)} 条错误日志，Top 模式已去重展示。"
+        if context_items:
+            summary += f" 已补充 {len(context_items)} 段错误日志前后文。"
         if service:
             summary = f"{service} 服务，" + summary
         if source_labels.get("namespace"):
             summary += f" namespace={source_labels['namespace']}。"
-        return {"title": "日志", "summary": summary, "items": items, "raw_count": len(logs)}
+        return {
+            "title": "日志",
+            "summary": summary,
+            "items": items + context_items[:4],
+            "context_items": context_items,
+            "raw_count": len(logs),
+        }
     except asyncio.TimeoutError:
         return {"title": "日志", "summary": "Loki 查询超时。", "items": []}
     except Exception as exc:
         return {"title": "日志", "summary": f"Loki 查询失败: {exc}", "items": []}
+
+
+def _context_label_filters(labels: dict) -> dict[str, str]:
+    allowed = {
+        "app", "service", "job", "namespace", "pod", "pod_name", "container",
+        "container_name", "instance", "stream", "env", "cluster",
+    }
+    result: dict[str, str] = {}
+    for key, value in (labels or {}).items():
+        if key in allowed and value not in (None, ""):
+            result[str(key)] = str(value)
+    return result
+
+
+async def _collect_log_context_items(loki, logs: list[dict], *, service: str | None, hours: float) -> list[str]:
+    async def _one(entry: dict) -> str:
+        try:
+            timestamp_ns = int(entry.get("timestamp_ns") or 0)
+            if timestamp_ns <= 0:
+                return ""
+            labels = entry.get("labels", {}) if isinstance(entry.get("labels"), dict) else {}
+            line = str(entry.get("line") or entry.get("message") or "")
+            context = await asyncio.wait_for(
+                loki.query_log_context(
+                    timestamp_ns=timestamp_ns,
+                    service=service or labels.get("app") or labels.get("service") or labels.get("job") or None,
+                    line_prefix=line[:120] or None,
+                    before=3,
+                    after=3,
+                    hours=hours,
+                    label_filters=_context_label_filters(labels),
+                ),
+                timeout=_CTX_TIMEOUT,
+            )
+            rows = context.get("data", []) if isinstance(context, dict) else []
+            anchor_index = int(context.get("anchor_index", 0) or 0) if isinstance(context, dict) else 0
+            rendered: list[str] = []
+            for idx, row in enumerate(rows[:7]):
+                marker = ">" if idx == anchor_index else " "
+                ts = str(row.get("timestamp", ""))[:19]
+                row_labels = row.get("labels", {}) if isinstance(row.get("labels"), dict) else {}
+                svc = row_labels.get("app") or row_labels.get("service") or row_labels.get("job") or service or "unknown"
+                rendered.append(f"{marker} [{ts}][{svc}] {str(row.get('line') or '')[:220]}")
+            return "日志上下文:\n" + "\n".join(rendered) if rendered else ""
+        except Exception:
+            return ""
+
+    tasks = [_one(entry) for entry in logs[:_MAX_LOG_CONTEXT_ANCHORS]]
+    if not tasks:
+        return []
+    results = await asyncio.gather(*tasks)
+    return [item for item in results if item]
 
 
 async def _collect_prometheus(service: str | None, source_labels: dict[str, str]) -> dict:
@@ -740,9 +803,89 @@ def _collect_change_context(service: str | None) -> dict:
     }
 
 
-def _collect_code_context(service: str | None) -> dict:
+def _extract_code_terms(service: str | None, signal_text: str = "") -> list[str]:
+    terms: list[str] = []
+    if service:
+        terms.append(service)
+        normalized = service.replace("-", "_")
+        if normalized != service:
+            terms.append(normalized)
+        compact = service.replace("-", "").replace("_", "")
+        if compact != service and len(compact) >= 4:
+            terms.append(compact)
+
+    for match in re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:Exception|Error)\b", signal_text or ""):
+        terms.append(match)
+    for match in re.findall(r"/[A-Za-z0-9_./{}:-]{3,}", signal_text or ""):
+        if not match.startswith("//"):
+            terms.append(match[:80])
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for term in terms:
+        value = str(term or "").strip()
+        if len(value) < 4:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+        if len(result) >= 6:
+            break
+    return result
+
+
+def _rg_code_hits(terms: list[str]) -> list[str]:
+    if not terms or not shutil.which("rg"):
+        return []
+
+    search_paths = [name for name in ("backend", "frontend", "docs") if (_REPO_DIR / name).exists()]
+    if not search_paths:
+        return []
+
+    hits: list[str] = []
+    for term in terms[:5]:
+        try:
+            completed = subprocess.run(
+                [
+                    "rg", "-n", "--fixed-strings",
+                    "--glob", "!frontend/dist/**",
+                    "--glob", "!node_modules/**",
+                    "--glob", "!backend/data/**",
+                    "--glob", "!*.map",
+                    "--", term, *search_paths,
+                ],
+                cwd=_REPO_DIR,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            continue
+        for line in completed.stdout.splitlines()[:4]:
+            line = line.strip()
+            if line and line not in hits:
+                hits.append(line[:260])
+            if len(hits) >= 12:
+                return hits
+    return hits
+
+
+def _collect_code_context(service: str | None, signal_text: str = "") -> dict:
+    terms = _extract_code_terms(service, signal_text)
+    source_hits = _rg_code_hits(terms)
+    if source_hits:
+        return {
+            "title": "代码库",
+            "summary": f"按服务名/异常类/接口路径命中 {len(source_hits)} 条源码线索。",
+            "items": source_hits,
+            "search_terms": terms,
+        }
+
     if not service:
-        return {"title": "代码库", "summary": "未指定服务，跳过代码路径聚焦。", "items": []}
+        return {"title": "代码库", "summary": "未指定服务，跳过代码路径聚焦。", "items": [], "search_terms": terms}
 
     needle = service.lower()
     hits: list[str] = []
@@ -761,11 +904,12 @@ def _collect_code_context(service: str | None) -> dict:
             break
 
     if not hits:
-        return {"title": "代码库", "summary": f"未在仓库中发现与 {service} 直接匹配的路径。", "items": []}
+        return {"title": "代码库", "summary": f"未在仓库中发现与 {service} 直接匹配的路径。", "items": [], "search_terms": terms}
     return {
         "title": "代码库",
         "summary": f"代码库中命中 {len(hits)} 个与服务名相关的路径。",
         "items": hits,
+        "search_terms": terms,
     }
 
 
@@ -850,16 +994,23 @@ async def collect_context(
     sw_task = _collect_skywalking(service)
     cmdb_task = _collect_cmdb(service)
     changes_task = asyncio.to_thread(_collect_change_context, service)
-    code_task = asyncio.to_thread(_collect_code_context, service)
 
-    loki, prometheus, skywalking, cmdb, changes, codebase = await asyncio.gather(
+    loki, prometheus, skywalking, cmdb, changes = await asyncio.gather(
         loki_task,
         prom_task,
         sw_task,
         cmdb_task,
         changes_task,
-        code_task,
     )
+    code_signal = " ".join(
+        [
+            extra_context or "",
+            str(loki.get("summary", "")),
+            " ".join(str(item) for item in loki.get("items", [])[:8]),
+            " ".join(str(item) for item in loki.get("context_items", [])[:4]),
+        ]
+    )
+    codebase = await asyncio.to_thread(_collect_code_context, service, code_signal)
 
     context: dict[str, dict] = {
         "loki": loki,
@@ -906,6 +1057,8 @@ def _collect_signal_text(record: dict) -> str:
             continue
         parts.append(str(value.get("summary") or ""))
         for item in value.get("items", [])[:8]:
+            parts.append(str(item))
+        for item in value.get("context_items", [])[:4]:
             parts.append(str(item))
     return " ".join(parts).lower()
 
@@ -978,6 +1131,7 @@ def _candidate_base_scores(record: dict) -> dict[str, tuple[int, list[str]]]:
     p99 = _metric_value(context, "p99_latency_ms")
     raw_logs = int(context.get("loki", {}).get("raw_count", 0) or 0)
     trace_errors = int(context.get("skywalking", {}).get("error_trace_count", 0) or 0)
+    code_hits = len(context.get("codebase", {}).get("items", []) if isinstance(context.get("codebase"), dict) else [])
     inspect_critical = int(context.get("inspection", {}).get("critical_count", 0) or 0)
     inspect_warning = int(context.get("inspection", {}).get("warning_count", 0) or 0)
     recent_changes = len(context.get("changes", {}).get("items", []) if isinstance(context.get("changes"), dict) else [])
@@ -997,6 +1151,9 @@ def _candidate_base_scores(record: dict) -> dict[str, tuple[int, list[str]]]:
     if err_ratio >= 5:
         score_map["application_bug"] += 10
         evidence_map["application_bug"].append(f"HTTP 5xx 比例达到 {err_ratio:.2f}%。")
+    if code_hits > 0 and has_any("exception", "traceback", "error", "500", "5xx"):
+        score_map["application_bug"] += 10
+        evidence_map["application_bug"].append(f"源码检索命中 {code_hits} 条服务/异常/接口相关线索。")
 
     if has_any("timeout", "timed out", "connection refused", "reset by peer", "dns", "upstream", "redis", "mysql", "postgres", "kafka", "rabbitmq", "es", "elasticsearch"):
         score_map["dependency_failure"] += 24

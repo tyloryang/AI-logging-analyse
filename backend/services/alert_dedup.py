@@ -18,6 +18,69 @@ _DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "alert_groups.jso
 _SUPPRESS_TTL = 900
 _WINDOW_SECS = 300
 
+_ALERT_TYPE_META: dict[str, dict[str, str]] = {
+    "infra": {
+        "label": "基建告警",
+        "description": "机器、网络、K8s、容器、中间件和资源容量类告警",
+        "analysis_strategy": "infra_first",
+    },
+    "business": {
+        "label": "运营数据告警",
+        "description": "接口成功率、在线、订单、支付、SLA 和业务指标类告警",
+        "analysis_strategy": "metric_trace_first",
+    },
+    "log_exception": {
+        "label": "错误/异常日志告警",
+        "description": "错误日志、异常栈、TraceId 和代码级报错类告警",
+        "analysis_strategy": "logs_context_code_first",
+    },
+}
+
+_ALERT_TYPE_ALIASES = {
+    "infra": "infra",
+    "infrastructure": "infra",
+    "platform": "infra",
+    "host": "infra",
+    "node": "infra",
+    "k8s": "infra",
+    "kubernetes": "infra",
+    "基建": "infra",
+    "基础设施": "infra",
+    "业务": "business",
+    "运营": "business",
+    "business": "business",
+    "operation": "business",
+    "slo": "business",
+    "sla": "business",
+    "log": "log_exception",
+    "logs": "log_exception",
+    "exception": "log_exception",
+    "error_log": "log_exception",
+    "log_exception": "log_exception",
+    "日志": "log_exception",
+    "异常日志": "log_exception",
+}
+
+_INFRA_KEYWORDS = (
+    "node", "host", "machine", "instance", "server", "k8s", "kubernetes", "pod",
+    "container", "namespace", "deployment", "daemonset", "statefulset", "cpu",
+    "memory", "mem", "disk", "filesystem", "inode", "network", "tcp", "dns",
+    "oom", "restart", "crashloop", "evicted", "pressure", "capacity", "redis",
+    "mysql", "postgres", "kafka", "elasticsearch", "middleware", "jvm", "gc",
+    "主机", "机器", "节点", "容器", "集群", "磁盘", "内存", "网络", "中间件",
+)
+_BUSINESS_KEYWORDS = (
+    "success_rate", "successrate", "availability", "online", "active_user", "dau",
+    "qps", "tps", "throughput", "order", "payment", "checkout", "revenue", "gmv",
+    "conversion", "sla", "slo", "apdex", "http_5xx", "http5xx", "api", "interface",
+    "接口", "成功率", "在线", "活跃", "订单", "支付", "转化", "可用率", "运营",
+)
+_LOG_EXCEPTION_KEYWORDS = (
+    "log", "loki", "errorlog", "error_log", "exception", "traceback", "stacktrace",
+    "stack_trace", "fatal", "panic", "nullpointer", "illegalstate", "outofmemory",
+    "runtimeerror", "uncaught", "throwable", "错误日志", "异常日志", "异常栈",
+)
+
 
 def _load() -> dict[str, Any]:
     data = read_json_file(_DATA_FILE, default={"groups": {}, "suppressed": {}})
@@ -53,6 +116,94 @@ def _severity(alert: dict) -> str:
 def _service(alert: dict) -> str:
     labels = alert.get("labels", {})
     return labels.get("service") or labels.get("job") or labels.get("instance", "unknown")
+
+
+def _normalize_alert_type(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    return _ALERT_TYPE_ALIASES.get(raw) or (raw if raw in _ALERT_TYPE_META else None)
+
+
+def _alert_text(alert: dict) -> str:
+    labels = alert.get("labels", {}) if isinstance(alert.get("labels"), dict) else {}
+    annotations = alert.get("annotations", {}) if isinstance(alert.get("annotations"), dict) else {}
+    parts = [
+        alert.get("alertname"),
+        alert.get("service"),
+        alert.get("severity"),
+        alert.get("summary"),
+        alert.get("description"),
+        labels.get("alertname"),
+        labels.get("service"),
+        labels.get("job"),
+        labels.get("source"),
+        labels.get("category"),
+        labels.get("alert_type"),
+        labels.get("type"),
+        annotations.get("summary"),
+        annotations.get("description"),
+        annotations.get("message"),
+    ]
+    return " ".join(str(part) for part in parts if part is not None).lower()
+
+
+def classify_alert(alert: dict) -> str:
+    """Classify alert into infra, business, or log_exception.
+
+    Explicit labels win. Otherwise classify by alert name, labels, and annotations.
+    The order intentionally gives error-log alerts priority over broad infra words
+    such as pod/container when an exception stack is present.
+    """
+    labels = alert.get("labels", {}) if isinstance(alert.get("labels"), dict) else {}
+    annotations = alert.get("annotations", {}) if isinstance(alert.get("annotations"), dict) else {}
+    for key in ("alert_type", "type", "category", "domain"):
+        explicit = _normalize_alert_type(labels.get(key) or annotations.get(key) or alert.get(key))
+        if explicit:
+            return explicit
+
+    text = _alert_text(alert)
+    if any(keyword in text for keyword in _LOG_EXCEPTION_KEYWORDS):
+        return "log_exception"
+    if any(keyword in text for keyword in _BUSINESS_KEYWORDS):
+        return "business"
+    if any(keyword in text for keyword in _INFRA_KEYWORDS):
+        return "infra"
+    return "log_exception" if _severity(alert) in ("error", "critical", "fatal") else "infra"
+
+
+def _alert_type_fields(alert_type: str) -> dict[str, str]:
+    meta = _ALERT_TYPE_META.get(alert_type) or _ALERT_TYPE_META["infra"]
+    return {
+        "alert_type": alert_type,
+        "alert_type_label": meta["label"],
+        "alert_type_description": meta["description"],
+        "analysis_strategy": meta["analysis_strategy"],
+    }
+
+
+def _normalize_group_alert_type(group: dict) -> dict:
+    current = _normalize_alert_type(group.get("alert_type"))
+    if current:
+        group.update(_alert_type_fields(current))
+        return group
+
+    raw_alerts = group.get("raw_alerts") or []
+    if raw_alerts:
+        pseudo = dict(raw_alerts[-1])
+    else:
+        pseudo = {"labels": {}, "annotations": {}}
+    labels = dict(pseudo.get("labels") or {})
+    labels.setdefault("alertname", group.get("alertname", ""))
+    labels.setdefault("service", group.get("service", ""))
+    labels.setdefault("severity", group.get("severity", ""))
+    pseudo["labels"] = labels
+    pseudo.setdefault(
+        "annotations",
+        {"summary": group.get("summary", ""), "description": group.get("description", "")},
+    )
+    group.update(_alert_type_fields(classify_alert(pseudo)))
+    return group
 
 
 def _is_parent_alert(alert: dict) -> bool:
@@ -134,6 +285,7 @@ def _merge_group(group: dict, alert: dict, severity: str, now_iso: str) -> None:
     group["common_annotations"] = alert.get("__common_annotations", group.get("common_annotations", {}))
     group["alertmanager_status"] = alert.get("__payload_status", group.get("alertmanager_status", ""))
     group["truncated_alerts"] = alert.get("__truncated_alerts", group.get("truncated_alerts", 0))
+    group.update(_alert_type_fields(classify_alert(alert)))
 
 
 def _extract_namespace(alert: dict) -> str:
@@ -155,7 +307,7 @@ def _extract_env(alert: dict) -> str:
 
 
 def _new_group(fp: str, alert: dict, service: str, severity: str, name: str, now_iso: str) -> dict:
-    return {
+    group = {
         "id": fp,
         "fingerprint": fp,
         "alertname": name,
@@ -185,6 +337,8 @@ def _new_group(fp: str, alert: dict, service: str, severity: str, name: str, now
         "namespace": _extract_namespace(alert),
         "env": _extract_env(alert),
     }
+    group.update(_alert_type_fields(classify_alert(alert)))
+    return group
 
 
 def _slim_alert(alert: dict) -> dict:
@@ -212,10 +366,11 @@ def list_groups(
     namespace: str | None = None,
     env: str | None = None,
     service: str | None = None,
+    alert_type: str | None = None,
     limit: int = 100,
 ) -> list[dict]:
     groups = _load()["groups"]
-    result = list(groups.values())
+    result = [_normalize_group_alert_type(g) for g in groups.values()]
     result.sort(key=lambda x: x["last_at"], reverse=True)
     if status:
         result = [g for g in result if g["status"] == status]
@@ -225,7 +380,17 @@ def list_groups(
         result = [g for g in result if g.get("env") == env]
     if service:
         result = [g for g in result if service.lower() in g.get("service", "").lower()]
+    normalized_type = _normalize_alert_type(alert_type)
+    if normalized_type:
+        result = [g for g in result if g.get("alert_type") == normalized_type]
     return result[:limit]
+
+
+def alert_types() -> list[dict[str, str]]:
+    return [
+        {"key": key, **meta}
+        for key, meta in _ALERT_TYPE_META.items()
+    ]
 
 
 def list_namespaces() -> list[str]:
@@ -241,7 +406,8 @@ def list_envs() -> list[str]:
 
 
 def get_group(group_id: str) -> dict | None:
-    return _load()["groups"].get(group_id)
+    group = _load()["groups"].get(group_id)
+    return _normalize_group_alert_type(group) if group else None
 
 
 def update_group_status(
@@ -272,7 +438,7 @@ def update_group_status(
 
 
 def stats() -> dict:
-    groups = list(_load()["groups"].values())
+    groups = [_normalize_group_alert_type(g) for g in _load()["groups"].values()]
     active = [g for g in groups if g["status"] not in ("resolved", "suppressed")]
     return {
         "total": len(groups),
@@ -281,4 +447,8 @@ def stats() -> dict:
         "p1": sum(1 for g in active if g["severity"] == "warning"),
         "resolved": sum(1 for g in groups if g["status"] == "resolved"),
         "suppressed": sum(1 for g in groups if g["status"] == "suppressed"),
+        "by_type": {
+            key: sum(1 for g in active if g.get("alert_type") == key)
+            for key in _ALERT_TYPE_META
+        },
     }

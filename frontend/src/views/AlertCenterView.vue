@@ -2,7 +2,7 @@
   <div class="page alert-center">
     <div class="page-header">
       <h1>告警中心</h1>
-      <span class="subtitle">聚合告警管理 · 状态联动 · 直接进入根因分析</span>
+      <span class="subtitle">基建告警 · 运营数据告警 · 错误/异常日志告警 · Hook 驱动 RCA</span>
       <button class="btn btn-outline btn-sm" style="margin-left:auto" @click="load" :disabled="loading">
         {{ loading ? '刷新中...' : '刷新' }}
       </button>
@@ -21,6 +21,10 @@
       </button>
 
       <div class="alert-filters">
+        <select v-model="filterType" @change="load" class="filter-select" title="告警类型">
+          <option value="">全部告警类型</option>
+          <option v-for="type in filterOptions.alert_types" :key="type.key" :value="type.key">{{ type.label }}</option>
+        </select>
         <select v-model="filterNs" @change="load" class="filter-select" title="K8s Namespace">
           <option value="">全部 Namespace</option>
           <option v-for="ns in filterOptions.namespaces" :key="ns" :value="ns">{{ ns }}</option>
@@ -43,6 +47,19 @@
       <button class="copy-btn" @click="copyWebhook">{{ copied ? '已复制' : '复制' }}</button>
     </div>
 
+    <div class="type-strip">
+      <button
+        v-for="type in alertTypeOptions"
+        :key="type.key"
+        class="type-card"
+        :class="[`type-${type.key}`, { active: filterType === type.key }]"
+        @click="switchType(type.key)"
+      >
+        <b>{{ countByType(type.key) }}</b>
+        <span>{{ type.label }}</span>
+      </button>
+    </div>
+
     <div v-if="loading" class="empty-state"><div class="spinner"></div></div>
     <div v-else-if="!filtered.length" class="empty-state">
       <div class="icon">🔔</div>
@@ -54,6 +71,9 @@
         <div class="group-head">
           <span class="sev-dot" :class="group.severity"></span>
           <span class="group-name">{{ group.alertname || 'Unknown Alert' }}</span>
+          <span class="type-chip" :class="`type-${group.alert_type || 'infra'}`">
+            {{ group.alert_type_label || TYPE_LABEL[group.alert_type] || '基建告警' }}
+          </span>
           <span class="group-svc mono">{{ group.service || 'unknown' }}</span>
           <span class="group-count">{{ group.count }} 次</span>
           <span class="status-chip" :class="group.status">{{ STATUS_LABEL[group.status] || group.status }}</span>
@@ -71,6 +91,7 @@
         <div class="group-meta">
           <span>首次：<span class="mono">{{ fmt(group.first_at) }}</span></span>
           <span>最近：<span class="mono">{{ fmt(group.last_at) }}</span></span>
+          <span v-if="group.analysis_strategy">策略：{{ ANALYSIS_LABEL[group.analysis_strategy] || group.analysis_strategy }}</span>
           <span v-if="group.resolved_at">解决：<span class="mono">{{ fmt(group.resolved_at) }}</span></span>
         </div>
 
@@ -149,17 +170,36 @@ const STATUS_LABEL = {
   resolved: '已解决',
 }
 
+const TYPE_LABEL = {
+  infra: '基建告警',
+  business: '运营数据告警',
+  log_exception: '错误/异常日志告警',
+}
+
+const ANALYSIS_LABEL = {
+  infra_first: '基建优先',
+  metric_trace_first: '指标/Trace 优先',
+  logs_context_code_first: '日志上下文/源码优先',
+}
+
 const loading = ref(false)
 const groups = ref([])
 const tab = ref('all')
 const expanded = ref(new Set())
 const copied = ref(false)
+const filterType = ref('')
 const filterNs = ref('')
 const filterEnv = ref('')
 const filterSvc = ref('')
-const filterOptions = ref({ namespaces: [], envs: [] })
+const filterOptions = ref({ namespaces: [], envs: [], alert_types: [] })
+const typeStats = ref({})
 
 const webhookUrl = computed(() => `${window.location.protocol}//${window.location.host}/api/alerts/webhook`)
+const alertTypeOptions = computed(() => {
+  const remote = filterOptions.value.alert_types || []
+  if (remote.length) return remote
+  return Object.entries(TYPE_LABEL).map(([key, label]) => ({ key, label }))
+})
 
 const filtered = computed(() => {
   if (tab.value === 'all') return groups.value
@@ -168,6 +208,16 @@ const filtered = computed(() => {
 
 function countByStatus(status) {
   return groups.value.filter(group => group.status === status).length
+}
+
+function countByType(type) {
+  if (typeof typeStats.value[type] === 'number') return typeStats.value[type]
+  return groups.value.filter(group => (group.alert_type || 'infra') === type).length
+}
+
+async function switchType(type) {
+  filterType.value = filterType.value === type ? '' : type
+  await load()
 }
 
 function fmt(iso) {
@@ -190,15 +240,18 @@ async function load() {
   loading.value = true
   try {
     const params = {}
+    if (filterType.value) params.alert_type = filterType.value
     if (filterNs.value) params.namespace = filterNs.value
     if (filterEnv.value) params.env = filterEnv.value
     if (filterSvc.value) params.service = filterSvc.value
-    const [result, options] = await Promise.all([
+    const [result, options, stats] = await Promise.all([
       api.alertGroups(params),
       api.alertFilters().catch(() => ({ namespaces: [], envs: [] })),
+      api.alertStats().catch(() => ({ by_type: {} })),
     ])
     groups.value = result.groups || []
     filterOptions.value = options
+    typeStats.value = stats.by_type || {}
   } catch (error) {
     console.error(error)
   } finally {
@@ -273,6 +326,43 @@ onMounted(load)
   color: var(--accent); cursor: pointer;
 }
 
+.type-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.type-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.type-card:hover,
+.type-card.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.type-card b {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.type-card span {
+  font-size: 12px;
+  font-weight: 600;
+}
+.type-card.type-infra b { color: var(--warning); }
+.type-card.type-business b { color: var(--success); }
+.type-card.type-log_exception b { color: var(--error); }
+
 .groups-list { display: flex; flex-direction: column; gap: 10px; }
 
 .group-card {
@@ -297,6 +387,16 @@ onMounted(load)
 .sev-dot.warning { background: var(--warning); }
 .sev-dot.info { background: var(--accent); }
 .group-name { font-weight: 600; font-size: 13px; }
+.type-chip {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.type-chip.type-infra { background: rgba(245,158,11,.14); color: var(--warning); }
+.type-chip.type-business { background: rgba(26,127,55,.12); color: var(--success); }
+.type-chip.type-log_exception { background: rgba(239,68,68,.12); color: var(--error); }
 .group-svc { font-size: 12px; color: var(--text-secondary); }
 .group-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
 .group-actions { display: flex; gap: 6px; }
@@ -376,4 +476,9 @@ onMounted(load)
 }
 .raw-desc { font-size: 12px; color: var(--text-secondary); }
 .raw-time { font-size: 11px; color: var(--text-muted); }
+
+@media (max-width: 720px) {
+  .type-strip { grid-template-columns: 1fr; }
+  .alert-filters { width: 100%; margin-left: 0; flex-wrap: wrap; }
+}
 </style>

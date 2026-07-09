@@ -24,6 +24,7 @@ SYSTEM_MODULES = [
     {"id": "admin",     "name": "用户管理", "description": "用户、权限与审计"},
     {"id": "agent",      "name": "AI 智能体",  "description": "LangGraph 根因分析、自主巡检、智能对话"},
     {"id": "skywalking", "name": "APM 链路追踪","description": "SkyWalking 追踪、拓扑、性能指标"},
+    {"id": "workflow",   "name": "工作流编排", "description": "工作流定义、任务执行与定时调度"},
 ]
 
 

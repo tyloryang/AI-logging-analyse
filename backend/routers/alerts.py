@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 from notifier import send_feishu_alert_group
 from services.alert_dedup import (
+    alert_types,
+    classify_alert,
     get_group,
     ingest_alerts,
     list_envs,
@@ -23,6 +25,13 @@ from state import load_groups
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _decorate_alert(alert: dict, payload: dict) -> dict:
@@ -109,6 +118,57 @@ def _decorate_alert_group(alert_group: dict) -> dict:
     return item
 
 
+def _build_alert_rca_context(group: dict, labels: dict[str, str], extra_context: str = "") -> str:
+    alert_type = group.get("alert_type") or "infra"
+    alert_type_label = group.get("alert_type_label") or alert_type
+    analysis_strategy = group.get("analysis_strategy") or ""
+    strategy_text = {
+        "infra_first": "优先验证机器、K8s、容器、中间件、网络和资源指标，再关联 Trace 与日志。",
+        "metric_trace_first": "优先验证接口成功率、在线、SLA、业务指标和 Trace，再补充错误日志。",
+        "logs_context_code_first": "优先验证错误日志、日志前后文、TraceId、异常栈和源码命中。",
+    }.get(analysis_strategy, "按告警类型选择最相关证据，避免无差别全量巡检。")
+
+    lines = [
+        f"告警类型：{alert_type_label} ({alert_type})",
+        f"分析策略：{strategy_text}",
+        f"告警名称：{group.get('alertname', '')}",
+        f"严重级别：{group.get('severity', '')}",
+        f"服务/对象：{group.get('service', '')}",
+        f"Namespace：{group.get('namespace', '')}",
+        f"环境：{group.get('env', '')}",
+    ]
+    if group.get("summary"):
+        lines.append(f"摘要：{group.get('summary')}")
+    if group.get("description"):
+        lines.append(f"描述：{group.get('description')}")
+
+    trace_labels = {
+        key: value
+        for key, value in labels.items()
+        if key.lower() in {"traceid", "trace_id", "requestid", "request_id", "spanid", "span_id", "pod", "container", "instance"}
+        and value
+    }
+    if trace_labels:
+        lines.append("链路/实例标签：" + ", ".join(f"{k}={v}" for k, v in trace_labels.items()))
+
+    for idx, alert in enumerate((group.get("raw_alerts") or [])[:3], start=1):
+        annotations = alert.get("annotations", {}) if isinstance(alert, dict) else {}
+        raw_labels = alert.get("labels", {}) if isinstance(alert, dict) else {}
+        summary = annotations.get("summary") or annotations.get("message") or ""
+        desc = annotations.get("description") or ""
+        label_text = ", ".join(
+            f"{key}={value}"
+            for key, value in raw_labels.items()
+            if key in {"alertname", "service", "job", "namespace", "pod", "instance", "severity"}
+        )
+        if summary or desc or label_text:
+            lines.append(f"原始告警{idx}：{label_text} {summary} {desc}".strip())
+
+    if extra_context.strip():
+        lines.append("人工补充：" + extra_context.strip())
+    return "\n".join(line for line in lines if line and not line.endswith("："))
+
+
 @router.post("/api/alerts/webhook")
 async def alertmanager_webhook(payload: dict = Body(...)):
     raw_alerts = payload.get("alerts", [])
@@ -122,12 +182,109 @@ async def alertmanager_webhook(payload: dict = Body(...)):
     if affected:
         asyncio.create_task(_notify_feishu(affected))
 
+    if affected and _env_flag("ALERTS_AUTO_RCA", True):
+        asyncio.create_task(_dispatch_to_structured_rca(affected))
+
     # AIOps Router：告警自动派单给 aiops_router Agent 出根因/建议/趋势
     # 用 ALERTS_TO_AIOPS_ROUTER 环境变量控制（默认关闭，避免线上首次开就爆炸）
     if os.getenv("ALERTS_TO_AIOPS_ROUTER", "false").lower() in ("1", "true", "yes"):
         asyncio.create_task(_dispatch_to_aiops_router(enriched_alerts))
 
-    return {"ok": True, "affected_groups": affected, "raw_count": len(raw_alerts)}
+    return {
+        "ok": True,
+        "affected_groups": affected,
+        "raw_count": len(raw_alerts),
+        "auto_rca": bool(affected and _env_flag("ALERTS_AUTO_RCA", True)),
+    }
+
+
+async def _run_structured_rca(
+    *,
+    group_id: str,
+    rca_id: str,
+    group: dict,
+    labels: dict[str, str],
+    extra_context: str,
+    hours: float,
+) -> None:
+    try:
+        from services.rca_engine import run_rca
+
+        await run_rca(
+            service=group.get("service"),
+            alert_name=group.get("alertname", ""),
+            alert_group_id=group_id,
+            hours=hours,
+            extra_context=extra_context,
+            source_type="alert",
+            source_id=group_id,
+            source_name=group.get("alertname", ""),
+            source_labels=labels,
+            existing_id=rca_id,
+        )
+    except Exception as exc:
+        logger.error("[alerts] auto RCA failed group=%s rca=%s err=%s", group_id, rca_id, exc)
+
+
+async def _dispatch_to_structured_rca(group_ids: list[str]) -> None:
+    from datetime import datetime, timezone
+
+    from services.rca_engine import create_pending_rca
+
+    try:
+        limit = max(1, min(10, int(os.getenv("ALERTS_AUTO_RCA_LIMIT", "3"))))
+    except ValueError:
+        limit = 3
+    try:
+        hours = max(0.016667, min(24.0, float(os.getenv("ALERTS_AUTO_RCA_HOURS", "0.5"))))
+    except ValueError:
+        hours = 0.5
+
+    for group_id in group_ids[:limit]:
+        group = get_group(group_id)
+        if not group or group.get("status") in {"resolved", "suppressed", "analyzing"}:
+            continue
+        if group.get("rca_id"):
+            continue
+
+        labels = _collect_alert_labels(group)
+        extra_context = _build_alert_rca_context(group, labels)
+        pending = create_pending_rca(
+            service=group.get("service"),
+            alert_name=group.get("alertname", ""),
+            alert_group_id=group_id,
+            hours=hours,
+            extra_context=extra_context,
+            source_type="alert",
+            source_id=group_id,
+            source_name=group.get("alertname", ""),
+            source_labels=labels,
+        )
+        update_group_status(
+            group_id,
+            "analyzing",
+            rca_id=pending["id"],
+            extra_updates={
+                "analysis_hook": {
+                    "trigger": "alert_webhook",
+                    "mode": "structured_rca",
+                    "alert_type": group.get("alert_type", ""),
+                    "strategy": group.get("analysis_strategy", ""),
+                    "status": "queued",
+                    "queued_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+        asyncio.create_task(
+            _run_structured_rca(
+                group_id=group_id,
+                rca_id=pending["id"],
+                group=group,
+                labels=labels,
+                extra_context=extra_context,
+                hours=hours,
+            )
+        )
 
 
 def _extract_report_section(report: str, keyword: str) -> str:
@@ -156,18 +313,22 @@ async def _dispatch_to_aiops_router(alerts: list[dict]) -> None:
         alertname = labels.get("alertname", "UnknownAlert")
         severity = labels.get("severity", "warning")
         service = labels.get("service", "") or labels.get("job", "")
+        alert_type = classify_alert(alert)
         summary = annotations.get("summary", "")
         desc = annotations.get("description", "")
 
         body = (
             f"[Alertmanager 告警派单]\n"
             f"- alertname: {alertname}\n"
+            f"- alert_type: {alert_type}\n"
             f"- severity: {severity}\n"
             f"- labels: {labels}\n"
             f"- summary: {summary}\n"
             f"- description: {desc}\n\n"
             f"请按 aiops-router SKILL 流程处理：L1 抽实体 → L2 打域标签 → "
-            f"L3 派单 domain skill → L4 交叉验证 → L5 输出【根因/影响/建议/趋势】。"
+            f"L3 派单 domain skill → L4 交叉验证 → L5 输出【根因/影响/建议/趋势】。\n"
+            f"关键约束：必须按 alert_type 选择证据链；错误/异常日志告警优先错误日志、日志上下文、TraceId 和源码，"
+            f"运营数据告警优先指标和 Trace，基建告警才进入机器/K8s/中间件巡检；不要固定执行全量主机巡检。"
         )
 
         try:
@@ -289,15 +450,16 @@ async def get_alert_groups(
     namespace: str | None = Query(None, description="k8s namespace"),
     env: str | None = Query(None, description="environment"),
     service: str | None = Query(None, description="service fuzzy match"),
+    alert_type: str | None = Query(None, description="infra/business/log_exception"),
     limit: int = Query(100, ge=1, le=500),
 ):
-    groups = list_groups(status=status, namespace=namespace, env=env, service=service, limit=limit)
+    groups = list_groups(status=status, namespace=namespace, env=env, service=service, alert_type=alert_type, limit=limit)
     return {"groups": [_decorate_alert_group(group) for group in groups]}
 
 
 @router.get("/api/alerts/filters")
 async def get_alert_filters():
-    return {"namespaces": list_namespaces(), "envs": list_envs()}
+    return {"namespaces": list_namespaces(), "envs": list_envs(), "alert_types": alert_types()}
 
 
 @router.get("/api/alerts/groups/{group_id}")
@@ -340,15 +502,7 @@ async def trigger_alert_group_rca(group_id: str, body: AlertRCATriggerRequest | 
 
     payload = body or AlertRCATriggerRequest()
     labels = _collect_alert_labels(group)
-    extra_context = "\n".join(
-        item
-        for item in (
-            str(group.get("summary") or "").strip(),
-            str(group.get("description") or "").strip(),
-            str(payload.extra_context or "").strip(),
-        )
-        if item
-    )
+    extra_context = _build_alert_rca_context(group, labels, payload.extra_context or "")
 
     from services.rca_engine import create_pending_rca, run_rca
 
