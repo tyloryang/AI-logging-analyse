@@ -3,7 +3,7 @@
     <div class="cron-header">
       <div class="header-left">
         <h2>定时任务</h2>
-        <span class="subtitle">基于 SSH 的内置计划执行</span>
+        <span class="subtitle">Ansible / SSH 双引擎计划执行（每分钟检查 cron 表达式）</span>
       </div>
       <button class="btn btn-primary" @click="openCreate">+ 新建定时任务</button>
     </div>
@@ -21,7 +21,10 @@
         </thead>
         <tbody>
           <tr v-for="c in crons" :key="c.id">
-            <td class="cron-name">{{ c.name }}</td>
+            <td class="cron-name">
+              <span v-if="c.engine === 'ansible'" class="engine-tag" title="Ansible 引擎">A</span>
+              {{ c.name }}
+            </td>
             <td class="cron-cmd mono">{{ c.command }}</td>
             <td class="mono small">{{ c.cron }}</td>
             <td class="small">{{ targetLabel(c) }}</td>
@@ -73,12 +76,21 @@
               <button v-for="p in PRESETS" :key="p.v" class="preset-btn" @click="form.cron = p.v">{{ p.label }}</button>
             </div>
           </div>
-          <div class="form-group">
-            <label>目标主机</label>
-            <select v-model="form.mode" class="form-select">
-              <option value="group">按分组</option>
-              <option value="hosts">指定主机</option>
-            </select>
+          <div class="form-row">
+            <div class="form-group">
+              <label>执行引擎</label>
+              <select v-model="form.engine" class="form-select">
+                <option value="ansible">Ansible（控制节点 ad-hoc）</option>
+                <option value="ssh">SSH 直连</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>目标主机</label>
+              <select v-model="form.mode" class="form-select">
+                <option value="group">按分组</option>
+                <option value="hosts">指定主机</option>
+              </select>
+            </div>
           </div>
           <div v-if="form.mode === 'group'" class="form-group">
             <label>选择分组</label>
@@ -144,7 +156,7 @@ const formError = ref('')
 const defaultForm = () => ({
   name: '', command: '', cron: '0 9 * * *',
   mode: 'group', host_group: '', host_ids: [],
-  timeout: 60, enabled: true, description: '',
+  timeout: 60, enabled: true, description: '', engine: 'ansible',
 })
 const form = ref(defaultForm())
 
@@ -205,6 +217,7 @@ function openEdit(c) {
     timeout:    c.timeout || 60,
     enabled:    c.enabled,
     description: c.description || '',
+    engine:     c.engine || 'ssh',
   }
   showModal.value = true
 }
@@ -221,6 +234,7 @@ async function save() {
     host_group:  f.mode === 'group' ? f.host_group : '',
     host_ids:    f.mode === 'hosts' ? f.host_ids : [],
     timeout:     f.timeout, enabled: f.enabled, description: f.description,
+    engine:      f.engine || 'ssh',
   }
   try {
     if (editId.value) await api.ansibleUpdateCron(editId.value, payload)
@@ -260,6 +274,7 @@ onMounted(() => {
 .cron-table th { padding: 9px 12px; background: var(--bg-header, var(--bg-base)); border-bottom: 1px solid var(--border); text-align: left; font-size: 11px; color: var(--text-muted); font-weight: 600; white-space: nowrap; }
 .cron-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; }
 .cron-name { font-weight: 500; }
+.engine-tag { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-right: 3px; border-radius: 4px; background: var(--accent-dim, rgba(217,119,87,.15)); color: var(--accent); font-size: 10px; font-weight: 700; vertical-align: 1px; }
 .cron-cmd { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 .mono { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; }
 .small { font-size: 12px; color: var(--text-muted); }

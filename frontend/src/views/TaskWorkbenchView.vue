@@ -3,9 +3,20 @@
     <header class="ops-header">
       <div>
         <h1>任务工作台</h1>
-        <p>集中执行 SSH 运维命令，查看最近任务状态和主机输出。</p>
+        <p>Ansible / SSH 双引擎：即时命令、Playbook 编排与执行历史。</p>
       </div>
       <div class="header-actions">
+        <button
+          class="engine-pill"
+          :class="ansibleStatus?.ok ? 'ok' : (ansibleStatus ? 'bad' : '')"
+          @click="checkAnsible"
+          :title="ansibleStatus?.hint || ansibleStatus?.ansible_version || '点击检测 Ansible 控制节点'"
+        >
+          <span v-if="checkingAnsible" class="spinner-sm"></span>
+          <template v-else-if="ansibleStatus?.ok">⬢ {{ ansibleStatus.host }} · {{ shortVersion(ansibleStatus.ansible_version) }}</template>
+          <template v-else-if="ansibleStatus">⬡ Ansible 不可用</template>
+          <template v-else>⬡ 检测控制节点</template>
+        </button>
         <button class="btn btn-outline" @click="refreshAll" :disabled="loading">
           <span v-if="loading" class="spinner-sm"></span>
           刷新
@@ -42,6 +53,12 @@
           <div>
             <h2>立即执行</h2>
             <span>选择目标主机或分组后执行命令</span>
+          </div>
+          <div class="target-tabs engine-tabs">
+            <button :class="{ active: runForm.engine === 'ansible' }" @click="runForm.engine = 'ansible'"
+                    title="通过控制节点执行 ansible ad-hoc（shell 模块）">Ansible</button>
+            <button :class="{ active: runForm.engine === 'ssh' }" @click="runForm.engine = 'ssh'"
+                    title="asyncssh 直连逐台执行">SSH 直连</button>
           </div>
         </div>
 
@@ -137,7 +154,10 @@
           >
             <span class="status-dot" :class="task.status"></span>
             <span class="task-main">
-              <strong>{{ task.name }}</strong>
+              <strong>
+                <i v-if="task.engine === 'ansible'" class="engine-badge">A</i>
+                {{ task.name }}
+              </strong>
               <code>{{ task.command }}</code>
             </span>
             <span class="task-meta">
@@ -149,6 +169,96 @@
         </div>
       </section>
     </div>
+
+    <section class="panel playbook-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Playbook 编排</h2>
+          <span>ansible-playbook 管理与执行（控制节点：{{ ansibleStatus?.host || '未检测' }}）</span>
+        </div>
+        <button class="btn btn-outline" @click="newPb">新建 Playbook</button>
+      </div>
+
+      <div class="playbook-grid">
+        <div class="pb-list">
+          <button
+            v-for="pb in playbooks"
+            :key="pb.id"
+            class="pb-item"
+            :class="{ active: pbForm.id === pb.id }"
+            @click="selectPb(pb)"
+          >
+            <strong>{{ pb.name }}<em v-if="pb.builtin">内置</em></strong>
+            <small>{{ pb.description || '-' }}</small>
+          </button>
+          <p v-if="!playbooks.length" class="pb-empty">暂无 Playbook</p>
+        </div>
+
+        <div class="pb-editor">
+          <div class="form-grid">
+            <label>
+              <span>名称</span>
+              <input v-model.trim="pbForm.name" placeholder="Playbook 名称" />
+            </label>
+            <label>
+              <span>描述</span>
+              <input v-model.trim="pbForm.description" placeholder="用途说明" />
+            </label>
+          </div>
+          <label class="block-label">
+            <span>Playbook YAML</span>
+            <textarea v-model="pbForm.yaml" rows="14" spellcheck="false"
+                      placeholder="---&#10;- name: 示例&#10;  hosts: all&#10;  tasks: ..."></textarea>
+          </label>
+          <div class="pb-actions">
+            <button class="btn btn-primary" @click="savePb" :disabled="pbSaving">
+              <span v-if="pbSaving" class="spinner-sm"></span>
+              {{ pbForm.id ? '保存修改' : '创建' }}
+            </button>
+            <button v-if="pbForm.id" class="btn btn-primary run" @click="pbRun.visible = true">运行 ▶</button>
+            <button v-if="pbForm.id && !pbForm.builtin" class="btn btn-outline danger" @click="deletePb">删除</button>
+            <span v-if="pbError" class="pb-error">{{ pbError }}</span>
+          </div>
+
+          <div v-if="pbRun.visible" class="pb-run-box">
+            <div class="form-grid">
+              <label>
+                <span>目标分组</span>
+                <select v-model="pbRun.host_group">
+                  <option value="">— 改用指定主机 —</option>
+                  <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.host_count || 0 }} 台）</option>
+                </select>
+              </label>
+              <label>
+                <span>超时秒数</span>
+                <input v-model.number="pbRun.timeout" type="number" min="30" max="3600" />
+              </label>
+            </div>
+            <div v-if="!pbRun.host_group" class="host-picker" style="margin-top:8px">
+              <div class="host-list">
+                <label v-for="host in hosts" :key="host.id" class="host-item">
+                  <input v-model="pbRun.host_ids" type="checkbox" :value="host.id" />
+                  <span>{{ host.hostname || host.ip }}</span>
+                  <code>{{ host.ip }}</code>
+                </label>
+              </div>
+            </div>
+            <label class="block-label">
+              <span>extra_vars（JSON，如 {"service_name": "nginx"}）</span>
+              <textarea v-model="pbRun.extraVarsText" rows="2" spellcheck="false"></textarea>
+            </label>
+            <div class="pb-actions">
+              <button class="btn btn-primary" @click="submitPbRun" :disabled="pbRunning">
+                <span v-if="pbRunning" class="spinner-sm"></span>
+                确认执行
+              </button>
+              <button class="btn btn-outline" @click="pbRun.visible = false">取消</button>
+              <span v-if="pbRun.error" class="pb-error">{{ pbRun.error }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <section class="panel detail-panel">
       <div class="panel-head">
@@ -187,6 +297,11 @@
             <pre v-if="item.stderr" class="stderr">{{ item.stderr }}</pre>
           </article>
         </div>
+
+        <details v-if="detail.raw_output" class="raw-output">
+          <summary>Ansible 完整输出（{{ detail.raw_output.split('\n').length }} 行）</summary>
+          <pre>{{ detail.raw_output }}</pre>
+        </details>
       </template>
     </section>
   </div>
@@ -220,7 +335,113 @@ const runForm = reactive({
   host_group: '',
   host_ids: [],
   timeout: 60,
+  engine: 'ansible',
 })
+
+// ── Ansible 控制节点 / Playbook 状态 ───────────────────────────────────────
+const ansibleStatus = ref(null)
+const checkingAnsible = ref(false)
+const playbooks = ref([])
+const pbForm = reactive({ id: '', name: '', description: '', yaml: '', builtin: false })
+const pbSaving = ref(false)
+const pbRunning = ref(false)
+const pbError = ref('')
+const pbRun = reactive({
+  visible: false,
+  host_group: '',
+  host_ids: [],
+  extraVarsText: '{}',
+  timeout: 600,
+  error: '',
+})
+
+function shortVersion(text) {
+  const m = /\[core ([\d.]+)\]/.exec(text || '')
+  return m ? `ansible ${m[1]}` : (text || '')
+}
+
+async function checkAnsible() {
+  checkingAnsible.value = true
+  try {
+    ansibleStatus.value = await api.ansibleCheckConfig()
+    if (!ansibleStatus.value.ok) runForm.engine = 'ssh'
+  } catch {
+    ansibleStatus.value = { ok: false, hint: '检测请求失败' }
+    runForm.engine = 'ssh'
+  } finally {
+    checkingAnsible.value = false
+  }
+}
+
+async function loadPlaybooks() {
+  playbooks.value = await api.ansiblePlaybooks().catch(() => [])
+}
+
+function selectPb(pb) {
+  Object.assign(pbForm, {
+    id: pb.id, name: pb.name, description: pb.description || '', yaml: pb.yaml, builtin: !!pb.builtin,
+  })
+  pbRun.visible = false
+  pbError.value = ''
+}
+
+function newPb() {
+  Object.assign(pbForm, { id: '', name: '', description: '', yaml: '---\n- name: 新任务\n  hosts: all\n  tasks:\n    - name: 示例\n      shell: echo hello\n', builtin: false })
+  pbRun.visible = false
+  pbError.value = ''
+}
+
+async function savePb() {
+  pbError.value = ''
+  if (!pbForm.name.trim()) { pbError.value = '请填写名称'; return }
+  if (!pbForm.yaml.trim()) { pbError.value = '请填写 Playbook YAML'; return }
+  pbSaving.value = true
+  try {
+    const payload = { name: pbForm.name, description: pbForm.description, yaml: pbForm.yaml }
+    const saved = pbForm.id
+      ? await api.ansibleUpdatePlaybook(pbForm.id, payload)
+      : await api.ansibleCreatePlaybook(payload)
+    await loadPlaybooks()
+    selectPb(saved)
+  } catch (error) {
+    pbError.value = error?.response?.data?.detail || '保存失败'
+  } finally {
+    pbSaving.value = false
+  }
+}
+
+async function deletePb() {
+  if (!pbForm.id || !confirm(`确认删除 Playbook「${pbForm.name}」？`)) return
+  await api.ansibleDeletePlaybook(pbForm.id).catch(() => {})
+  newPb()
+  await loadPlaybooks()
+}
+
+async function submitPbRun() {
+  pbRun.error = ''
+  if (!pbRun.host_group && !pbRun.host_ids.length) { pbRun.error = '请选择目标分组或主机'; return }
+  let extraVars = {}
+  const text = pbRun.extraVarsText.trim()
+  if (text && text !== '{}') {
+    try { extraVars = JSON.parse(text) } catch { pbRun.error = 'extra_vars 不是合法 JSON'; return }
+  }
+  pbRunning.value = true
+  try {
+    const task = await api.ansibleRunPlaybook(pbForm.id, {
+      host_group: pbRun.host_group,
+      host_ids: pbRun.host_group ? [] : pbRun.host_ids,
+      extra_vars: extraVars,
+      timeout: pbRun.timeout || 600,
+    })
+    pbRun.visible = false
+    await loadTasks()
+    await openDetail(task.id)
+  } catch (error) {
+    pbRun.error = error?.response?.data?.detail || '执行失败'
+  } finally {
+    pbRunning.value = false
+  }
+}
 
 let pollTimer = null
 
@@ -309,6 +530,7 @@ async function submitRun() {
       name: runForm.name,
       command: runForm.command,
       timeout: runForm.timeout || 60,
+      engine: runForm.engine,
       host_group: runForm.mode === 'group' ? runForm.host_group : '',
       host_ids: runForm.mode === 'hosts' ? runForm.host_ids : [],
     }
@@ -332,6 +554,8 @@ async function deleteCurrent() {
 
 onMounted(async () => {
   await refreshAll()
+  loadPlaybooks()
+  checkAnsible()
   pollTimer = setInterval(async () => {
     if (tasks.value.some(task => task.status === 'running' || task.status === 'pending')) {
       await loadTasks()
@@ -761,8 +985,153 @@ pre.stderr {
 @media (max-width: 1100px) {
   .workbench-grid,
   .detail-meta,
-  .stat-grid {
+  .stat-grid,
+  .playbook-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Ansible 控制节点 / Playbook ─────────────────────────────────────── */
+.engine-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  padding: 7px 13px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.engine-pill.ok {
+  color: var(--success);
+  border-color: rgba(var(--success-rgb), .35);
+}
+.engine-pill.bad {
+  color: var(--warning);
+  border-color: rgba(var(--error-rgb), .3);
+}
+.engine-tabs button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.engine-tabs button.active {
+  color: #fff;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-right: 4px;
+  border-radius: 4px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+.playbook-panel {
+  margin-top: 14px;
+}
+.playbook-grid {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.pb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 460px;
+  overflow: auto;
+}
+.pb-item {
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.pb-item.active,
+.pb-item:hover {
+  border-color: var(--accent);
+}
+.pb-item strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.pb-item strong em {
+  font-style: normal;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.pb-item small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pb-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px 0;
+}
+.pb-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.btn-primary.run {
+  background: var(--success);
+}
+.pb-error {
+  color: var(--error);
+  font-size: 12px;
+}
+.pb-run-box {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-dim);
+}
+.raw-output {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-base);
+}
+.raw-output summary {
+  padding: 9px 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  user-select: none;
+}
+.raw-output pre {
+  border-top: 1px solid var(--border);
+  max-height: 420px;
 }
 </style>
