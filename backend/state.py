@@ -192,7 +192,31 @@ clusterer = LogClusterer()
 # ── CMDB / 凭证辅助函数 ───────────────────────────────────────────────────────
 
 def load_hosts_list() -> list[dict]:
-    """新格式：主机列表（手动录入，UUID 主键）。"""
+    """CMDB 主机列表。主存储 SQLite（services.cmdb_store），
+    JSON 文件仅作首次迁移来源与导出镜像；DB 异常时回退 JSON。"""
+    from services import cmdb_store
+
+    try:
+        hosts = cmdb_store.load_hosts()
+    except Exception as exc:
+        logger.warning("[CMDB] SQLite 读取异常，回退 JSON: %s", exc)
+        return _load_hosts_from_json()
+
+    if hosts is not None:
+        return hosts
+
+    # 尚未迁移：从 JSON 读取并一次性导入 SQLite
+    legacy = _load_hosts_from_json()
+    try:
+        cmdb_store.save_hosts(legacy)
+        logger.info("[CMDB] 已迁移 %d 台主机到 SQLite 主存储", len(legacy))
+    except Exception as exc:
+        logger.warning("[CMDB] 迁移到 SQLite 失败（继续用 JSON）: %s", exc)
+    return legacy
+
+
+def _load_hosts_from_json() -> list[dict]:
+    """旧 JSON 存储读取 + 历史 dict 格式自动迁移（仅迁移期/降级期使用）。"""
     if CMDB_FILE.exists():
         try:
             data = _read_cached_json(CMDB_FILE)
@@ -256,7 +280,16 @@ def load_hosts_list() -> list[dict]:
 
 
 def save_hosts_list(hosts: list[dict]) -> None:
-    _write_cached_json(CMDB_FILE, hosts, ensure_parent=True)
+    """保存主机列表：SQLite 事务为主（失败抛给调用方），JSON 镜像为灾备/兼容。"""
+    from services import cmdb_store
+
+    cmdb_store.save_hosts(hosts)
+    try:
+        # 导出镜像：兼容直接读 cmdb_hosts.json 的模块（agent 工具等），
+        # 且经 json_snapshot_store 再冗余一份到 sqlite 快照表
+        _write_cached_json(CMDB_FILE, hosts, ensure_parent=True)
+    except Exception as exc:
+        logger.warning("[CMDB] JSON 镜像写入失败（主存储已保存）: %s", exc)
 
 
 def load_cmdb() -> dict:
