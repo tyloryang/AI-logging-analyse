@@ -368,24 +368,25 @@ function selectCluster(id) {
   switchTab('overview', true)
 }
 
-async function loadOverview() {
+async function loadOverview(refresh = false) {
   loading.value = true
   loadError.value = ''
-  try { overview.value = await api.kafkaOverview(activeId.value) }
+  try { overview.value = await api.kafkaOverview(activeId.value, refresh === true) }
   catch (e) { loadError.value = `集群元数据加载失败：${e}`; overview.value = null }
   finally { loading.value = false }
 }
 
-function switchTab(id, force = false) {
+function switchTab(id, force = false, refresh = false) {
   if (tab.value === id && !force) return
   tab.value = id
   loadError.value = ''
-  if (id === 'overview') loadOverview()
-  else if (id === 'topics') loadTopics()
-  else if (id === 'groups') loadGroups()
+  if (id === 'overview') loadOverview(refresh)
+  else if (id === 'topics') loadTopics(refresh)
+  else if (id === 'groups') loadGroups(refresh)
 }
 
-function refreshAll() { switchTab(tab.value, true) }
+// 手动刷新：跳过后端缓存强制重建；tab 切换/集群切换仍走 15s 缓存秒回
+function refreshAll() { switchTab(tab.value, true, true) }
 
 async function testActive() {
   testResult.value = { ok: true, message: '测试中...' }
@@ -454,10 +455,11 @@ async function removeCluster() {
 }
 
 // ── Topic ─────────────────────────────────────────────────────────────────
-async function loadTopics() {
+async function loadTopics(refresh = false) {
   topicsLoading.value = true
   loadError.value = ''
-  try { topics.value = (await api.kafkaTopics(activeId.value, includeInternal.value)).topics }
+  // refresh 可能是 @change 传入的 Event，严格判 true
+  try { topics.value = (await api.kafkaTopics(activeId.value, includeInternal.value, refresh === true)).topics }
   catch (e) { loadError.value = `Topic 加载失败：${e}`; topics.value = [] }
   finally { topicsLoading.value = false }
 }
@@ -540,10 +542,10 @@ async function removeTopic(name) {
 }
 
 // ── 消费组 ────────────────────────────────────────────────────────────────
-async function loadGroups() {
+async function loadGroups(refresh = false) {
   groupsLoading.value = true
   loadError.value = ''
-  try { groups.value = (await api.kafkaGroups(activeId.value)).groups }
+  try { groups.value = (await api.kafkaGroups(activeId.value, refresh === true)).groups }
   catch (e) { loadError.value = `消费组加载失败：${e}`; groups.value = [] }
   finally { groupsLoading.value = false }
 }

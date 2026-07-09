@@ -18,6 +18,7 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -31,6 +32,56 @@ _DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "kafka_clusters.j
 _VALID_SECURITY = {"PLAINTEXT", "SASL_PLAINTEXT", "SSL", "SASL_SSL"}
 _VALID_SASL = {"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"}
 _REQUEST_TIMEOUT_MS = 10000
+
+# ── 读缓存：每次 Kafka 请求都要新建客户端完整握手（1~2s），
+#    overview/topics/groups 用 15s TTL + stale-while-revalidate 挡掉重复握手；
+#    连接失败也短缓存 10s（negative cache），避免不可达集群反复吃满超时 ──
+_kafka_cache: TTLCache = TTLCache(maxsize=64, ttl=15)
+_kafka_stale: dict[str, dict] = {}
+_kafka_error_cache: TTLCache = TTLCache(maxsize=64, ttl=10)
+_kafka_refresh_tasks: dict[str, asyncio.Task] = {}
+
+
+def _invalidate_cluster_cache(cluster_id: str) -> None:
+    """集群配置变更 / Topic 增删后清掉相关缓存。"""
+    prefix = f"{cluster_id}:"
+    for store in (_kafka_cache, _kafka_stale, _kafka_error_cache):
+        for key in [k for k in list(store.keys()) if str(k).startswith(prefix)]:
+            store.pop(key, None)
+
+
+async def _cached_result(key: str, builder, *, refresh: bool = False) -> dict:
+    """TTL 命中秒回 → 过期返回旧数据并后台重建 → 首次同步构建。
+    构建失败进 10s 负缓存；refresh=True 绕过全部缓存立即重试。"""
+    if not refresh:
+        cached = _kafka_cache.get(key)
+        if cached is not None:
+            return cached
+        error_detail = _kafka_error_cache.get(key)
+        if error_detail is not None:
+            raise HTTPException(status_code=502, detail=error_detail)
+        stale = _kafka_stale.get(key)
+        if stale is not None:
+            task = _kafka_refresh_tasks.get(key)
+            if task is None or task.done():
+                async def _run():
+                    try:
+                        result = await builder()
+                        _kafka_cache[key] = result
+                        _kafka_stale[key] = result
+                    except Exception as exc:
+                        logger.warning("[kafka] 后台刷新 %s 失败: %s", key, exc)
+                _kafka_refresh_tasks[key] = asyncio.create_task(_run())
+            return {**stale, "stale": True}
+
+    try:
+        result = await builder()
+    except HTTPException as exc:
+        _kafka_error_cache[key] = str(exc.detail)
+        raise
+    _kafka_cache[key] = result
+    _kafka_stale[key] = result
+    return result
 
 
 class KafkaClusterPayload(BaseModel):
@@ -222,6 +273,7 @@ async def update_cluster(cluster_id: str, body: KafkaClusterPayload):
         updated["password"] = current.get("password", "")
     clusters[index] = {**current, **updated}
     _save_clusters(clusters)
+    _invalidate_cluster_cache(cluster_id)
     return _safe_cluster(clusters[index])
 
 
@@ -229,6 +281,7 @@ async def update_cluster(cluster_id: str, body: KafkaClusterPayload):
 async def delete_cluster(cluster_id: str):
     clusters = [c for c in _load_clusters() if c.get("id") != cluster_id]
     _save_clusters(clusters)
+    _invalidate_cluster_cache(cluster_id)
     return {"ok": True}
 
 
@@ -275,7 +328,7 @@ async def test_cluster(cluster_id: str):
 # ── 集群概览 ──────────────────────────────────────────────────────────────────
 
 @router.get("/clusters/{cluster_id}/overview")
-async def cluster_overview(cluster_id: str):
+async def cluster_overview(cluster_id: str, refresh: bool = False):
     cluster = _get_cluster(cluster_id)
 
     async def _build(admin: AIOKafkaAdminClient):
@@ -341,13 +394,17 @@ async def cluster_overview(cluster_id: str):
             "consumer_groups": groups,
         }
 
-    return await _with_admin(cluster, _build)
+    return await _cached_result(
+        f"{cluster_id}:overview",
+        lambda: _with_admin(cluster, _build),
+        refresh=refresh,
+    )
 
 
 # ── Topic 管理 ────────────────────────────────────────────────────────────────
 
 @router.get("/clusters/{cluster_id}/topics")
-async def list_topics(cluster_id: str, include_internal: bool = False):
+async def list_topics(cluster_id: str, include_internal: bool = False, refresh: bool = False):
     cluster = _get_cluster(cluster_id)
 
     async def _build(admin: AIOKafkaAdminClient):
@@ -388,7 +445,11 @@ async def list_topics(cluster_id: str, include_internal: bool = False):
         topics.sort(key=lambda t: t["name"])
         return {"topics": topics}
 
-    return await _with_admin(cluster, _build)
+    return await _cached_result(
+        f"{cluster_id}:topics:{int(include_internal)}",
+        lambda: _with_admin(cluster, _build),
+        refresh=refresh,
+    )
 
 
 @router.get("/clusters/{cluster_id}/topics/{topic}")
@@ -463,7 +524,9 @@ async def create_topic(cluster_id: str, body: TopicCreatePayload):
         ])
         return {"ok": True, "name": name, "message": f"Topic {name} 创建成功"}
 
-    return await _with_admin(cluster, _create)
+    result = await _with_admin(cluster, _create)
+    _invalidate_cluster_cache(cluster_id)
+    return result
 
 
 @router.delete("/clusters/{cluster_id}/topics/{topic}")
@@ -476,7 +539,9 @@ async def delete_topic(cluster_id: str, topic: str):
         await admin.delete_topics([topic])
         return {"ok": True, "message": f"Topic {topic} 已删除"}
 
-    return await _with_admin(cluster, _delete)
+    result = await _with_admin(cluster, _delete)
+    _invalidate_cluster_cache(cluster_id)
+    return result
 
 
 # ── 消息浏览 ──────────────────────────────────────────────────────────────────
@@ -629,7 +694,7 @@ async def browse_messages(
 # ── 消费组 ────────────────────────────────────────────────────────────────────
 
 @router.get("/clusters/{cluster_id}/groups")
-async def list_groups(cluster_id: str):
+async def list_groups(cluster_id: str, refresh: bool = False):
     cluster = _get_cluster(cluster_id)
 
     async def _build(admin: AIOKafkaAdminClient):
@@ -654,7 +719,11 @@ async def list_groups(cluster_id: str):
         groups.sort(key=lambda x: x["group_id"])
         return {"groups": groups}
 
-    return await _with_admin(cluster, _build)
+    return await _cached_result(
+        f"{cluster_id}:groups",
+        lambda: _with_admin(cluster, _build),
+        refresh=refresh,
+    )
 
 
 @router.get("/clusters/{cluster_id}/groups/{group_id}/lag")
