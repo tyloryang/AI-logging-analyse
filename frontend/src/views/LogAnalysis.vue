@@ -785,6 +785,7 @@ const labelCatalog   = ref([])
 const groupOptions   = ref([{ value: 'namespace', label: 'namespace' }])
 const loadingLabelCatalog = ref(false)
 const labelExplorerOpen = ref(true)
+const serviceLabelName = ref('')     // Loki 服务标签名（如 app），钻取联动用
 const openLabelGroups = ref(new Set())
 const labelValueMap = ref({})
 const labelValueTotals = ref({})
@@ -1598,6 +1599,9 @@ async function loadLabelCatalog() {
   try {
     const result = await api.getLogLabels()
     labelCatalog.value = result.data || []
+    serviceLabelName.value = result.service_label
+      || labelCatalog.value.find(item => item.role === 'service')?.name
+      || ''
     groupOptions.value = result.group_options?.length
       ? result.group_options
       : [{ value: 'namespace', label: 'namespace' }]
@@ -2087,6 +2091,28 @@ function _applyRouteQuery() {
   if (q.q)       keyword.value = q.q
 }
 
+// 钻取联动：URL 带 service 进入时，标签面板默认展示该服务的标签上下文——
+// 展开 Loki 标签面板、标签名选中服务标签并加载值列表；若服务名确认是该
+// 标签的值，则直接转成可见的筛选 chip（app=服务），标签分组随之联动，
+// 并移除重复的服务 chip 避免同条件二次 AND。
+async function _applyServiceDrilldown() {
+  const svc = selectedService.value || selectedServices.value[0] || ''
+  if (!svc) return
+  const serviceLabel = serviceLabelName.value || 'app'
+
+  labelExplorerOpen.value = true
+  selectedLabelName.value = serviceLabel
+  labelNameQuery.value = serviceLabel
+  await ensureLabelValues(serviceLabel)
+
+  const values = labelValueMap.value[serviceLabel] || []
+  if (values.includes(svc)) {
+    addActiveLabel(serviceLabel, svc, { silent: true, skipRefresh: true })
+    selectedServices.value = selectedServices.value.filter(s => s !== svc)
+    if (selectedService.value === svc) selectedService.value = ''
+  }
+}
+
 onMounted(async () => {
   _applyRouteQuery()
   // 已有 URL ?service=xxx 兼容进 chip
@@ -2094,6 +2120,7 @@ onMounted(async () => {
     selectedServices.value.push(selectedService.value)
   }
   await loadLabelCatalog()
+  await _applyServiceDrilldown()
   // 预取服务名（供 chip datalist 提示）
   try {
     const r = await api.getServices({})
