@@ -406,11 +406,18 @@
 
       <!-- 日志详情模态框（居中弹出，包含原始记录 + 上下文滚动）-->
       <transition name="modal-fade">
-        <div v-if="detailLog" class="log-detail-modal-mask" @click.self="closeDetail" @keyup.esc="closeDetail" tabindex="0">
-          <div class="drawer-panel log-detail-modal">
+        <div
+          v-if="showDetailModal && detailLog"
+          ref="detailModalMask"
+          class="log-detail-modal-mask"
+          @click.self="closeDetail"
+          @keydown.esc.stop.prevent="closeDetail"
+          tabindex="-1"
+        >
+          <div class="drawer-panel log-detail-modal" @click.stop>
             <div class="drawer-header">
               <span>日志详情 · 上下文</span>
-              <button class="drawer-close" @click="closeDetail">✕</button>
+              <button type="button" class="drawer-close" aria-label="关闭日志上下文" @click.stop="closeDetail">✕</button>
             </div>
             <div class="drawer-body">
               <!-- 元数据折叠区（默认收起，header 显示关键摘要，留更多空间给上下文） -->
@@ -1171,6 +1178,7 @@ const INCIDENT_KEYWORDS = ['error', 'exception', 'fail', 'timeout', 'refused', '
 
 // 详情抽屉
 const detailLog   = ref(null)
+const showDetailModal = ref(false)
 const loadingDetailContext = ref(false)
 const detailContextLogs = ref([])
 const detailContextAnchorIndex = ref(-1)
@@ -1178,6 +1186,7 @@ const detailContextAnchorFound = ref(true)
 const detailContextBeforeCount = ref(0)
 const detailContextAfterCount = ref(0)
 const detailContextError = ref('')
+const detailModalMask = ref(null)
 const contextScrollWrap = ref(null)
 const metaOpen = ref(false)   // 元数据折叠状态：默认收起，给上下文留位
 
@@ -1285,8 +1294,10 @@ function normalizeRequestError(error) {
 }
 
 function closeDetail() {
+  detailContextRequestId += 1
   detailContextAbort?.abort()
   detailContextAbort = null
+  showDetailModal.value = false
   detailLog.value = null
   metaOpen.value = false   // 下次打开重新收起，焦点回到上下文
   loadingDetailContext.value = false
@@ -1503,7 +1514,15 @@ function onContextScroll(event) {
 
 function openDetail(log) {
   detailLog.value = log
+  showDetailModal.value = true
   loadLogContext(log, { reset: true })   // 切换日志时重置窗口
+  nextTick(() => detailModalMask.value?.focus?.())
+}
+
+function onLogDetailKeydown(event) {
+  if (event.key !== 'Escape' || !showDetailModal.value) return
+  event.preventDefault()
+  closeDetail()
 }
 
 function onLevelChange() {
@@ -2114,6 +2133,7 @@ async function _applyServiceDrilldown() {
 }
 
 onMounted(async () => {
+  window.addEventListener('keydown', onLogDetailKeydown)
   _applyRouteQuery()
   // 已有 URL ?service=xxx 兼容进 chip
   if (selectedService.value && !selectedServices.value.length) {
@@ -2133,6 +2153,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onLogDetailKeydown)
   clearTimeout(searchTimer)
   logsAbort?.abort()
   loadMoreAbort?.abort()
