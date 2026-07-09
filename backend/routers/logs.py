@@ -393,9 +393,14 @@ async def get_log_context(
     start_time: Optional[str] = Query(None, description="自定义开始时间 ISO 格式"),
     end_time: Optional[str] = Query(None, description="自定义结束时间 ISO 格式"),
 ):
-    """围绕某条日志返回同一流的前后文。"""
+    """围绕某条日志返回同一流的前后文。
+
+    可靠性保证：任何失败都不再抛 5xx —— 先降级重查（去掉 line_prefix、
+    放宽时间窗），仍失败则返回以点击行为中心的最小上下文 + error 说明，
+    前端始终有内容可渲染。
+    """
+    label_filters: dict[str, str] | None = None
     try:
-        label_filters: dict[str, str] | None = None
         if labels_json:
             parsed = json.loads(labels_json)
             if not isinstance(parsed, dict):
@@ -404,22 +409,57 @@ async def get_log_context(
                 str(key): "" if value is None else str(value)
                 for key, value in parsed.items()
             }
+        start_ns = _parse_time_ns(start_time)
+        end_ns = _parse_time_ns(end_time)
+    except (TypeError, ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=400, detail=f"参数错误: {e}")
 
-        return await loki.query_log_context(
+    async def _attempt(**overrides):
+        params = dict(
             timestamp_ns=timestamp_ns,
             service=service or None,
             line_prefix=line_prefix or None,
             before=before,
             after=after,
             hours=hours,
-            start_ns=_parse_time_ns(start_time),
-            end_ns=_parse_time_ns(end_time),
+            start_ns=start_ns,
+            end_ns=end_ns,
             label_filters=label_filters,
         )
-    except (TypeError, ValueError, json.JSONDecodeError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        params.update(overrides)
+        return await loki.query_log_context(**params)
+
+    last_error: Exception | None = None
+    # 1) 正常查询 → 2) 降级：去 line_prefix、忽略自定义窗口放宽到 24h
+    for attempt, overrides in enumerate((
+        {},
+        {"line_prefix": None, "start_ns": None, "end_ns": None, "hours": max(hours, 24.0)},
+    )):
+        try:
+            result = await _attempt(**overrides)
+            if attempt > 0:
+                result["degraded"] = True
+            return result
+        except Exception as e:
+            last_error = e
+            logger.warning("[logs] context attempt %d failed: %s", attempt + 1, e)
+
+    # 3) 兜底：返回仅含点击行的最小上下文（HTTP 200），前端可展示并提示
+    anchor_labels = {k: v for k, v in (label_filters or {}).items() if v}
+    return {
+        "data": [{
+            "timestamp": datetime.fromtimestamp(timestamp_ns / 1e9).strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp_ns": str(timestamp_ns),
+            "line": line_prefix or "",
+            "labels": anchor_labels,
+        }],
+        "anchor_index": 0,
+        "anchor_found": False,
+        "before_count": 0,
+        "after_count": 0,
+        "degraded": True,
+        "error": f"上下文查询失败（已降级重试）: {last_error}",
+    }
 
 
 @router.get("/api/logs/errors")

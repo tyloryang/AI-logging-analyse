@@ -1369,6 +1369,8 @@ async function loadLogContext(log = detailLog.value, opts = {}) {
     detailContextAnchorFound.value = result.anchor_found !== false
     detailContextBeforeCount.value = result.before_count ?? 0
     detailContextAfterCount.value = result.after_count ?? 0
+    // 后端降级兜底时带 error 说明：数据照常渲染，同时给出提示
+    detailContextError.value = result.error || ''
 
     // 前端兜底：保证锚点 = 用户实际点击的那条
     //   1) 用 timestamp_ns + line 严格匹配查 anchor index
