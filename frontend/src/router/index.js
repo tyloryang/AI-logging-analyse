@@ -51,7 +51,6 @@ const routes = [
   { path: '/observability/metric-charts', component: () => import('../views/PromChartsView.vue'), name: 'obs-metric-charts', meta: { module: 'metrics' } },
   { path: '/observability/metrics-query', redirect: '/observability/metric-charts' },
   { path: '/observability/http-server-metrics', redirect: '/observability/metric-charts' },
-  { path: '/observability/logs-query', component: () => import('../views/LogsQueryView.vue'), name: 'obs-logs-query', meta: { module: 'log' } },
   { path: '/observability/grafana',  component: () => import('../views/GrafanaView.vue'),    name: 'obs-grafana',  meta: { module: 'metrics' } },
   { path: '/observability/logs',     component: () => import('../views/LogAnalysis.vue'),    name: 'obs-logs',     meta: { module: 'log' } },
   { path: '/observability/trace',    component: () => import('../views/SkyWalkingView.vue'), name: 'obs-trace',    meta: { module: 'skywalking' } },
@@ -65,8 +64,8 @@ const routes = [
   // ── 10. 工具市场 ──────────────────────────────────────────────
   { path: '/tools',         component: () => import('../views/ToolMarketView.vue'), name: 'tools' },
   { path: '/tools/java-diagnostics', component: () => import('../views/JavaDiagnosticView.vue'), name: 'tools-java-diagnostics', meta: { module: 'ssh' } },
-  // /tools/ssh 已并入 CMDB，保留路径重定向到 CMDB 的 SSH tab
-  { path: '/tools/ssh', redirect: '/cmdb?tab=ssh' },
+  // SSH 终端独立保留，CMDB 内部入口改为凭证管理。
+  { path: '/tools/ssh', component: () => import('../views/SSHTerminal.vue'), name: 'tools-ssh', meta: { module: 'ssh' } },
   { path: '/tools/slowlog', component: () => import('../views/SlowLogView.vue'),    name: 'tools-slowlog', meta: { module: 'slowlog' } },
   { path: '/tools/report',  component: () => import('../views/AnalysisReport.vue'), name: 'tools-report',  meta: { module: 'report' } },
   { path: '/tools/knowledge', component: () => import('../views/KnowledgeView.vue'), name: 'tools-knowledge' },
@@ -80,7 +79,8 @@ const routes = [
   { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
   { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
   { path: '/aiops/workbench', component: () => import('../views/AIWorkbenchView.vue'),    name: 'aiops-workbench', meta: { module: 'agent' } },
-  { path: '/aiops/claude',    component: () => import('../views/ClaudeCodePageView.vue'), name: 'aiops-claude',    meta: { module: 'agent' } },
+  // Claude 模块已下线（保留智能助手），组件文件保留；旧路径重定向到智能助手
+  { path: '/aiops/claude',    redirect: '/aiops/assistant' },
   { path: '/aiops/cc-haha',  component: () => import('../views/CcHahaView.vue'),         name: 'aiops-cc-haha',   meta: { module: 'agent' } },
   { path: '/aiops/assistant', component: () => import('../views/AIAgent.vue'),     name: 'aiops-assistant', meta: { module: 'agent' } },
   { path: '/aiops/config',    component: () => import('../views/AgentConfig.vue'), name: 'aiops-config' },
@@ -98,7 +98,7 @@ const routes = [
   { path: '/skywalking',   redirect: '/observability/trace' },
   { path: '/hosts/assets', redirect: '/cmdb' },
   { path: '/hosts',        redirect: '/cmdb' },
-  { path: '/ssh',          redirect: '/cmdb?tab=ssh' },
+  { path: '/ssh',          redirect: '/tools/ssh' },
   { path: '/slowlog',      redirect: '/tools/slowlog' },
   { path: '/report',       redirect: '/tools/report' },
   { path: '/agent',        redirect: '/aiops/assistant' },

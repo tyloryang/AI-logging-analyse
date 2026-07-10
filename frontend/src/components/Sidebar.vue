@@ -176,7 +176,6 @@ const MENU = [
     children: [
       { label: '监控大屏',   to: '/observability/bigscreen' },
       { label: '指标图表',   to: '/observability/metric-charts', module: 'metrics' },
-      { label: '日志中心',   to: '/observability/logs-query',    module: 'log' },
       { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
       { label: '日志分析',   to: '/observability/logs',    module: 'log' },
       { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
@@ -202,7 +201,6 @@ const MENU = [
       { label: '📊 异常检测', to: '/aiops/anomaly' },
       { label: '🧰 AI 工作台', to: '/aiops/workbench', module: 'agent' },
       { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
-      { label: '◈ Claude',     to: '/aiops/claude',   module: 'agent' },
       { label: '⚙ 智能配置',  to: '/aiops/config' },
     ],
   },

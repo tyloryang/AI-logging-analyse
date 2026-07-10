@@ -1444,12 +1444,14 @@ const AUTO_REFRESH_OPTIONS = [
   { value: '300', label: '5 分钟', short: '5m', sec: 300 },
 ]
 import { api } from '../api/index.js'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 
 const authStore = useAuthStore()
+const route = useRoute()
 
 const TABS = [
   { id: 'pods', label: 'Pods' },
@@ -3178,6 +3180,119 @@ async function openResourceLogs(kind, row) {
   await loadSelectedPodLogs()
 }
 
+let _appliedLogRouteKey = ''
+
+function routeQueryValue(query, keys) {
+  for (const key of keys) {
+    const raw = query?.[key]
+    const value = Array.isArray(raw) ? raw[0] : raw
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim()
+    }
+  }
+  return ''
+}
+
+function routeLogTarget(query = route.query) {
+  if (routeQueryValue(query, ['view']) !== 'logs') return null
+  const pod = routeQueryValue(query, [
+    'pod', 'pod_name', 'k8s_pod', 'k8s_pod_name', 'kubernetes_pod', 'kubernetes_pod_name',
+  ])
+  const container = routeQueryValue(query, [
+    'container', 'container_name', 'k8s_container', 'k8s_container_name', 'kubernetes_container', 'kubernetes_container_name',
+  ])
+  if (!pod && !container) return null
+  const tailLines = Number(routeQueryValue(query, ['tail_lines', 'tailLines', 'tail']))
+  return {
+    pod,
+    container,
+    namespace: routeQueryValue(query, [
+      'namespace', 'k8s_namespace', 'k8s_namespace_name', 'kubernetes_namespace', 'kubernetes_namespace_name', 'ns',
+    ]),
+    clusterId: routeQueryValue(query, ['cluster_id', 'clusterId', 'cluster']),
+    tailLines: Number.isFinite(tailLines) && tailLines > 0 ? clampTailLines(tailLines) : 200,
+  }
+}
+
+function routeLogTargetKey(target) {
+  if (!target) return ''
+  return [
+    target.clusterId || activeClusterId.value || '',
+    target.namespace || '',
+    target.pod || '',
+    target.container || '',
+    target.tailLines || '',
+  ].join('|')
+}
+
+function applyRouteLogScope(target) {
+  if (!target) return false
+  let changed = false
+  activeTab.value = 'pods'
+  searchKeyword.value = target.pod || target.container || ''
+
+  const matchedCluster = target.clusterId
+    ? clusters.value.find(item => (
+      item.id === target.clusterId || item.name === target.clusterId || item.context === target.clusterId
+    ))
+    : null
+
+  if (matchedCluster && activeClusterId.value !== matchedCluster.id) {
+    activeClusterId.value = matchedCluster.id
+    activeNs.value = target.namespace || ''
+    resetNotice()
+    changed = true
+  } else if (target.namespace && activeNs.value !== target.namespace) {
+    activeNs.value = target.namespace
+    changed = true
+  }
+  return changed
+}
+
+async function openRouteLogTarget(target) {
+  if (!target) return
+  const changed = applyRouteLogScope(target)
+  if (changed) await fetchAll()
+
+  const key = routeLogTargetKey(target)
+  if (_appliedLogRouteKey === key && showLogModal.value) return
+
+  if (!target.pod) return
+  const pod = pods.value.find(item => (
+    item.name === target.pod && (!target.namespace || item.namespace === target.namespace)
+  )) || pods.value.find(item => item.name === target.pod)
+
+  if (!pod) {
+    error.value = `未找到 Pod ${target.namespace ? `${target.namespace}/` : ''}${target.pod}`
+    return
+  }
+
+  _appliedLogRouteKey = key
+  resetLogState()
+  const containers = [...(pod.containers || [])]
+  if (target.container && !containers.some(item => item.name === target.container)) {
+    containers.unshift({ name: target.container, ready: false })
+  }
+  const logPod = { ...pod, containers }
+  logPods.value = [logPod]
+  selectedLogPod.value = logPod.name
+  selectedLogContainer.value = target.container || pickDefaultContainer(logPod)
+  logTailLines.value = target.tailLines || 200
+  Object.assign(logMeta, {
+    kind: 'pod',
+    name: logPod.name,
+    namespace: logPod.namespace || target.namespace || 'default',
+  })
+  showLogModal.value = true
+  await loadSelectedPodLogs()
+}
+
+async function applyRouteLogQuery() {
+  const target = routeLogTarget()
+  if (!target) return
+  await openRouteLogTarget(target)
+}
+
 async function saveCluster() {
   const name = clusterForm.name.trim()
   if (!name) {
@@ -3531,12 +3646,18 @@ function _stopNowTick() {
 
 // 用户改自动刷新档位 → 立即应用
 watch(autoRefreshInterval, () => _startAutoRefresh())
+watch(() => route.query, () => {
+  applyRouteLogQuery()
+}, { deep: true })
 
 onMounted(async () => {
   _startNowTick()
   await loadClusters()
+  const initialLogTarget = routeLogTarget()
+  applyRouteLogScope(initialLogTarget)
   // 首次进入：走缓存逻辑；若是冷启动 cache miss 会拉一次
   await fetchAll()
+  if (initialLogTarget) await openRouteLogTarget(initialLogTarget)
   _startAutoRefresh()
 })
 

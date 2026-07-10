@@ -133,7 +133,7 @@
             />
           </td>
           <td>
-            <button class="link" @click="jumpLogs(ep)" title="跳到日志中心，按服务过滤">日志 →</button>
+            <button class="link" @click="jumpLogs(ep)" title="跳到日志分析，按服务过滤">日志 →</button>
           </td>
         </tr>
       </tbody>

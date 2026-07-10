@@ -194,7 +194,7 @@ function genUUID() {
 function routeLabel(name) {
   return {
     dashboard: '平台总览',
-    'obs-logs': '日志中心',
+    'obs-logs': '日志分析',
     'obs-grafana': '监控看板',
     'obs-trace': '链路追踪',
     containers: '容器管理',
