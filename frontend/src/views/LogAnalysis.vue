@@ -1479,29 +1479,48 @@ function fmtDateTimeSec(d) {
 }
 
 // 智能解析各种标准时间/时间戳 → Date（无法解析返回 null）
-//   支持：2026-07-09 10:31:12 / 2026/07/09 10:31 / ISO(带/不带 Z) /
-//         纳秒(≥16位)/毫秒(13位)/秒(10位) epoch 时间戳
+//   核心场景：直接复制日志里的 2026-07-10 09:53:43（可含毫秒/斜杠/T 分隔/时区）
+//   兼容：ISO(带/不带 Z 或 ±时区) / 纳秒(≥16位)/毫秒(13位)/秒(10位) epoch
+//   健壮：容忍前后空白、多空格、制表符，甚至从整行日志文本中提取首个时间
 function parseFlexibleTime(raw) {
   const s = String(raw || '').trim()
   if (!s) return null
-
-  // 纯数字 → epoch 时间戳（按位数判断精度）
-  if (/^\d+$/.test(s)) {
-    let ms
-    if (s.length >= 13) ms = Number(s.slice(0, 13))       // 纳秒/微秒/毫秒 → 取前 13 位为毫秒
-    else if (s.length >= 10) ms = Number(s) * 1000        // 秒
-    else ms = Number(s) * 1000
+  const pad2 = n => String(n).padStart(2, '0')
+  const toEpoch = digits => {
+    // ≥13 位取前 13 位为毫秒（纳秒/微秒/毫秒），否则按秒
+    const ms = digits.length >= 13 ? Number(digits.slice(0, 13)) : Number(digits) * 1000
     const d = new Date(ms)
     return isNaN(d.getTime()) ? null : d
   }
 
-  // 文本时间：空格分隔转 ISO 的 T；斜杠日期转横杠；纳秒小数截断到毫秒
-  let text = s
-    .replace(/\//g, '-')
-    .replace(/(\d{4}-\d{2}-\d{2})[ T]/, '$1T')
-    .replace(/(\.\d{3})\d+/, '$1')
-  let d = new Date(text)
-  if (isNaN(d.getTime())) d = new Date(s)   // 兜底用原串再试一次
+  // 整串是纯数字 → epoch 时间戳
+  if (/^\d+$/.test(s)) return toEpoch(s)
+
+  // 从文本中提取「日期[ 时间][时区]」，容忍多空格/制表符/整行复制
+  const m = s.match(
+    /(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[\sT]+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(Z|[+-]\d{2}:?\d{2})?)?/
+  )
+  if (m) {
+    const [, Y, Mo, D, h, mi, se, frac, tz] = m
+    if (h == null) return new Date(Number(Y), Number(Mo) - 1, Number(D))
+    if (tz) {
+      // 带时区 → 拼成标准 ISO 交给 Date（毫秒截断到 3 位，时区补冒号）
+      const iso = `${Y}-${pad2(Mo)}-${pad2(D)}T${pad2(h)}:${pad2(mi)}:${pad2(se || 0)}` +
+                  `${frac ? '.' + frac.slice(0, 3) : ''}${tz.replace(/([+-]\d{2})(\d{2})$/, '$1:$2')}`
+      const d = new Date(iso)
+      return isNaN(d.getTime()) ? null : d
+    }
+    // 无时区 → 按本地时间构造（不依赖浏览器对字符串的解析差异）
+    return new Date(Number(Y), Number(Mo) - 1, Number(D),
+                    Number(h), Number(mi), Number(se || 0))
+  }
+
+  // 文本里夹带的纯 epoch（10~19 位数字）
+  const em = s.match(/\d{10,19}/)
+  if (em) return toEpoch(em[0])
+
+  // 兜底：交给浏览器
+  const d = new Date(s)
   return isNaN(d.getTime()) ? null : d
 }
 
