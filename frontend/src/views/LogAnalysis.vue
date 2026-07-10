@@ -516,36 +516,50 @@
                 </div>
                 <div v-if="!detailContextError" class="drawer-context-search">
                   <div class="context-search-main-row">
-                    <div class="context-search-box" :class="{ active: contextSearchTerms.length }">
+                    <div
+                      class="context-search-box"
+                      :class="{ active: contextSearchTerms.length }"
+                      title="可添加多个搜索条件；AND 条件需同时命中，OR 条件命中任一分组即可"
+                    >
                       <span class="context-search-icon">⌕</span>
-                      <div class="kw-mode-switch context-mode-switch">
+                      <template v-for="(kw, i) in contextSearchKeywords" :key="kw.id">
                         <button
-                          class="kw-mode-btn"
-                          :class="{ active: contextSearchMode === 'and' }"
-                          @click="contextSearchMode = 'and'"
-                        >AND</button>
-                        <button
-                          class="kw-mode-btn"
-                          :class="{ active: contextSearchMode === 'or' }"
-                          @click="contextSearchMode = 'or'"
-                        >OR</button>
-                      </div>
-                      <span
-                        v-for="(kw, i) in contextSearchKeywords"
-                        :key="`${kw}-${i}`"
-                        class="filter-chip include context-search-chip"
-                      >
-                        <span class="chip-text">{{ kw }}</span>
-                        <span class="chip-remove" @click.stop="removeContextSearchKeyword(i)" title="删除关键字">✕</span>
-                      </span>
+                          v-if="i > 0"
+                          type="button"
+                          class="context-condition-join"
+                          :class="kw.join"
+                          :title="`点击切换为 ${kw.join === 'and' ? 'OR' : 'AND'}`"
+                          @click.stop="toggleContextSearchJoin(i)"
+                        >{{ kw.join.toUpperCase() }}</button>
+                        <span class="filter-chip include context-search-chip">
+                          <span class="chip-text">{{ kw.text }}</span>
+                          <span class="chip-remove" @click.stop="removeContextSearchKeyword(i)" title="删除条件">✕</span>
+                        </span>
+                      </template>
+                      <button
+                        v-if="contextSearchKeywords.length"
+                        type="button"
+                        class="context-condition-join"
+                        :class="contextSearchDraftJoin"
+                        :title="`新条件使用 ${contextSearchDraftJoin.toUpperCase()} 连接，点击切换`"
+                        @click.stop="toggleContextSearchDraftJoin"
+                      >{{ contextSearchDraftJoin.toUpperCase() }}</button>
                       <input
                         v-model="contextSearchInput"
                         class="context-search-input"
-                        :placeholder="contextSearchKeywords.length ? '添加关键字' : '搜索上下文'"
+                        :placeholder="contextSearchKeywords.length ? '输入下一个条件' : '输入搜索条件'"
                         @keydown="onContextSearchInputKeydown"
                       />
                       <button
+                        type="button"
+                        class="context-add-condition"
+                        :disabled="!contextSearchInput.trim()"
+                        title="添加搜索条件（也可按 Enter）"
+                        @click.stop="addContextSearchKeywords"
+                      >＋ 条件</button>
+                      <button
                         v-if="contextSearchTerms.length || contextSearchInput"
+                        type="button"
                         class="kw-clear"
                         @click="clearContextSearch"
                         title="清空搜索"
@@ -1400,37 +1414,27 @@ function detailServiceDrilldown(labels) {
 
 function serviceLogLinkTitle(labels) {
   const target = detailServiceDrilldown(labels)
-  if (!target) return '跳转到微服务日志'
-  return `跳转到 ${target.label}=${target.value} 的微服务日志`
+  if (!target) return '跳转到容器页面的微服务日志'
+  return `跳转到容器页面查看 ${target.label}=${target.value} 的微服务日志`
 }
 
 function goToMicroserviceLogs(labels) {
   const target = detailServiceDrilldown(labels)
   if (!target) return
 
-  activeTab.value = 'logs'
-  selectedService.value = target.serviceLike ? target.value : ''
-  selectedServices.value = target.serviceLike ? [target.value] : []
-  labelExplorerOpen.value = true
-  selectedLabelName.value = target.label
-  selectedLabelValue.value = target.value
-  labelNameQuery.value = target.label
-  labelValueQuery.value = target.value
-  activeLabelFilters.value = [{ label: target.label, value: target.value }]
-  selectedGroupLabel.value = target.label
-  selectedGroupValue.value = target.value
-  if (groupBy.value !== target.label) groupBy.value = target.label
   closeDetail()
-
   router.push({
-    name: 'obs-logs',
+    name: 'containers',
     query: compactQuery({
+      view: 'logs',
+      pod: labelValue(labels, POD_LABEL_KEYS),
+      namespace: labelValue(labels, NAMESPACE_LABEL_KEYS),
+      container: detailContainerValue(labels),
+      cluster_id: labelValue(labels, CLUSTER_LABEL_KEYS),
       service: target.serviceLike ? target.value : '',
-      labels: `${target.label}:${target.value}`,
-      hours: hours.value,
+      service_label: target.serviceLike ? target.label : '',
     }),
   })
-  loadLogs()
 }
 
 function applyRouteLabelFilters(params) {
@@ -1636,9 +1640,10 @@ const contextScrollWrap = ref(null)
 const metaOpen = ref(false)   // 元数据折叠状态：默认收起，给上下文留位
 const contextSearchInput = ref('')
 const contextSearchKeywords = ref([])
-const contextSearchMode = ref('or')
+const contextSearchDraftJoin = ref('and')
 const activeContextSearchMatch = ref(0)
 const copiedContextLineKey = ref('')
+let contextSearchConditionId = 0
 
 // 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
 const CONTEXT_INITIAL_BEFORE = 250
@@ -1692,7 +1697,7 @@ function scrollContextAnchorIntoView() {
 
 function splitContextSearchTerms(raw) {
   return String(raw || '')
-    .split(/[\s,，、;；]+/)
+    .split(/[,，、;；]+/)
     .map(item => item.trim())
     .filter(Boolean)
 }
@@ -1711,10 +1716,43 @@ function uniqueContextTerms(items) {
   return out
 }
 
-const contextSearchTerms = computed(() => uniqueContextTerms([
-  ...contextSearchKeywords.value,
-  ...splitContextSearchTerms(contextSearchInput.value),
-]))
+const contextSearchConditions = computed(() => {
+  const conditions = contextSearchKeywords.value.map(item => ({
+    text: item.text,
+    join: item.join,
+  }))
+  for (const text of splitContextSearchTerms(contextSearchInput.value)) {
+    conditions.push({
+      text,
+      join: conditions.length ? contextSearchDraftJoin.value : 'and',
+    })
+  }
+  const seen = new Set()
+  return conditions.filter(item => {
+    const key = item.text.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+})
+
+const contextSearchTerms = computed(() => uniqueContextTerms(
+  contextSearchConditions.value.map(item => item.text),
+))
+
+// AND 的优先级高于 OR：A AND B OR C AND D => (A AND B) OR (C AND D)
+const contextSearchConditionGroups = computed(() => {
+  const groups = []
+  for (const condition of contextSearchConditions.value) {
+    const term = condition.text.toLowerCase()
+    if (!groups.length || condition.join === 'or') {
+      groups.push([term])
+    } else {
+      groups[groups.length - 1].push(term)
+    }
+  }
+  return groups
+})
 
 function contextLogSearchText(log) {
   return [
@@ -1725,13 +1763,10 @@ function contextLogSearchText(log) {
 }
 
 function contextLogMatchesSearch(log) {
-  const terms = contextSearchTerms.value.map(item => item.toLowerCase())
-  if (!terms.length) return false
+  const groups = contextSearchConditionGroups.value
+  if (!groups.length) return false
   const haystack = contextLogSearchText(log)
-  if (contextSearchMode.value === 'and') {
-    return terms.every(term => haystack.includes(term))
-  }
-  return terms.some(term => haystack.includes(term))
+  return groups.some(group => group.every(term => haystack.includes(term)))
 }
 
 const contextSearchMatches = computed(() => {
@@ -1893,13 +1928,30 @@ function scrollToCurrentContextSearchMatch() {
 function addContextSearchKeywords() {
   const terms = splitContextSearchTerms(contextSearchInput.value)
   if (!terms.length) return
-  contextSearchKeywords.value = uniqueContextTerms([
-    ...contextSearchKeywords.value,
-    ...terms,
-  ])
+  const existing = new Set(contextSearchKeywords.value.map(item => item.text.toLowerCase()))
+  for (const text of terms) {
+    const key = text.toLowerCase()
+    if (existing.has(key)) continue
+    contextSearchKeywords.value.push({
+      id: ++contextSearchConditionId,
+      text,
+      join: contextSearchKeywords.value.length ? contextSearchDraftJoin.value : 'and',
+    })
+    existing.add(key)
+  }
   contextSearchInput.value = ''
   activeContextSearchMatch.value = 0
   nextTick(scrollToCurrentContextSearchMatch)
+}
+
+function toggleContextSearchJoin(index) {
+  if (index <= 0 || !contextSearchKeywords.value[index]) return
+  const condition = contextSearchKeywords.value[index]
+  condition.join = condition.join === 'and' ? 'or' : 'and'
+}
+
+function toggleContextSearchDraftJoin() {
+  contextSearchDraftJoin.value = contextSearchDraftJoin.value === 'and' ? 'or' : 'and'
 }
 
 function removeContextSearchKeyword(index) {
@@ -1911,13 +1963,14 @@ function removeContextSearchKeyword(index) {
 function clearContextSearch() {
   contextSearchInput.value = ''
   contextSearchKeywords.value = []
+  contextSearchDraftJoin.value = 'and'
   activeContextSearchMatch.value = 0
 }
 
 function resetContextSearch() {
   contextSearchInput.value = ''
   contextSearchKeywords.value = []
-  contextSearchMode.value = 'or'
+  contextSearchDraftJoin.value = 'and'
   activeContextSearchMatch.value = 0
 }
 
@@ -1952,7 +2005,7 @@ watch(contextSearchMatches, (matches) => {
 })
 
 watch(
-  () => `${contextSearchMode.value}|${contextSearchTerms.value.join('\n')}`,
+  () => contextSearchConditions.value.map(item => `${item.join}:${item.text}`).join('\n'),
   () => {
     activeContextSearchMatch.value = 0
     nextTick(scrollToCurrentContextSearchMatch)
@@ -3910,11 +3963,29 @@ onBeforeUnmount(() => {
   line-height: 1;
   flex-shrink: 0;
 }
-.context-mode-switch {
-  margin-right: 2px;
-}
 .context-search-chip {
   cursor: default;
+}
+.context-condition-join {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid rgba(56,189,248,.35);
+  border-radius: 999px;
+  background: rgba(56,189,248,.09);
+  color: #38bdf8;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 20px;
+  cursor: pointer;
+}
+.context-condition-join.or {
+  border-color: rgba(251,191,36,.4);
+  background: rgba(251,191,36,.1);
+  color: #fbbf24;
+}
+.context-condition-join:hover {
+  filter: brightness(1.15);
 }
 .context-search-input {
   flex: 1 1 120px;
@@ -3928,6 +3999,25 @@ onBeforeUnmount(() => {
 }
 .context-search-input::placeholder {
   color: var(--text-muted);
+}
+.context-add-condition {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid rgba(56,189,248,.35);
+  border-radius: 5px;
+  background: rgba(56,189,248,.08);
+  color: #38bdf8;
+  font-size: 11px;
+  cursor: pointer;
+}
+.context-add-condition:hover:not(:disabled) {
+  border-color: #38bdf8;
+  background: rgba(56,189,248,.14);
+}
+.context-add-condition:disabled {
+  opacity: .42;
+  cursor: not-allowed;
 }
 .context-search-actions {
   display: flex;

@@ -946,44 +946,54 @@
         <div class="modal-title">{{ editingClusterId ? '编辑集群' : '添加集群' }}</div>
         <div class="modal-body">
 
-          <!-- 集群名称 -->
-          <label class="field">
-            <span>集群名称</span>
-            <input v-model="clusterForm.name" class="form-input" placeholder="生产-k8s-01" />
-          </label>
-
-          <!-- 粘贴 kubeconfig 文本（自动识别 *-data base64 内嵌格式） -->
-          <div class="field">
-            <div class="paste-header" @click="pasteOpen = !pasteOpen">
-              <span class="paste-toggle">{{ pasteOpen ? '▼' : '▶' }}</span>
-              <span>或粘贴 kubeconfig 文本（自动识别 apiVersion / clusters / users / contexts）</span>
-            </div>
-            <div v-if="pasteOpen" class="paste-body">
-              <textarea
-                v-model="pasteContent"
-                class="form-textarea"
-                rows="8"
-                placeholder="apiVersion: v1&#10;clusters:&#10;- cluster:&#10;    certificate-authority-data: ...&#10;    server: https://x.x.x.x:6443&#10;..."
-              />
-              <div class="paste-actions">
-                <button
-                  class="btn-detect"
-                  :class="{ loading: pasteLoading }"
-                  type="button"
-                  :disabled="pasteLoading || !clusterForm.name.trim() || !pasteContent.trim()"
-                  @click="savePastedKubeconfig"
-                >
-                  {{ pasteLoading ? '保存中...' : '保存并自动识别' }}
-                </button>
-                <span v-if="pasteResult" class="paste-success">
-                  ✓ 已保存到 {{ pasteResult.relative }}
-                  <em v-if="pasteResult.server">· server={{ pasteResult.server }}</em>
-                  <em v-if="pasteResult.current_context">· context={{ pasteResult.current_context }}</em>
-                </span>
-                <span v-if="pasteError" class="paste-error">{{ pasteError }}</span>
+          <!-- 快速导入：粘贴完整 kubeconfig 后自动命名、保存、测试并加入集群 -->
+          <div v-if="!editingClusterId" class="kubeconfig-quick-import">
+            <div class="quick-import-heading">
+              <div>
+                <strong>粘贴完整 kubeconfig</strong>
+                <span class="quick-import-recommended">推荐</span>
               </div>
+              <span>兼容 Kubernetes 1.18+ 的标准 kubeconfig</span>
+            </div>
+            <p class="quick-import-help">
+              直接粘贴包含 apiVersion、clusters、contexts、users 的完整内容，无需拆分 CA 证书或 Token。
+            </p>
+            <textarea
+              v-model="pasteContent"
+              class="form-textarea kubeconfig-paste-input"
+              rows="12"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="apiVersion: v1&#10;kind: Config&#10;clusters:&#10;- cluster:&#10;    certificate-authority-data: ...&#10;    server: https://x.x.x.x:6443&#10;..."
+            />
+            <div class="quick-import-security">🔒 kubeconfig 含访问凭据，导入后仅保存到服务端受控目录，不会在页面回显 Token。</div>
+            <div v-if="pasteResult" class="quick-import-preview">
+              <span>✓ 已识别 {{ pasteResult.suggested_name }}</span>
+              <span v-if="pasteResult.server">API Server：{{ pasteResult.server }}</span>
+              <span v-if="pasteResult.current_context">Context：{{ pasteResult.current_context }}</span>
+              <span v-if="pasteResult.namespace">Namespace：{{ pasteResult.namespace }}</span>
+            </div>
+            <div v-if="pasteError" class="paste-error">{{ pasteError }}</div>
+            <div class="quick-import-actions">
+              <button
+                class="btn-primary-lg"
+                type="button"
+                :disabled="pasteLoading || !pasteContent.trim()"
+                @click="importPastedCluster"
+              >
+                {{ pasteLoading ? '正在解析并测试连接...' : '解析并加入集群' }}
+              </button>
+              <span>集群名称默认取 clusters[0].name，也可在下方预先填写自定义名称。</span>
             </div>
           </div>
+
+          <div v-if="!editingClusterId" class="cluster-import-divider"><span>或使用路径 / 证书方式</span></div>
+
+          <!-- 集群名称 -->
+          <label class="field">
+            <span>集群名称 <small v-if="!editingClusterId" style="color:var(--text-muted);font-weight:400">（快速导入时可留空）</small></span>
+            <input v-model="clusterForm.name" class="form-input" placeholder="留空时自动使用 kubeconfig 中的集群名称" />
+          </label>
 
           <!-- kubeconfig 路径 + 自动识别（支持直接粘贴 yaml 文本：含 apiVersion: 自动落盘） -->
           <div class="field">
@@ -1793,7 +1803,6 @@ const detectLoading = ref(false)
 const detectResult  = ref(null)   // 识别出的单个 file 对象
 const detectError   = ref('')
 // 粘贴文本入口
-const pasteOpen     = ref(false)
 const pasteContent  = ref('')
 const pasteLoading  = ref(false)
 const pasteResult   = ref(null)
@@ -1903,18 +1912,18 @@ async function onPathInputPaste(event) {
   pasteError.value   = ''
 
   // 集群名兜底：用户没填 → 生成临时名 (后续保存集群时仍用 form.name 真名)
-  const fallbackName = (clusterForm.name || '').trim() ||
-                       `pasted-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
-
   pasteLoading.value = true
   pasteResult.value  = null
   try {
-    const r = await api.k8sUploadKubeconfigText(fallbackName, text)
+    const r = await api.k8sUploadKubeconfigText((clusterForm.name || '').trim(), text)
     pasteResult.value = r
     // 把后端返回的 relative 路径填进输入框, 替换原始粘贴文本
     clusterForm.kubeconfig = r.relative
+    if (!clusterForm.name.trim()) clusterForm.name = r.suggested_name || r.clusters?.[0] || ''
     if (r.current_context) clusterForm.context = r.current_context
     await autoDetect()   // 自动触发证书/Token 识别
+    // 已粘贴的是完整 kubeconfig，保存时必须原样使用，不能用脱敏 Token 再生成。
+    authMode.value = 'kubeconfig'
   } catch (e) {
     pasteError.value = '落盘失败: ' + (e?.response?.data?.detail || e?.message || e)
     // 失败也把文本填进输入框，让用户能手动改
@@ -1924,25 +1933,26 @@ async function onPathInputPaste(event) {
   }
 }
 
-// 把粘贴的 kubeconfig 文本提交后端落盘，再触发 autoDetect 走原流程
-async function savePastedKubeconfig() {
-  const name = clusterForm.name.trim()
+// 快速导入：粘贴全文后由后端校验并落盘，再自动创建集群和测试连接。
+async function importPastedCluster() {
   const content = pasteContent.value.trim()
-  if (!name) { pasteError.value = '请先填写集群名称'; return }
   if (!content) { pasteError.value = 'kubeconfig 文本不能为空'; return }
 
   pasteLoading.value = true
   pasteResult.value  = null
   pasteError.value   = ''
   try {
-    const r = await api.k8sUploadKubeconfigText(name, content)
+    const r = await api.k8sUploadKubeconfigText(clusterForm.name.trim(), content)
     pasteResult.value = r
-    // 回填路径，触发已有 autoDetect 流程
     clusterForm.kubeconfig = r.relative
+    if (!clusterForm.name.trim()) clusterForm.name = r.suggested_name || r.clusters?.[0] || ''
     if (r.current_context) clusterForm.context = r.current_context
-    await autoDetect()
+    authMode.value = 'kubeconfig'
+
+    const saved = await saveCluster({ useExistingKubeconfig: true, testAfterSave: true })
+    if (!saved) pasteError.value = clusterTestMsg.value || '集群导入失败'
   } catch (e) {
-    pasteError.value = '保存失败: ' + (e?.response?.data?.detail || e?.message || e)
+    pasteError.value = '导入失败: ' + (e?.response?.data?.detail || e?.message || e)
   } finally {
     pasteLoading.value = false
   }
@@ -3128,7 +3138,6 @@ function closeClusterModal() {
   authMode.value      = 'kubeconfig'
   detectResult.value  = null
   detectError.value   = ''
-  pasteOpen.value     = false
   pasteContent.value  = ''
   pasteResult.value   = null
   pasteError.value    = ''
@@ -3251,6 +3260,7 @@ async function loadSelectedPodLogs() {
 
 async function handleLogPodChange() {
   stopLogFollow()
+  logMeta.namespace = selectedLogPodData.value?.namespace || logMeta.namespace
   selectedLogContainer.value = pickDefaultContainer(selectedLogPodData.value)
   await loadSelectedPodLogs()
 }
@@ -3309,11 +3319,16 @@ function routeLogTarget(query = route.query) {
   const container = routeQueryValue(query, [
     'container', 'container_name', 'k8s_container', 'k8s_container_name', 'kubernetes_container', 'kubernetes_container_name',
   ])
-  if (!pod && !container) return null
+  const service = routeQueryValue(query, [
+    'service', 'service_name', 'app', 'app_name', 'application', 'component', 'workload',
+  ])
+  if (!pod && !container && !service) return null
   const tailLines = Number(routeQueryValue(query, ['tail_lines', 'tailLines', 'tail']))
   return {
     pod,
     container,
+    service,
+    serviceLabel: routeQueryValue(query, ['service_label', 'serviceLabel']),
     namespace: routeQueryValue(query, [
       'namespace', 'k8s_namespace', 'k8s_namespace_name', 'kubernetes_namespace', 'kubernetes_namespace_name', 'ns',
     ]),
@@ -3329,6 +3344,8 @@ function routeLogTargetKey(target) {
     target.namespace || '',
     target.pod || '',
     target.container || '',
+    target.serviceLabel || '',
+    target.service || '',
     target.tailLines || '',
   ].join('|')
 }
@@ -3337,7 +3354,7 @@ function applyRouteLogScope(target) {
   if (!target) return false
   let changed = false
   activeTab.value = 'pods'
-  searchKeyword.value = target.pod || target.container || ''
+  searchKeyword.value = target.pod || target.service || target.container || ''
 
   const matchedCluster = target.clusterId
     ? clusters.value.find(item => (
@@ -3357,6 +3374,38 @@ function applyRouteLogScope(target) {
   return changed
 }
 
+function normalizeRouteLabelKey(key) {
+  return String(key || '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+const ROUTE_SERVICE_LABEL_KEYS = new Set([
+  'app', 'app_name', 'app_kubernetes_io_name', 'app_kubernetes_io_instance',
+  'service', 'service_name', 'application', 'application_name', 'component',
+  'workload', 'deployment', 'statefulset', 'daemonset', 'job',
+])
+
+function podMatchesRouteService(pod, target) {
+  const service = String(target?.service || '').trim().toLowerCase()
+  if (!service) return false
+
+  const labels = Object.entries(pod?.labels || {}).map(([key, value]) => ({
+    key: normalizeRouteLabelKey(key),
+    value: String(value ?? '').trim().toLowerCase(),
+  }))
+  const requestedLabel = normalizeRouteLabelKey(target.serviceLabel)
+  if (requestedLabel && labels.some(item => item.key === requestedLabel && item.value === service)) return true
+  if (labels.some(item => ROUTE_SERVICE_LABEL_KEYS.has(item.key) && item.value === service)) return true
+
+  const podName = String(pod?.name || '').toLowerCase()
+  if (podName === service || podName.startsWith(`${service}-`)) return true
+  return (pod?.containers || []).some(item => String(item?.name || '').toLowerCase() === service)
+}
+
 async function openRouteLogTarget(target) {
   if (!target) return
   const changed = applyRouteLogScope(target)
@@ -3365,31 +3414,45 @@ async function openRouteLogTarget(target) {
   const key = routeLogTargetKey(target)
   if (_appliedLogRouteKey === key && showLogModal.value) return
 
-  if (!target.pod) return
-  const pod = pods.value.find(item => (
-    item.name === target.pod && (!target.namespace || item.namespace === target.namespace)
-  )) || pods.value.find(item => item.name === target.pod)
+  const scopedPods = target.namespace
+    ? pods.value.filter(item => item.namespace === target.namespace)
+    : pods.value
+  let matchedPods = []
+  if (target.pod) {
+    const pod = scopedPods.find(item => item.name === target.pod)
+      || pods.value.find(item => item.name === target.pod)
+    if (pod) matchedPods = [pod]
+  } else if (target.service) {
+    matchedPods = scopedPods.filter(item => podMatchesRouteService(item, target))
+  } else if (target.container) {
+    matchedPods = scopedPods.filter(item => (
+      item.containers || []
+    ).some(container => container.name === target.container))
+  }
 
-  if (!pod) {
-    error.value = `未找到 Pod ${target.namespace ? `${target.namespace}/` : ''}${target.pod}`
+  if (!matchedPods.length) {
+    const resourceName = target.pod || target.service || target.container
+    error.value = `未找到微服务日志目标 ${target.namespace ? `${target.namespace}/` : ''}${resourceName}`
     return
   }
 
   _appliedLogRouteKey = key
   resetLogState()
-  const containers = [...(pod.containers || [])]
-  if (target.container && !containers.some(item => item.name === target.container)) {
-    containers.unshift({ name: target.container, ready: false })
-  }
-  const logPod = { ...pod, containers }
-  logPods.value = [logPod]
-  selectedLogPod.value = logPod.name
-  selectedLogContainer.value = target.container || pickDefaultContainer(logPod)
+  logPods.value = matchedPods.map(pod => {
+    const containers = [...(pod.containers || [])]
+    if (target.container && !containers.some(item => item.name === target.container)) {
+      containers.unshift({ name: target.container, ready: false })
+    }
+    return { ...pod, containers }
+  })
+  const firstPod = logPods.value[0]
+  selectedLogPod.value = firstPod.name
+  selectedLogContainer.value = target.container || pickDefaultContainer(firstPod)
   logTailLines.value = target.tailLines || 200
   Object.assign(logMeta, {
     kind: 'pod',
-    name: logPod.name,
-    namespace: logPod.namespace || target.namespace || 'default',
+    name: target.service || firstPod.name,
+    namespace: firstPod.namespace || target.namespace || 'default',
   })
   showLogModal.value = true
   await loadSelectedPodLogs()
@@ -3401,7 +3464,7 @@ async function applyRouteLogQuery() {
   await openRouteLogTarget(target)
 }
 
-async function saveCluster() {
+async function saveCluster(options = {}) {
   const name = clusterForm.name.trim()
   if (!name) {
     clusterTestResult.value = false
@@ -3417,8 +3480,12 @@ async function saveCluster() {
     .filter(Boolean)
     .join(pathSep)
 
-  // 证书 / token 模式：先上传证书再生成 kubeconfig
-  if (authMode.value !== 'kubeconfig') {
+  const useExistingKubeconfig = options.useExistingKubeconfig === true
+    || Boolean(detectResult.value && kubeconfigPath)
+    || pasteResult.value?.relative === kubeconfigPath
+
+  // 手动证书 / token 模式才生成新 kubeconfig；已识别或粘贴的完整文件保持原样。
+  if (authMode.value !== 'kubeconfig' && !useExistingKubeconfig) {
     if (!certForm.server.trim()) {
       clusterTestResult.value = false
       clusterTestMsg.value = 'API Server 地址不能为空'
@@ -3488,7 +3555,16 @@ async function saveCluster() {
   } catch (e) {
     clusterTestResult.value = false
     clusterTestMsg.value = `保存集群失败：${e}`
-    return
+    return null
+  }
+
+  let connectionTest = null
+  if (options.testAfterSave === true) {
+    try {
+      connectionTest = await api.k8sTestCluster(saved.id)
+    } catch (e) {
+      connectionTest = { ok: false, error: e?.response?.data?.detail || e?.message || String(e) }
+    }
   }
   try {
     // 集群配置可能变了，清掉这个集群相关的缓存
@@ -3499,13 +3575,21 @@ async function saveCluster() {
     activeClusterId.value = saved.id
     activeNs.value = ''
     closeClusterModal()
+    if (connectionTest && !connectionTest.ok) {
+      clusterTestResult.value = false
+      clusterTestMsg.value = `${successMsg}，但连接测试失败：${connectionTest.error || '无法访问 Kubernetes API Server'}`
+      return saved
+    }
     await fetchAll({ force: true })
     clusterTestResult.value = true
-    clusterTestMsg.value = successMsg
+    clusterTestMsg.value = connectionTest?.ok
+      ? `${successMsg}，连接测试成功（${connectionTest.node_count || 0} 个节点）`
+      : successMsg
   } catch (e) {
     clusterTestResult.value = false
     clusterTestMsg.value = `${successMsg}，但资源加载失败：${e}`
   }
+  return saved
 }
 
 async function setDefaultCluster(cluster) {
@@ -4380,32 +4464,87 @@ onBeforeUnmount(() => { _destroyExec() })
 .btn-detect:disabled { opacity: .5; cursor: not-allowed; }
 .btn-detect.loading { opacity: .7; }
 
-/* 粘贴 kubeconfig 文本 */
-.paste-header {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 0; cursor: pointer;
-  color: var(--text-muted); font-size: 12px;
-  user-select: none;
+/* 粘贴完整 kubeconfig 快速导入 */
+.kubeconfig-quick-import {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(56,139,253,.42);
+  border-radius: 9px;
+  background: linear-gradient(135deg, rgba(56,139,253,.10), rgba(56,139,253,.03));
 }
-.paste-header:hover { color: var(--text-primary); }
-.paste-toggle { display: inline-block; width: 10px; font-size: 9px; }
-.paste-body {
-  margin-top: 6px;
-  display: flex; flex-direction: column; gap: 8px;
+.quick-import-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
-.paste-actions {
-  display: flex; align-items: center; gap: 10px;
+.quick-import-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.quick-import-heading strong { font-size: 14px; color: var(--text-primary); }
+.quick-import-heading > span { font-size: 11px; color: var(--text-muted); }
+.quick-import-recommended {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(63,185,80,.16);
+  border: 1px solid rgba(63,185,80,.35);
+  color: #3fb950;
+  font-size: 10px;
+}
+.quick-import-help {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.kubeconfig-paste-input {
+  min-height: 220px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.quick-import-security {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.quick-import-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(63,185,80,.08);
+  border: 1px solid rgba(63,185,80,.25);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.quick-import-preview span:first-child { color: #3fb950; font-weight: 600; }
+.quick-import-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
 }
-.paste-success {
-  color: var(--success, #3fb950);
-  font-size: 12px;
-}
-.paste-success em {
-  font-style: normal;
+.quick-import-actions > span { color: var(--text-muted); font-size: 11px; }
+.cluster-import-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   color: var(--text-muted);
-  font-family: monospace;
-  margin-left: 4px;
+  font-size: 11px;
+}
+.cluster-import-divider::before,
+.cluster-import-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 .paste-error {
   color: var(--error, #f85149);
