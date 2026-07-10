@@ -1608,6 +1608,21 @@ def _prioritize(procs: list[dict]) -> list[dict]:
     return combined[:15]
 
 
+async def _read_host_processes(
+    host: dict,
+    limit: int = 15,
+    prioritize_services: bool = True,
+) -> list[dict]:
+    """读取一台主机的进程快照，供 CMDB 页面和巡检日报复用。"""
+    async with await _ssh_run(host, _PROC_CMD, timeout=10) as conn:
+        result = await conn.run(_PROC_CMD, timeout=10)
+        raw = result.stdout or ""
+    processes = _parse_processes(raw)
+    if prioritize_services:
+        processes = _prioritize(processes)
+    return processes[:max(1, limit)]
+
+
 _JAVA_DIAG_DIR = REPORTS_DIR / "java_diagnostics"
 _JAVA_DIAG_DIR.mkdir(exist_ok=True)
 
@@ -1985,14 +2000,9 @@ async def get_host_processes(host_id: str):
     host = _get_host_or_404(host_id)
 
     try:
-        async with await _ssh_run(host, _PROC_CMD, timeout=10) as conn:
-            result = await conn.run(_PROC_CMD, timeout=10)
-            raw = result.stdout or ""
+        procs = await _read_host_processes(host, limit=15)
     except Exception as e:
         raise HTTPException(status_code=400, detail=_ssh_error_msg(e, host))
-
-    procs = _parse_processes(raw)
-    procs = _prioritize(procs)
 
     # 统计检测到的服务
     detected = sorted({p["service"] for p in procs if p["service"]})
@@ -2712,15 +2722,15 @@ async def export_inspect_excel(req: InspectExcelRequest):
 
         ws2 = wb.create_sheet("全部主机明细")
         headers2 = [
-            "状态", "主机名", "IP", "系统",
+            "分组", "状态", "服务器IP", "服务器", "主机名", "负责人", "机房",
             "CPU使用率(%)", "CPU核心", "内存使用率(%)", "内存总量(GB)",
             "负载1m", "负载5m", "负载15m", "运行时长",
-            "磁盘挂载", "磁盘使用率(%)", "磁盘容量(已用/总量GB)",
+            "磁盘具体占用",
             "网络入(MB/s)", "网络出(MB/s)", "磁盘读(MB/s)", "磁盘写(MB/s)",
-            "TCP连接", "TIME_WAIT", "异常项",
+            "TCP连接", "TIME_WAIT", "进程占用Top10", "异常项",
         ]
         header_row(ws2, headers2)
-        col_widths(ws2, [10, 18, 16, 22, 14, 10, 14, 14, 10, 10, 10, 14, 14, 14, 18, 14, 14, 14, 14, 12, 12, 36])
+        col_widths(ws2, [16, 10, 16, 18, 18, 14, 16, 14, 10, 14, 14, 10, 10, 10, 14, 44, 14, 14, 14, 14, 12, 12, 52, 36])
         ws2.row_dimensions[1].height = 22
 
         def fmt(v, decimals=1):
@@ -2775,6 +2785,21 @@ async def export_inspect_excel(req: InspectExcelRequest):
                 for c in abnormal
             )
 
+        def partitions_text(partitions: list[dict]) -> str:
+            return "\n".join(
+                f"{pt.get('mountpoint') or pt.get('mount') or '-'} "
+                f"{pt.get('usage_pct', pt.get('used_pct', '-'))}% "
+                f"({pt.get('used_gb', '-')}/{pt.get('total_gb', pt.get('size_gb', '-'))}GB)"
+                for pt in partitions or []
+            ) or "未采集"
+
+        def processes_text(processes: list[dict], error: str = "") -> str:
+            return "\n".join(
+                f"{idx}. {proc.get('service') or proc.get('comm') or '-'} "
+                f"CPU {proc.get('cpu', '-')}% / MEM {proc.get('mem', '-')}%"
+                for idx, proc in enumerate(processes or [], 1)
+            ) or error or "未采集"
+
         for ri, h in enumerate(results, 2):
             overall      = h.get("overall", "normal")
             status_label = STATUS_TEXT.get(overall, overall)
@@ -2785,20 +2810,21 @@ async def export_inspect_excel(req: InspectExcelRequest):
             disk_usage = disk.get("usage_pct", disk.get("used_pct")) if disk else None
 
             row_vals = [
-                status_label, h.get("hostname", "-"), h.get("ip", "-"), h.get("os", "-"),
+                h.get("group_name") or "未分组", status_label, h.get("ip", "-"),
+                h.get("role") or h.get("os") or "-", h.get("hostname", "-"),
+                h.get("owner") or "未配置", h.get("datacenter") or "未配置",
                 fmt(m.get("cpu_usage")), h.get("cpu_cores") or "-", fmt(m.get("mem_usage")), fmt(m.get("mem_total_gb") or h.get("memory_gb")),
                 fmt(m.get("load1")), fmt(m.get("load5")), fmt(m.get("load15")), uptime_text(m.get("uptime_seconds")),
-                (disk.get("mountpoint") or disk.get("mount") or "-") if disk else "-",
-                fmt(disk_usage),
-                disk_capacity_text(disk),
+                partitions_text(partitions),
                 fmt(m.get("net_recv_mbps")), fmt(m.get("net_send_mbps")), fmt(m.get("disk_read_mbps")), fmt(m.get("disk_write_mbps")),
                 m.get("tcp_estab") if m.get("tcp_estab") is not None else "-",
                 m.get("tcp_tw") if m.get("tcp_tw") is not None else "-",
+                processes_text(h.get("process_top10") or [], h.get("process_error") or ""),
                 issue_text(h.get("checks") or []),
             ]
             for ci, val in enumerate(row_vals, 1):
-                data_cell(ws2, ri, ci, val, overall if ci == 1 else None)
-            ws2.row_dimensions[ri].height = 16
+                data_cell(ws2, ri, ci, val, overall if ci == 2 else None)
+            ws2.row_dimensions[ri].height = max(30, min(150, 15 * max(len(partitions), len(h.get("process_top10") or []), 1)))
 
         ws2.freeze_panes = "A2"
 

@@ -33,7 +33,9 @@
           <button class="tab-btn" :class="{ active: tab === 'groups' }" @click="tab = 'groups'">
             分组管理 <span class="tab-count">{{ groups.length }}</span>
           </button>
-          <button class="tab-btn" :class="{ active: tab === 'ssh' }" @click="tab = 'ssh'">SSH 终端</button>
+          <button class="tab-btn" :class="{ active: tab === 'credentials' }" @click="tab = 'credentials'">
+            凭证管理 <span class="tab-count">{{ credentials.length }}</span>
+          </button>
         </div>
       </div>
       <div class="toolbar-right">
@@ -425,17 +427,102 @@
       </div>
     </div>
 
-    <!-- SSH 终端 -->
-    <div v-show="tab === 'ssh'" class="ssh-tab-wrap">
-      <KeepAlive>
-        <SSHTerminal
-          v-if="tab === 'ssh'"
-          :external-hosts="hosts"
-          :external-credentials="credentials"
-          :embedded="true"
-          @credentials-changed="loadCredentials"
-        />
-      </KeepAlive>
+    <!-- 凭证管理 -->
+    <div v-show="tab === 'credentials'" class="credentials-tab-wrap">
+      <div class="credential-panel">
+        <div class="credential-panel-head">
+          <div>
+            <div class="credential-panel-title">凭证管理录入</div>
+            <div class="credential-panel-sub">维护可复用的 SSH 凭证，主机录入、批量绑定、巡检同步会直接引用凭证库。</div>
+          </div>
+          <div class="credential-kpis">
+            <span>凭证 {{ credentials.length }}</span>
+            <span>已绑定主机 {{ credentialBoundHostCount }}</span>
+          </div>
+        </div>
+
+        <form class="credential-form-card" @submit.prevent="saveCredential">
+          <div class="credential-form-title">{{ credentialEditId ? '编辑凭证' : '新增凭证' }}</div>
+          <div class="credential-form-grid">
+            <div class="form-group required">
+              <label>凭证名称</label>
+              <input v-model="credentialForm.name" placeholder="生产环境 root" />
+            </div>
+            <div class="form-group required">
+              <label>用户名</label>
+              <input v-model="credentialForm.username" placeholder="root" />
+            </div>
+            <div class="form-group required">
+              <label>密码 <span class="form-hint">{{ credentialEditId ? '（留空保持不变）' : '' }}</span></label>
+              <input v-model="credentialForm.password" type="password" :placeholder="credentialEditId ? '留空不修改' : '请输入密码'" autocomplete="new-password" />
+            </div>
+            <div class="form-group credential-port-field">
+              <label>端口</label>
+              <input v-model.number="credentialForm.port" type="number" min="1" max="65535" />
+            </div>
+            <div class="credential-form-actions">
+              <button type="submit" class="btn btn-primary" :disabled="credentialSaving">
+                <span v-if="credentialSaving" class="spinner" style="width:13px;height:13px;border-width:2px"></span>
+                {{ credentialEditId ? '保存修改' : '新增凭证' }}
+              </button>
+              <button v-if="credentialEditId" type="button" class="btn btn-outline" @click="resetCredentialForm()">取消编辑</button>
+            </div>
+          </div>
+          <div v-if="credentialError" class="form-error">{{ credentialError }}</div>
+          <div v-if="credentialSuccess" class="import-result ok">{{ credentialSuccess }}</div>
+        </form>
+
+        <div class="credential-list-card">
+          <div class="credential-list-head">
+            <div>
+              <div class="credential-list-title">凭证列表</div>
+              <div class="credential-list-sub">删除已绑定凭证会同步清除主机上的凭证引用。</div>
+            </div>
+            <button class="btn btn-outline btn-xs" @click="loadCredentials">刷新凭证</button>
+          </div>
+          <div v-if="!credentials.length" class="empty-state credential-empty">
+            <span class="icon">🔑</span>
+            <p>暂无凭证<br><small style="color:var(--text-muted)">在上方录入第一条 SSH 凭证</small></p>
+          </div>
+          <div v-else class="credential-table-wrap">
+            <table class="credential-table">
+              <thead>
+                <tr>
+                  <th>凭证名称</th>
+                  <th>用户名</th>
+                  <th>端口</th>
+                  <th>绑定主机</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in credentials" :key="c.id">
+                  <td>
+                    <div class="credential-name-cell">
+                      <span class="credential-name">{{ c.name }}</span>
+                      <span class="credential-id">{{ c.id }}</span>
+                    </div>
+                  </td>
+                  <td>{{ c.username || 'root' }}</td>
+                  <td>{{ c.port || 22 }}</td>
+                  <td>
+                    <span class="credential-bind-count" :class="{ empty: credentialUsageCount(c.id) === 0 }">
+                      {{ credentialUsageCount(c.id) }} 台
+                    </span>
+                  </td>
+                  <td>
+                    <div class="credential-actions">
+                      <button class="btn btn-outline btn-xs" @click="editCredential(c)">编辑</button>
+                      <button class="btn btn-outline btn-xs" @click="openBatchWithCredential(c)">应用到主机</button>
+                      <button class="btn btn-danger btn-xs" @click="deleteCredential(c)">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
 
     </div><!-- /content-main -->
@@ -988,12 +1075,11 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, nextTick, defineAsyncComponent } from 'vue'
+import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { api } from '../api/index.js'
 
 const router = useRouter()
-const SSHTerminal = defineAsyncComponent(() => import('./SSHTerminal.vue'))
 
 // ── 数据 ─────────────────────────────────────────────────────────────────────
 const hosts       = ref([])
@@ -1079,9 +1165,11 @@ async function loadCredentials() {
 }
 
 onMounted(() => {
-  // 支持 URL ?tab=xxx 直接进入对应 tab（替代旧 /tools/ssh 路由）
+  // 支持 URL ?tab=xxx 直接进入对应 tab；旧 tab=ssh 映射到凭证管理。
   const q = router.currentRoute.value.query
-  if (q.tab && ['ssh', 'groups', 'cmdb', 'inspect'].includes(q.tab)) tab.value = q.tab
+  const routeTab = String(q.tab || '')
+  if (routeTab === 'ssh') tab.value = 'credentials'
+  else if (['credentials', 'groups', 'cmdb', 'inspect'].includes(routeTab)) tab.value = routeTab
   if (q.q) search.value = String(q.q)
   if (q.env) envFilter.value = String(q.env)
   if (q.group) groupFilter.value = String(q.group)
@@ -1172,7 +1260,7 @@ function batchApplyCredential() {
   showBatchCredModal.value = true
 }
 
-// 主 tab 刷新动作：每个 tab 调对应的加载函数，并联动凭据（SSH tab 也用）
+// 主 tab 刷新动作：每个 tab 调对应的加载函数，并联动凭据。
 function refreshActiveTab() {
   if (tab.value === 'cmdb') {
     loadHosts()
@@ -1183,7 +1271,7 @@ function refreshActiveTab() {
   } else if (tab.value === 'groups') {
     loadGroups()
     loadHosts()  // 分组上的「主机数」依赖最新 hosts
-  } else if (tab.value === 'ssh') {
+  } else if (tab.value === 'credentials') {
     loadHosts()
     loadCredentials()
   }
@@ -1282,6 +1370,120 @@ function credentialDisplay(host) {
     return `凭证库：${host.credential_name}（${username}@${port}）`
   }
   return `凭证库：${host.credential_id}`
+}
+
+// ── 凭证管理 ─────────────────────────────────────────────────────────────────
+const credentialEditId = ref('')
+const credentialSaving = ref(false)
+const credentialError = ref('')
+const credentialSuccess = ref('')
+const credentialForm = reactive({
+  name: '',
+  username: 'root',
+  password: '',
+  port: 22,
+})
+
+const credentialBoundHostCount = computed(() => hosts.value.filter(h => h.credential_id || h.ssh_saved).length)
+
+function credentialUsageCount(id) {
+  return hosts.value.filter(h => h.credential_id === id).length
+}
+
+function resetCredentialForm(clearMessage = true) {
+  credentialEditId.value = ''
+  Object.assign(credentialForm, { name: '', username: 'root', password: '', port: 22 })
+  if (clearMessage) {
+    credentialError.value = ''
+    credentialSuccess.value = ''
+  }
+}
+
+function editCredential(c) {
+  credentialEditId.value = c.id
+  Object.assign(credentialForm, {
+    name: c.name || '',
+    username: c.username || 'root',
+    password: '',
+    port: c.port || 22,
+  })
+  credentialError.value = ''
+  credentialSuccess.value = ''
+}
+
+function validateCredentialForm() {
+  const name = String(credentialForm.name || '').trim()
+  const username = String(credentialForm.username || '').trim()
+  const password = String(credentialForm.password || '')
+  const port = Number(credentialForm.port || 22)
+  if (!name) return '请输入凭证名称'
+  if (!username) return '请输入用户名'
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口必须是 1-65535 的整数'
+  if (!credentialEditId.value && !password) return '新增凭证时密码不能为空'
+  return ''
+}
+
+async function saveCredential() {
+  credentialError.value = ''
+  credentialSuccess.value = ''
+  const invalid = validateCredentialForm()
+  if (invalid) {
+    credentialError.value = invalid
+    return
+  }
+
+  credentialSaving.value = true
+  try {
+    const payload = {
+      name: String(credentialForm.name).trim(),
+      username: String(credentialForm.username).trim() || 'root',
+      password: credentialForm.password || '',
+      port: Number(credentialForm.port || 22),
+    }
+    if (credentialEditId.value) {
+      await api.updateCredential(credentialEditId.value, payload)
+      credentialSuccess.value = '凭证已更新'
+    } else {
+      await api.createCredential(payload)
+      credentialSuccess.value = '凭证已新增'
+    }
+    resetCredentialForm(false)
+    await loadCredentials()
+    await loadHosts()
+  } catch (e) {
+    credentialError.value = '保存凭证失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  } finally {
+    credentialSaving.value = false
+  }
+}
+
+async function deleteCredential(c) {
+  credentialError.value = ''
+  credentialSuccess.value = ''
+  const used = credentialUsageCount(c.id)
+  const tip = used ? `该凭证当前绑定 ${used} 台主机，删除后会清除这些主机的凭证引用。` : '该凭证当前未绑定主机。'
+  if (!confirm(`${tip}\n确定删除凭证「${c.name}」？`)) return
+  try {
+    await api.deleteCredential(c.id)
+    if (credentialEditId.value === c.id) resetCredentialForm(false)
+    credentialSuccess.value = '凭证已删除'
+    await loadCredentials()
+    await loadHosts()
+  } catch (e) {
+    credentialError.value = '删除凭证失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  }
+}
+
+function openBatchWithCredential(c) {
+  batchCredError.value = ''
+  batchCredResult.value = ''
+  batchCredForm.scope = selectedHostIds.value.size ? 'selected' : 'all'
+  batchCredForm.mode = 'credential'
+  batchCredForm.credential_id = c.id
+  batchCredForm.ssh_user = c.username || 'root'
+  batchCredForm.ssh_port = c.port || 22
+  batchCredForm.ssh_password = ''
+  showBatchCredModal.value = true
 }
 
 // ── 添加/编辑主机 ─────────────────────────────────────────────────────────────
@@ -2375,8 +2577,95 @@ async function deleteGroup(g) {
 .btn.danger { color: var(--error); border-color: var(--error); }
 .btn.danger:hover { background: rgba(189,86,79,.08); }
 .tab-btn.active .tab-count { background: var(--accent-soft); color: var(--accent); }
-.ssh-tab-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.ssh-tab-wrap > * { flex: 1; min-height: 0; }
+.credentials-tab-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.credential-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.credential-panel-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+.credential-panel-title { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.credential-panel-sub { margin-top: 3px; font-size: 12px; color: var(--text-muted); }
+.credential-kpis { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.credential-kpis span {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-faint, var(--border));
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.credential-form-card,
+.credential-list-card {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  padding: 12px;
+}
+.credential-form-title,
+.credential-list-title { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.credential-list-sub { margin-top: 2px; font-size: 11px; color: var(--text-muted); }
+.credential-form-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.5fr) minmax(140px, 1fr) minmax(180px, 1.4fr) 100px auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 10px;
+}
+.credential-port-field { min-width: 90px; }
+.credential-form-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.credential-list-card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.credential-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-shrink: 0; }
+.credential-table-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border-faint, var(--border)); border-radius: 8px; }
+.credential-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.credential-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-header);
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.credential-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-faint, var(--border)); white-space: nowrap; }
+.credential-table tbody tr:hover { background: var(--bg-hover); }
+.credential-name-cell { display: flex; flex-direction: column; gap: 2px; min-width: 180px; }
+.credential-name { font-weight: 600; color: var(--text-primary); }
+.credential-id { color: var(--text-muted); font-size: 11px; font-family: 'Cascadia Code','Consolas',monospace; }
+.credential-bind-count {
+  display: inline-flex;
+  min-width: 48px;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(63,185,80,.12);
+  color: var(--success);
+  font-size: 11px;
+}
+.credential-bind-count.empty { background: var(--bg-input); color: var(--text-muted); }
+.credential-actions { display: flex; align-items: center; gap: 6px; }
+.credential-empty { min-height: 220px; border: 1px dashed var(--border); border-radius: 8px; background: var(--bg-input); }
+@media (max-width: 1180px) {
+  .credential-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .credential-form-actions { justify-content: flex-start; }
+}
+@media (max-width: 720px) {
+  .credential-panel-head,
+  .credential-list-head { align-items: flex-start; flex-direction: column; }
+  .credential-kpis { justify-content: flex-start; }
+  .credential-form-grid { grid-template-columns: 1fr; }
+}
 .search-input { padding: 5px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 13px; width: 200px; }
 .filter-select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
 
