@@ -43,22 +43,23 @@ def _build_feishu_card(report: dict, keyword: str = "", report_url: str = "") ->
     """构造飞书交互卡片"""
     score = report.get("health_score", 0)
     title = report.get("title", "运维日报")
-    top10 = report.get("top10_errors", [])[:5]
+    service_summaries = report.get("service_error_summaries", [])[:8]
+    error_keywords = report.get("error_keywords", [])[:5]
+    interface_status = report.get("interface_status") or {}
     ai = report.get("ai_analysis", "") or ""
 
     # 指标行
     metrics = (
-        f"**总日志**: {report.get('total_logs', 0):,}  "
-        f"**错误数**: {report.get('total_errors', 0):,}  "
         f"**涉及服务**: {report.get('service_count', 0)}  "
-        f"**活跃告警**: {report.get('active_alerts', 0)}"
+        f"**节点**: {report.get('node_status', {}).get('normal', 0)} 正常 / "
+        f"{report.get('node_status', {}).get('abnormal', 0)} 异常  "
+        f"**接口监控**: {interface_status.get('status', '未采集')}"
     )
 
-    # Top 错误服务
-    top_lines = ""
-    if top10:
-        lines = [f"{i+1}. **{x['service']}** — {x['count']:,} 条" for i, x in enumerate(top10)]
-        top_lines = "\n".join(lines)
+    summary_lines = "\n".join(
+        f"- {item.get('summary', '')}" for item in service_summaries
+    )
+    keyword_line = "、".join(item.get("keyword", "") for item in error_keywords if item.get("keyword"))
 
     # 若配置了关键词且标题中未包含，在指标行前拼入（确保通过飞书关键词安全校验）
     header_content = f"{_health_emoji(score)} **健康评分**: {score}/100\n{metrics}"
@@ -75,11 +76,16 @@ def _build_feishu_card(report: dict, keyword: str = "", report_url: str = "") ->
         },
     ]
 
-    if top_lines:
+    if summary_lines:
         elements.append({"tag": "hr"})
         elements.append({
             "tag": "div",
-            "text": {"tag": "lark_md", "content": f"**🔥 错误 Top 5 服务**\n{top_lines}"},
+            "text": {"tag": "lark_md", "content": f"**微服务错误概括**\n{summary_lines}"},
+        })
+    if keyword_line:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**高频错误关键字**: {keyword_line}"},
         })
 
     if ai:
@@ -117,7 +123,9 @@ def _build_dingtalk_markdown(report: dict, keyword: str = "") -> dict:
     """构造钉钉 Markdown 消息。keyword 会插入消息首行确保通过关键词安全策略。"""
     score = report.get("health_score", 0)
     title = report.get("title", "运维日报")
-    top10 = report.get("top10_errors", [])[:5]
+    service_summaries = report.get("service_error_summaries", [])[:8]
+    error_keywords = report.get("error_keywords", [])[:5]
+    interface_status = report.get("interface_status") or {}
     ai = report.get("ai_analysis", "") or ""
 
     emoji = _health_emoji(score)
@@ -125,16 +133,16 @@ def _build_dingtalk_markdown(report: dict, keyword: str = "") -> dict:
         f"## {emoji} {title}",
         "",
         f"**健康评分**: {score}/100",
-        f"**总日志**: {report.get('total_logs', 0):,} &nbsp; "
-        f"**错误数**: {report.get('total_errors', 0):,} &nbsp; "
         f"**涉及服务**: {report.get('service_count', 0)} &nbsp; "
-        f"**活跃告警**: {report.get('active_alerts', 0)}",
+        f"**接口监控**: {interface_status.get('status', '未采集')}",
     ]
 
-    if top10:
-        lines += ["", "### 🔥 错误 Top 5 服务"]
-        for i, x in enumerate(top10):
-            lines.append(f"{i+1}. **{x['service']}** — {x['count']:,} 条")
+    if service_summaries:
+        lines += ["", "### 微服务错误一句话概括"]
+        lines += [f"- {item.get('summary', '')}" for item in service_summaries]
+    if error_keywords:
+        lines += ["", "### 高频错误关键字",
+                  "、".join(item.get("keyword", "") for item in error_keywords if item.get("keyword"))]
 
     if ai:
         summary = ai[:300].strip()

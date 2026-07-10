@@ -277,7 +277,9 @@ class AIAnalyzer:
                 f"{c.get('item', '未知项')}={c.get('value', '-')}" for c in bad_checks
             ) or "未发现明显异常"
             host_lines.append(
-                f"- {r.get('hostname') or r.get('instance')} ({r.get('ip', '-')}) "
+                f"- 分组={r.get('group_name') or '未分组'}；"
+                f"{r.get('hostname') or r.get('instance')} ({r.get('ip', '-')})；"
+                f"负责人={r.get('owner') or '未配置'}；机房={r.get('datacenter') or '未配置'} "
                 f"[{r.get('overall', 'normal')}]：{detail}"
             )
         if not host_lines:
@@ -307,16 +309,16 @@ class AIAnalyzer:
 {chr(10).join(host_lines)}
 
 请输出：
-1. 用 2-3 句话概括本次巡检整体健康状态
-2. 逐台列出每个异常主机的 IP 地址和具体问题，格式为：
-   - IP x.x.x.x（主机名）：[严重/警告] 问题描述（如：CPU 使用率 95%、磁盘 /data 使用率 92%）
-3. 列出 3-5 条最值得关注的问题（每条以"⚠️"开头，注明受影响的 IP 列表）
-4. 给出 2-4 条最优先的处置建议（每条以"✅"开头，注明需操作的 IP）
-5. 最后补充"未来24小时风险预测"
+1. 开头直接用 2-3 句话给出本次巡检结论，明确是否需要立即处置
+2. 按主机分组输出异常，先列含严重告警的组，再列警告组；同组内严重优先于警告
+3. 逐台列出异常主机的 IP、主机名、负责人、机房和具体问题
+4. 列出 3-5 条最值得关注的问题（每条以"⚠️"开头，注明受影响分组和 IP）
+5. 给出 2-4 条最优先的处置建议（每条以"✅"开头，注明负责人和需操作的 IP）
+6. 最后补充"未来24小时风险预测"
 
 要求：
 - 使用中文
-- 第2点必须明确列出每台异常主机的 IP，不能只写主机名
+- 异常清单必须明确列出每台异常主机的 IP，不能只写主机名
 - 结论具体，避免空话
 - 不要复述原始数据表格，直接给结论和动作建议
 """
@@ -339,47 +341,75 @@ class AIAnalyzer:
         node_status: dict,
         active_alerts: int,
         sample_errors: list[dict],
+        service_error_summaries: list[dict] | None = None,
+        error_keywords: list[dict] | None = None,
+        interface_status: dict | None = None,
     ) -> AsyncIterator[str]:
         """流式生成运维日报"""
-        top10 = list(error_counts.items())[:10]
-        top10_text = "\n".join(
-            f"  {i+1}. {svc}: {cnt} 条错误" for i, (svc, cnt) in enumerate(top10)
-        )
         total_errors = sum(error_counts.values())
         health_score = max(0, min(100, 100 - int(total_errors / max(total_logs, 1) * 200)))
 
+        summary_text = "\n".join(
+            f"- {item.get('summary', '')}"
+            for item in (service_error_summaries or [])
+        ) or "- 未发现需要概括的微服务错误。"
+        keyword_text = "\n".join(
+            f"- {item.get('keyword', '未知')}：高频出现，涉及 {', '.join(item.get('services') or []) or '未标记服务'}"
+            for item in (error_keywords or [])[:10]
+        ) or "- 暂无可统计的高频错误关键字。"
+
+        interface_status = interface_status or {}
+        interface_rows = interface_status.get("rows") or []
+        interface_text = "\n".join(
+            (
+                f"- [{row.get('status', 'unknown')}] "
+                f"{row.get('application', '-')} {row.get('method', '-')} {row.get('uri', '-')}："
+                f"5xx率 {row.get('error_ratio', 0)}%，P95 {row.get('p95_ms', 0)}ms"
+            )
+            for row in interface_rows[:10]
+        ) or "- 未采集到 http_server 接口指标，无法完成接口健康评估。"
+
         sample_text = "\n".join(
-            f"[{l['timestamp']}][{l['labels'].get('app', '?')}] {l['line'][:120]}"
-            for l in sample_errors[:30]
+            f"[{l.get('timestamp', '')}][{(l.get('labels') or {}).get('app', '?')}] {_log_line[:160]}"
+            for l in sample_errors[:20]
+            for _log_line in [str(l.get("line") or l.get("message") or "")]
         )
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         prompt = f"""你是一名资深运维工程师，请根据以下数据生成今日运维日报分析。
 
-=== 基础指标 ===
+=== 运行概况 ===
 报告时间: {now}
-总日志条数: {total_logs} 条
 涉及服务数: {service_count} 个
 节点状态: {node_status.get('normal', 0)} 正常 / {node_status.get('abnormal', 0)} 异常
 活跃告警: {active_alerts} 个
-错误日志总计: {total_errors} 条
 整体健康评分: {health_score}/100
 
-=== 错误 Top10 服务 ===
-{top10_text}
+=== 微服务错误一句话摘要（禁止改写为条数排名）===
+{summary_text}
 
-=== 错误样本 ===
+=== 高频错误关键字 ===
+{keyword_text}
+
+=== 接口监控评估数据 ===
+总体状态: {interface_status.get('status', 'unknown')}
+监控接口数: {interface_status.get('monitored_interfaces', 0)}
+异常接口数: {interface_status.get('abnormal_interfaces', 0)}
+{interface_text}
+
+=== 代表性错误样本（仅用于判断，不在结论中逐条复述）===
 {sample_text}
 
-请生成「AI 分析」部分，要求：
-1. 用 2-3 句话总结当前系统整体状态
-2. 列出 3-5 个最值得关注的问题（每条用 ⚠️ 开头）
-3. 给出今日最重要的 2-3 条运维建议（每条用 ✅ 开头）
-4. 预测若不处理，可能在未来 24 小时出现的风险
+请直接生成「AI 运维结论」，要求：
+1. 第一段用 2-3 句话给出整体结论，先说是否需要立即处置
+2. 每个有错误的微服务只用一句话概括错误模式与影响，不写错误日志条数
+3. 汇总高频错误关键字，并说明它们指向的共同风险
+4. 单独给出接口监控状况评估，明确异常接口、5xx 风险和延迟风险；无指标时明确说明
+5. 给出 2-4 条按优先级排序的处置建议（每条用 ✅ 开头）
 
-语言简洁、专业，使用中文。"""
+语言简洁、专业，使用中文。禁止输出“某服务有 N 条错误”这类条数陈述。"""
 
-        async for chunk in self._observed_stream(prompt, max_tokens=1500, op="daily_report"):
+        async for chunk in self._observed_stream(prompt, max_tokens=1800, op="daily_report"):
             yield chunk
 
     async def generate_host_inspect_report(

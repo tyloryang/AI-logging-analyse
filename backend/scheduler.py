@@ -38,6 +38,9 @@ async def _build_and_save_report() -> dict:
         node_status=data["node_status"],
         active_alerts=data["active_alerts"],
         sample_errors=data["error_logs"],
+        service_error_summaries=data["service_error_summaries"],
+        error_keywords=data["error_keywords"],
+        interface_status=data["interface_status"],
     ):
         ai_parts.append(chunk)
     report["ai_analysis"] = "".join(ai_parts)

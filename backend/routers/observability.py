@@ -1346,11 +1346,22 @@ async def query_prometheus_range(body: PrometheusRangeQueryIn):
 async def prometheus_label_values(
     label: str,
     limit: int = Query(200, ge=1, le=5000),
+    query: str = Query("", max_length=2000),
 ):
+    label_name = _validate_label_name(label)
+    query_text = str(query or "").strip()
     try:
-        values = await prom.label_values(label, timeout=15)
+        if query_text:
+            result = await prom.query_instant(query_text, timeout=20)
+            values = sorted({
+                str(item.get("metric", {}).get(label_name) or "")
+                for item in result
+                if item.get("metric", {}).get(label_name)
+            })
+        else:
+            values = await prom.label_values(label_name, timeout=15)
         values = sorted(values)
-        return {"label": label, "data": values[:limit], "total": len(values)}
+        return {"label": label_name, "query": query_text, "data": values[:limit], "total": len(values)}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -1612,9 +1623,100 @@ _METRIC_PANEL_SEEDS = [
 
 class MetricPanelsPayload(BaseModel):
     charts: list[dict] = []
+    dashboards: list[dict] = []
+    active_dashboard_id: str = ""
     range_minutes: int = 60
     step: int = 60
     refresh_seconds: int = 0
+
+
+def _sanitize_metric_chart(item: dict, index: int) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    query = str(item.get("query") or "").strip()
+    if not query:
+        return None
+    return {
+        "id": str(item.get("id") or f"chart-{index}")[:80],
+        "title": str(item.get("title") or "未命名图表")[:80],
+        "query": query[:2000],
+        "unit": str(item.get("unit") or "")[:20],
+        "width": item.get("width") if item.get("width") in ("half", "full") else "half",
+    }
+
+
+def _sanitize_metric_variable(item: dict, index: int) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name") or "").strip()[:40]
+    label = str(item.get("label") or "").strip()[:80]
+    if not name or not label:
+        return None
+    values = item.get("values") if isinstance(item.get("values"), list) else []
+    return {
+        "id": str(item.get("id") or f"var-{index}")[:80],
+        "name": name,
+        "label": label,
+        "query": str(item.get("query") or "").strip()[:2000],
+        "value": str(item.get("value") or "")[:500],
+        "values": [str(value)[:500] for value in values[:5000] if str(value)],
+    }
+
+
+def _sanitize_metric_dashboard(item: dict, index: int, fallback_charts: list[dict] | None = None) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    raw_charts = item.get("charts") if isinstance(item.get("charts"), list) else (fallback_charts or [])
+    charts = []
+    for chart_index, chart in enumerate(raw_charts[:60]):
+        cleaned = _sanitize_metric_chart(chart, chart_index)
+        if cleaned:
+            charts.append(cleaned)
+    variables = []
+    raw_variables = item.get("variables") if isinstance(item.get("variables"), list) else []
+    seen_names: set[str] = set()
+    for var_index, variable in enumerate(raw_variables[:30]):
+        cleaned = _sanitize_metric_variable(variable, var_index)
+        if cleaned and cleaned["name"] not in seen_names:
+            variables.append(cleaned)
+            seen_names.add(cleaned["name"])
+    return {
+        "id": str(item.get("id") or f"dashboard-{index}")[:80],
+        "name": str(item.get("name") or ("默认" if index == 0 else f"页签 {index + 1}"))[:50],
+        "variables": variables,
+        "charts": charts,
+    }
+
+
+def _normalize_metric_panels_data(data: dict) -> dict:
+    raw_charts = data.get("charts") if isinstance(data.get("charts"), list) else _METRIC_PANEL_SEEDS
+    raw_dashboards = data.get("dashboards") if isinstance(data.get("dashboards"), list) else []
+    dashboards = []
+    if raw_dashboards:
+        for index, dashboard in enumerate(raw_dashboards[:20]):
+            cleaned = _sanitize_metric_dashboard(dashboard, index)
+            if cleaned:
+                dashboards.append(cleaned)
+    if not dashboards:
+        default_dashboard = _sanitize_metric_dashboard(
+            {"id": "default", "name": "默认", "variables": [], "charts": raw_charts},
+            0,
+            raw_charts,
+        )
+        if default_dashboard:
+            dashboards.append(default_dashboard)
+    active_dashboard_id = str(data.get("active_dashboard_id") or "")
+    if not any(item["id"] == active_dashboard_id for item in dashboards):
+        active_dashboard_id = dashboards[0]["id"] if dashboards else "default"
+    active_charts = next((item["charts"] for item in dashboards if item["id"] == active_dashboard_id), [])
+    return {
+        "charts": active_charts,
+        "dashboards": dashboards,
+        "active_dashboard_id": active_dashboard_id,
+        "range_minutes": max(5, min(int(data.get("range_minutes") or 60), 7 * 24 * 60)),
+        "step": max(10, min(int(data.get("step") or 60), 3600)),
+        "refresh_seconds": max(0, min(int(data.get("refresh_seconds") or 0), 3600)),
+    }
 
 
 @router.get("/metric-panels")
@@ -1623,31 +1725,23 @@ async def get_metric_panels():
     if not isinstance(data, dict) or not isinstance(data.get("charts"), list):
         data = {"charts": _METRIC_PANEL_SEEDS, "range_minutes": 60, "step": 60, "refresh_seconds": 0}
         write_json_file(_METRIC_PANELS_FILE, data, ensure_parent=True)
-    return data
+    normalized = _normalize_metric_panels_data(data)
+    if normalized != data:
+        write_json_file(_METRIC_PANELS_FILE, normalized, ensure_parent=True)
+    return normalized
 
 
 @router.put("/metric-panels")
 async def save_metric_panels(body: MetricPanelsPayload):
-    charts = []
-    for item in body.charts[:60]:
-        if not isinstance(item, dict):
-            continue
-        query = str(item.get("query") or "").strip()
-        if not query:
-            continue
-        charts.append({
-            "id": str(item.get("id") or f"chart-{len(charts)}"),
-            "title": str(item.get("title") or "未命名图表")[:80],
-            "query": query[:2000],
-            "unit": str(item.get("unit") or "")[:20],
-            "width": item.get("width") if item.get("width") in ("half", "full") else "half",
-        })
-    data = {
-        "charts": charts,
+    raw_data = {
+        "charts": body.charts,
+        "dashboards": body.dashboards,
+        "active_dashboard_id": body.active_dashboard_id,
         "range_minutes": max(5, min(int(body.range_minutes or 60), 7 * 24 * 60)),
         "step": max(10, min(int(body.step or 60), 3600)),
         "refresh_seconds": max(0, min(int(body.refresh_seconds or 0), 3600)),
     }
+    data = _normalize_metric_panels_data(raw_data)
     write_json_file(_METRIC_PANELS_FILE, data, ensure_parent=True)
     return data
 

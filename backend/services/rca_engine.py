@@ -89,6 +89,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _text_or_empty(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
@@ -341,6 +345,11 @@ def create_pending_rca(
     source_name: str = "",
     source_labels: dict[str, str] | None = None,
 ) -> dict:
+    alert_name = _text_or_empty(alert_name)
+    extra_context = _text_or_empty(extra_context)
+    source_type = _text_or_empty(source_type) or "manual"
+    source_id = _text_or_empty(source_id)
+    source_name = _text_or_empty(source_name)
     rca_id = f"rca_{int(time.time() * 1000)}"
     now = _now_iso()
     record = {
@@ -987,6 +996,8 @@ async def collect_context(
     inspection_summary: dict | None = None,
     inspection_results: list[dict] | None = None,
 ) -> dict[str, dict]:
+    alert_name = _text_or_empty(alert_name)
+    extra_context = _text_or_empty(extra_context)
     labels = source_labels or {}
 
     loki_task = _collect_loki(service, hours, labels)
@@ -1047,9 +1058,9 @@ async def collect_context(
 
 def _collect_signal_text(record: dict) -> str:
     parts = [
-        record.get("service"),
-        record.get("alert_name"),
-        record.get("extra_context"),
+        _text_or_empty(record.get("service")),
+        _text_or_empty(record.get("alert_name")),
+        _text_or_empty(record.get("extra_context")),
     ]
     context = record.get("context", {}) or {}
     for value in context.values():
@@ -1060,7 +1071,7 @@ def _collect_signal_text(record: dict) -> str:
             parts.append(str(item))
         for item in value.get("context_items", [])[:4]:
             parts.append(str(item))
-    return " ".join(parts).lower()
+    return " ".join(parts).strip().lower()
 
 
 def _metric_value(context: dict, key: str) -> float:
@@ -1293,6 +1304,8 @@ async def analyze_stream(
     extra_context: str = "",
 ) -> AsyncIterator[str]:
     """Compatibility stream API. The new UI uses async trigger + polling."""
+    alert_name = _text_or_empty(alert_name)
+    extra_context = _text_or_empty(extra_context)
     record = await run_rca(
         service=service,
         alert_name=alert_name,
@@ -1321,6 +1334,11 @@ async def run_rca(
     existing_id: str | None = None,
 ) -> str:
     """Run full RCA and persist a structured RCA run."""
+    alert_name = _text_or_empty(alert_name)
+    extra_context = _text_or_empty(extra_context)
+    source_type = _text_or_empty(source_type) or "manual"
+    source_id = _text_or_empty(source_id)
+    source_name = _text_or_empty(source_name)
     record = get_rca(existing_id) if existing_id else None
     if not record:
         record = create_pending_rca(

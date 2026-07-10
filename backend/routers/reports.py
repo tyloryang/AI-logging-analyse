@@ -5,6 +5,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -24,11 +25,40 @@ from state import (
     load_groups, load_cmdb,
 )
 from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
-from report_builder import collect_inspect_data, build_inspect_meta
+from report_builder import collect_daily_data, collect_inspect_data, build_inspect_meta
 from report_store import save_report_meta, list_report_meta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _slowlog_ai_timeout_seconds() -> int:
+    try:
+        return max(30, int(os.getenv("SLOWLOG_AI_TIMEOUT_SECONDS", "120")))
+    except (TypeError, ValueError):
+        return 120
+
+
+async def _stream_ai_with_timeout(prompt: str, *, max_tokens: int, timeout_seconds: int):
+    iterator = analyzer.provider.stream(prompt, max_tokens=max_tokens).__aiter__()
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    try:
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                break
+            yield chunk
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if close:
+            try:
+                await close()
+            except Exception:
+                pass
 
 
 def _read_report_json(path):
@@ -57,57 +87,25 @@ class ReportMeta(BaseModel):
 async def generate_report():
     """触发生成运维日报，流式返回 AI 分析内容"""
     try:
-        error_counts = await loki.count_errors_by_service(hours=24)
-        error_logs   = await loki.query_error_logs(hours=24, limit=1000)
+        data = await collect_daily_data()
+        meta = data["meta"]
 
-        services          = await loki.get_services()
-        total_error_count = sum(error_counts.values())
-        total_logs        = total_error_count * 8   # Loki 无法廉价地统计总量，以错误数估算
-        active_alerts     = len(error_counts)       # 有错误的服务数
-
-        try:
-            hosts       = await prom.discover_hosts()
-            node_normal = sum(1 for h in hosts if h.get("state") == "up")
-            node_status = {"normal": node_normal, "abnormal": len(hosts) - node_normal}
-        except Exception:
-            node_status = {"normal": 0, "abnormal": 0}
-
-        health_score = await analyzer.calculate_health_score(
-            total_logs, total_error_count, active_alerts, node_status["abnormal"]
-        )
-
-        now       = datetime.now(timezone.utc)
-        report_id = now.strftime("%Y%m%d%H%M%S")
-
-        meta = {
-            "id":            report_id,
-            "title":         f"运维日报 {now.strftime('%Y-%m-%d')}",
-            "created_at":    now.isoformat(),
-            "health_score":  health_score,
-            "total_logs":    total_logs,
-            "total_errors":  total_error_count,
-            "service_count": len(services),
-            "active_alerts": active_alerts,
-            "node_status":   node_status,
-            "top10_errors":  [
-                {"service": k, "count": v}
-                for k, v in list(error_counts.items())[:10]
-            ],
-        }
-
-        report_path    = REPORTS_DIR / f"{report_id}.json"
+        report_path    = REPORTS_DIR / f"{meta['id']}.json"
         ai_content_parts: list[str] = []
 
         async def generate():
             yield f"data: __META__{json.dumps(meta, ensure_ascii=False)}\n\n"
             try:
                 async for chunk in analyzer.generate_daily_report(
-                    error_counts=error_counts,
-                    total_logs=total_logs,
-                    service_count=len(services),
-                    node_status=node_status,
-                    active_alerts=active_alerts,
-                    sample_errors=error_logs,
+                    error_counts=data["error_counts"],
+                    total_logs=data["total_logs"],
+                    service_count=data["service_count"],
+                    node_status=data["node_status"],
+                    active_alerts=data["active_alerts"],
+                    sample_errors=data["error_logs"],
+                    service_error_summaries=data["service_error_summaries"],
+                    error_keywords=data["error_keywords"],
+                    interface_status=data["interface_status"],
                 ):
                     ai_content_parts.append(chunk)
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -663,15 +661,15 @@ async def download_inspect_report_excel(report_id: str):
         # Sheet 2: 全部主机明细
         ws2 = wb.create_sheet("全部主机明细")
         headers2 = [
-            "状态", "主机名", "IP", "系统",
+            "分组", "状态", "服务器IP", "服务器", "主机名", "负责人", "机房",
             "CPU使用率(%)", "CPU核心", "内存使用率(%)", "内存总量(GB)",
             "负载1m", "负载5m", "负载15m", "运行时长",
-            "磁盘挂载", "磁盘使用率(%)", "磁盘容量(已用/总量GB)",
+            "磁盘具体占用",
             "网络入(MB/s)", "网络出(MB/s)", "磁盘读(MB/s)", "磁盘写(MB/s)",
-            "TCP连接", "TIME_WAIT", "异常项",
+            "TCP连接", "TIME_WAIT", "进程占用Top10", "异常项",
         ]
         write_header_row(ws2, headers2)
-        set_col_widths(ws2, [10, 18, 16, 22, 14, 10, 14, 14, 10, 10, 10, 14, 14, 14, 18, 14, 14, 14, 14, 12, 12, 36])
+        set_col_widths(ws2, [16, 10, 16, 18, 18, 14, 16, 14, 10, 14, 14, 10, 10, 10, 14, 44, 14, 14, 14, 14, 12, 12, 52, 36])
         ws2.row_dimensions[1].height = 22
 
         def fmt(v, decimals=1):
@@ -726,6 +724,21 @@ async def download_inspect_report_excel(report_id: str):
                 for c in abnormal
             )
 
+        def partitions_text(partitions: list[dict]) -> str:
+            return "\n".join(
+                f"{pt.get('mountpoint') or pt.get('mount') or '-'} "
+                f"{pt.get('usage_pct', pt.get('used_pct', '-'))}% "
+                f"({pt.get('used_gb', '-')}/{pt.get('total_gb', pt.get('size_gb', '-'))}GB)"
+                for pt in partitions or []
+            ) or "未采集"
+
+        def processes_text(processes: list[dict], error: str = "") -> str:
+            return "\n".join(
+                f"{idx}. {proc.get('service') or proc.get('comm') or '-'} "
+                f"CPU {proc.get('cpu', '-')}% / MEM {proc.get('mem', '-')}%"
+                for idx, proc in enumerate(processes or [], 1)
+            ) or error or "未采集"
+
         for ri, h in enumerate(all_hosts, 2):
             overall      = h.get("overall", "normal")
             status_label = STATUS_TEXT.get(overall, overall)
@@ -735,21 +748,22 @@ async def download_inspect_report_excel(report_id: str):
             disk_usage = disk.get("usage_pct", disk.get("used_pct")) if disk else None
 
             row_vals = [
-                status_label, h.get("hostname", "-"), h.get("ip", "-"), h.get("os", "-"),
+                h.get("group_name") or "未分组", status_label, h.get("ip", "-"),
+                h.get("role") or h.get("os") or "-", h.get("hostname", "-"),
+                h.get("owner") or "未配置", h.get("datacenter") or "未配置",
                 fmt(h.get("cpu_pct")), h.get("cpu_cores") or "-", fmt(h.get("mem_pct")), fmt(h.get("mem_total")),
                 fmt(h.get("load1")), fmt(h.get("load5")), fmt(h.get("load15")), uptime_text(h.get("uptime_s")),
-                (disk.get("mountpoint") or disk.get("mount") or "-") if disk else "-",
-                fmt(disk_usage),
-                disk_capacity_text(disk),
+                partitions_text(partitions),
                 fmt(h.get("net_recv")), fmt(h.get("net_send")), fmt(h.get("disk_read")), fmt(h.get("disk_write")),
                 h.get("tcp_estab") if h.get("tcp_estab") is not None else "-",
                 h.get("tcp_tw") if h.get("tcp_tw") is not None else "-",
+                processes_text(h.get("process_top10") or [], h.get("process_error") or ""),
                 issue_text(h.get("checks") or []),
             ]
             for ci, val in enumerate(row_vals, 1):
-                st = overall if ci == 1 else None
+                st = overall if ci == 2 else None
                 write_data_cell(ws2, ri, ci, val, st)
-            ws2.row_dimensions[ri].height = 16
+            ws2.row_dimensions[ri].height = max(30, min(150, 15 * max(len(partitions), len(h.get("process_top10") or []), 1)))
 
         ws2.freeze_panes = "A2"
 
@@ -822,13 +836,50 @@ async def export_report_html(report_id: str):
     )
 
 
+@router.get("/api/report/{report_id}/export.pdf")
+async def export_report_pdf(report_id: str):
+    """报告直接导出 PDF（reportlab 生成，支持运维日报/主机巡检/慢日志三类）。"""
+    import asyncio
+
+    p = REPORTS_DIR / f"{report_id}.json"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    data = _read_report_json(p)
+    if not data:
+        raise HTTPException(status_code=404, detail="报告内容不存在")
+
+    from services.report_pdf import build_report_pdf
+    try:
+        # reportlab 是纯 CPU 同步渲染，放线程池避免阻塞事件循环
+        pdf_bytes = await asyncio.to_thread(build_report_pdf, data)
+    except Exception as exc:
+        logger.exception("[report] PDF 导出失败 %s", report_id)
+        raise HTTPException(status_code=500, detail=f"PDF 生成失败: {exc}")
+
+    encoded = quote(f"{data.get('title', report_id)}.pdf")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename*=UTF-8\'\'{encoded}'},
+    )
+
+
 def _render_report_html(data: dict) -> str:
     title       = data.get("title", "运维报告")
     created_at  = data.get("created_at", "")[:19].replace("T", " ")
     score       = data.get("health_score", "-")
-    score_color = "#22c55e" if int(score or 0) >= 80 else ("#f59e0b" if int(score or 0) >= 60 else "#ef4444")
+    try:
+        score_value = int(score)
+    except (TypeError, ValueError):
+        score_value = 0
+    score_color = "#22c55e" if score_value >= 80 else ("#f59e0b" if score_value >= 60 else "#ef4444")
     ai_text     = data.get("ai_analysis", "（暂无 AI 分析）")
     report_type = data.get("type", "daily")
+    report_type_label = {
+        "daily": "运维日报",
+        "inspect": "主机巡检日报",
+        "slowlog": "MySQL 慢日志报告",
+    }.get(report_type, "分析报告")
 
     # 转义 HTML 特殊字符
     def esc(s): return str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -844,20 +895,9 @@ def _render_report_html(data: dict) -> str:
             out.append(f'<p>{ln}</p>' if not ln.startswith('<h4>') else ln)
         return "\n".join(out)
 
-    # top10 错误表格
-    top10 = data.get("top10_errors", [])
-    top10_rows = "".join(
-        f"<tr><td>{esc(r.get('service',''))}</td><td style='text-align:right'>{esc(r.get('count',''))}</td></tr>"
-        for r in top10
-    )
-    top10_block = f"""
-    <h3>Top 错误服务</h3>
-    <table><thead><tr><th>服务</th><th>错误数</th></tr></thead>
-    <tbody>{top10_rows}</tbody></table>""" if top10 else ""
-
     # 节点状态 / 巡检状态
     node = data.get("node_status", {})
-    summary = data.get("summary", {})
+    summary = data.get("host_summary") or data.get("summary", {})
     stats_block = ""
     if node or summary:
         items = []
@@ -871,6 +911,106 @@ def _render_report_html(data: dict) -> str:
         stats_block = "<div class='stats-row'>" + "".join(
             f"<div class='stat-card'>{esc(i)}</div>" for i in items
         ) + "</div>"
+
+    detail_block = ""
+    if report_type == "daily":
+        service_rows = "".join(
+            "<tr>"
+            f"<td>{esc(item.get('service', '-'))}</td>"
+            f"<td>{esc('、'.join(item.get('keywords') or []) or '样本不足')}</td>"
+            f"<td>{esc(item.get('summary', '-'))}</td>"
+            "</tr>"
+            for item in data.get("service_error_summaries") or []
+        )
+        keyword_rows = "".join(
+            "<tr>"
+            f"<td>{esc(item.get('keyword', '-'))}</td>"
+            f"<td>{esc(item.get('count', 0))}</td>"
+            f"<td>{esc('、'.join(item.get('services') or []) or '-')}</td>"
+            "</tr>"
+            for item in data.get("error_keywords") or []
+        )
+        interface = data.get("interface_status") or {}
+        interface_rows = "".join(
+            "<tr>"
+            f"<td>{esc(row.get('status', '-'))}</td>"
+            f"<td>{esc(row.get('application', '-'))}</td>"
+            f"<td>{esc(row.get('method', '-'))}</td>"
+            f"<td>{esc(row.get('uri', '-'))}</td>"
+            f"<td>{esc(row.get('error_ratio', 0))}%</td>"
+            f"<td>{esc(row.get('p95_ms', 0))}ms</td>"
+            "</tr>"
+            for row in interface.get("rows") or []
+        )
+        detail_block = f"""
+        <h2>第二部分 · 微服务错误一句话概括</h2>
+        <table><thead><tr><th>微服务</th><th>错误关键字</th><th>一句话结论</th></tr></thead>
+        <tbody>{service_rows or '<tr><td colspan="3">未发现微服务错误</td></tr>'}</tbody></table>
+        <h2>第三部分 · 高频错误关键字</h2>
+        <table><thead><tr><th>关键字</th><th>样本频次</th><th>涉及服务</th></tr></thead>
+        <tbody>{keyword_rows or '<tr><td colspan="3">暂无可统计关键字</td></tr>'}</tbody></table>
+        <h2>第四部分 · 接口监控状况评估</h2>
+        <table><thead><tr><th>状态</th><th>应用</th><th>方法</th><th>接口</th><th>5xx率</th><th>P95</th></tr></thead>
+        <tbody>{interface_rows or '<tr><td colspan="6">未采集到 http_server 接口指标</td></tr>'}</tbody></table>
+        """
+    elif report_type == "inspect":
+        sections = data.get("group_sections") or [{
+            "group_name": data.get("group_name") or "全部主机",
+            "hosts": data.get("all_hosts") or [],
+        }]
+        section_html = []
+        for group in sections:
+            rows = []
+            for host in group.get("hosts") or []:
+                disks = "；".join(
+                    f"{p.get('mountpoint') or p.get('mount') or '-'} "
+                    f"{p.get('usage_pct', p.get('used_pct', '-'))}% "
+                    f"({p.get('used_gb', '-')}/{p.get('total_gb', p.get('size_gb', '-'))}GB)"
+                    for p in host.get("partitions") or []
+                ) or "未采集"
+                processes = "；".join(
+                    f"{i}. {proc.get('service') or proc.get('comm') or '-'} "
+                    f"CPU {proc.get('cpu', '-')}%/MEM {proc.get('mem', '-')}%"
+                    for i, proc in enumerate(host.get("process_top10") or [], 1)
+                ) or host.get("process_error") or "未采集"
+                rows.append(
+                    "<tr>"
+                    f"<td>{esc(host.get('overall', '-'))}</td><td>{esc(host.get('ip', '-'))}</td>"
+                    f"<td>{esc(host.get('role') or host.get('os') or '-')}</td>"
+                    f"<td>{esc(host.get('hostname', '-'))}</td>"
+                    f"<td>{esc(host.get('cpu_pct', '-'))}%</td><td>{esc(host.get('mem_pct', '-'))}%</td>"
+                    f"<td>{esc(disks)}</td><td>{esc(processes)}</td>"
+                    f"<td>{esc(host.get('owner') or '未配置')}</td>"
+                    f"<td>{esc(host.get('datacenter') or '未配置')}</td>"
+                    "</tr>"
+                )
+            section_html.append(
+                f"<h3>{esc(group.get('group_name', '未分组'))}（{len(group.get('hosts') or [])} 台，告警优先）</h3>"
+                "<div class='table-scroll'><table><thead><tr>"
+                "<th>状态</th><th>服务器IP</th><th>服务器</th><th>主机名</th><th>CPU</th><th>内存</th>"
+                "<th>磁盘具体占用</th><th>进程占用Top10</th><th>负责人</th><th>机房</th>"
+                f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+            )
+        detail_block = "<h2>第二部分 · 按组分类主机巡检明细</h2>" + "".join(section_html)
+    elif report_type == "slowlog":
+        slow_rows = "".join(
+            "<tr>"
+            f"<td>{esc(i)}</td><td>{esc(row.get('host_ip', '-'))}</td>"
+            f"<td>{esc(row.get('query_time', 0))}s</td>"
+            f"<td>{esc(row.get('rows_examined', 0))}</td><td>{esc(row.get('sql_brief', '-'))}</td>"
+            "</tr>"
+            for i, row in enumerate(data.get("top_slow") or [], 1)
+        )
+        detail_block = f"""
+        <h2>慢日志分析结果</h2>
+        <div class="stats-row"><div class="stat-card">分析时段: {esc(data.get('date_from', '-'))} ~ {esc(data.get('date_to', '-'))}</div>
+        <div class="stat-card">慢查询: {esc(data.get('total_queries', 0))}</div>
+        <div class="stat-card">高耗时告警: {esc(data.get('alert_queries', 0))}</div>
+        <div class="stat-card">最大耗时: {esc(data.get('max_query_time', 0))}s</div></div>
+        <h3>Top 10 最慢查询</h3>
+        <table><thead><tr><th>#</th><th>主机IP</th><th>耗时</th><th>扫描行</th><th>SQL摘要</th></tr></thead>
+        <tbody>{slow_rows or '<tr><td colspan="5">未发现慢查询</td></tr>'}</tbody></table>
+        """
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -905,6 +1045,8 @@ def _render_report_html(data: dict) -> str:
         border-bottom: 2px solid #bfdbfe; }}
   td {{ padding: 7px 12px; border-bottom: 1px solid #f3f4f6; }}
   tr:nth-child(even) td {{ background: #f9fafb; }}
+  .table-scroll {{ width: 100%; overflow-x: auto; }}
+  .table-scroll table {{ min-width: 1300px; }}
   .footer {{ margin-top: 32px; padding-top: 12px; border-top: 1px solid #e5e7eb;
              color: #9ca3af; font-size: 11px; text-align: center; }}
   @media print {{
@@ -924,21 +1066,21 @@ def _render_report_html(data: dict) -> str:
 </div>
 
 <h1>{esc(title)}</h1>
-<div class="meta">生成时间：{esc(created_at)} &nbsp;·&nbsp; 报告类型：{"运维日报" if report_type == "daily" else "主机巡检"}</div>
+<div class="meta">生成时间：{esc(created_at)} &nbsp;·&nbsp; 报告类型：{report_type_label}</div>
 
 <div class="kv-grid">
   <div class="kv-card"><div class="val"><span class="score-badge">{esc(score)}</span></div><div class="lbl">健康评分</div></div>
-  <div class="kv-card"><div class="val">{esc(data.get("total_errors", 0))}</div><div class="lbl">错误总数</div></div>
-  <div class="kv-card"><div class="val">{esc(data.get("service_count", 0))}</div><div class="lbl">服务数</div></div>
-  <div class="kv-card"><div class="val">{esc(data.get("active_alerts", 0))}</div><div class="lbl">告警数</div></div>
+  <div class="kv-card"><div class="val">{esc(data.get("service_count", data.get("hosts_count", summary.get("total", 0))))}</div><div class="lbl">覆盖对象</div></div>
+  <div class="kv-card"><div class="val">{esc(data.get("active_alerts", data.get("alert_queries", summary.get("warning", 0))))}</div><div class="lbl">需关注</div></div>
+  <div class="kv-card"><div class="val">{esc((data.get("interface_status") or {}).get("status", data.get("max_query_time", summary.get("critical", "-"))))}</div><div class="lbl">关键状态</div></div>
 </div>
 
 {stats_block}
 
-<h2>AI 分析摘要</h2>
+<h2>第一部分 · AI 结论</h2>
 <div class="ai-section">{md2html(esc(ai_text))}</div>
 
-{top10_block}
+{detail_block}
 
 <div class="footer">由 AIOps 智能运维平台生成 · {esc(created_at)}</div>
 </body>
@@ -1070,29 +1212,49 @@ async def generate_slowlog_report():
             return
 
         meta = {k: v for k, v in data.items() if not k.startswith("_")}
+        report_path = REPORTS_DIR / f"{meta['id']}.json"
+        initial_report = {
+            **meta,
+            "ai_analysis": "AI 分析生成中，基础慢日志统计已保存。",
+        }
+        _write_report_json(report_path, initial_report)
+        await save_report_meta(initial_report)
         yield f"data: __META__{json.dumps(meta, ensure_ascii=False)}\n\n"
 
         if not data.get("_all_entries"):
             meta["ai_analysis"] = "未找到满足条件的慢查询记录，请检查目标主机、日志路径及时间范围配置。"
-            _write_report_json(REPORTS_DIR / f"{meta['id']}.json", meta)
-            asyncio.create_task(save_report_meta(meta))
+            _write_report_json(report_path, meta)
+            await save_report_meta(meta)
             yield "data: [DONE]\n\n"
             return
 
         prompt = build_slowlog_ai_prompt(data)
         ai_parts: list[str] = []
         try:
-            async for chunk in analyzer.provider.stream(prompt, max_tokens=3000):
+            timeout_seconds = _slowlog_ai_timeout_seconds()
+            async for chunk in _stream_ai_with_timeout(
+                prompt,
+                max_tokens=1800,
+                timeout_seconds=timeout_seconds,
+            ):
                 ai_parts.append(chunk)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        except asyncio.TimeoutError:
+            msg = (
+                f"\n[AI生成超时] 已保存基础慢日志报告；AI 分析超过 "
+                f"{_slowlog_ai_timeout_seconds()} 秒未完成，请稍后重试或检查模型服务。"
+            )
+            logger.warning("[slowlog_report] AI 生成超时")
+            ai_parts.append(msg)
+            yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
         except Exception as exc:
             logger.exception("[slowlog_report] AI 生成异常")
             ai_parts.append(f"\n[AI生成出错] {exc}")
             yield f"data: {json.dumps('[AI生成出错] ' + str(exc), ensure_ascii=False)}\n\n"
 
         meta["ai_analysis"] = "".join(ai_parts)
-        _write_report_json(REPORTS_DIR / f"{meta['id']}.json", meta)
-        asyncio.create_task(save_report_meta(meta))
+        _write_report_json(report_path, meta)
+        await save_report_meta(meta)
         try:
             from agent.report_memory import get_report_memory
             asyncio.create_task(get_report_memory().save(meta))

@@ -5,16 +5,216 @@ Router（SSE 流式）和 Scheduler（非流式）共用同一套数据采集逻
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+from collections import Counter, defaultdict
 from datetime import datetime, timezone, date as date_cls, timedelta
 from typing import Optional
 
-from state import loki, prom, analyzer, load_hosts_list
+from state import loki, prom, analyzer, load_hosts_list, load_groups
 
 logger = logging.getLogger(__name__)
 
 
 # ── 运维日报 ──────────────────────────────────────────────────────────────────
+
+_ERROR_KEYWORD_PATTERNS = [
+    ("OutOfMemoryError", re.compile(r"\bOutOfMemoryError\b", re.I)),
+    ("NullPointerException", re.compile(r"\bNullPointerException\b", re.I)),
+    ("SQL异常", re.compile(r"\b(?:SQLException|SQLSyntaxErrorException|deadlock)\b", re.I)),
+    ("连接超时", re.compile(r"\b(?:connect(?:ion)? timed? out|connection timeout)\b", re.I)),
+    ("请求超时", re.compile(r"\b(?:read timed? out|request timeout|timeout)\b", re.I)),
+    ("连接拒绝", re.compile(r"\b(?:connection refused|connect refused)\b", re.I)),
+    ("连接重置", re.compile(r"\b(?:connection reset|broken pipe)\b", re.I)),
+    ("HTTP 5xx", re.compile(r"\b5\d\d\b")),
+    ("认证失败", re.compile(r"\b(?:unauthorized|forbidden|authentication failed)\b", re.I)),
+    ("资源不足", re.compile(r"\b(?:too many open files|no space left|resource exhausted)\b", re.I)),
+]
+_EXCEPTION_RE = re.compile(r"\b([A-Z][A-Za-z0-9_.]*(?:Exception|Error))\b")
+
+
+def _log_service(log: dict) -> str:
+    labels = log.get("labels") or {}
+    return str(
+        log.get("service")
+        or labels.get("app")
+        or labels.get("application")
+        or labels.get("service")
+        or labels.get("job")
+        or "未标记服务"
+    )
+
+
+def _log_line(log: dict) -> str:
+    return str(log.get("line") or log.get("message") or "")
+
+
+def _extract_error_keyword(line: str) -> str:
+    for label, pattern in _ERROR_KEYWORD_PATTERNS:
+        if pattern.search(line):
+            return label
+    match = _EXCEPTION_RE.search(line)
+    if match:
+        return match.group(1).split(".")[-1]
+    return "其他错误"
+
+
+def _keyword_action(keyword: str) -> str:
+    if keyword in {"连接超时", "请求超时", "连接拒绝", "连接重置"}:
+        return "优先检查下游依赖、网络连通性与连接池"
+    if keyword in {"OutOfMemoryError", "资源不足"}:
+        return "优先检查资源水位、容量限制与泄漏风险"
+    if keyword in {"SQL异常"}:
+        return "优先检查数据库可用性、SQL 兼容性与事务锁"
+    if keyword in {"HTTP 5xx"}:
+        return "优先结合接口 5xx 与调用链定位失败入口"
+    return "建议结合代表性日志与调用链确认根因"
+
+
+def summarize_service_errors(
+    error_counts: dict[str, int],
+    error_logs: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """生成每个微服务一句话摘要，以及跨服务高频错误关键字统计。"""
+    service_keywords: dict[str, Counter] = defaultdict(Counter)
+    keyword_services: dict[str, set[str]] = defaultdict(set)
+    keyword_counts: Counter = Counter()
+
+    for log in error_logs:
+        service = _log_service(log)
+        keyword = _extract_error_keyword(_log_line(log))
+        service_keywords[service][keyword] += 1
+        keyword_counts[keyword] += 1
+        keyword_services[keyword].add(service)
+
+    service_names = list(error_counts)
+    for service in service_keywords:
+        if service not in service_names:
+            service_names.append(service)
+
+    summaries = []
+    for service in service_names:
+        keywords = [item for item, _ in service_keywords.get(service, Counter()).most_common(3)]
+        if keywords:
+            keyword_text = "、".join(keywords)
+            sentence = f"{service} 主要出现 {keyword_text}，{_keyword_action(keywords[0])}。"
+        else:
+            keyword_text = "缺少代表性样本"
+            sentence = f"{service} 检测到异常但当前样本不足，建议补充日志采样后确认根因。"
+        summaries.append({
+            "service": service,
+            "keywords": keywords,
+            "summary": sentence,
+        })
+
+    keyword_stats = [
+        {
+            "keyword": keyword,
+            "count": count,
+            "services": sorted(keyword_services[keyword]),
+        }
+        for keyword, count in keyword_counts.most_common(10)
+    ]
+    return summaries, keyword_stats
+
+
+async def collect_interface_status(hours: int = 24) -> dict:
+    """从 http_server 指标生成日报用接口健康概览；无指标时明确标记未采集。"""
+    window = f"{max(1, min(int(hours), 168))}h"
+    labels = "application,app,service,uri,method"
+    metric = "http_server_requests_seconds_count"
+    bucket = "http_server_requests_seconds_bucket"
+    queries = {
+        "requests": f"sum by ({labels}) (increase({metric}[{window}]))",
+        "errors": f'sum by ({labels}) (increase({metric}{{status=~"5.."}}[{window}]))',
+        "p95": (
+            f"histogram_quantile(0.95, sum by (le,{labels}) "
+            f"(rate({bucket}[5m]))) * 1000"
+        ),
+    }
+
+    async def safe_query(query: str) -> list[dict]:
+        try:
+            return await prom.query_instant(query, timeout=20)
+        except Exception as exc:
+            logger.warning("[report_builder][interface] query failed: %s", exc)
+            return []
+
+    request_rows, error_rows, p95_rows = await asyncio.gather(
+        safe_query(queries["requests"]),
+        safe_query(queries["errors"]),
+        safe_query(queries["p95"]),
+    )
+
+    def row_key(item: dict) -> tuple[str, ...]:
+        metric_labels = item.get("metric") or {}
+        return tuple(str(metric_labels.get(label) or "") for label in labels.split(","))
+
+    rows: dict[tuple[str, ...], dict] = {}
+
+    def merge(items: list[dict], field: str) -> None:
+        for item in items:
+            key = row_key(item)
+            labels_dict = item.get("metric") or {}
+            row = rows.setdefault(key, {
+                "application": (
+                    labels_dict.get("application")
+                    or labels_dict.get("app")
+                    or labels_dict.get("service")
+                    or "-"
+                ),
+                "uri": labels_dict.get("uri") or "-",
+                "method": labels_dict.get("method") or "-",
+            })
+            try:
+                row[field] = float((item.get("value") or [None, 0])[1])
+            except (TypeError, ValueError, IndexError):
+                row[field] = 0.0
+
+    merge(request_rows, "requests")
+    merge(error_rows, "errors")
+    merge(p95_rows, "p95_ms")
+
+    result_rows = []
+    severity = {"normal": 0, "warning": 1, "critical": 2}
+    overall = "normal"
+    for row in rows.values():
+        requests = float(row.get("requests") or 0)
+        errors = float(row.get("errors") or 0)
+        ratio = round(errors / requests * 100, 2) if requests > 0 else 0.0
+        p95 = round(float(row.get("p95_ms") or 0), 1)
+        status = (
+            "critical" if ratio >= 5 or p95 >= 2000
+            else "warning" if ratio >= 1 or p95 >= 1000
+            else "normal"
+        )
+        row.update({
+            "request_count": round(requests),
+            "error_ratio": ratio,
+            "p95_ms": p95,
+            "status": status,
+        })
+        result_rows.append(row)
+        if severity[status] > severity[overall]:
+            overall = status
+
+    result_rows.sort(
+        key=lambda item: (
+            severity[item["status"]],
+            item["error_ratio"],
+            item["p95_ms"],
+        ),
+        reverse=True,
+    )
+    return {
+        "available": bool(request_rows or error_rows or p95_rows),
+        "status": overall if result_rows else "unknown",
+        "monitored_interfaces": len(result_rows),
+        "abnormal_interfaces": sum(1 for row in result_rows if row["status"] != "normal"),
+        "rows": result_rows[:20],
+    }
+
 
 async def collect_daily_data() -> dict:
     """采集运维日报所需原始数据，返回包含 meta 和 ai_inputs 的字典。"""
@@ -26,8 +226,11 @@ async def collect_daily_data() -> dict:
     total_logs        = total_error_count * 8   # 估算：错误日志约占总量 1/8
     active_alerts     = len(error_counts)       # 有错误的服务数
 
+    service_summaries, error_keywords = summarize_service_errors(error_counts, error_logs)
+    interface_status = await collect_interface_status(hours=24)
+
     try:
-        hosts       = await prom.discover_hosts()
+        hosts = await prom.discover_hosts()
         node_normal = sum(1 for h in hosts if h.get("state") == "up")
         node_status = {"normal": node_normal, "abnormal": len(hosts) - node_normal}
     except Exception:
@@ -51,6 +254,9 @@ async def collect_daily_data() -> dict:
         "service_count": len(services),
         "active_alerts": active_alerts,
         "node_status":   node_status,
+        "service_error_summaries": service_summaries,
+        "error_keywords": error_keywords,
+        "interface_status": interface_status,
         "top10_errors":  [
             {"service": k, "count": v}
             for k, v in list(error_counts.items())[:10]
@@ -65,6 +271,9 @@ async def collect_daily_data() -> dict:
         "service_count": len(services),
         "node_status":   node_status,
         "active_alerts": active_alerts,
+        "service_error_summaries": service_summaries,
+        "error_keywords": error_keywords,
+        "interface_status": interface_status,
     }
 
 
@@ -113,7 +322,11 @@ def _build_host_brief(result: dict) -> dict:
         "job":        result.get("job", ""),
         "state":      result.get("state", ""),
         "group":      result.get("group", ""),
+        "group_name": result.get("group_name", ""),
         "env":        result.get("env", ""),
+        "role":       result.get("role", ""),
+        "owner":      result.get("owner", ""),
+        "datacenter": result.get("datacenter", ""),
         "overall":    result.get("overall", "normal"),
         "cpu_pct":    metrics.get("cpu_usage"),
         "cpu_cores":  result.get("cpu_cores"),
@@ -131,6 +344,8 @@ def _build_host_brief(result: dict) -> dict:
         "uptime_s":   metrics.get("uptime_seconds"),
         "checks":     result.get("checks", []),
         "partitions": result.get("partitions", []),
+        "process_top10": result.get("process_top10", []),
+        "process_error": result.get("process_error", ""),
         "metrics_source": result.get("metrics_source", "prometheus"),
     }
 
@@ -142,6 +357,37 @@ def _build_scope_note(cmdb_total: int, extra_count: int, fallback_count: int = 0
     if extra_count:
         note += f" Prometheus 额外发现 {extra_count} 个非 CMDB 实例（通常为容器 IP 或临时节点），已单独列出且不计入上方统计。"
     return note
+
+
+async def _collect_process_top10(hosts: list[dict]) -> dict[str, dict]:
+    """并发采集巡检表格所需的 Top 10 进程；单机失败不影响整份报告。"""
+    if not hosts:
+        return {}
+    from routers.hosts import _read_host_processes, _ssh_error_msg
+
+    sem = asyncio.Semaphore(5)
+
+    async def collect_one(host: dict) -> tuple[str, dict]:
+        ip = str(host.get("ip") or "").strip()
+        if not ip:
+            return "", {"data": [], "error": "未配置 IP"}
+        if not (host.get("credential_id") or host.get("ssh_password")):
+            return ip, {"data": [], "error": "未配置 SSH 凭证"}
+        async with sem:
+            try:
+                return ip, {
+                    "data": await _read_host_processes(
+                        host,
+                        limit=10,
+                        prioritize_services=False,
+                    ),
+                    "error": "",
+                }
+            except Exception as exc:
+                return ip, {"data": [], "error": _ssh_error_msg(exc, host)}
+
+    pairs = await asyncio.gather(*(collect_one(host) for host in hosts))
+    return {ip: payload for ip, payload in pairs if ip}
 
 
 async def collect_inspect_data(
@@ -172,13 +418,26 @@ async def collect_inspect_data(
 
     missing_hosts = [host for host in target_hosts if (host.get("ip") or "").strip() not in prom_map]
     fallback_map: dict[str, dict] = {}
-    if missing_hosts:
+
+    async def collect_fallbacks() -> dict[str, dict]:
+        if not missing_hosts:
+            return {}
         try:
             from routers.hosts import _collect_inspection_fallbacks
-
-            fallback_map = await _collect_inspection_fallbacks(missing_hosts)
+            return await _collect_inspection_fallbacks(missing_hosts)
         except Exception as e:
             logger.warning("[report_builder] SSH/Python 兜底采集失败: %s", e)
+            return {}
+
+    fallback_map, process_map = await asyncio.gather(
+        collect_fallbacks(),
+        _collect_process_top10(target_hosts),
+    )
+
+    group_names = {
+        str(group.get("id") or ""): str(group.get("name") or "")
+        for group in load_groups()
+    }
 
     results: list[dict] = []
     cmdb_ips = {(host.get("ip") or "").strip() for host in target_hosts if host.get("ip")}
@@ -196,12 +455,26 @@ async def collect_inspect_data(
             merged["group"] = host.get("group", "")
             merged["env"] = host.get("env", "")
             merged["metrics_source"] = merged.get("metrics_source", "prometheus")
-            results.append(merged)
+            selected = merged
         elif fallback_map.get(ip, {}).get("ok") and fallback_map[ip].get("result"):
-            results.append(fallback_map[ip]["result"])
+            selected = dict(fallback_map[ip]["result"])
         else:
             fallback_error = fallback_map.get(ip, {}).get("error", "")
-            results.append(_build_missing_host_result(host, fallback_error=fallback_error))
+            selected = _build_missing_host_result(host, fallback_error=fallback_error)
+
+        group_key = str(host.get("group") or "")
+        process_payload = process_map.get(ip, {})
+        selected.update({
+            "group": group_key,
+            "group_name": group_names.get(group_key) or "未分组",
+            "env": host.get("env", ""),
+            "role": host.get("role", ""),
+            "owner": host.get("owner", ""),
+            "datacenter": host.get("datacenter", ""),
+            "process_top10": process_payload.get("data", []),
+            "process_error": process_payload.get("error", ""),
+        })
+        results.append(selected)
 
     extra_prometheus_hosts: list[dict] = []
     if not group_id and instances is None:
@@ -264,6 +537,31 @@ async def collect_inspect_data(
     )
 
     all_hosts_brief = [_build_host_brief(result) for result in results]
+    severity = {"critical": 2, "warning": 1, "normal": 0}
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for host in all_hosts_brief:
+        grouped[host.get("group_name") or "未分组"].append(host)
+    group_sections = []
+    for name, hosts in grouped.items():
+        hosts.sort(
+            key=lambda item: (
+                severity.get(item.get("overall", "normal"), 0),
+                item.get("ip", ""),
+            ),
+            reverse=True,
+        )
+        group_sections.append({
+            "group_name": name,
+            "total": len(hosts),
+            "critical": sum(1 for item in hosts if item.get("overall") == "critical"),
+            "warning": sum(1 for item in hosts if item.get("overall") == "warning"),
+            "normal": sum(1 for item in hosts if item.get("overall") == "normal"),
+            "hosts": hosts,
+        })
+    group_sections.sort(
+        key=lambda item: (item["critical"], item["warning"], item["total"]),
+        reverse=True,
+    )
 
     health_score = await analyzer.calculate_host_health_score(summary)
 
@@ -273,6 +571,7 @@ async def collect_inspect_data(
         "top_issues":    [{"item": k, "count": v} for k, v in top_issues],
         "abnormal_hosts": abnormal_hosts[:20],
         "all_hosts":     all_hosts_brief,
+        "group_sections": group_sections,
         "prometheus_extra_hosts": extra_prometheus_hosts,
         "scope_note":    summary["scope_note"],
         "health_score":  health_score,
@@ -302,6 +601,7 @@ def build_inspect_meta(
         "top_issues":     data["top_issues"],
         "abnormal_hosts": data["abnormal_hosts"],
         "all_hosts":      data["all_hosts"],
+        "group_sections": data.get("group_sections", []),
         "prometheus_extra_hosts": data.get("prometheus_extra_hosts", []),
         "prometheus_extra_count": len(data.get("prometheus_extra_hosts", [])),
         "summary_scope_note": data.get("scope_note", ""),
@@ -380,6 +680,20 @@ async def collect_slowlog_data(config: dict) -> dict | None:
         if total_queries else 0.0
     )
     max_qt = max((r["max_query_time"] for r in host_results), default=0.0)
+    for result in host_results:
+        result["status"] = (
+            "critical" if result["max_query_time"] >= alert_sec or result["alert_count"] > 0
+            else "warning" if result["total"] > 0
+            else "normal"
+        )
+    host_results.sort(
+        key=lambda item: (
+            item["status"] == "critical",
+            item["alert_count"],
+            item["max_query_time"],
+        ),
+        reverse=True,
+    )
 
     top_slow_brief = [
         {
@@ -393,7 +707,7 @@ async def collect_slowlog_data(config: dict) -> dict | None:
 
     # 健康评分
     if total_queries == 0:
-        health_score = 50
+        health_score = 60 if errors else 100
     else:
         deduct = 0
         ratio = alert_queries / total_queries
@@ -414,11 +728,14 @@ async def collect_slowlog_data(config: dict) -> dict | None:
         "health_score":   health_score,
         "date_from":      date_from,
         "date_to":        date_to,
+        "threshold_sec":  threshold_sec,
+        "alert_sec":      alert_sec,
         "total_queries":  total_queries,
         "alert_queries":  alert_queries,
         "avg_query_time": round(avg_qt, 2),
         "max_query_time": round(max_qt, 3),
         "hosts_count":    len(host_results),
+        "critical_hosts": sum(1 for r in host_results if r["status"] == "critical"),
         "host_results":   host_results,
         "top_slow":       top_slow_brief,
         "errors":         errors,
@@ -443,7 +760,7 @@ def build_slowlog_ai_prompt(data: dict) -> str:
     alert_sec      = data.get("_alert_sec", 10.0)
     all_entries    = data.get("_all_entries", [])
 
-    prompt = f"""你是 MySQL 数据库性能专家，请分析以下慢查询汇总并给出优化建议。
+    prompt = f"""你是 MySQL 数据库性能专家，请基于以下慢查询结果给出可执行的优化报告。
 
 **报告概况**
 - 分析时间段：{date_from} ~ {date_to}
@@ -487,14 +804,14 @@ def build_slowlog_ai_prompt(data: dict) -> str:
             )
 
     prompt += """
-**请按以下结构输出分析报告**：
-1. 整体评估（问题等级：严重/警告/正常）
-2. 主要问题分析（高频/高耗时 SQL 的根因）
-3. 具体优化建议（加索引、改写 SQL、分页、缓存等可操作方案）
-4. 各主机重点关注事项
-5. 优先处理顺序
+**请按结果优先的结构输出**：
+1. 直接结论：用 2-3 句话说明问题等级、主要瓶颈和是否需要立即处理
+2. 优先级清单：P0/P1/P2 排序，明确主机 IP、SQL 模板和判断依据
+3. SQL 优化方案：逐个重点模板给出索引建议、改写方向和 EXPLAIN 验证项；信息不足时明确写“需补充表结构/执行计划”，不要臆造字段
+4. 主机级结论：每台主机一句话，先列告警主机
+5. 验证与回滚：说明优化后的观测指标、验证方法和回滚条件
 
-使用中文输出，格式清晰，给出可操作的建议。"""
+使用中文输出，格式清晰，避免复述目标配置和大段统计数字，把篇幅集中在慢 SQL 结果、根因与处理动作。"""
     return prompt
 
 

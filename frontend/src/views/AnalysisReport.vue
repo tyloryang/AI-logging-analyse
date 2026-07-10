@@ -73,7 +73,7 @@
       </aside>
 
       <!-- 右侧：慢日志目标配置面板（仅 slowlog 类型时显示） -->
-      <div v-if="reportType === 'slowlog'" class="slowlog-config-panel">
+      <div v-if="reportType === 'slowlog'" class="slowlog-config-panel" :class="{ expanded: slcOpen }">
         <div class="slc-header" @click="slcOpen = !slcOpen">
           <span>⚙️ 慢日志报告目标配置</span>
           <span class="slc-saved" v-if="slcSaved">已保存 ✓</span>
@@ -173,6 +173,12 @@
                   title="导出各主机汇总为 CSV"
                 >主机 CSV</button>
                 <button
+                  v-if="currentReport.type === 'inspect'"
+                  class="btn-export-r"
+                  @click="exportInspectExcel"
+                  title="导出按组分类的完整主机巡检明细"
+                >Excel</button>
+                <button
                   class="btn-export-r"
                   @click="exportReport('json')"
                   title="导出完整报告 JSON"
@@ -180,8 +186,14 @@
                 <button
                   class="btn-export-r btn-export-pdf"
                   @click="exportPdf"
-                  title="导出为 PDF（浏览器打开后 Ctrl+P → 另存为 PDF）"
-                >📄 PDF</button>
+                  :disabled="pdfExporting"
+                  title="直接下载 PDF 格式报告"
+                >{{ pdfExporting ? '生成中…' : '📄 PDF' }}</button>
+                <button
+                  class="btn-export-r"
+                  @click="exportPrintHtml"
+                  title="打印视图（浏览器 Ctrl+P）"
+                >打印</button>
               </div>
               <button v-if="!generating" class="btn btn-outline" @click="generateReport" title="重新生成">
                 🔄 重新生成
@@ -221,23 +233,53 @@
             </div>
           </div>
 
+          <!-- 第一部分：直接给出 AI 结论 -->
+          <div class="section ai-conclusion-section">
+            <div class="section-title-row">
+              <h3 class="section-title">🤖 第一部分 · AI 结论</h3>
+              <span v-if="generating" class="analyzing-badge">
+                <span class="dot1">·</span><span class="dot2">·</span><span class="dot3">·</span>
+                分析中
+              </span>
+            </div>
+            <div class="ai-analysis-box">
+              <div v-if="aiStreamContent" class="ai-text" v-html="renderText(aiStreamContent)"></div>
+              <div v-else-if="inspectGroupAnalyses.length" class="group-ai-list">
+                <div
+                  v-for="group in inspectGroupAnalyses"
+                  :key="group.group_id || group.group_name"
+                  class="group-ai-card"
+                >
+                  <div class="group-ai-header">
+                    <div>
+                      <div class="group-ai-name">{{ group.group_name || '未分组' }}</div>
+                      <div class="group-ai-meta">{{ formatGroupSummary(group.host_summary) }}</div>
+                    </div>
+                    <span class="badge" :class="healthBadge(group.health_score ?? 0)">
+                      {{ group.health_score ?? 0 }}/100
+                    </span>
+                  </div>
+                  <div class="ai-text" v-html="renderText(group.ai_analysis)"></div>
+                </div>
+              </div>
+              <div v-else-if="currentReport.ai_analysis" class="ai-text" v-html="renderText(currentReport.ai_analysis)"></div>
+              <div v-else-if="generating" class="ai-placeholder">
+                <div class="spinner" style="width:20px;height:20px;border-width:2px"></div>
+                <span>等待 AI 响应...</span>
+              </div>
+              <div v-else class="empty-state" style="padding:24px">
+                <p>AI 结论尚未生成，请点击「重新生成」</p>
+              </div>
+            </div>
+          </div>
+
           <!-- ① 运维日报指标 -->
           <template v-if="!currentReport.type || currentReport.type === 'daily'">
             <div class="metrics-row">
               <div class="metric-card">
-                <div class="metric-icon">📋</div>
-                <div class="metric-val">{{ fmtNum(currentReport.total_logs) }}</div>
-                <div class="metric-label">总日志条数</div>
-              </div>
-              <div class="metric-card">
-                <div class="metric-icon">❌</div>
-                <div class="metric-val" style="color:var(--error)">{{ fmtNum(currentReport.total_errors) }}</div>
-                <div class="metric-label">错误总数</div>
-              </div>
-              <div class="metric-card">
                 <div class="metric-icon">🔧</div>
                 <div class="metric-val">{{ currentReport.service_count }}</div>
-                <div class="metric-label">涉及服务数</div>
+                <div class="metric-label">覆盖微服务</div>
               </div>
               <div class="metric-card">
                 <div class="metric-icon">🖥️</div>
@@ -249,24 +291,68 @@
                 <div class="metric-label">节点状态</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">🔔</div>
-                <div class="metric-val" :style="{ color: currentReport.active_alerts > 0 ? 'var(--error)' : 'var(--success)' }">
-                  {{ currentReport.active_alerts }}
+                <div class="metric-icon">🌐</div>
+                <div class="metric-val" :class="'status-' + (currentReport.interface_status?.status || 'unknown')">
+                  {{ interfaceStatusLabel(currentReport.interface_status?.status) }}
                 </div>
-                <div class="metric-label">活跃告警</div>
+                <div class="metric-label">接口监控状态</div>
               </div>
             </div>
-            <div class="section" v-if="currentReport.top10_errors?.length">
-              <h3 class="section-title">🔥 错误 Top 10 服务</h3>
-              <div class="top10-list">
-                <div v-for="(item, i) in currentReport.top10_errors" :key="item.service" class="top10-row">
-                  <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
-                  <span class="top10-svc" :title="item.service">{{ item.service }}</span>
-                  <div class="bar-wrap">
-                    <div class="bar" :style="{ width: topBarWidth(item.count) + '%' }"></div>
-                  </div>
-                  <span class="badge badge-error" style="white-space:nowrap">{{ fmtNum(item.count) }} 条</span>
-                </div>
+
+            <div class="section" v-if="currentReport.service_error_summaries?.length">
+              <h3 class="section-title">第二部分 · 微服务错误一句话概括</h3>
+              <div class="summary-table-wrap">
+                <table class="report-table">
+                  <thead><tr><th>微服务</th><th>错误关键字</th><th>一句话结论</th></tr></thead>
+                  <tbody>
+                    <tr v-for="item in currentReport.service_error_summaries" :key="item.service">
+                      <td class="service-cell">{{ item.service }}</td>
+                      <td>
+                        <span v-for="keyword in item.keywords" :key="keyword" class="keyword-chip">{{ keyword }}</span>
+                        <span v-if="!item.keywords?.length" class="muted">样本不足</span>
+                      </td>
+                      <td>{{ item.summary }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="section" v-if="currentReport.error_keywords?.length">
+              <h3 class="section-title">第三部分 · 高频错误关键字统计</h3>
+              <div class="summary-table-wrap">
+                <table class="report-table compact">
+                  <thead><tr><th>关键字</th><th>样本频次</th><th>涉及服务</th></tr></thead>
+                  <tbody>
+                    <tr v-for="item in currentReport.error_keywords" :key="item.keyword">
+                      <td><strong>{{ item.keyword }}</strong></td>
+                      <td>{{ item.count }}</td>
+                      <td>{{ (item.services || []).join('、') || '-' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="section">
+              <h3 class="section-title">第四部分 · 接口监控状况评估</h3>
+              <div v-if="!currentReport.interface_status?.available" class="inspect-scope-note">
+                未采集到 http_server 接口指标，本日报无法评估接口成功率与延迟；请检查指标暴露和 Prometheus 抓取配置。
+              </div>
+              <div v-else class="summary-table-wrap">
+                <table class="report-table">
+                  <thead><tr><th>状态</th><th>应用</th><th>方法</th><th>接口</th><th>5xx率</th><th>P95</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in currentReport.interface_status.rows" :key="[row.application,row.method,row.uri].join('|')">
+                      <td><span class="status-pill" :class="row.status">{{ statusText(row.status) }}</span></td>
+                      <td>{{ row.application }}</td>
+                      <td>{{ row.method }}</td>
+                      <td class="mono">{{ row.uri }}</td>
+                      <td>{{ row.error_ratio }}%</td>
+                      <td>{{ row.p95_ms }}ms</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </template>
@@ -300,32 +386,56 @@
                 {{ currentReport.summary_scope_note || currentReport.host_summary?.scope_note }}
               </div>
             </div>
-            <div class="section" v-if="currentReport.top_issues?.length">
-              <h3 class="section-title">🔥 高频异常项 Top 10</h3>
-              <div class="top10-list">
-                <div v-for="(item, i) in currentReport.top_issues" :key="item.item" class="top10-row">
-                  <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
-                  <span class="top10-svc" :title="item.item">{{ item.item }}</span>
-                  <div class="bar-wrap">
-                    <div class="bar" :style="{ width: issueBarWidth(item.count) + '%' }"></div>
+            <div class="section">
+              <h3 class="section-title">第二部分 · 按组分类主机巡检明细（告警优先）</h3>
+              <div v-if="!inspectGroupSections.length" class="inspect-scope-note">当前报告没有主机明细。</div>
+              <div v-for="group in inspectGroupSections" :key="group.group_name" class="host-group-section">
+                <div class="host-group-header">
+                  <div>
+                    <strong>{{ group.group_name }}</strong>
+                    <span class="group-count">共 {{ group.total }} 台</span>
                   </div>
-                  <span class="badge badge-error" style="white-space:nowrap">{{ item.count }} 台</span>
+                  <div class="group-status-counts">
+                    <span v-if="group.critical" class="status-pill critical">严重 {{ group.critical }}</span>
+                    <span v-if="group.warning" class="status-pill warning">警告 {{ group.warning }}</span>
+                    <span class="status-pill normal">正常 {{ group.normal }}</span>
+                  </div>
                 </div>
-              </div>
-            </div>
-            <div class="section" v-if="currentReport.abnormal_hosts?.length">
-              <h3 class="section-title">⚠️ 异常主机列表</h3>
-              <div class="abnormal-list">
-                <div v-for="h in currentReport.abnormal_hosts" :key="h.instance" class="abnormal-row" :class="'row-' + h.overall">
-                  <span class="abnormal-dot" :class="h.overall"></span>
-                  <span class="abnormal-host">{{ h.hostname || h.instance }}</span>
-                  <span class="abnormal-ip">{{ h.ip }}</span>
-                  <div class="abnormal-checks">
-                    <span v-for="c in h.checks.filter(c => c.status !== 'normal').slice(0, 3)" :key="c.item" class="check-tag" :class="c.status">
-                      {{ c.item }}: {{ c.value }}
-                    </span>
-                  </div>
-                  <span class="badge" :class="h.overall === 'critical' ? 'badge-error' : 'badge-warn'">{{ h.overall }}</span>
+                <div class="host-table-wrap">
+                  <table class="report-table host-detail-table">
+                    <thead>
+                      <tr>
+                        <th>状态</th><th>服务器 IP</th><th>服务器</th><th>主机名</th>
+                        <th>CPU</th><th>内存</th><th>磁盘具体占用</th><th>进程占用 Top 10</th>
+                        <th>负责人</th><th>机房</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="host in group.hosts" :key="host.ip || host.instance" :class="'host-row-' + host.overall">
+                        <td><span class="status-pill" :class="host.overall">{{ statusText(host.overall) }}</span></td>
+                        <td class="mono">{{ host.ip || '-' }}</td>
+                        <td>{{ host.role || host.os || '-' }}</td>
+                        <td>{{ host.hostname || '-' }}</td>
+                        <td>{{ metricPct(host.cpu_pct) }}<small v-if="host.cpu_cores"> / {{ host.cpu_cores }} 核</small></td>
+                        <td>{{ metricPct(host.mem_pct) }}<small v-if="host.mem_total"> / {{ host.mem_total }}GB</small></td>
+                        <td class="disk-cell">
+                          <span v-for="disk in host.partitions" :key="disk.mountpoint || disk.mount">
+                            {{ disk.mountpoint || disk.mount }} {{ disk.usage_pct ?? disk.used_pct ?? '-' }}%
+                            ({{ disk.used_gb ?? '-' }}/{{ disk.total_gb ?? disk.size_gb ?? '-' }}GB)
+                          </span>
+                          <span v-if="!host.partitions?.length" class="muted">未采集</span>
+                        </td>
+                        <td class="process-cell">
+                          <span v-for="(proc, index) in host.process_top10" :key="proc.pid || index">
+                            {{ index + 1 }}. {{ proc.service || proc.comm }} CPU {{ proc.cpu }}% / MEM {{ proc.mem }}%
+                          </span>
+                          <span v-if="!host.process_top10?.length" class="muted">{{ host.process_error || '未采集' }}</span>
+                        </td>
+                        <td>{{ host.owner || '未配置' }}</td>
+                        <td>{{ host.datacenter || '未配置' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
@@ -353,6 +463,7 @@
             <!-- 时间段 -->
             <div class="slowlog-date-range">
               📅 分析时段：<strong>{{ currentReport.date_from }}</strong> ~ <strong>{{ currentReport.date_to }}</strong>
+              <span class="slowlog-threshold">慢查询 ≥ {{ currentReport.threshold_sec ?? 1 }}s · 告警 ≥ {{ currentReport.alert_sec ?? 10 }}s</span>
             </div>
             <!-- 指标卡 -->
             <div class="metrics-row">
@@ -385,18 +496,33 @@
               </div>
             </div>
 
+            <!-- Top 慢查询：报告结果优先展示 -->
+            <div class="section" v-if="currentReport.top_slow?.length">
+              <h3 class="section-title">🐌 核心结果 · Top 10 最慢查询</h3>
+              <div class="slowlog-list">
+                <div v-for="(s, i) in currentReport.top_slow" :key="i" class="slowlog-row">
+                  <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
+                  <span class="sl-host mono">{{ s.host_ip }}</span>
+                  <span class="sl-time" :class="s.query_time >= (currentReport.alert_sec || 10) ? 'sl-time-alert' : ''">{{ s.query_time }}s</span>
+                  <span class="sl-rows">扫 {{ fmtNum(s.rows_examined) }} 行</span>
+                  <span class="sl-sql" :title="s.sql_brief">{{ s.sql_brief }}</span>
+                </div>
+              </div>
+            </div>
+
             <!-- 各主机明细 -->
             <div class="section" v-if="currentReport.host_results?.length">
-              <h3 class="section-title">🖥️ 各主机慢查询情况</h3>
+              <h3 class="section-title">🖥️ 主机级分析结果（告警优先）</h3>
               <table class="sl-table">
                 <thead>
                   <tr>
-                    <th>主机 IP</th><th>慢查询数</th><th>告警数</th>
+                    <th>状态</th><th>主机 IP</th><th>慢查询数</th><th>告警数</th>
                     <th>平均耗时(s)</th><th>最大耗时(s)</th><th>Top SQL 模板</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="h in currentReport.host_results" :key="h.host_ip">
+                    <td><span class="status-pill" :class="slowlogHostStatus(h)">{{ statusText(slowlogHostStatus(h)) }}</span></td>
                     <td class="mono">{{ h.host_ip }}</td>
                     <td>{{ h.total }}</td>
                     <td :style="{ color: h.alert_count > 0 ? 'var(--error)' : 'var(--success)' }">{{ h.alert_count }}</td>
@@ -413,20 +539,6 @@
               </table>
             </div>
 
-            <!-- Top 慢查询 -->
-            <div class="section" v-if="currentReport.top_slow?.length">
-              <h3 class="section-title">🐌 Top 10 最慢查询</h3>
-              <div class="slowlog-list">
-                <div v-for="(s, i) in currentReport.top_slow" :key="i" class="slowlog-row">
-                  <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
-                  <span class="sl-host mono">{{ s.host_ip }}</span>
-                  <span class="sl-time" :class="s.query_time >= 10 ? 'sl-time-alert' : ''">{{ s.query_time }}s</span>
-                  <span class="sl-rows">扫 {{ fmtNum(s.rows_examined) }} 行</span>
-                  <span class="sl-sql" :title="s.sql_brief">{{ s.sql_brief }}</span>
-                </div>
-              </div>
-            </div>
-
             <!-- SSH 错误提示 -->
             <div v-if="currentReport.errors?.length" class="section">
               <h3 class="section-title" style="color:var(--error)">⚠️ 采集失败的主机</h3>
@@ -435,46 +547,6 @@
               </div>
             </div>
           </template>
-
-          <!-- AI 分析（通用） -->
-          <div class="section">
-            <div class="section-title-row">
-              <h3 class="section-title">🤖 AI 分析</h3>
-              <span v-if="generating" class="analyzing-badge">
-                <span class="dot1">·</span><span class="dot2">·</span><span class="dot3">·</span>
-                分析中
-              </span>
-            </div>
-            <div class="ai-analysis-box">
-              <div v-if="aiStreamContent" class="ai-text" v-html="renderText(aiStreamContent)"></div>
-              <div v-else-if="inspectGroupAnalyses.length" class="group-ai-list">
-                <div
-                  v-for="group in inspectGroupAnalyses"
-                  :key="group.group_id || group.group_name"
-                  class="group-ai-card"
-                >
-                  <div class="group-ai-header">
-                    <div>
-                      <div class="group-ai-name">{{ group.group_name || '未分组' }}</div>
-                      <div class="group-ai-meta">{{ formatGroupSummary(group.host_summary) }}</div>
-                    </div>
-                    <span class="badge" :class="healthBadge(group.health_score ?? 0)">
-                      {{ group.health_score ?? 0 }}/100
-                    </span>
-                  </div>
-                  <div class="ai-text" v-html="renderText(group.ai_analysis)"></div>
-                </div>
-              </div>
-              <div v-else-if="currentReport.ai_analysis" class="ai-text" v-html="renderText(currentReport.ai_analysis)"></div>
-              <div v-else-if="generating" class="ai-placeholder">
-                <div class="spinner" style="width:20px;height:20px;border-width:2px"></div>
-                <span>等待 AI 响应...</span>
-              </div>
-              <div v-else class="empty-state" style="padding:24px">
-                <p>AI 分析尚未生成，请点击「重新生成」</p>
-              </div>
-            </div>
-          </div>
 
         </div>
       </div>
@@ -501,7 +573,7 @@ const inspectGroupId = ref('')
 const groupGenerating = ref(false)
 
 // ── 慢日志目标配置状态 ─────────────────────────────────────────────────
-const slcOpen   = ref(true)
+const slcOpen   = ref(false)
 const slcSaved  = ref(false)
 const slcSaving = ref(false)
 const slcConfig = reactive({
@@ -520,6 +592,7 @@ async function saveSlcConfig() {
   try {
     await api.saveSlowlogTargets({ ...slcConfig, targets: [...slcConfig.targets] })
     slcSaved.value = true
+    slcOpen.value = false
     setTimeout(() => { slcSaved.value = false }, 3000)
   } catch (e) {
     errorMsg.value = '保存失败：' + e
@@ -583,10 +656,46 @@ const inspectGroupAnalyses = computed(() => {
   return Array.isArray(items) ? items : []
 })
 
+const inspectGroupSections = computed(() => {
+  if (currentReport.value?.type !== 'inspect') return []
+  const sections = currentReport.value?.group_sections
+  if (Array.isArray(sections) && sections.length) return sections
+  const hosts = Array.isArray(currentReport.value?.all_hosts) ? currentReport.value.all_hosts : []
+  if (!hosts.length) return []
+  return [{
+    group_name: currentReport.value.group_name || '全部主机',
+    total: hosts.length,
+    critical: hosts.filter(h => h.overall === 'critical').length,
+    warning: hosts.filter(h => h.overall === 'warning').length,
+    normal: hosts.filter(h => h.overall === 'normal').length,
+    hosts: [...hosts].sort((a, b) => ({ critical: 2, warning: 1, normal: 0 }[b.overall] || 0) - ({ critical: 2, warning: 1, normal: 0 }[a.overall] || 0)),
+  }]
+})
+
 const maxTop   = computed(() => currentReport.value?.top10_errors?.[0]?.count || 1)
 const maxIssue = computed(() => currentReport.value?.top_issues?.[0]?.count || 1)
 function topBarWidth(cnt)   { return Math.round((cnt / maxTop.value) * 100) }
 function issueBarWidth(cnt) { return Math.round((cnt / maxIssue.value) * 100) }
+
+function statusText(status) {
+  return { critical: '严重', warning: '警告', normal: '正常', unknown: '未采集' }[status] || status || '未知'
+}
+
+function interfaceStatusLabel(status) {
+  return { critical: '严重', warning: '需关注', normal: '正常', unknown: '未采集' }[status] || '未采集'
+}
+
+function metricPct(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? `${number.toFixed(1)}%` : '未采集'
+}
+
+function slowlogHostStatus(host) {
+  if (host?.status) return host.status
+  if (Number(host?.alert_count || 0) > 0) return 'critical'
+  if (Number(host?.total || 0) > 0) return 'warning'
+  return 'normal'
+}
 
 function formatGroupSummary(summary) {
   if (!summary) return ''
@@ -638,12 +747,26 @@ function generateReport() {
   if (reportType.value === 'inspect' && inspectGroupId.value) {
     url += `?group_id=${encodeURIComponent(inspectGroupId.value)}`
   }
+  const isSlowlogGeneration = reportType.value === 'slowlog'
+  let generatedReportId = ''
 
   streamSSE(
     url,
     (raw) => {
       if (raw.startsWith('__META__')) {
-        try { currentReport.value = JSON.parse(raw.slice(8)); aiStreamContent.value = '' }
+        try {
+          const meta = JSON.parse(raw.slice(8))
+          currentReport.value = meta
+          generatedReportId = meta.id || ''
+          aiStreamContent.value = ''
+          if (isSlowlogGeneration && generatedReportId) {
+            const id = generatedReportId
+            loadReportList()
+            api.getReport(id).then((report) => {
+              if (currentReport.value?.id === id) currentReport.value = report
+            }).catch(() => {})
+          }
+        }
         catch (e) { console.error('META parse error', e) }
         return
       }
@@ -659,6 +782,15 @@ function generateReport() {
     },
     (err) => {
       generating.value = false
+      if (isSlowlogGeneration && generatedReportId) {
+        const id = generatedReportId
+        loadReportList()
+        api.getReport(id).then((report) => {
+          if (currentReport.value?.id === id) currentReport.value = report
+        }).catch(() => {})
+        console.warn('Slowlog SSE closed after report metadata was saved', err)
+        return
+      }
       errorMsg.value   = '生成失败，请检查后端连接和配置'
       console.error('SSE error', err)
     },
@@ -787,7 +919,33 @@ function exportReport(fmt) {
   }
 }
 
-function exportPdf() {
+const pdfExporting = ref(false)
+
+async function exportPdf() {
+  const r = currentReport.value
+  if (!r?.id || pdfExporting.value) return
+  pdfExporting.value = true
+  try {
+    const resp = await fetch(`/api/report/${r.id}/export.pdf`, { credentials: 'include' })
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}))
+      throw new Error(body.detail || `HTTP ${resp.status}`)
+    }
+    _downloadBlob(await resp.blob(), `${r.title || r.id}.pdf`)
+  } catch (error) {
+    alert(`PDF 导出失败：${error.message || error}`)
+  } finally {
+    pdfExporting.value = false
+  }
+}
+
+function exportInspectExcel() {
+  const r = currentReport.value
+  if (!r?.id || r.type !== 'inspect') return
+  window.open(`/api/report/inspect/${encodeURIComponent(r.id)}/excel`, '_blank', 'noopener')
+}
+
+function exportPrintHtml() {
   const r = currentReport.value
   if (!r?.id) return
   window.open(`/api/report/${r.id}/export.html`, '_blank', 'noopener')
@@ -878,12 +1036,13 @@ onMounted(async () => {
 
 /* 慢日志配置面板 */
 .slowlog-config-panel {
-  width: 100%; flex-shrink: 0;
+  width: 230px; flex: 0 0 230px;
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius); margin-bottom: 0;
-  /* 撑满剩余宽度的上部 - 通过 grid 布局实现，这里用独立面板 */
-  max-width: 680px;
+  align-self: flex-start; max-height: 100%; overflow: auto;
+  transition: width .2s ease, flex-basis .2s ease;
 }
+.slowlog-config-panel.expanded { width: 420px; flex-basis: 420px; }
 .slc-header {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
@@ -1002,6 +1161,57 @@ onMounted(async () => {
   background: var(--bg-base); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 20px; min-height: 80px;
 }
+.ai-conclusion-section {
+  padding: 16px;
+  border: 1px solid rgba(99,102,241,.25);
+  border-radius: var(--radius);
+  background: rgba(99,102,241,.05);
+}
+.summary-table-wrap, .host-table-wrap { width: 100%; overflow-x: auto; }
+.report-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.report-table th {
+  background: var(--bg-hover); color: var(--text-secondary); font-weight: 600;
+  padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.report-table td {
+  padding: 9px 10px; border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary); vertical-align: top; line-height: 1.55;
+}
+.report-table.compact { max-width: 900px; }
+.service-cell { min-width: 150px; font-weight: 600; }
+.keyword-chip {
+  display: inline-flex; margin: 0 4px 4px 0; padding: 1px 7px;
+  border-radius: 999px; color: var(--warning);
+  background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.25);
+  white-space: nowrap;
+}
+.status-pill {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 2px 7px; border-radius: 999px; font-size: 11px; white-space: nowrap;
+}
+.status-pill.critical, .status-critical { color: var(--error); background: rgba(248,81,73,.1); }
+.status-pill.warning, .status-warning { color: var(--warning); background: rgba(210,153,34,.1); }
+.status-pill.normal, .status-normal { color: var(--success); background: rgba(63,185,80,.1); }
+.status-unknown { color: var(--text-muted); }
+.host-group-section {
+  margin-bottom: 18px; border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; background: var(--bg-base);
+}
+.host-group-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 11px 13px; background: var(--bg-hover); border-bottom: 1px solid var(--border);
+}
+.group-count { margin-left: 8px; color: var(--text-muted); font-size: 11px; }
+.group-status-counts { display: flex; gap: 6px; flex-wrap: wrap; }
+.host-detail-table { min-width: 1450px; }
+.host-detail-table small { display: block; color: var(--text-muted); white-space: nowrap; }
+.host-row-critical td:first-child { border-left: 3px solid var(--error); }
+.host-row-warning td:first-child { border-left: 3px solid var(--warning); }
+.disk-cell, .process-cell { min-width: 220px; }
+.disk-cell span, .process-cell span { display: block; white-space: nowrap; font-size: 11px; }
 .group-ai-list { display: flex; flex-direction: column; gap: 14px; }
 .group-ai-card {
   background: var(--bg-card);
@@ -1059,6 +1269,7 @@ onMounted(async () => {
   margin-bottom: 16px; padding: 8px 12px;
   background: var(--bg-hover); border-radius: var(--radius);
 }
+.slowlog-threshold { margin-left: 14px; color: var(--text-muted); font-size: 11px; }
 .sl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .sl-table th { background: var(--bg-hover); padding: 7px 10px; text-align: left; font-weight: 600; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
 .sl-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-light); vertical-align: top; color: var(--text-primary); }
