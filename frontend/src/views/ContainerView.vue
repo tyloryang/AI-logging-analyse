@@ -18,7 +18,7 @@
         </div>
         <div class="filter-group" title="命名空间过滤">
           <span class="filter-icon">📂</span>
-          <select v-model="activeNs" class="ns-select" :disabled="!activeClusterId || loading" @change="fetchAll()">
+          <select v-model="activeNs" class="ns-select" :disabled="!activeClusterId || loading" @change="handleNamespaceChange">
             <option value="">全部</option>
             <option v-for="ns in namespaces" :key="ns.name" :value="ns.name">{{ ns.name }}</option>
           </select>
@@ -339,7 +339,7 @@
                 :key="item.tab"
                 class="search-stat-chip"
                 :class="{ active: activeTab === item.tab, zero: item.count === 0 }"
-                @click="activeTab = item.tab"
+                @click="selectResourceTab(item.tab)"
               >
                 <span class="search-stat-name">{{ item.label }}</span>
                 <span class="search-stat-count">{{ item.count }}</span>
@@ -493,12 +493,13 @@
             :key="tab.id"
             class="tab-btn"
             :class="{ active: activeTab === tab.id }"
-            @click="activeTab = tab.id"
+            @click="selectResourceTab(tab.id)"
           >
             {{ tab.label }}
             <span class="tab-count">{{ tabCount(tab.id) }}</span>
           </button>
           <button
+            v-if="activeTab !== 'events'"
             class="tab-btn abnormal-toggle"
             :class="{ active: onlyAbnormal, 'has-abnormal': abnormalTotal > 0 }"
             @click="onlyAbnormal = !onlyAbnormal"
@@ -903,20 +904,85 @@
           </table>
         </div>
 
+        <div v-else-if="activeTab === 'events'" class="cluster-events-panel">
+          <div class="cluster-event-toolbar">
+            <div class="event-filter-group">
+              <button
+                v-for="option in CLUSTER_EVENT_TYPE_OPTIONS"
+                :key="option.value"
+                type="button"
+                class="event-filter-btn"
+                :class="{ active: clusterEventTypeFilter === option.value, warning: option.value === 'Warning' }"
+                @click="clusterEventTypeFilter = option.value"
+              >{{ option.label }} <span>{{ option.value ? clusterEvents.filter(item => item.type === option.value).length : clusterEvents.length }}</span></button>
+            </div>
+            <div class="cluster-event-toolbar-meta">
+              <span>{{ activeNs ? `命名空间：${activeNs}` : '全部命名空间' }}</span>
+              <button class="btn-ghost" type="button" :disabled="clusterEventsLoading" @click="loadClusterEvents({ force: true })">
+                {{ clusterEventsLoading ? '刷新中...' : '刷新事件' }}
+              </button>
+            </div>
+          </div>
+          <div v-if="clusterEventsLoading" class="loading-row compact"><span class="spinner"></span>正在加载集群 Events...</div>
+          <div v-else-if="clusterEventsError" class="modal-tip modal-tip-error">{{ clusterEventsError }}</div>
+          <div v-else class="table-wrap cluster-event-table-wrap">
+            <table class="k8s-table cluster-event-table">
+              <thead>
+                <tr>
+                  <th>级别</th><th>最后发生</th><th>命名空间</th><th>对象</th><th>原因</th><th>次数</th><th>来源</th><th>消息</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!filteredClusterEvents.length"><td colspan="8" class="empty">暂无匹配的集群事件</td></tr>
+                <tr
+                  v-for="(event, index) in limitRows(filteredClusterEvents)"
+                  :key="`${event.namespace}-${event.object_kind}-${event.object_name}-${event.reason}-${event.last_ts}-${index}`"
+                  :class="`cluster-event-${event.type.toLowerCase()}`"
+                >
+                  <td><span class="event-type-badge" :class="`event-type-${event.type.toLowerCase()}`">{{ event.type }}</span></td>
+                  <td class="mono small event-time-cell" :title="event.first_ts ? `首次发生：${event.first_ts}` : ''">{{ formatRelative(event.last_ts) || event.last_ts || '-' }}</td>
+                  <td><span v-if="event.namespace" class="ns-tag">{{ event.namespace }}</span><span v-else class="muted">集群级</span></td>
+                  <td class="small"><span class="resource-kind event-object-kind">{{ event.object_kind || 'Object' }}</span><span class="event-object-name">{{ event.object_name || '-' }}</span></td>
+                  <td class="event-reason">{{ event.reason || '-' }}</td>
+                  <td class="mono small">{{ event.count || 1 }}</td>
+                  <td class="small muted" :title="event.source_host || ''">{{ event.source || '-' }}</td>
+                  <td class="event-message-cell" :title="event.message">{{ event.message || '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div v-else-if="activeTab === 'nodes'" class="table-wrap">
           <table class="k8s-table">
             <thead>
               <tr>
-                <th>名称</th><th>IP 地址</th><th>状态</th><th>角色</th><th>版本</th><th>OS</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>IP 地址</th><th>状态</th><th>角色</th><th>CPU</th><th>内存</th><th>版本</th><th>OS</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredNodes.length"><td colspan="8" class="empty">暂无数据</td></tr>
+              <tr v-if="!filteredNodes.length"><td colspan="10" class="empty">暂无数据</td></tr>
               <tr v-for="node in limitRows(filteredNodes)" :key="node.name">
                 <td class="name-cell">{{ node.name }}</td>
                 <td class="mono small node-list-cell">{{ node.internal_ip || '-' }}</td>
                 <td><span class="status-dot" :class="node.statusClass"></span>{{ node.status }}</td>
                 <td><span class="role-tag">{{ node.roles }}</span></td>
+                <td class="resource-cell" :title="nodeResourceTitle(node, 'cpu')">
+                  <div class="resource-line">
+                    <span class="resource-value">{{ nodeResourceUsageText(node, 'cpu') }}</span>
+                    <span class="resource-ratio" :class="nodeResourceThresholdClass(node, 'cpu')">{{ nodeResourceRatioText(node, 'cpu') }}</span>
+                  </div>
+                  <div class="resource-limit">/ {{ nodeResourceAllocatableText(node, 'cpu') }}</div>
+                  <div class="resource-meter" :class="nodeResourceThresholdClass(node, 'cpu')"><span :style="{ width: nodeResourceBarWidth(node, 'cpu') }"></span></div>
+                </td>
+                <td class="resource-cell" :title="nodeResourceTitle(node, 'memory')">
+                  <div class="resource-line">
+                    <span class="resource-value">{{ nodeResourceUsageText(node, 'memory') }}</span>
+                    <span class="resource-ratio" :class="nodeResourceThresholdClass(node, 'memory')">{{ nodeResourceRatioText(node, 'memory') }}</span>
+                  </div>
+                  <div class="resource-limit">/ {{ nodeResourceAllocatableText(node, 'memory') }}</div>
+                  <div class="resource-meter" :class="nodeResourceThresholdClass(node, 'memory')"><span :style="{ width: nodeResourceBarWidth(node, 'memory') }"></span></div>
+                </td>
                 <td class="mono small">{{ node.version }}</td>
                 <td class="small muted">{{ node.os }}</td>
                 <td class="muted mono small" :title="formatRelative(node.age)">{{ formatDateTime(node.age) }}</td>
@@ -942,22 +1008,38 @@
     </div>
 
     <div v-if="showClusterModal" class="modal-mask" @click.self="closeClusterModal">
-      <div class="modal-card">
+      <div class="modal-card cluster-modal-card">
         <div class="modal-title">{{ editingClusterId ? '编辑集群' : '添加集群' }}</div>
         <div class="modal-body">
+          <label class="field">
+            <span>集群名称 <small v-if="authMode === 'paste'" style="color:var(--text-muted);font-weight:400">（粘贴模式可留空自动识别）</small></span>
+            <input v-model="clusterForm.name" class="form-input" :placeholder="authMode === 'paste' ? '留空时使用 kubeconfig 中的集群名称' : '生产-k8s-01'" />
+          </label>
 
-          <!-- 快速导入：粘贴完整 kubeconfig 后自动命名、保存、测试并加入集群 -->
-          <div v-if="!editingClusterId" class="kubeconfig-quick-import">
-            <div class="quick-import-heading">
-              <div>
-                <strong>粘贴完整 kubeconfig</strong>
-                <span class="quick-import-recommended">推荐</span>
-              </div>
-              <span>兼容 Kubernetes 1.18+ 的标准 kubeconfig</span>
+          <div class="field">
+            <span>认证方式</span>
+            <div class="auth-mode-tabs auth-mode-grid">
+              <button
+                v-for="mode in CLUSTER_AUTH_MODES"
+                :key="mode.value"
+                type="button"
+                class="auth-tab auth-mode-card"
+                :class="{ active: authMode === mode.value }"
+                :aria-pressed="authMode === mode.value"
+                @click="selectAuthMode(mode.value)"
+              >
+                <span class="auth-mode-icon">{{ mode.icon }}</span>
+                <span class="auth-mode-copy"><strong>{{ mode.label }}</strong><small>{{ mode.description }}</small></span>
+              </button>
             </div>
-            <p class="quick-import-help">
-              直接粘贴包含 apiVersion、clusters、contexts、users 的完整内容，无需拆分 CA 证书或 Token。
-            </p>
+          </div>
+
+          <div v-if="authMode === 'paste'" class="kubeconfig-quick-import auth-mode-panel">
+            <div class="quick-import-heading">
+              <div><strong>粘贴完整 kubeconfig</strong><span class="quick-import-recommended">推荐</span></div>
+              <span>兼容 Kubernetes 1.18+ 标准 kubeconfig</span>
+            </div>
+            <p class="quick-import-help">直接粘贴包含 apiVersion、clusters、contexts、users 的完整内容，证书与 Token 将原样安全保存。</p>
             <textarea
               v-model="pasteContent"
               class="form-textarea kubeconfig-paste-input"
@@ -966,7 +1048,7 @@
               autocomplete="off"
               placeholder="apiVersion: v1&#10;kind: Config&#10;clusters:&#10;- cluster:&#10;    certificate-authority-data: ...&#10;    server: https://x.x.x.x:6443&#10;..."
             />
-            <div class="quick-import-security">🔒 kubeconfig 含访问凭据，导入后仅保存到服务端受控目录，不会在页面回显 Token。</div>
+            <div class="quick-import-security">🔒 页面不会回显 kubeconfig 中的 Token；保存后自动测试连接。</div>
             <div v-if="pasteResult" class="quick-import-preview">
               <span>✓ 已识别 {{ pasteResult.suggested_name }}</span>
               <span v-if="pasteResult.server">API Server：{{ pasteResult.server }}</span>
@@ -974,76 +1056,38 @@
               <span v-if="pasteResult.namespace">Namespace：{{ pasteResult.namespace }}</span>
             </div>
             <div v-if="pasteError" class="paste-error">{{ pasteError }}</div>
-            <div class="quick-import-actions">
-              <button
-                class="btn-primary-lg"
-                type="button"
-                :disabled="pasteLoading || !pasteContent.trim()"
-                @click="importPastedCluster"
-              >
-                {{ pasteLoading ? '正在解析并测试连接...' : '解析并加入集群' }}
-              </button>
-              <span>集群名称默认取 clusters[0].name，也可在下方预先填写自定义名称。</span>
-            </div>
           </div>
 
-          <div v-if="!editingClusterId" class="cluster-import-divider"><span>或使用路径 / 证书方式</span></div>
-
-          <!-- 集群名称 -->
-          <label class="field">
-            <span>集群名称 <small v-if="!editingClusterId" style="color:var(--text-muted);font-weight:400">（快速导入时可留空）</small></span>
-            <input v-model="clusterForm.name" class="form-input" placeholder="留空时自动使用 kubeconfig 中的集群名称" />
-          </label>
-
-          <!-- kubeconfig 路径 + 自动识别（支持直接粘贴 yaml 文本：含 apiVersion: 自动落盘） -->
-          <div class="field">
-            <span>kubeconfig 路径 <small style="color:var(--text-muted);font-weight:400">（可直接粘贴 yaml 文本）</small></span>
-            <div class="detect-row">
-              <input v-model="clusterForm.kubeconfig" class="form-input detect-input"
-                placeholder="路径 (~/.kube/config) 或粘贴 yaml 文本（含 apiVersion:）"
-                @paste="onPathInputPaste"
-                @keyup.enter="autoDetect" />
-              <button class="btn-detect" :class="{ loading: detectLoading || pasteLoading }"
-                @click="autoDetect" type="button" :disabled="detectLoading || pasteLoading || !clusterForm.kubeconfig.trim()">
-                {{ pasteLoading ? '解析文本...' : detectLoading ? '识别中...' : '自动识别' }}
-              </button>
+          <div v-else-if="authMode === 'kubeconfig'" class="auth-mode-panel">
+            <div class="field">
+              <span>kubeconfig 路径</span>
+              <div class="detect-row">
+                <input v-model="clusterForm.kubeconfig" class="form-input detect-input"
+                  placeholder="~/.kube/config 或 backend/data/kubeconfigs/cluster.yaml"
+                  @paste="onPathInputPaste"
+                  @keyup.enter="autoDetect" />
+                <button class="btn-detect" :class="{ loading: detectLoading || pasteLoading }"
+                  @click="autoDetect" type="button" :disabled="detectLoading || pasteLoading || !clusterForm.kubeconfig.trim()">
+                  {{ pasteLoading ? '解析文本...' : detectLoading ? '识别中...' : '自动识别' }}
+                </button>
+              </div>
             </div>
-            <div v-if="pasteError" class="paste-error" style="margin-top:6px">{{ pasteError }}</div>
+            <div v-if="detectResult" class="detect-result" :class="'detect-' + (detectResult.auth?.type || 'unknown')">
+              <span class="detect-icon">{{ { certificate:'🔐', token:'🎫', exec:'⚙️', basic:'👤', unknown:'❓' }[detectResult.auth?.type] || '❓' }}</span>
+              <div class="detect-info">
+                <span class="detect-type">{{ { certificate:'证书认证', token:'Token 认证', exec:'Exec 插件', basic:'用户名密码', unknown:'未知类型' }[detectResult.auth?.type] }}<span v-if="detectResult.auth?.cert_embedded" class="detect-tag-embedded">✓ 内嵌证书</span></span>
+                <span class="detect-server">{{ detectResult.server }}</span>
+                <span v-if="detectResult.auth?.cert_detail?.subject" class="detect-sub">{{ detectResult.auth.cert_detail.subject }}</span>
+                <span v-if="detectResult.auth?.cert_detail?.not_after" class="detect-sub" :class="{ 'detect-expired': new Date(detectResult.auth.cert_detail.not_after) < new Date() }">过期：{{ detectResult.auth.cert_detail.not_after }}</span>
+              </div>
+              <button class="detect-clear" @click="detectResult = null" type="button">✕</button>
+            </div>
+            <div v-if="detectError" class="detect-error">{{ detectError }}</div>
+            <div v-if="pasteError" class="paste-error">{{ pasteError }}</div>
           </div>
 
-          <!-- 识别结果徽章 -->
-          <div v-if="detectResult" class="detect-result" :class="'detect-' + (detectResult.auth?.type || 'unknown')">
-            <span class="detect-icon">{{ { certificate:'🔐', token:'🎫', exec:'⚙️', basic:'👤', unknown:'❓' }[detectResult.auth?.type] || '❓' }}</span>
-            <div class="detect-info">
-              <span class="detect-type">
-                {{ { certificate:'证书认证', token:'Token 认证', exec:'Exec 插件', basic:'用户名密码', unknown:'未知类型' }[detectResult.auth?.type] }}
-                <span v-if="detectResult.auth?.cert_embedded" class="detect-tag-embedded" title="证书已通过 *-data base64 内嵌在 kubeconfig 中，无需外部文件">
-                  ✓ 内嵌证书
-                </span>
-              </span>
-              <span class="detect-server">{{ detectResult.server }}</span>
-              <span v-if="detectResult.auth?.cert_detail?.subject" class="detect-sub">{{ detectResult.auth.cert_detail.subject }}</span>
-              <span v-if="detectResult.auth?.cert_detail?.not_after" class="detect-sub"
-                :class="{ 'detect-expired': new Date(detectResult.auth.cert_detail.not_after) < new Date() }">
-                过期：{{ detectResult.auth.cert_detail.not_after }}
-              </span>
-            </div>
-            <button class="detect-clear" @click="detectResult = null; authMode = 'kubeconfig'" type="button">✕</button>
-          </div>
-          <div v-if="detectError" class="detect-error">{{ detectError }}</div>
-
-          <!-- 认证模式（自动识别后高亮，也可手动切换） -->
-          <div class="field">
-            <span>认证方式</span>
-            <div class="auth-mode-tabs">
-              <button :class="['auth-tab', { active: authMode === 'kubeconfig' }]" @click="authMode = 'kubeconfig'" type="button">kubeconfig 路径</button>
-              <button :class="['auth-tab', { active: authMode === 'cert' }]"       @click="authMode = 'cert'"       type="button">证书认证</button>
-              <button :class="['auth-tab', { active: authMode === 'token' }]"      @click="authMode = 'token'"      type="button">Token 认证</button>
-            </div>
-          </div>
-
-          <!-- 证书/Token 模式：路径从自动识别填入，也可手动编辑 -->
-          <template v-if="authMode === 'cert' || authMode === 'token'">
+          <template v-else>
+            <div class="auth-mode-panel manual-auth-panel">
             <label class="field">
               <span>API Server 地址</span>
               <input v-model="certForm.server" class="form-input" placeholder="https://192.168.9.221:6443" />
@@ -1063,38 +1107,27 @@
                 </label>
               </div>
             </div>
-          </template>
-
-          <template v-if="authMode === 'cert'">
-            <div class="field">
-              <span>客户端证书路径</span>
-              <div class="cert-path-row">
-                <input v-model="certForm.clientCertPath" class="form-input" placeholder="backend/data/test/user.crt" />
-                <label class="cert-upload-btn" title="上传新文件到 data/ca/">
-                  {{ certForm.clientCertUploading ? '...' : '上传' }}
-                  <input type="file" accept=".pem,.crt,.cer" style="display:none"
-                    @change="e => handleCertUpload(e, 'client-cert')" />
-                </label>
+            <template v-if="authMode === 'cert'">
+              <div class="field">
+                <span>客户端证书路径</span>
+                <div class="cert-path-row">
+                  <input v-model="certForm.clientCertPath" class="form-input" placeholder="backend/data/ca/client.crt" />
+                  <label class="cert-upload-btn" title="上传客户端证书">{{ certForm.clientCertUploading ? '...' : '上传' }}<input type="file" accept=".pem,.crt,.cer" style="display:none" @change="e => handleCertUpload(e, 'client-cert')" /></label>
+                </div>
               </div>
-            </div>
-            <div class="field">
-              <span>客户端私钥路径</span>
-              <div class="cert-path-row">
-                <input v-model="certForm.clientKeyPath" class="form-input" placeholder="backend/data/test/user.key" />
-                <label class="cert-upload-btn" title="上传新文件到 data/ca/">
-                  {{ certForm.clientKeyUploading ? '...' : '上传' }}
-                  <input type="file" accept=".pem,.key" style="display:none"
-                    @change="e => handleCertUpload(e, 'client-key')" />
-                </label>
+              <div class="field">
+                <span>客户端私钥路径</span>
+                <div class="cert-path-row">
+                  <input v-model="certForm.clientKeyPath" class="form-input" placeholder="backend/data/ca/client.key" />
+                  <label class="cert-upload-btn" title="上传客户端私钥">{{ certForm.clientKeyUploading ? '...' : '上传' }}<input type="file" accept=".pem,.key" style="display:none" @change="e => handleCertUpload(e, 'client-key')" /></label>
+                </div>
               </div>
+            </template>
+            <label v-else class="field">
+                <span>Bearer Token</span>
+                <textarea v-model="certForm.token" class="form-textarea" rows="4" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Bearer Token" />
+              </label>
             </div>
-          </template>
-
-          <template v-if="authMode === 'token'">
-            <label class="field">
-              <span>Bearer Token</span>
-              <textarea v-model="certForm.token" class="form-textarea" rows="3" placeholder="eyJhbGciOiJSUzI1NiIsInR5..." />
-            </label>
           </template>
 
           <!-- 通用字段 -->
@@ -1109,7 +1142,7 @@
         </div>
         <div class="modal-actions">
           <button class="btn-ghost" @click="closeClusterModal">取消</button>
-          <button class="btn-primary-lg" @click="saveCluster">{{ editingClusterId ? '保存修改' : '确认添加' }}</button>
+          <button class="btn-primary-lg" :disabled="clusterSaving || pasteLoading" @click="submitCluster">{{ clusterSaveButtonLabel }}</button>
         </div>
       </div>
     </div>
@@ -1494,6 +1527,12 @@ const TABS = [
   { id: 'services', label: 'Services' },
   { id: 'configMaps', label: 'ConfigMaps' },
   { id: 'nodes', label: 'Nodes' },
+  { id: 'events', label: 'Events' },
+]
+const CLUSTER_EVENT_TYPE_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'Warning', label: 'Warning' },
+  { value: 'Normal', label: 'Normal' },
 ]
 const OVERVIEW_SECTIONS = [
   'summary', 'namespaces', 'pods', 'deployments', 'daemonSets',
@@ -1548,6 +1587,11 @@ const cronJobs = ref([])
 const services = ref([])
 const configMaps = ref([])
 const nodes = ref([])
+const clusterEvents = ref([])
+const clusterEventsLoading = ref(false)
+const clusterEventsError = ref('')
+const clusterEventTypeFilter = ref('')
+let clusterEventsRequestId = 0
 const searchKeyword = ref('')
 const showDetailModal = ref(false)
 const detailLoading = ref(false)
@@ -1797,8 +1841,15 @@ const showClusterModal = ref(false)
 const editingClusterId = ref('')
 const clusterTestResult = ref(null)
 const clusterTestMsg = ref('')
-// 认证模式：kubeconfig | cert | token
-const authMode     = ref('kubeconfig')
+const CLUSTER_AUTH_MODES = [
+  { value: 'paste', label: '粘贴完整 kubeconfig', description: '直接粘贴 YAML 全文', icon: '📋' },
+  { value: 'kubeconfig', label: 'kubeconfig 路径', description: '使用服务器已有文件', icon: '📁' },
+  { value: 'cert', label: '证书认证', description: 'CA + 客户端证书', icon: '🔐' },
+  { value: 'token', label: 'Token 认证', description: 'CA + Bearer Token', icon: '🎫' },
+]
+// 认证模式：paste | kubeconfig | cert | token
+const authMode = ref('paste')
+const clusterSaving = ref(false)
 const detectLoading = ref(false)
 const detectResult  = ref(null)   // 识别出的单个 file 对象
 const detectError   = ref('')
@@ -1862,27 +1913,21 @@ async function autoDetect() {
     // 自动填充 context
     if (firstFile.current_context) clusterForm.context = firstFile.current_context
 
-    // 自动切换模式并填充字段
+    // 只展示识别结果，不自动切换认证方式；路径模式必须原样使用该 kubeconfig。
     if (auth.type === 'certificate') {
-      authMode.value = 'cert'
-      // 内嵌证书时显式标注"(已内嵌)"，让用户知道认证 OK，无需手动填路径
-      const isEmbedded = auth.cert_embedded === true
       certForm.caPath = firstFile.ca && firstFile.ca !== '(none)' && firstFile.ca !== '(embedded)'
         ? firstFile.ca
-        : (isEmbedded ? '(已内嵌在 kubeconfig 中，无需路径)' : '')
+        : ''
       certForm.clientCertPath = auth.client_certificate && auth.client_certificate !== '(embedded)'
         ? auth.client_certificate
-        : (isEmbedded ? '(已内嵌在 kubeconfig 中，无需路径)' : '')
+        : ''
       certForm.clientKeyPath = auth.client_key && auth.client_key !== '(embedded)'
         ? auth.client_key
-        : (isEmbedded ? '(已内嵌在 kubeconfig 中，无需路径)' : '')
+        : ''
     } else if (auth.type === 'token') {
-      authMode.value = 'token'
       certForm.caPath = firstFile.ca && firstFile.ca !== '(none)' && firstFile.ca !== '(embedded)' ? firstFile.ca : ''
-      certForm.token  = auth.token_preview || ''
-    } else {
-      // exec / basic / unknown → 保持 kubeconfig 路径模式
-      authMode.value = 'kubeconfig'
+      // token_preview 仅用于展示，绝不能回填到可保存字段。
+      certForm.token = ''
     }
   } catch (e) {
     detectError.value = '识别失败: ' + e
@@ -1947,7 +1992,6 @@ async function importPastedCluster() {
     clusterForm.kubeconfig = r.relative
     if (!clusterForm.name.trim()) clusterForm.name = r.suggested_name || r.clusters?.[0] || ''
     if (r.current_context) clusterForm.context = r.current_context
-    authMode.value = 'kubeconfig'
 
     const saved = await saveCluster({ useExistingKubeconfig: true, testAfterSave: true })
     if (!saved) pasteError.value = clusterTestMsg.value || '集群导入失败'
@@ -1964,6 +2008,32 @@ const clusterForm = reactive({
   context: '',
   description: '',
 })
+
+function selectAuthMode(mode) {
+  if (!CLUSTER_AUTH_MODES.some(item => item.value === mode)) return
+  authMode.value = mode
+  detectError.value = ''
+  pasteError.value = ''
+  if (mode !== 'kubeconfig') detectResult.value = null
+  if (mode !== 'paste') pasteResult.value = null
+}
+
+const clusterSaveButtonLabel = computed(() => {
+  if (clusterSaving.value || pasteLoading.value) return '正在保存并测试...'
+  if (authMode.value === 'paste') return editingClusterId.value ? '解析并更新集群' : '解析并加入集群'
+  return editingClusterId.value ? '保存修改并测试' : '添加集群并测试'
+})
+
+async function submitCluster() {
+  if (clusterSaving.value || pasteLoading.value) return
+  clusterSaving.value = true
+  try {
+    if (authMode.value === 'paste') await importPastedCluster()
+    else await saveCluster({ testAfterSave: true })
+  } finally {
+    clusterSaving.value = false
+  }
+}
 
 const activeCluster = computed(() => clusters.value.find(item => item.id === activeClusterId.value) || null)
 const sortedClusters = computed(() => (
@@ -2089,6 +2159,14 @@ const filteredNodes = computed(() =>
   nodes.value.filter((item) => matchesSearch([
     item.name, item.internal_ip, item.status, item.roles, item.version, item.os,
   ])).filter(abnormalPass(isNodeAbnormal))
+)
+const filteredClusterEvents = computed(() =>
+  clusterEvents.value.filter((item) => (
+    !clusterEventTypeFilter.value || item.type === clusterEventTypeFilter.value
+  )).filter((item) => matchesSearch([
+    item.type, item.reason, item.message, item.namespace,
+    item.object_kind, item.object_name, item.source, item.source_host,
+  ]))
 )
 
 // 全集群异常总数（不受 onlyAbnormal 影响，供开关徽标展示）
@@ -2601,6 +2679,7 @@ const TAB_TO_LIST = {
   services: () => filteredServices.value,
   configMaps: () => filteredConfigMaps.value,
   nodes: () => filteredNodes.value,
+  events: () => filteredClusterEvents.value,
 }
 
 const currentKind = computed(() => TAB_TO_KIND[activeTab.value] || '')
@@ -2790,9 +2869,55 @@ function resetData() {
   services.value = []
   configMaps.value = []
   nodes.value = []
+  clusterEvents.value = []
+  clusterEventsError.value = ''
+  clusterEventsLoading.value = false
+  clusterEventsRequestId += 1
   lastFetchedAt.value = 0
   closeDetailModal()
   closeLogModal()
+}
+
+async function loadClusterEvents(options = {}) {
+  if (!activeClusterId.value) return
+  const requestId = ++clusterEventsRequestId
+  const clusterId = activeClusterId.value
+  const namespace = activeNs.value || ''
+  clusterEventsLoading.value = true
+  clusterEventsError.value = ''
+  try {
+    const result = await api.k8sClusterEvents(
+      clusterId,
+      namespace,
+      '',
+      options.force === true,
+    )
+    if (requestId !== clusterEventsRequestId || clusterId !== activeClusterId.value || namespace !== (activeNs.value || '')) return
+    clusterEvents.value = result?.items || []
+  } catch (e) {
+    if (requestId !== clusterEventsRequestId) return
+    clusterEvents.value = []
+    clusterEventsError.value = e?.response?.data?.detail || e?.message || String(e)
+  } finally {
+    if (requestId === clusterEventsRequestId) clusterEventsLoading.value = false
+  }
+}
+
+function selectResourceTab(tabId) {
+  activeTab.value = tabId
+  showAllRows.value = false
+  if (tabId === 'events' && !clusterEvents.value.length && !clusterEventsLoading.value) {
+    loadClusterEvents()
+  }
+}
+
+async function handleNamespaceChange() {
+  clusterEventsRequestId += 1
+  clusterEvents.value = []
+  clusterEventsError.value = ''
+  clusterEventsLoading.value = false
+  await fetchAll()
+  if (activeTab.value === 'events') await loadClusterEvents()
 }
 
 function resetNotice() {
@@ -2821,6 +2946,7 @@ function tabCount(id) {
     services: filteredServices.value.length,
     configMaps: filteredConfigMaps.value.length,
     nodes: filteredNodes.value.length,
+    events: filteredClusterEvents.value.length,
   }
   return mapping[id] ?? 0
 }
@@ -2833,6 +2959,7 @@ function formatBytes(n) {
 }
 
 function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }
@@ -2917,6 +3044,56 @@ function podResourceTitle(pod, type) {
     : []
   if (missing.length) parts.push(`未配置 limit 容器: ${missing.join(', ')}`)
   return parts.join('\n')
+}
+
+function nodeResourceMetric(node, type) {
+  return node?.resources?.[type] || {}
+}
+
+function nodeResourceUsageText(node, type) {
+  const value = nodeResourceMetric(node, type).usage
+  return type === 'cpu' ? formatCpuCores(value) : formatMemoryBytes(value)
+}
+
+function nodeResourceAllocatableText(node, type) {
+  const value = nodeResourceMetric(node, type).allocatable
+  return type === 'cpu' ? formatCpuCores(value) : formatMemoryBytes(value)
+}
+
+function nodeResourceRatioValue(node, type) {
+  return finiteNumber(nodeResourceMetric(node, type).usage_pct)
+}
+
+function nodeResourceRatioText(node, type) {
+  const pct = nodeResourceRatioValue(node, type)
+  if (pct === null) return 'N/A'
+  return pct >= 10 ? `${pct.toFixed(0)}%` : `${pct.toFixed(1)}%`
+}
+
+function nodeResourceThresholdClass(node, type) {
+  const pct = nodeResourceRatioValue(node, type)
+  if (pct === null) return 'resource-unknown'
+  if (pct >= 90) return 'resource-critical'
+  if (pct >= 70) return 'resource-warn'
+  return 'resource-ok'
+}
+
+function nodeResourceBarWidth(node, type) {
+  const pct = nodeResourceRatioValue(node, type)
+  if (pct === null) return '0%'
+  return `${Math.min(100, Math.max(0, pct)).toFixed(1)}%`
+}
+
+function nodeResourceTitle(node, type) {
+  const label = type === 'cpu' ? 'CPU' : '内存'
+  const lines = [
+    `${label} 使用: ${nodeResourceUsageText(node, type)}`,
+    `${label} 可分配: ${nodeResourceAllocatableText(node, type)}`,
+    `使用率: ${nodeResourceRatioText(node, type)}`,
+  ]
+  if (!node?.metrics_available) lines.push('metrics-server 暂无该节点指标')
+  if (node?.metrics_timestamp) lines.push(`采集时间: ${node.metrics_timestamp}`)
+  return lines.join('\n')
 }
 
 // 单行删除（复用批量 API, items 长度=1）
@@ -3103,7 +3280,8 @@ async function refreshAll(opts = {}) {
   if (opts?.clusters === true) {
     await loadClusters(true)
   }
-  return fetchAll({ force: true })
+  await fetchAll({ force: true })
+  if (activeTab.value === 'events') await loadClusterEvents({ force: true })
 }
 
 async function selectCluster(clusterId) {
@@ -3112,11 +3290,30 @@ async function selectCluster(clusterId) {
   activeNs.value = ''
   resetNotice()
   await fetchAll()   // 走缓存：切回老集群时秒回
+  if (activeTab.value === 'events') await loadClusterEvents()
+}
+
+function resetClusterAuthState(mode = 'paste') {
+  authMode.value = mode
+  clusterSaving.value = false
+  detectResult.value = null
+  detectError.value = ''
+  pasteContent.value = ''
+  pasteResult.value = null
+  pasteError.value = ''
+  pasteLoading.value = false
+  Object.assign(certForm, {
+    server: '', insecureSkipTLS: false, caPath: '', caUploading: false,
+    clientCertPath: '', clientCertUploading: false,
+    clientKeyPath: '', clientKeyUploading: false,
+    token: '',
+  })
 }
 
 function openAddCluster() {
   editingClusterId.value = ''
   Object.assign(clusterForm, { name: '', kubeconfig: '', context: '', description: '' })
+  resetClusterAuthState('paste')
   showClusterModal.value = true
 }
 
@@ -3129,25 +3326,13 @@ function openEditCluster() {
     context: activeCluster.value.context || '',
     description: activeCluster.value.description || '',
   })
+  resetClusterAuthState('kubeconfig')
   showClusterModal.value = true
 }
 
 function closeClusterModal() {
   showClusterModal.value = false
-  // 重置检测状态和 certForm
-  authMode.value      = 'kubeconfig'
-  detectResult.value  = null
-  detectError.value   = ''
-  pasteContent.value  = ''
-  pasteResult.value   = null
-  pasteError.value    = ''
-  pasteLoading.value  = false
-  Object.assign(certForm, {
-    server: '', insecureSkipTLS: false, caPath: '', caUploading: false,
-    clientCertPath: '', clientCertUploading: false,
-    clientKeyPath: '',  clientKeyUploading: false,
-    token: '',
-  })
+  resetClusterAuthState('paste')
 }
 
 async function openResourceDetail(kind, row) {
@@ -3509,6 +3694,10 @@ async function saveCluster(options = {}) {
       }
       clientCertRel = certForm.clientCertPath.trim()
       clientKeyRel  = certForm.clientKeyPath.trim()
+    } else if (!certForm.token.trim()) {
+      clusterTestResult.value = false
+      clusterTestMsg.value = 'Bearer Token 不能为空'
+      return
     }
 
     clusterTestMsg.value = '生成 kubeconfig...'
@@ -3807,6 +3996,7 @@ const searchMatchSummary = computed(() => [
   { tab: 'cronJobs',     label: 'CronJobs',     count: filteredCronJobs.value.length },
   { tab: 'services',     label: 'Services',     count: filteredServices.value.length },
   { tab: 'nodes',        label: 'Nodes',        count: filteredNodes.value.length },
+  { tab: 'events',       label: 'Events',       count: filteredClusterEvents.value.length },
 ])
 const searchTotalCount = computed(() =>
   searchMatchSummary.value.reduce((s, i) => s + i.count, 0)
@@ -4586,8 +4776,14 @@ onBeforeUnmount(() => { _destroyExec() })
 .cert-path-row { display: flex; gap: 6px; align-items: center; }
 .cert-path-row .form-input { flex: 1; font-family: monospace; font-size: 12px; }
 
-/* 认证模式 */
-.auth-mode-tabs { display: flex; gap: 4px; }
+/* 四类认证模式 */
+.cluster-modal-card {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.auth-mode-tabs { display: flex; gap: 8px; }
+.auth-mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .auth-tab {
   padding: 4px 12px; font-size: 12px; border-radius: 5px; cursor: pointer;
   border: 1px solid var(--border); background: transparent; color: var(--text-secondary);
@@ -4595,6 +4791,33 @@ onBeforeUnmount(() => { _destroyExec() })
 }
 .auth-tab:hover { background: var(--sidebar-hover); }
 .auth-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.auth-mode-card {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  text-align: left;
+}
+.auth-mode-card.active {
+  background: rgba(56,139,253,.12);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(56,139,253,.18);
+}
+.auth-mode-icon { font-size: 19px; flex-shrink: 0; }
+.auth-mode-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.auth-mode-copy strong { color: inherit; font-size: 12px; }
+.auth-mode-copy small { color: var(--text-muted); font-size: 10px; font-weight: 400; }
+.auth-mode-card.active .auth-mode-copy small { color: var(--accent); opacity: .8; }
+.auth-mode-panel { border-radius: 9px; }
+.manual-auth-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+}
 
 /* 证书上传行 */
 .cert-upload-field { display: flex; flex-direction: column; gap: 4px; }
@@ -4958,6 +5181,50 @@ onBeforeUnmount(() => { _destroyExec() })
   margin-left: 4px; padding: 0 5px;
   background: rgba(56,139,253,.15); color: var(--accent);
   border-radius: 8px; font-size: 10px; font-weight: 700;
+}
+
+/* 集群 Events 资源页 */
+.cluster-events-panel { display: flex; flex-direction: column; gap: 10px; min-height: 260px; }
+.cluster-event-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+.event-filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.event-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.event-filter-btn span { font-family: var(--font-mono); }
+.event-filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(56,139,253,.10); }
+.event-filter-btn.warning.active { border-color: var(--warning, #d29922); color: var(--warning, #d29922); background: rgba(210,153,34,.10); }
+.cluster-event-toolbar-meta { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 11px; }
+.cluster-event-table-wrap { max-height: 560px; }
+.cluster-event-table { min-width: 1060px; }
+.cluster-event-table tr.cluster-event-warning td { background: rgba(210,153,34,.035); }
+.cluster-event-table tr.cluster-event-warning:hover td { background: rgba(210,153,34,.075); }
+.event-time-cell { white-space: nowrap; }
+.event-object-kind { margin-right: 5px; }
+.event-object-name { font-family: var(--font-mono); color: var(--text-secondary); }
+.event-message-cell {
+  min-width: 300px;
+  max-width: 560px;
+  white-space: normal;
+  word-break: break-word;
+  color: var(--text-secondary);
 }
 
 /* 镜像编辑列 */
@@ -5561,6 +5828,10 @@ onBeforeUnmount(() => { _destroyExec() })
   .btn-refresh,
   .btn-ghost { flex: 1; }
   .cluster-meta { grid-template-columns: 1fr; }
+  .cluster-modal-card { width: calc(100vw - 24px); }
+  .auth-mode-grid { grid-template-columns: 1fr; }
+  .cluster-event-toolbar { align-items: stretch; flex-direction: column; }
+  .cluster-event-toolbar-meta { justify-content: space-between; }
   .detail-modal-card,
   .log-modal-card { width: calc(100vw - 24px); }
   .log-toolbar { grid-template-columns: 1fr; }

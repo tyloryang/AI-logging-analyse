@@ -854,12 +854,14 @@ def _fetch_pod_metrics_index(cluster_id: str | None, namespace: str = "") -> dic
                 version="v1beta1",
                 namespace=namespace,
                 plural="pods",
+                _request_timeout=5,
             )
         else:
             payload = metrics_api.list_cluster_custom_object(
                 group="metrics.k8s.io",
                 version="v1beta1",
                 plural="pods",
+                _request_timeout=5,
             )
     except Exception as exc:
         logger.info("[k8s] pod metrics unavailable: %s", exc)
@@ -898,6 +900,40 @@ def _fetch_pod_metrics_index(cluster_id: str | None, namespace: str = "") -> dic
             "cpu_usage_cores": float(cpu_total) if has_cpu else None,
             "memory_usage_bytes": memory_total if has_memory else None,
             "containers": container_metrics,
+        }
+    return index
+
+
+def _fetch_node_metrics_index(cluster_id: str | None) -> dict[str, dict]:
+    """读取 metrics.k8s.io/v1beta1 NodeMetrics；metrics-server 不可用时返回空。"""
+    try:
+        from kubernetes import client
+
+        metrics_api = client.CustomObjectsApi(_get_api_client(cluster_id))
+        payload = metrics_api.list_cluster_custom_object(
+            group="metrics.k8s.io",
+            version="v1beta1",
+            plural="nodes",
+            _request_timeout=5,
+        )
+    except Exception as exc:
+        logger.info("[k8s] node metrics unavailable: %s", exc)
+        return {}
+
+    index: dict[str, dict] = {}
+    for item in payload.get("items") or []:
+        meta = item.get("metadata") or {}
+        name = str(meta.get("name") or "").strip()
+        if not name:
+            continue
+        usage = item.get("usage") or {}
+        cpu_usage = _parse_cpu_quantity_to_cores(usage.get("cpu"))
+        memory_usage = _parse_memory_quantity_to_bytes(usage.get("memory"))
+        index[name] = {
+            "cpu_usage_cores": float(cpu_usage) if cpu_usage is not None else None,
+            "memory_usage_bytes": memory_usage,
+            "timestamp": str(item.get("timestamp") or ""),
+            "window": str(item.get("window") or ""),
         }
     return index
 
@@ -1213,8 +1249,9 @@ def _serialize_configmaps(items: list, pod_index: list[dict]) -> list[dict]:
     return result
 
 
-def _serialize_nodes(node_items: list) -> list[dict]:
+def _serialize_nodes(node_items: list, node_metrics: dict[str, dict] | None = None) -> list[dict]:
     result = []
+    node_metrics = node_metrics or {}
     for item in node_items:
         ready = "Unknown"
         for cond in (item.status.conditions or []):
@@ -1225,6 +1262,12 @@ def _serialize_nodes(node_items: list) -> list[dict]:
             (a.address for a in (item.status.addresses or []) if a.type == "InternalIP"),
             "",
         )
+        metrics = node_metrics.get(item.metadata.name) or {}
+        allocatable = item.status.allocatable or item.status.capacity or {}
+        cpu_allocatable = _parse_cpu_quantity_to_cores(allocatable.get("cpu"))
+        memory_allocatable = _parse_memory_quantity_to_bytes(allocatable.get("memory"))
+        cpu_usage = metrics.get("cpu_usage_cores")
+        memory_usage = metrics.get("memory_usage_bytes")
         result.append(
             {
                 "name": item.metadata.name,
@@ -1241,6 +1284,21 @@ def _serialize_nodes(node_items: list) -> list[dict]:
                 "os": getattr(info, "os_image", ""),
                 "arch": getattr(info, "architecture", ""),
                 "age": _safe_age(item.metadata.creation_timestamp),
+                "metrics_available": bool(metrics),
+                "metrics_timestamp": metrics.get("timestamp", ""),
+                "metrics_window": metrics.get("window", ""),
+                "resources": {
+                    "cpu": {
+                        "usage": cpu_usage,
+                        "allocatable": float(cpu_allocatable) if cpu_allocatable is not None else None,
+                        "usage_pct": _resource_usage_pct(cpu_usage, cpu_allocatable),
+                    },
+                    "memory": {
+                        "usage": memory_usage,
+                        "allocatable": memory_allocatable,
+                        "usage_pct": _resource_usage_pct(memory_usage, memory_allocatable),
+                    },
+                },
             }
         )
     return result
@@ -2126,6 +2184,49 @@ async def update_resource_image(
 
 # ── Events 关联 ─────────────────────────────────────────────────────────────
 
+def _event_iso(value) -> str:
+    return value.isoformat() if value and hasattr(value, "isoformat") else str(value or "")
+
+
+def _serialize_event_items(event_items: list) -> list[dict]:
+    """兼容 Kubernetes 1.18 core/v1 Event 与较新版本 event_time/series 字段。"""
+    items = []
+    for ev in event_items:
+        series = getattr(ev, "series", None)
+        last_ts = (
+            getattr(series, "last_observed_time", None)
+            or getattr(ev, "last_timestamp", None)
+            or getattr(ev, "event_time", None)
+            or getattr(ev, "first_timestamp", None)
+            or getattr(getattr(ev, "metadata", None), "creation_timestamp", None)
+        )
+        involved = getattr(ev, "involved_object", None)
+        source = getattr(ev, "source", None)
+        count = getattr(series, "count", None) or getattr(ev, "count", None) or 1
+        items.append({
+            "type": getattr(ev, "type", None) or "Normal",
+            "reason": getattr(ev, "reason", None) or "",
+            "message": getattr(ev, "message", None) or "",
+            "count": count,
+            "source": (
+                getattr(ev, "reporting_component", None)
+                or getattr(source, "component", None)
+                or ""
+            ),
+            "source_host": (
+                getattr(ev, "reporting_instance", None)
+                or getattr(source, "host", None)
+                or ""
+            ),
+            "namespace": getattr(getattr(ev, "metadata", None), "namespace", None) or "",
+            "object_kind": getattr(involved, "kind", None) or "",
+            "object_name": getattr(involved, "name", None) or "",
+            "first_ts": _event_iso(getattr(ev, "first_timestamp", None)),
+            "last_ts": _event_iso(last_ts),
+        })
+    items.sort(key=lambda item: item["last_ts"], reverse=True)
+    return items
+
 @router.get("/resource-events")
 async def resource_events(
     kind: str = Query(..., description="资源类型"),
@@ -2155,19 +2256,7 @@ async def resource_events(
         else:
             events = await asyncio.to_thread(v1.list_event_for_all_namespaces, field_selector=selector, limit=200)
 
-        items = []
-        for ev in events.items:
-            ts = ev.last_timestamp or ev.event_time or ev.first_timestamp
-            items.append({
-                "type":     ev.type or "Normal",
-                "reason":   ev.reason or "",
-                "message":  ev.message or "",
-                "count":    ev.count or 1,
-                "source":   ev.source.component if ev.source else "",
-                "first_ts": ev.first_timestamp.isoformat() if ev.first_timestamp else "",
-                "last_ts":  ts.isoformat() if ts else "",
-            })
-        items.sort(key=lambda x: x["last_ts"], reverse=True)
+        items = _serialize_event_items(events.items)
         return {"kind": normalized, "name": name, "namespace": namespace, "items": items, "total": len(items)}
     except HTTPException:
         raise
@@ -2175,6 +2264,40 @@ async def resource_events(
         detail = getattr(exc, "body", None) or str(exc)
         logger.warning("[k8s] resource_events failed kind=%s ns=%s name=%s: %s", kind, namespace, name, detail)
         raise HTTPException(status_code=502, detail=f"events 查询失败: {detail}")
+
+
+@router.get("/cluster-events")
+async def cluster_events(
+    namespace: str = Query("", description="命名空间，空=全部"),
+    cluster_id: str = Query("", description="集群 ID"),
+    event_type: str = Query("", description="事件类型：Normal / Warning"),
+    limit: int = Query(300, ge=20, le=500),
+    force: bool = Query(False, description="跳过缓存强制刷新"),
+    user: User = Depends(current_user),
+):
+    """查询集群 Event，按最后发生时间倒序，兼容 Kubernetes 1.18 core/v1。"""
+    try:
+        cluster = _resolve_cluster_for_user(user, cluster_id or None)
+
+        async def _load():
+            v1, _ = _get_client(cluster["id"])
+            if namespace:
+                response = await asyncio.to_thread(v1.list_namespaced_event, namespace=namespace, limit=500)
+            else:
+                response = await asyncio.to_thread(v1.list_event_for_all_namespaces, limit=500)
+            return _serialize_event_items(response.items)
+
+        items = await _list_with_cache("cluster-events", cluster["id"], namespace, force, _load)
+        normalized_type = event_type.strip().lower()
+        if normalized_type:
+            items = [item for item in items if item["type"].lower() == normalized_type]
+        return {"items": items[:limit], "total": len(items), "namespace": namespace}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = getattr(exc, "body", None) or str(exc)
+        logger.warning("[k8s] cluster_events failed ns=%s: %s", namespace, detail)
+        raise HTTPException(status_code=502, detail=f"集群 events 查询失败: {detail}")
 
 
 # ── 批量操作 (借鉴 jay-codemine/k8s_operation 浮动操作条) ────────────────────
@@ -3645,36 +3768,8 @@ async def list_nodes(
         async def _load():
             v1, _ = _get_client(cluster["id"])
             nodes = await asyncio.to_thread(v1.list_node)
-            result = []
-            for item in nodes.items:
-                ready = "Unknown"
-                for cond in (item.status.conditions or []):
-                    if cond.type == "Ready":
-                        ready = "Ready" if cond.status == "True" else "NotReady"
-                info = item.status.node_info or {}
-                internal_ip = next(
-                    (a.address for a in (item.status.addresses or []) if a.type == "InternalIP"),
-                    "",
-                )
-                result.append(
-                    {
-                        "name": item.metadata.name,
-                        "internal_ip": internal_ip,
-                        "status": ready,
-                        "statusClass": _phase_class(ready),
-                        "roles": ", ".join(
-                            key.split("/")[-1]
-                            for key in (item.metadata.labels or {})
-                            if key.startswith("node-role.kubernetes.io/")
-                        )
-                        or "worker",
-                        "version": getattr(info, "kubelet_version", ""),
-                        "os": getattr(info, "os_image", ""),
-                        "arch": getattr(info, "architecture", ""),
-                        "age": _safe_age(item.metadata.creation_timestamp),
-                    }
-                )
-            return result
+            metrics = await asyncio.to_thread(_fetch_node_metrics_index, cluster["id"])
+            return _serialize_nodes(nodes.items, metrics)
         return await _list_with_cache("nodes", cluster["id"], "", force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_nodes failed: %s", exc)
@@ -3782,8 +3877,20 @@ async def _build_overview_payload(cluster: dict, namespace: str, requested_secti
     endpoints = _response_items(raw.get("endpoints"))
     pod_index = []
     pod_metrics = {}
+    node_metrics = {}
+    metric_names = []
+    metric_tasks = []
     if "pods" in requested_sections:
-        pod_metrics = await asyncio.to_thread(_fetch_pod_metrics_index, cluster["id"], namespace)
+        metric_names.append("pods")
+        metric_tasks.append(asyncio.to_thread(_fetch_pod_metrics_index, cluster["id"], namespace))
+    if "nodes" in requested_sections:
+        metric_names.append("nodes")
+        metric_tasks.append(asyncio.to_thread(_fetch_node_metrics_index, cluster["id"]))
+    if metric_tasks:
+        metric_results = await asyncio.gather(*metric_tasks)
+        metric_map = dict(zip(metric_names, metric_results))
+        pod_metrics = metric_map.get("pods", {})
+        node_metrics = metric_map.get("nodes", {})
     if needs_pod_index:
         pod_index = await asyncio.to_thread(_build_pod_placement_index_from_items, pods)
         _POD_INDEX_CACHE[_pod_index_cache_key(cluster["id"], namespace)] = pod_index
@@ -3822,7 +3929,7 @@ async def _build_overview_payload(cluster: dict, namespace: str, requested_secti
     if "configMaps" in requested_sections:
         payload["configMaps"] = _serialize_configmaps(configmaps, pod_index)
     if "nodes" in requested_sections:
-        payload["nodes"] = _serialize_nodes(nodes)
+        payload["nodes"] = _serialize_nodes(nodes, node_metrics)
     return payload
 
 

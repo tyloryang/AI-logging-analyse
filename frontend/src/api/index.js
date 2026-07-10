@@ -243,6 +243,16 @@ export const api = {
   k8sResourceEvents: (clusterId, kind, name, namespace = '') =>
     http.get('/k8s/resource-events',
       { params: { ...(clusterId ? { cluster_id: clusterId } : {}), kind, name, namespace } }),
+  k8sClusterEvents: (clusterId, namespace = '', eventType = '', force = false) =>
+    http.get('/k8s/cluster-events', {
+      params: {
+        ...(clusterId ? { cluster_id: clusterId } : {}),
+        ...(namespace ? { namespace } : {}),
+        ...(eventType ? { event_type: eventType } : {}),
+        ...(force ? { force: true } : {}),
+        limit: 500,
+      },
+    }),
   // SSE 日志流 URL (用 EventSource 消费, 不走 axios)
   k8sPodLogsStreamUrl: (clusterId, podName, namespace, container, tailLines = 100) => {
     const params = new URLSearchParams({ namespace, pod_name: podName, tail_lines: String(tailLines) })
