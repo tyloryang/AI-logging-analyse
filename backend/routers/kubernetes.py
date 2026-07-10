@@ -5,8 +5,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import uuid
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from cachetools import TTLCache
@@ -721,8 +723,212 @@ def _serialize_namespaces(ns_items: list) -> list[dict]:
     ]
 
 
-def _serialize_pod_items(pod_items: list) -> list[dict]:
+_K8S_QUANTITY_RE = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))([a-zA-Z]*)\s*$")
+_CPU_QUANTITY_FACTORS = {
+    "": Decimal("1"),
+    "n": Decimal("0.000000001"),
+    "u": Decimal("0.000001"),
+    "m": Decimal("0.001"),
+    "k": Decimal("1000"),
+    "K": Decimal("1000"),
+    "M": Decimal("1000000"),
+    "G": Decimal("1000000000"),
+}
+_MEMORY_QUANTITY_FACTORS = {
+    "": Decimal("1"),
+    "n": Decimal("0.000000001"),
+    "u": Decimal("0.000001"),
+    "m": Decimal("0.001"),
+    "k": Decimal("1000"),
+    "K": Decimal("1000"),
+    "M": Decimal("1000000"),
+    "G": Decimal("1000000000"),
+    "T": Decimal("1000000000000"),
+    "P": Decimal("1000000000000000"),
+    "E": Decimal("1000000000000000000"),
+    "Ki": Decimal(1024),
+    "Mi": Decimal(1024 ** 2),
+    "Gi": Decimal(1024 ** 3),
+    "Ti": Decimal(1024 ** 4),
+    "Pi": Decimal(1024 ** 5),
+    "Ei": Decimal(1024 ** 6),
+}
+
+
+def _parse_k8s_quantity(value) -> tuple[Decimal, str] | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = _K8S_QUANTITY_RE.match(text)
+    if not match:
+        return None
+    try:
+        return Decimal(match.group(1)), match.group(2)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _parse_cpu_quantity_to_cores(value) -> Decimal | None:
+    parsed = _parse_k8s_quantity(value)
+    if not parsed:
+        return None
+    number, suffix = parsed
+    factor = _CPU_QUANTITY_FACTORS.get(suffix)
+    if factor is None:
+        return None
+    return number * factor
+
+
+def _parse_memory_quantity_to_bytes(value) -> int | None:
+    parsed = _parse_k8s_quantity(value)
+    if not parsed:
+        return None
+    number, suffix = parsed
+    factor = _MEMORY_QUANTITY_FACTORS.get(suffix)
+    if factor is None:
+        return None
+    return max(0, int(number * factor))
+
+
+def _pod_resource_limits(pod) -> dict:
+    containers = list(getattr(getattr(pod, "spec", None), "containers", None) or [])
+    cpu_total = Decimal("0")
+    memory_total = 0
+    cpu_configured = False
+    memory_configured = False
+    cpu_missing: list[str] = []
+    memory_missing: list[str] = []
+
+    for container in containers:
+        name = getattr(container, "name", "") or ""
+        limits = getattr(getattr(container, "resources", None), "limits", None) or {}
+
+        cpu_limit = _parse_cpu_quantity_to_cores(limits.get("cpu"))
+        if cpu_limit is None:
+            cpu_missing.append(name)
+        else:
+            cpu_total += cpu_limit
+            cpu_configured = True
+
+        memory_limit = _parse_memory_quantity_to_bytes(limits.get("memory"))
+        if memory_limit is None:
+            memory_missing.append(name)
+        else:
+            memory_total += memory_limit
+            memory_configured = True
+
+    return {
+        "cpu_limit_cores": float(cpu_total) if cpu_configured else None,
+        "cpu_limit_complete": bool(containers) and not cpu_missing,
+        "cpu_limit_missing_containers": cpu_missing,
+        "memory_limit_bytes": memory_total if memory_configured else None,
+        "memory_limit_complete": bool(containers) and not memory_missing,
+        "memory_limit_missing_containers": memory_missing,
+    }
+
+
+def _resource_usage_pct(usage, limit) -> float | None:
+    if usage is None or limit is None:
+        return None
+    try:
+        usage_value = Decimal(str(usage))
+        limit_value = Decimal(str(limit))
+    except (InvalidOperation, ValueError):
+        return None
+    if limit_value <= 0:
+        return None
+    return round(float((usage_value / limit_value) * Decimal("100")), 1)
+
+
+def _fetch_pod_metrics_index(cluster_id: str | None, namespace: str = "") -> dict[tuple[str, str], dict]:
+    try:
+        from kubernetes import client
+
+        metrics_api = client.CustomObjectsApi(_get_api_client(cluster_id))
+        if namespace:
+            payload = metrics_api.list_namespaced_custom_object(
+                group="metrics.k8s.io",
+                version="v1beta1",
+                namespace=namespace,
+                plural="pods",
+            )
+        else:
+            payload = metrics_api.list_cluster_custom_object(
+                group="metrics.k8s.io",
+                version="v1beta1",
+                plural="pods",
+            )
+    except Exception as exc:
+        logger.info("[k8s] pod metrics unavailable: %s", exc)
+        return {}
+
+    index: dict[tuple[str, str], dict] = {}
+    for item in payload.get("items") or []:
+        meta = item.get("metadata") or {}
+        pod_name = meta.get("name") or ""
+        pod_namespace = meta.get("namespace") or namespace or ""
+        if not pod_name or not pod_namespace:
+            continue
+
+        cpu_total = Decimal("0")
+        memory_total = 0
+        has_cpu = False
+        has_memory = False
+        container_metrics: list[dict] = []
+        for container in item.get("containers") or []:
+            usage = container.get("usage") or {}
+            cpu_usage = _parse_cpu_quantity_to_cores(usage.get("cpu"))
+            memory_usage = _parse_memory_quantity_to_bytes(usage.get("memory"))
+            if cpu_usage is not None:
+                cpu_total += cpu_usage
+                has_cpu = True
+            if memory_usage is not None:
+                memory_total += memory_usage
+                has_memory = True
+            container_metrics.append({
+                "name": container.get("name") or "",
+                "cpu_usage_cores": float(cpu_usage) if cpu_usage is not None else None,
+                "memory_usage_bytes": memory_usage,
+            })
+
+        index[(pod_namespace, pod_name)] = {
+            "cpu_usage_cores": float(cpu_total) if has_cpu else None,
+            "memory_usage_bytes": memory_total if has_memory else None,
+            "containers": container_metrics,
+        }
+    return index
+
+
+def _pod_resource_summary(pod, metrics: dict | None) -> dict:
+    limits = _pod_resource_limits(pod)
+    cpu_usage = metrics.get("cpu_usage_cores") if metrics else None
+    memory_usage = metrics.get("memory_usage_bytes") if metrics else None
+    cpu_limit = limits["cpu_limit_cores"]
+    memory_limit = limits["memory_limit_bytes"]
+    return {
+        "cpu": {
+            "usage": cpu_usage,
+            "limit": cpu_limit,
+            "usage_pct": _resource_usage_pct(cpu_usage, cpu_limit),
+            "limit_complete": limits["cpu_limit_complete"],
+            "limit_missing_containers": limits["cpu_limit_missing_containers"],
+        },
+        "memory": {
+            "usage": memory_usage,
+            "limit": memory_limit,
+            "usage_pct": _resource_usage_pct(memory_usage, memory_limit),
+            "limit_complete": limits["memory_limit_complete"],
+            "limit_missing_containers": limits["memory_limit_missing_containers"],
+        },
+        "containers": (metrics or {}).get("containers", []),
+    }
+
+
+def _serialize_pod_items(pod_items: list, pod_metrics: dict | None = None) -> list[dict]:
     result = []
+    pod_metrics = pod_metrics or {}
     for pod in pod_items:
         status = _pod_status(pod)
         containers = [
@@ -788,6 +994,10 @@ def _serialize_pod_items(pod_items: list) -> list[dict]:
                 "last_restart_exit_code": pod_last_exit,
                 "last_restart_container": pod_last_container,
                 "age": _safe_age(pod.metadata.creation_timestamp),
+                "resources": _pod_resource_summary(
+                    pod,
+                    pod_metrics.get((pod.metadata.namespace, pod.metadata.name)),
+                ),
             }
         )
     return result
@@ -2940,7 +3150,8 @@ async def list_pods(
         async def _load():
             # 走 raw Pod 共享缓存：同一次页面打开的其他 list_* 也会复用这份数据
             pods = await _get_pods_raw(cluster["id"], namespace)
-            return await asyncio.to_thread(_serialize_pod_items, pods.items)
+            metrics = await asyncio.to_thread(_fetch_pod_metrics_index, cluster["id"], namespace)
+            return await asyncio.to_thread(_serialize_pod_items, pods.items, metrics)
         return await _list_with_cache("pods", cluster["id"], namespace, force, _load)
     except Exception as exc:
         logger.warning("[k8s] list_pods failed: %s", exc)
@@ -3618,6 +3829,9 @@ async def _build_overview_payload(cluster: dict, namespace: str, requested_secti
     configmaps = _response_items(raw.get("configMaps"))
     endpoints = _response_items(raw.get("endpoints"))
     pod_index = []
+    pod_metrics = {}
+    if "pods" in requested_sections:
+        pod_metrics = await asyncio.to_thread(_fetch_pod_metrics_index, cluster["id"], namespace)
     if needs_pod_index:
         pod_index = await asyncio.to_thread(_build_pod_placement_index_from_items, pods)
         _POD_INDEX_CACHE[_pod_index_cache_key(cluster["id"], namespace)] = pod_index
@@ -3640,7 +3854,7 @@ async def _build_overview_payload(cluster: dict, namespace: str, requested_secti
     if "namespaces" in requested_sections:
         payload["namespaces"] = _serialize_namespaces(namespaces)
     if "pods" in requested_sections:
-        payload["pods"] = _serialize_pod_items(pods)
+        payload["pods"] = _serialize_pod_items(pods, pod_metrics)
     if "deployments" in requested_sections:
         payload["deployments"] = _serialize_deployments(deployments, pod_index)
     if "daemonSets" in requested_sections:

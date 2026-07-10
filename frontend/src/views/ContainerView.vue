@@ -526,6 +526,7 @@
                     title="全选 / 取消全选" />
                 </th>
                 <th>名称</th><th>命名空间</th><th>状态</th><th>节点 / IP</th><th>容器</th>
+                <th>CPU</th><th>内存</th>
                 <th class="sortable-th" @click="togglePodRestartSort" :title="`点击切换排序 (当前: ${ {desc:'降序',asc:'升序',null:'默认'}[podRestartSortOrder] || '默认' })`">
                   重启
                   <span class="sort-indicator">{{ podRestartSortOrder === 'desc' ? '↓' : podRestartSortOrder === 'asc' ? '↑' : '⇅' }}</span>
@@ -534,7 +535,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!sortedFilteredPods.length"><td colspan="9" class="empty">暂无数据</td></tr>
+              <tr v-if="!sortedFilteredPods.length"><td colspan="11" class="empty">暂无数据</td></tr>
               <tr v-for="pod in limitRows(sortedFilteredPods)" :key="pod.namespace + '/' + pod.name"
                   :class="{ 'row-selected': isRowSelected('pod', pod) }">
                 <td class="select-col">
@@ -558,6 +559,26 @@
                   >
                     {{ container.name }}
                   </span>
+                </td>
+                <td class="resource-cell" :title="podResourceTitle(pod, 'cpu')">
+                  <div class="resource-line">
+                    <span class="resource-value">{{ podResourceUsageText(pod, 'cpu') }}</span>
+                    <span class="resource-ratio" :class="podResourceThresholdClass(pod, 'cpu')">{{ podResourceRatioText(pod, 'cpu') }}</span>
+                  </div>
+                  <div class="resource-limit">/ {{ podResourceLimitText(pod, 'cpu') }}</div>
+                  <div class="resource-meter" :class="podResourceThresholdClass(pod, 'cpu')">
+                    <span :style="{ width: podResourceBarWidth(pod, 'cpu') }"></span>
+                  </div>
+                </td>
+                <td class="resource-cell" :title="podResourceTitle(pod, 'memory')">
+                  <div class="resource-line">
+                    <span class="resource-value">{{ podResourceUsageText(pod, 'memory') }}</span>
+                    <span class="resource-ratio" :class="podResourceThresholdClass(pod, 'memory')">{{ podResourceRatioText(pod, 'memory') }}</span>
+                  </div>
+                  <div class="resource-limit">/ {{ podResourceLimitText(pod, 'memory') }}</div>
+                  <div class="resource-meter" :class="podResourceThresholdClass(pod, 'memory')">
+                    <span :style="{ width: podResourceBarWidth(pod, 'memory') }"></span>
+                  </div>
                 </td>
                 <td>
                   <span class="restart-badge" :class="restartClass(pod.restarts)">{{ pod.restarts }}</span>
@@ -2801,6 +2822,93 @@ function formatBytes(n) {
   return (x / (1024 * 1024)).toFixed(2) + ' MB'
 }
 
+function finiteNumber(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function podResourceMetric(pod, type) {
+  return pod?.resources?.[type] || {}
+}
+
+function formatCpuCores(value) {
+  const cores = finiteNumber(value)
+  if (cores === null) return '-'
+  const millicores = cores * 1000
+  if (cores > 0 && millicores < 1) return '<1m'
+  if (millicores < 1000) return `${Math.round(millicores)}m`
+  if (Number.isInteger(cores)) return `${cores} 核`
+  return `${cores.toFixed(2)} 核`
+}
+
+function formatMemoryBytes(value) {
+  const bytes = finiteNumber(value)
+  if (bytes === null) return '-'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`
+  if (bytes < 1024 ** 3) return `${(bytes / (1024 ** 2)).toFixed(1)} MiB`
+  return `${(bytes / (1024 ** 3)).toFixed(2)} GiB`
+}
+
+function podResourceUsageText(pod, type) {
+  const metric = podResourceMetric(pod, type)
+  return type === 'cpu'
+    ? formatCpuCores(metric.usage)
+    : formatMemoryBytes(metric.usage)
+}
+
+function podResourceLimitText(pod, type) {
+  const metric = podResourceMetric(pod, type)
+  const value = type === 'cpu'
+    ? formatCpuCores(metric.limit)
+    : formatMemoryBytes(metric.limit)
+  if (value === '-') return '未配置'
+  const missing = Array.isArray(metric.limit_missing_containers)
+    ? metric.limit_missing_containers.filter(Boolean)
+    : []
+  return missing.length ? `${value} (部分)` : value
+}
+
+function podResourceRatioValue(pod, type) {
+  return finiteNumber(podResourceMetric(pod, type).usage_pct)
+}
+
+function podResourceRatioText(pod, type) {
+  const pct = podResourceRatioValue(pod, type)
+  if (pct === null) return 'N/A'
+  return pct >= 10 ? `${pct.toFixed(0)}%` : `${pct.toFixed(1)}%`
+}
+
+function podResourceThresholdClass(pod, type) {
+  const metric = podResourceMetric(pod, type)
+  const pct = podResourceRatioValue(pod, type)
+  if (pct === null || metric.limit_complete === false) return 'resource-unknown'
+  if (pct >= 90) return 'resource-critical'
+  if (pct >= 70) return 'resource-warn'
+  return 'resource-ok'
+}
+
+function podResourceBarWidth(pod, type) {
+  const pct = podResourceRatioValue(pod, type)
+  if (pct === null) return '0%'
+  return `${Math.min(100, Math.max(0, pct)).toFixed(1)}%`
+}
+
+function podResourceTitle(pod, type) {
+  const label = type === 'cpu' ? 'CPU' : '内存'
+  const metric = podResourceMetric(pod, type)
+  const parts = [
+    `${label} 使用: ${podResourceUsageText(pod, type)}`,
+    `${label} limit: ${podResourceLimitText(pod, type)}`,
+    `使用率: ${podResourceRatioText(pod, type)}`,
+  ]
+  const missing = Array.isArray(metric.limit_missing_containers)
+    ? metric.limit_missing_containers.filter(Boolean)
+    : []
+  if (missing.length) parts.push(`未配置 limit 容器: ${missing.join(', ')}`)
+  return parts.join('\n')
+}
+
 // 单行删除（复用批量 API, items 长度=1）
 async function deleteSingleResource(kind, row) {
   if (!activeClusterId.value) return
@@ -4145,6 +4253,31 @@ onBeforeUnmount(() => { _destroyExec() })
 
 .container-tag { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-right: 3px; background: var(--bg-surface); color: var(--text-secondary); border: 1px solid var(--border); }
 .container-tag.ready { color: var(--success); background: rgba(26,127,55,0.08); border-color: rgba(26,127,55,0.2); }
+.resource-cell { min-width: 118px; white-space: nowrap; }
+.resource-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 17px; }
+.resource-value { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; color: var(--text-primary); }
+.resource-ratio {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 38px; padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px; font-weight: 700;
+}
+.resource-limit { margin-top: 1px; font-size: 10.5px; color: var(--text-muted); }
+.resource-meter {
+  height: 4px; margin-top: 5px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.resource-meter span { display: block; height: 100%; border-radius: inherit; transition: width .2s ease; }
+.resource-ratio.resource-ok { background: rgba(26,127,55,.12); color: var(--success); }
+.resource-ratio.resource-warn { background: rgba(210,153,34,.18); color: var(--warning); }
+.resource-ratio.resource-critical { background: rgba(248,81,73,.18); color: var(--error, #f85149); }
+.resource-ratio.resource-unknown { background: var(--bg-input); color: var(--text-muted); }
+.resource-meter.resource-ok span { background: var(--success); }
+.resource-meter.resource-warn span { background: var(--warning); }
+.resource-meter.resource-critical span { background: var(--error, #f85149); }
+.resource-meter.resource-unknown span { background: var(--text-muted); }
 .action-cell { white-space: nowrap; width: 1%; }
 .action-group { display: flex; align-items: center; gap: 6px; }
 .action-btn {
