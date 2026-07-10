@@ -515,50 +515,52 @@
                   </div>
                 </div>
                 <div v-if="!detailContextError" class="drawer-context-search">
-                  <div class="context-search-box" :class="{ active: contextSearchTerms.length }">
-                    <span class="context-search-icon">⌕</span>
-                    <div class="kw-mode-switch context-mode-switch">
+                  <div class="context-search-main-row">
+                    <div class="context-search-box" :class="{ active: contextSearchTerms.length }">
+                      <span class="context-search-icon">⌕</span>
+                      <div class="kw-mode-switch context-mode-switch">
+                        <button
+                          class="kw-mode-btn"
+                          :class="{ active: contextSearchMode === 'and' }"
+                          @click="contextSearchMode = 'and'"
+                        >AND</button>
+                        <button
+                          class="kw-mode-btn"
+                          :class="{ active: contextSearchMode === 'or' }"
+                          @click="contextSearchMode = 'or'"
+                        >OR</button>
+                      </div>
+                      <span
+                        v-for="(kw, i) in contextSearchKeywords"
+                        :key="`${kw}-${i}`"
+                        class="filter-chip include context-search-chip"
+                      >
+                        <span class="chip-text">{{ kw }}</span>
+                        <span class="chip-remove" @click.stop="removeContextSearchKeyword(i)" title="删除关键字">✕</span>
+                      </span>
+                      <input
+                        v-model="contextSearchInput"
+                        class="context-search-input"
+                        :placeholder="contextSearchKeywords.length ? '添加关键字' : '搜索上下文'"
+                        @keydown="onContextSearchInputKeydown"
+                      />
                       <button
-                        class="kw-mode-btn"
-                        :class="{ active: contextSearchMode === 'and' }"
-                        @click="contextSearchMode = 'and'"
-                      >AND</button>
-                      <button
-                        class="kw-mode-btn"
-                        :class="{ active: contextSearchMode === 'or' }"
-                        @click="contextSearchMode = 'or'"
-                      >OR</button>
+                        v-if="contextSearchTerms.length || contextSearchInput"
+                        class="kw-clear"
+                        @click="clearContextSearch"
+                        title="清空搜索"
+                      >✕</button>
                     </div>
-                    <span
-                      v-for="(kw, i) in contextSearchKeywords"
-                      :key="`${kw}-${i}`"
-                      class="filter-chip include context-search-chip"
-                    >
-                      <span class="chip-text">{{ kw }}</span>
-                      <span class="chip-remove" @click.stop="removeContextSearchKeyword(i)" title="删除关键字">✕</span>
-                    </span>
-                    <input
-                      v-model="contextSearchInput"
-                      class="context-search-input"
-                      :placeholder="contextSearchKeywords.length ? '添加关键字' : '搜索上下文'"
-                      @keydown="onContextSearchInputKeydown"
-                    />
                     <button
-                      v-if="contextSearchTerms.length || contextSearchInput"
-                      class="kw-clear"
-                      @click="clearContextSearch"
-                      title="清空搜索"
-                    >✕</button>
+                      v-if="detailServiceDrilldown(detailLog.labels)"
+                      type="button"
+                      class="btn btn-outline btn-xs context-service-jump"
+                      :title="serviceLogLinkTitle(detailLog.labels)"
+                      @click.stop="goToMicroserviceLogs(detailLog.labels)"
+                    >
+                      跳转微服务日志 ↗
+                    </button>
                   </div>
-                  <button
-                    v-if="detailServiceDrilldown(detailLog.labels)"
-                    type="button"
-                    class="btn btn-outline btn-xs context-service-jump"
-                    :title="serviceLogLinkTitle(detailLog.labels)"
-                    @click.stop="goToMicroserviceLogs(detailLog.labels)"
-                  >
-                    跳转微服务日志 ↗
-                  </button>
                   <div v-if="contextSearchTerms.length" class="context-search-actions">
                     <span class="context-search-count">
                       {{ contextSearchMatchCount ? `${activeContextSearchMatch + 1}/${contextSearchMatchCount}` : '0/0' }}
@@ -602,6 +604,15 @@
                         <span v-else>{{ seg.text }}</span>
                       </template>
                     </span>
+                    <button
+                      type="button"
+                      class="context-copy-btn"
+                      :class="{ copied: copiedContextLineKey === contextLineCopyKey(item, idx) }"
+                      :title="copiedContextLineKey === contextLineCopyKey(item, idx) ? '已复制本行' : '复制本行'"
+                      @click.stop="copyContextLine(item, idx)"
+                    >
+                      {{ copiedContextLineKey === contextLineCopyKey(item, idx) ? '已复制' : '复制' }}
+                    </button>
                   </div>
                   <div v-if="loadingContextAfter" class="drawer-context-loading-more">
                     <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
@@ -1030,6 +1041,7 @@ let   loadMoreAbort = null
 let   templatesAbort = null
 let   traceLogsAbort = null
 let   detailContextAbort = null
+let   copiedContextLineTimer = null
 let   logsRequestId = 0
 let   loadMoreRequestId = 0
 let   templatesRequestId = 0
@@ -1626,6 +1638,7 @@ const contextSearchInput = ref('')
 const contextSearchKeywords = ref([])
 const contextSearchMode = ref('or')
 const activeContextSearchMatch = ref(0)
+const copiedContextLineKey = ref('')
 
 // 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
 const CONTEXT_INITIAL_BEFORE = 250
@@ -1768,6 +1781,62 @@ function segmentByRegex(line, regex) {
 
 function contextHighlightedSegments(line) {
   return segmentByRegex(line, contextSearchRegex.value)
+}
+
+function contextLineCopyKey(item, idx) {
+  return `${item?.timestamp_ns || item?.timestamp || 'line'}-${idx}`
+}
+
+function contextLineCopyText(item) {
+  const parts = []
+  if (item?.timestamp) parts.push(String(item.timestamp))
+  const service = logServiceName(item)
+  if (service) parts.push(String(service))
+  const prefix = parts.join(' ')
+  const line = String(item?.line ?? '')
+  return prefix ? `${prefix} ${line}`.trim() : line
+}
+
+function fallbackCopyText(text) {
+  if (typeof document === 'undefined') return false
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+async function writeClipboardText(text) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return true
+  }
+  return fallbackCopyText(text)
+}
+
+async function copyContextLine(item, idx) {
+  const text = contextLineCopyText(item)
+  if (!text) return
+  try {
+    const ok = await writeClipboardText(text)
+    if (!ok) return
+    copiedContextLineKey.value = contextLineCopyKey(item, idx)
+    clearTimeout(copiedContextLineTimer)
+    copiedContextLineTimer = setTimeout(() => {
+      copiedContextLineKey.value = ''
+      copiedContextLineTimer = null
+    }, 1600)
+  } catch {
+    // 浏览器或权限不允许复制时保持静默，避免打断日志排障流程。
+  }
 }
 
 // ── 主日志流关键字高亮（忽略大小写）──────────────────────────────
@@ -1964,6 +2033,9 @@ function closeDetail() {
   contextBeforeAtLimit.value = false
   contextAfterAtLimit.value = false
   contextScrollPending = null
+  copiedContextLineKey.value = ''
+  clearTimeout(copiedContextLineTimer)
+  copiedContextLineTimer = null
   resetContextSearch()
 }
 
@@ -2817,6 +2889,7 @@ onBeforeUnmount(() => {
   templatesAbort?.abort()
   traceLogsAbort?.abort()
   detailContextAbort?.abort()
+  clearTimeout(copiedContextLineTimer)
 })
 </script>
 
@@ -3807,6 +3880,13 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   margin-bottom: 8px;
 }
+.context-search-main-row {
+  flex: 1 1 520px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .context-search-box {
   flex: 1 1 320px;
   min-width: 240px;
@@ -3858,6 +3938,7 @@ onBeforeUnmount(() => {
 .context-service-jump {
   height: 32px;
   flex-shrink: 0;
+  white-space: nowrap;
   border-color: rgba(56,189,248,.45);
   color: #38bdf8;
 }
@@ -3901,7 +3982,7 @@ onBeforeUnmount(() => {
   width: 100%; display: grid;
   grid-template-columns: 138px 120px minmax(0, 1fr);
   gap: 10px; align-items: start;
-  padding: 10px 12px;
+  padding: 10px 68px 10px 12px;
   background: var(--bg-base); border: 1px solid var(--border);
   border-radius: 6px; color: var(--text-secondary);
   font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.6;
@@ -3982,6 +4063,52 @@ onBeforeUnmount(() => {
 .drawer-context-text {
   min-width: 0; word-break: break-all;
 }
+.context-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,.04);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  cursor: pointer;
+  opacity: .62;
+  transition: opacity .12s, color .12s, border-color .12s, background .12s;
+}
+.drawer-context-item:hover .context-copy-btn,
+.context-copy-btn:focus-visible,
+.context-copy-btn.copied {
+  opacity: 1;
+}
+.context-copy-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-accent);
+  background: var(--bg-hover);
+}
+.context-copy-btn.copied {
+  color: #22c55e;
+  border-color: rgba(34,197,94,.55);
+  background: rgba(34,197,94,.12);
+}
+.drawer-context-item.active .context-copy-btn {
+  color: #1f2937;
+  border-color: rgba(31,41,55,.35);
+  background: rgba(255,255,255,.62);
+}
+.drawer-context-item.active.level-error .context-copy-btn,
+.drawer-context-item.active.level-warn .context-copy-btn {
+  color: #fff;
+  border-color: rgba(255,255,255,.55);
+  background: rgba(255,255,255,.18);
+}
 .context-keyword-hit {
   display: inline;
   padding: 0 2px;
@@ -4005,12 +4132,17 @@ onBeforeUnmount(() => {
   .drawer-context-search {
     align-items: stretch;
   }
+  .context-search-main-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
   .context-search-box {
     flex-basis: 100%;
   }
   .drawer-context-item {
     grid-template-columns: 1fr;
     gap: 4px;
+    padding-right: 68px;
   }
 }
 
