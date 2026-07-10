@@ -456,7 +456,18 @@
                   <div v-if="detailLog.labels && Object.keys(detailLog.labels).length" class="drawer-row">
                     <span class="drawer-label">标签</span>
                     <div class="drawer-tags">
-                      <span v-for="(v, k) in detailLog.labels" :key="k" class="drawer-tag">{{ k }}=<em>{{ v }}</em></span>
+                      <template v-for="(v, k) in detailLog.labels" :key="k">
+                        <button
+                          v-if="isContainerLabel(k)"
+                          type="button"
+                          class="drawer-tag drawer-tag-link"
+                          :title="containerLogLinkTitle(detailLog.labels)"
+                          @click.stop="goToContainerLogs(detailLog.labels, v)"
+                        >
+                          {{ k }}=<em>{{ v }}</em><span class="drawer-tag-jump">↗</span>
+                        </button>
+                        <span v-else class="drawer-tag">{{ k }}=<em>{{ v }}</em></span>
+                      </template>
                     </div>
                   </div>
                   <div class="drawer-row drawer-row-full">
@@ -482,6 +493,59 @@
                     <button class="btn btn-outline btn-xs" @click="loadLogContext(detailLog, { reset: true })">刷新</button>
                   </div>
                 </div>
+                <div v-if="!detailContextError" class="drawer-context-search">
+                  <div class="context-search-box" :class="{ active: contextSearchTerms.length }">
+                    <span class="context-search-icon">⌕</span>
+                    <div class="kw-mode-switch context-mode-switch">
+                      <button
+                        class="kw-mode-btn"
+                        :class="{ active: contextSearchMode === 'and' }"
+                        @click="contextSearchMode = 'and'"
+                      >AND</button>
+                      <button
+                        class="kw-mode-btn"
+                        :class="{ active: contextSearchMode === 'or' }"
+                        @click="contextSearchMode = 'or'"
+                      >OR</button>
+                    </div>
+                    <span
+                      v-for="(kw, i) in contextSearchKeywords"
+                      :key="`${kw}-${i}`"
+                      class="filter-chip include context-search-chip"
+                    >
+                      <span class="chip-text">{{ kw }}</span>
+                      <span class="chip-remove" @click.stop="removeContextSearchKeyword(i)" title="删除关键字">✕</span>
+                    </span>
+                    <input
+                      v-model="contextSearchInput"
+                      class="context-search-input"
+                      :placeholder="contextSearchKeywords.length ? '添加关键字' : '搜索上下文'"
+                      @keydown="onContextSearchInputKeydown"
+                    />
+                    <button
+                      v-if="contextSearchTerms.length || contextSearchInput"
+                      class="kw-clear"
+                      @click="clearContextSearch"
+                      title="清空搜索"
+                    >✕</button>
+                  </div>
+                  <button
+                    v-if="detailServiceDrilldown(detailLog.labels)"
+                    type="button"
+                    class="btn btn-outline btn-xs context-service-jump"
+                    :title="serviceLogLinkTitle(detailLog.labels)"
+                    @click.stop="goToMicroserviceLogs(detailLog.labels)"
+                  >
+                    跳转微服务日志 ↗
+                  </button>
+                  <div v-if="contextSearchTerms.length" class="context-search-actions">
+                    <span class="context-search-count">
+                      {{ contextSearchMatchCount ? `${activeContextSearchMatch + 1}/${contextSearchMatchCount}` : '0/0' }}
+                    </span>
+                    <button class="btn btn-outline btn-xs context-search-nav" :disabled="!contextSearchMatchCount" @click="jumpContextSearch(-1)">↑</button>
+                    <button class="btn btn-outline btn-xs context-search-nav" :disabled="!contextSearchMatchCount" @click="jumpContextSearch(1)">↓</button>
+                  </div>
+                </div>
                 <div v-if="detailContextError" class="drawer-context-state drawer-context-state-error">
                   {{ detailContextError }}
                 </div>
@@ -499,16 +563,24 @@
                   <div
                     v-for="(item, idx) in detailContextLogs"
                     :key="`${item.timestamp_ns}-${idx}`"
+                    :data-context-index="idx"
                     class="drawer-context-item"
                     :class="[
                       { active: idx === detailContextAnchorIndex },
+                      { 'context-match': isContextSearchMatch(idx) },
+                      { 'context-match-current': isCurrentContextSearchMatch(idx) },
                       logClass(item.line),
                     ]"
                   >
                     <span v-if="idx === detailContextAnchorIndex" class="anchor-marker" title="当前查询的记录">▶</span>
                     <span class="drawer-context-ts">{{ item.timestamp }}</span>
                     <span class="drawer-context-svc">{{ logServiceName(item) }}</span>
-                    <span class="drawer-context-text">{{ item.line }}</span>
+                    <span class="drawer-context-text">
+                      <template v-for="(seg, segIdx) in contextHighlightedSegments(item.line)" :key="segIdx">
+                        <mark v-if="seg.hit" class="context-keyword-hit">{{ seg.text }}</mark>
+                        <span v-else>{{ seg.text }}</span>
+                      </template>
+                    </span>
                   </div>
                   <div v-if="loadingContextAfter" class="drawer-context-loading-more">
                     <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
@@ -780,7 +852,10 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { api, streamSSE } from '../api/index.js'
+
+const router = useRouter()
 
 // ── 公共状态 ─────────────────────────────
 const selectedService = ref('')
@@ -1125,6 +1200,219 @@ function logGroup(log) {
   )
 }
 
+const CONTAINER_LABEL_KEYS = new Set([
+  'container',
+  'container_name',
+  'k8s_container',
+  'k8s_container_name',
+  'kubernetes_container',
+  'kubernetes_container_name',
+])
+const POD_LABEL_KEYS = [
+  'pod',
+  'pod_name',
+  'k8s_pod',
+  'k8s_pod_name',
+  'kubernetes_pod',
+  'kubernetes_pod_name',
+]
+const NAMESPACE_LABEL_KEYS = [
+  'namespace',
+  'k8s_namespace',
+  'k8s_namespace_name',
+  'kubernetes_namespace',
+  'kubernetes_namespace_name',
+  'ns',
+]
+const CLUSTER_LABEL_KEYS = [
+  'cluster_id',
+  'cluster',
+  'cluster_name',
+  'k8s_cluster',
+  'k8s_cluster_name',
+  'kubernetes_cluster',
+  'kubernetes_cluster_name',
+]
+const SERVICE_LABEL_KEYS = [
+  'service',
+  'service_name',
+  'svc',
+  'app',
+  'app_name',
+  'application',
+  'application_name',
+  'component',
+  'workload',
+  'deployment',
+  'statefulset',
+  'daemonset',
+  'job',
+  'k8s_app',
+  'k8s_app_name',
+  'k8s_label_app',
+  'k8s_label_app_kubernetes_io_name',
+  'app_kubernetes_io_name',
+  'app_kubernetes_io_instance',
+  'kubernetes_name',
+  'container',
+  'container_name',
+]
+const LOW_VALUE_LABEL_KEYS = new Set([
+  '__name__',
+  'filename',
+  'level',
+  'severity',
+  'stream',
+  'cluster',
+  'cluster_id',
+  'namespace',
+  'pod',
+  'pod_name',
+  'instance',
+  'host',
+  'hostname',
+  'node',
+  'ip',
+])
+
+function normalizeLabelKey(key) {
+  return String(key || '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function isContainerLabel(key) {
+  return CONTAINER_LABEL_KEYS.has(normalizeLabelKey(key))
+}
+
+function labelValue(labels, keys) {
+  const normalizedMap = new Map(
+    Object.entries(labels || {}).map(([key, value]) => [normalizeLabelKey(key), value]),
+  )
+  for (const key of keys) {
+    const value = normalizedMap.get(key)
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value)
+  }
+  return ''
+}
+
+function compactQuery(query) {
+  return Object.fromEntries(
+    Object.entries(query).filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== ''),
+  )
+}
+
+function containerLogLinkTitle(labels) {
+  const pod = labelValue(labels, POD_LABEL_KEYS)
+  const namespace = labelValue(labels, NAMESPACE_LABEL_KEYS)
+  if (pod && namespace) return `跳转到 ${namespace}/${pod} 的容器日志`
+  if (pod) return `跳转到 ${pod} 的容器日志`
+  return '跳转到容器日志页'
+}
+
+function labelEntryValue(entry) {
+  return entry ? String(entry.value ?? '').trim() : ''
+}
+
+function labelEntryFromAliases(labels, keys) {
+  const normalized = Object.entries(labels || {}).map(([key, value]) => ({
+    label: key,
+    normalized: normalizeLabelKey(key),
+    value,
+  }))
+  for (const alias of keys) {
+    const normalizedAlias = normalizeLabelKey(alias)
+    const match = normalized.find(item => item.normalized === normalizedAlias)
+    if (match && String(match.value ?? '').trim() !== '') {
+      return { label: match.label, value: String(match.value).trim() }
+    }
+  }
+  return null
+}
+
+function detailContainerValue(labels) {
+  return labelEntryValue(labelEntryFromAliases(labels, [...CONTAINER_LABEL_KEYS]))
+}
+
+function detailServiceDrilldown(labels) {
+  const serviceAliases = uniqueContextTerms([
+    normalizeLabelKey(serviceLabelName.value),
+    ...SERVICE_LABEL_KEYS,
+  ])
+  const direct = labelEntryFromAliases(labels, serviceAliases)
+  if (direct) return { ...direct, serviceLike: true }
+  const entries = Object.entries(labels || {})
+    .map(([label, value]) => ({ label, normalized: normalizeLabelKey(label), value: String(value ?? '').trim() }))
+    .filter(item => item.value && !item.normalized.startsWith('__'))
+  const preferred = entries.find(item => !LOW_VALUE_LABEL_KEYS.has(item.normalized)) || entries[0]
+  return preferred ? { label: preferred.label, value: preferred.value, serviceLike: false } : null
+}
+
+function serviceLogLinkTitle(labels) {
+  const target = detailServiceDrilldown(labels)
+  if (!target) return '跳转到微服务日志'
+  return `跳转到 ${target.label}=${target.value} 的微服务日志`
+}
+
+function goToMicroserviceLogs(labels) {
+  const target = detailServiceDrilldown(labels)
+  if (!target) return
+
+  activeTab.value = 'logs'
+  selectedService.value = target.serviceLike ? target.value : ''
+  selectedServices.value = target.serviceLike ? [target.value] : []
+  labelExplorerOpen.value = true
+  selectedLabelName.value = target.label
+  selectedLabelValue.value = target.value
+  labelNameQuery.value = target.label
+  labelValueQuery.value = target.value
+  activeLabelFilters.value = [{ label: target.label, value: target.value }]
+  selectedGroupLabel.value = target.label
+  selectedGroupValue.value = target.value
+  if (groupBy.value !== target.label) groupBy.value = target.label
+  closeDetail()
+
+  router.push({
+    name: 'obs-logs',
+    query: compactQuery({
+      service: target.serviceLike ? target.value : '',
+      labels: `${target.label}:${target.value}`,
+      hours: hours.value,
+    }),
+  })
+  loadLogs()
+}
+
+function applyRouteLabelFilters(params) {
+  const labels = params.getAll('labels')
+  for (const item of labels) {
+    if (!item || !item.includes(':')) continue
+    const [label, ...rest] = item.split(':')
+    const value = rest.join(':')
+    if (label && value) {
+      addActiveLabel(label, value, { silent: true, skipRefresh: true })
+    }
+  }
+}
+
+function goToContainerLogs(labels, containerValue) {
+  const container = String(containerValue ?? '').trim()
+  if (!container) return
+  router.push({
+    name: 'containers',
+    query: compactQuery({
+      view: 'logs',
+      pod: labelValue(labels, POD_LABEL_KEYS),
+      namespace: labelValue(labels, NAMESPACE_LABEL_KEYS),
+      container,
+      cluster_id: labelValue(labels, CLUSTER_LABEL_KEYS),
+    }),
+  })
+}
+
 // 返回今天 00:00 ~ 当前时刻的本地时间字符串（datetime-local 格式）
 function todayRange() {
   const now = new Date()
@@ -1189,6 +1477,10 @@ const detailContextError = ref('')
 const detailModalMask = ref(null)
 const contextScrollWrap = ref(null)
 const metaOpen = ref(false)   // 元数据折叠状态：默认收起，给上下文留位
+const contextSearchInput = ref('')
+const contextSearchKeywords = ref([])
+const contextSearchMode = ref('or')
+const activeContextSearchMatch = ref(0)
 
 // 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
 const CONTEXT_INITIAL_BEFORE = 250
@@ -1239,6 +1531,182 @@ function scrollContextAnchorIntoView() {
   anchor.scrollIntoView({ block: 'center', behavior: 'auto' })
   return true
 }
+
+function splitContextSearchTerms(raw) {
+  return String(raw || '')
+    .split(/[\s,，、;；]+/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function uniqueContextTerms(items) {
+  const seen = new Set()
+  const out = []
+  for (const item of items) {
+    const text = String(item || '').trim()
+    if (!text) continue
+    const key = text.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(text)
+  }
+  return out
+}
+
+const contextSearchTerms = computed(() => uniqueContextTerms([
+  ...contextSearchKeywords.value,
+  ...splitContextSearchTerms(contextSearchInput.value),
+]))
+
+function contextLogSearchText(log) {
+  return [
+    log?.timestamp || '',
+    logServiceName(log),
+    log?.line || '',
+  ].join(' ').toLowerCase()
+}
+
+function contextLogMatchesSearch(log) {
+  const terms = contextSearchTerms.value.map(item => item.toLowerCase())
+  if (!terms.length) return false
+  const haystack = contextLogSearchText(log)
+  if (contextSearchMode.value === 'and') {
+    return terms.every(term => haystack.includes(term))
+  }
+  return terms.some(term => haystack.includes(term))
+}
+
+const contextSearchMatches = computed(() => {
+  if (!contextSearchTerms.value.length) return []
+  return detailContextLogs.value
+    .map((log, idx) => contextLogMatchesSearch(log) ? idx : -1)
+    .filter(idx => idx >= 0)
+})
+
+const contextSearchMatchCount = computed(() => contextSearchMatches.value.length)
+const contextSearchMatchIndexSet = computed(() => new Set(contextSearchMatches.value))
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+const contextSearchRegex = computed(() => {
+  const terms = contextSearchTerms.value
+    .slice()
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+  if (!terms.length) return null
+  return new RegExp(terms.join('|'), 'gi')
+})
+
+function contextHighlightedSegments(line) {
+  const text = String(line ?? '')
+  const regex = contextSearchRegex.value
+  if (!regex) return [{ text, hit: false }]
+
+  const out = []
+  let lastIndex = 0
+  regex.lastIndex = 0
+  let match = regex.exec(text)
+  while (match) {
+    const start = match.index
+    const end = start + match[0].length
+    if (start > lastIndex) out.push({ text: text.slice(lastIndex, start), hit: false })
+    out.push({ text: text.slice(start, end), hit: true })
+    lastIndex = end
+    if (match[0].length === 0) regex.lastIndex += 1
+    match = regex.exec(text)
+  }
+  if (lastIndex < text.length) out.push({ text: text.slice(lastIndex), hit: false })
+  return out.length ? out : [{ text, hit: false }]
+}
+
+function isContextSearchMatch(idx) {
+  return contextSearchMatchIndexSet.value.has(idx)
+}
+
+function isCurrentContextSearchMatch(idx) {
+  if (!contextSearchMatches.value.length) return false
+  return contextSearchMatches.value[activeContextSearchMatch.value] === idx
+}
+
+function scrollToCurrentContextSearchMatch() {
+  const idx = contextSearchMatches.value[activeContextSearchMatch.value]
+  if (idx == null) return false
+  const target = contextScrollWrap.value?.querySelector(`[data-context-index="${idx}"]`)
+  if (!target) return false
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  return true
+}
+
+function addContextSearchKeywords() {
+  const terms = splitContextSearchTerms(contextSearchInput.value)
+  if (!terms.length) return
+  contextSearchKeywords.value = uniqueContextTerms([
+    ...contextSearchKeywords.value,
+    ...terms,
+  ])
+  contextSearchInput.value = ''
+  activeContextSearchMatch.value = 0
+  nextTick(scrollToCurrentContextSearchMatch)
+}
+
+function removeContextSearchKeyword(index) {
+  contextSearchKeywords.value.splice(index, 1)
+  activeContextSearchMatch.value = 0
+  nextTick(scrollToCurrentContextSearchMatch)
+}
+
+function clearContextSearch() {
+  contextSearchInput.value = ''
+  contextSearchKeywords.value = []
+  activeContextSearchMatch.value = 0
+}
+
+function resetContextSearch() {
+  contextSearchInput.value = ''
+  contextSearchKeywords.value = []
+  contextSearchMode.value = 'or'
+  activeContextSearchMatch.value = 0
+}
+
+function onContextSearchInputKeydown(event) {
+  if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
+    event.preventDefault()
+    addContextSearchKeywords()
+    return
+  }
+  if (event.key === 'Backspace' && !contextSearchInput.value && contextSearchKeywords.value.length) {
+    contextSearchKeywords.value.pop()
+    activeContextSearchMatch.value = 0
+    nextTick(scrollToCurrentContextSearchMatch)
+  }
+}
+
+function jumpContextSearch(delta) {
+  const total = contextSearchMatches.value.length
+  if (!total) return
+  activeContextSearchMatch.value = (activeContextSearchMatch.value + delta + total) % total
+  nextTick(scrollToCurrentContextSearchMatch)
+}
+
+watch(contextSearchMatches, (matches) => {
+  if (!matches.length) {
+    activeContextSearchMatch.value = 0
+    return
+  }
+  if (activeContextSearchMatch.value >= matches.length) {
+    activeContextSearchMatch.value = matches.length - 1
+  }
+})
+
+watch(
+  () => `${contextSearchMode.value}|${contextSearchTerms.value.join('\n')}`,
+  () => {
+    activeContextSearchMatch.value = 0
+    nextTick(scrollToCurrentContextSearchMatch)
+  },
+)
 
 const filteredLogs = computed(() => {
   let list = logs.value
@@ -1314,6 +1782,7 @@ function closeDetail() {
   contextBeforeAtLimit.value = false
   contextAfterAtLimit.value = false
   contextScrollPending = null
+  resetContextSearch()
 }
 
 /**
@@ -1513,6 +1982,7 @@ function onContextScroll(event) {
 }
 
 function openDetail(log) {
+  resetContextSearch()
   detailLog.value = log
   showDetailModal.value = true
   loadLogContext(log, { reset: true })   // 切换日志时重置窗口
@@ -2101,13 +2571,15 @@ function startAIAnalysis() {
 
 // 钻取入口：从 URL ?service=&level=&hours=&q= 预填查询条件（指标→日志）
 function _applyRouteQuery() {
-  const q = (typeof window !== 'undefined' && window.location.hash.includes('?'))
-    ? Object.fromEntries(new URLSearchParams(window.location.hash.split('?')[1]))
-    : {}
+  const params = (typeof window !== 'undefined' && window.location.hash.includes('?'))
+    ? new URLSearchParams(window.location.hash.split('?')[1])
+    : new URLSearchParams()
+  const q = Object.fromEntries(params)
   if (q.service) selectedService.value = q.service
   if (q.level)   levelFilter.value = q.level
   if (q.hours)   hours.value = String(q.hours)
   if (q.q)       keyword.value = q.q
+  applyRouteLabelFilters(params)
 }
 
 // 钻取联动：URL 带 service 进入时，标签面板默认展示该服务的标签上下文——
@@ -3064,6 +3536,19 @@ onBeforeUnmount(() => {
   border-radius: 9999px; color: var(--text-muted);
 }
 .drawer-tag em { color: var(--accent-hover); font-style: normal; }
+.drawer-tag-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  appearance: none; font-family: inherit; font-size: 11px;
+  line-height: 1.4; cursor: pointer;
+  border-color: rgba(56, 189, 248, .45);
+  color: var(--accent);
+}
+.drawer-tag-link:hover {
+  background: rgba(56, 189, 248, .10);
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+.drawer-tag-jump { font-size: 10px; opacity: .75; }
 .drawer-content {
   margin: 0; padding: 12px 14px;
   background: var(--bg-base); border: 1px solid var(--border);
@@ -3097,6 +3582,84 @@ onBeforeUnmount(() => {
 }
 .drawer-section-meta {
   font-size: 11px; color: var(--text-muted);
+}
+.drawer-context-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.context-search-box {
+  flex: 1 1 320px;
+  min-width: 240px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 7px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 32px;
+}
+.context-search-box.active {
+  border-color: rgba(56,189,248,.45);
+  background: rgba(56,189,248,.06);
+}
+.context-search-icon {
+  color: #38bdf8;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.context-mode-switch {
+  margin-right: 2px;
+}
+.context-search-chip {
+  cursor: default;
+}
+.context-search-input {
+  flex: 1 1 120px;
+  min-width: 110px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 3px 0;
+  outline: none;
+}
+.context-search-input::placeholder {
+  color: var(--text-muted);
+}
+.context-search-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.context-service-jump {
+  height: 32px;
+  flex-shrink: 0;
+  border-color: rgba(56,189,248,.45);
+  color: #38bdf8;
+}
+.context-service-jump:hover {
+  border-color: #38bdf8;
+  background: rgba(56,189,248,.08);
+}
+.context-search-count {
+  min-width: 46px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.context-search-nav {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  justify-content: center;
 }
 .drawer-context-state {
   display: flex; align-items: center; gap: 8px;
@@ -3185,6 +3748,15 @@ onBeforeUnmount(() => {
   0%, 100% { opacity: 1; transform: translateY(-50%) translateX(0); }
   50%      { opacity: .55; transform: translateY(-50%) translateX(3px); }
 }
+.drawer-context-item.context-match {
+  border-color: rgba(56,189,248,.45);
+  box-shadow: inset 3px 0 0 rgba(56,189,248,.65);
+}
+.drawer-context-item.context-match-current {
+  outline: 2px solid #38bdf8;
+  outline-offset: 1px;
+  border-color: #38bdf8;
+}
 .drawer-context-ts,
 .drawer-context-svc { color: var(--text-muted); white-space: nowrap; }
 .drawer-context-svc {
@@ -3193,11 +3765,32 @@ onBeforeUnmount(() => {
 .drawer-context-text {
   min-width: 0; word-break: break-all;
 }
+.context-keyword-hit {
+  display: inline;
+  padding: 0 2px;
+  border-radius: 2px;
+  background: rgba(250,204,21,.42);
+  color: inherit;
+  font-weight: 700;
+}
+.drawer-context-item.active .context-keyword-hit {
+  background: rgba(31,41,55,.22);
+}
+.drawer-context-item.active.level-error .context-keyword-hit,
+.drawer-context-item.active.level-warn .context-keyword-hit {
+  background: rgba(255,255,255,.28);
+}
 .drawer-context-hint {
   font-size: 11px; color: var(--text-muted); padding: 0 2px;
 }
 
 @media (max-width: 720px) {
+  .drawer-context-search {
+    align-items: stretch;
+  }
+  .context-search-box {
+    flex-basis: 100%;
+  }
   .drawer-context-item {
     grid-template-columns: 1fr;
     gap: 4px;
