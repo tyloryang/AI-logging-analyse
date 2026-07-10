@@ -22,9 +22,30 @@
         </select>
         <!-- 自定义时间范围 -->
         <div v-else class="custom-time-wrap">
-          <input type="datetime-local" v-model="customStart" class="dt-input" @change="onCustomTimeChange" title="开始时间" />
-          <span class="dt-sep">→</span>
-          <input type="datetime-local" v-model="customEnd"   class="dt-input" @change="onCustomTimeChange" title="结束时间" />
+          <!-- 时间戳快速粘贴：支持 2026-07-09 10:31:12 / ISO / 纳秒(19位)/毫秒/秒 时间戳，也支持 "起 ~ 止" 区间 -->
+          <div class="ts-paste-row">
+            <input
+              type="text"
+              v-model="tsPasteInput"
+              class="dt-input ts-paste"
+              placeholder="粘贴时间戳快速定位，如 2026-07-09 10:31:12 或 1783564176796001726"
+              @paste="onTsPaste"
+              @keyup.enter="applyTsPaste()"
+              title="粘贴标准时间/时间戳后回车，自动填充时间范围" />
+            <button class="ts-apply-btn" @click="applyTsPaste()" title="解析并应用">应用</button>
+          </div>
+          <div v-if="tsPasteError" class="ts-paste-err">{{ tsPasteError }}</div>
+          <div v-if="tsCenterText" class="ts-range-chips">
+            <span class="ts-range-label">围绕 {{ tsCenterText }} ±</span>
+            <button v-for="m in TS_RANGE_PRESETS" :key="m.v"
+                    class="ts-range-chip" :class="{ active: tsRangeMinutes === m.v }"
+                    @click="applyCenterRange(m.v)">{{ m.label }}</button>
+          </div>
+          <div class="custom-time-inputs">
+            <input type="datetime-local" v-model="customStart" class="dt-input" @change="onCustomTimeChange" title="开始时间" />
+            <span class="dt-sep">→</span>
+            <input type="datetime-local" v-model="customEnd"   class="dt-input" @change="onCustomTimeChange" title="结束时间" />
+          </div>
         </div>
         <div class="panel-subsection">
           <span class="panel-subtitle">标签分组</span>
@@ -896,6 +917,20 @@ const timeMode    = ref('relative')
 const customStart = ref('')
 const customEnd   = ref('')
 
+// 时间戳快速粘贴
+const tsPasteInput   = ref('')
+const tsPasteError   = ref('')
+const tsCenter       = ref(null)   // 解析出的中心时刻（Date）
+const tsRangeMinutes = ref(5)      // 当前应用的 ± 分钟数
+const TS_RANGE_PRESETS = [
+  { v: 1,  label: '1分' },
+  { v: 5,  label: '5分' },
+  { v: 15, label: '15分' },
+  { v: 30, label: '30分' },
+  { v: 60, label: '1小时' },
+]
+const tsCenterText = computed(() => tsCenter.value ? fmtDateTimeSec(tsCenter.value) : '')
+
 // 关键字搜索
 const keyword      = ref('')         // 后端单关键字（旧参数，仍保留）
 const localKeywords     = ref([])    // 多条件过滤：[{ text, exclude }] AND/OR，同时推到 Loki 服务端
@@ -1428,6 +1463,97 @@ function todayRange() {
 function toUtcStr(localStr) {
   if (!localStr) return ''
   return new Date(localStr).toISOString().slice(0, 16)   // "2025-03-25T02:00"
+}
+
+// Date → datetime-local 输入值（本地时间，分钟精度）
+function toLocalInput(d) {
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+         `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function fmtDateTimeSec(d) {
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// 智能解析各种标准时间/时间戳 → Date（无法解析返回 null）
+//   支持：2026-07-09 10:31:12 / 2026/07/09 10:31 / ISO(带/不带 Z) /
+//         纳秒(≥16位)/毫秒(13位)/秒(10位) epoch 时间戳
+function parseFlexibleTime(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return null
+
+  // 纯数字 → epoch 时间戳（按位数判断精度）
+  if (/^\d+$/.test(s)) {
+    let ms
+    if (s.length >= 13) ms = Number(s.slice(0, 13))       // 纳秒/微秒/毫秒 → 取前 13 位为毫秒
+    else if (s.length >= 10) ms = Number(s) * 1000        // 秒
+    else ms = Number(s) * 1000
+    const d = new Date(ms)
+    return isNaN(d.getTime()) ? null : d
+  }
+
+  // 文本时间：空格分隔转 ISO 的 T；斜杠日期转横杠；纳秒小数截断到毫秒
+  let text = s
+    .replace(/\//g, '-')
+    .replace(/(\d{4}-\d{2}-\d{2})[ T]/, '$1T')
+    .replace(/(\.\d{3})\d+/, '$1')
+  let d = new Date(text)
+  if (isNaN(d.getTime())) d = new Date(s)   // 兜底用原串再试一次
+  return isNaN(d.getTime()) ? null : d
+}
+
+const _TS_RANGE_SEP = /\s*(?:~|～|至|到|—|,|、)\s*|\s+-\s+/
+
+// 解析粘贴内容：区间(起~止)直接填两端，单点作为中心 + 默认 ±范围
+function applyTsPaste() {
+  const raw = (tsPasteInput.value || '').trim()
+  tsPasteError.value = ''
+  if (!raw) return
+
+  const parts = raw.split(_TS_RANGE_SEP).map(x => x.trim()).filter(Boolean)
+  if (parts.length >= 2) {
+    const a = parseFlexibleTime(parts[0])
+    const b = parseFlexibleTime(parts[1])
+    if (a && b) {
+      const [start, end] = a <= b ? [a, b] : [b, a]
+      tsCenter.value = null
+      customStart.value = toLocalInput(start)
+      customEnd.value = toLocalInput(end)
+      onCustomTimeChange()
+      return
+    }
+  }
+
+  const center = parseFlexibleTime(parts[0] || raw)
+  if (!center) {
+    tsPasteError.value = '无法识别，请粘贴标准时间或时间戳'
+    return
+  }
+  tsCenter.value = center
+  applyCenterRange(tsRangeMinutes.value)
+}
+
+function onTsPaste(e) {
+  const text = e?.clipboardData?.getData('text')
+  if (text != null) {
+    tsPasteInput.value = text
+    e.preventDefault()
+  }
+  // 粘贴后自动解析，无需再点按钮
+  nextTick(applyTsPaste)
+}
+
+// 围绕中心时刻 ± N 分钟生成时间范围并查询
+function applyCenterRange(minutes) {
+  if (!tsCenter.value) return
+  tsRangeMinutes.value = minutes
+  const c = tsCenter.value.getTime()
+  customStart.value = toLocalInput(new Date(c - minutes * 60000))
+  customEnd.value   = toLocalInput(new Date(c + minutes * 60000))
+  onCustomTimeChange()
 }
 
 // 构建时间参数（relative 或 custom）
@@ -2394,6 +2520,9 @@ function onTimeModeChange() {
   if (timeMode.value === 'relative') {
     customStart.value = ''
     customEnd.value   = ''
+    tsPasteInput.value = ''
+    tsPasteError.value = ''
+    tsCenter.value = null
     onParamChange()
   } else {
     const r = todayRange()
@@ -2680,6 +2809,30 @@ onBeforeUnmount(() => {
 .dt-sep {
   text-align: center; font-size: 10px; color: var(--text-muted); line-height: 1;
 }
+/* 时间戳快速粘贴 */
+.ts-paste-row { display: flex; gap: 4px; }
+.ts-paste { flex: 1; min-width: 0; }
+.ts-apply-btn {
+  flex-shrink: 0; padding: 4px 8px; font-size: 11px;
+  border: 1px solid var(--accent); border-radius: 5px;
+  background: var(--accent-dim, rgba(217,119,87,.12)); color: var(--accent);
+  cursor: pointer; white-space: nowrap;
+}
+.ts-apply-btn:hover { background: var(--accent); color: #fff; }
+.ts-paste-err { font-size: 10px; color: var(--error, #d63031); }
+.ts-range-chips {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  padding: 4px 0 2px;
+}
+.ts-range-label { font-size: 10px; color: var(--text-muted); margin-right: 2px; }
+.ts-range-chip {
+  padding: 2px 7px; font-size: 10px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--bg-hover); color: var(--text-secondary);
+  cursor: pointer; transition: all .12s;
+}
+.ts-range-chip:hover { border-color: var(--accent); color: var(--accent); }
+.ts-range-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.custom-time-inputs { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
 .panel-subsection { margin-top: 10px; }
 .panel-subtitle {
   display: block;
