@@ -404,7 +404,7 @@
                   </td>
                   <td class="col-svc">{{ logServiceName(log) }}</td>
                   <td class="col-group">{{ logGroup(log) }}</td>
-                  <td class="col-msg">{{ log.line }}</td>
+                  <td class="col-msg"><template v-for="(seg, si) in highlightLogSegments(log.line)" :key="si"><mark v-if="seg.hit" class="log-kw-hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></td>
                 </tr>
               </tbody>
             </table>
@@ -1744,9 +1744,9 @@ const contextSearchRegex = computed(() => {
   return new RegExp(terms.join('|'), 'gi')
 })
 
-function contextHighlightedSegments(line) {
+// 按正则把文本切成 [{text, hit}] 片段，供 <mark> 高亮渲染（大小写不敏感由正则的 i 标志保证）
+function segmentByRegex(line, regex) {
   const text = String(line ?? '')
-  const regex = contextSearchRegex.value
   if (!regex) return [{ text, hit: false }]
 
   const out = []
@@ -1764,6 +1764,43 @@ function contextHighlightedSegments(line) {
   }
   if (lastIndex < text.length) out.push({ text: text.slice(lastIndex), hit: false })
   return out.length ? out : [{ text, hit: false }]
+}
+
+function contextHighlightedSegments(line) {
+  return segmentByRegex(line, contextSearchRegex.value)
+}
+
+// ── 主日志流关键字高亮（忽略大小写）──────────────────────────────
+// 命中的关键字来源：服务端单关键字 keyword + 多条件 include chips（排除项不高亮）
+const activeSearchTerms = computed(() => {
+  const seen = new Set()
+  const terms = []
+  const push = raw => {
+    const t = String(raw || '').trim()
+    if (!t) return
+    const key = t.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    terms.push(t)
+  }
+  for (const chip of localKeywords.value) {
+    if (!chip.exclude) push(chip.text)
+  }
+  push(keyword.value)
+  return terms
+})
+
+const logSearchRegex = computed(() => {
+  const terms = activeSearchTerms.value
+    .slice()
+    .sort((a, b) => b.length - a.length)   // 长词优先，避免短词抢占
+    .map(escapeRegExp)
+  if (!terms.length) return null
+  return new RegExp(terms.join('|'), 'gi')  // i = 忽略大小写
+})
+
+function highlightLogSegments(line) {
+  return segmentByRegex(line, logSearchRegex.value)
 }
 
 function isContextSearchMatch(idx) {
@@ -3565,6 +3602,14 @@ onBeforeUnmount(() => {
 .col-msg { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-error .col-msg { color: #fca5a5; }
 .row-warn  .col-msg { color: #fcd34d; }
+/* 关键字命中高亮（忽略大小写） */
+.col-msg mark.log-kw-hit {
+  background: var(--accent, #d97757);
+  color: #fff;
+  padding: 0 1px;
+  border-radius: 2px;
+  font-weight: 600;
+}
 .log-row.selected,
 .log-row.selected:hover {
   background: rgba(250,204,21,.18);
