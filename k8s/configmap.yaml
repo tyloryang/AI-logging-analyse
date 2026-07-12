@@ -44,7 +44,6 @@ data:
   SSH_KEY_FILE: "./.ssh_key"
   SLOWLOG_TARGETS_FILE: "./data/slowlog_targets.json"
 
-  CORS_ORIGINS: "*"
 
   SCHEDULE_CRON: "0 7 * * *"
   SCHEDULE_CHANNELS: "feishu"

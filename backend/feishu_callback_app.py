@@ -6,6 +6,7 @@ import os
 
 from fastapi import FastAPI
 
+from cors_config import add_permissive_cors
 from runtime_env import bootstrap_runtime_env
 
 bootstrap_runtime_env()
@@ -15,6 +16,7 @@ from routers.feishu_bot import feishu_webhook, router as feishu_bot_router  # no
 app = FastAPI(title="Feishu Callback Service", version="1.0.0")
 app.include_router(feishu_bot_router)
 app.add_api_route("/", feishu_webhook, methods=["POST"], include_in_schema=False)
+add_permissive_cors(app)
 
 
 @app.get("/")

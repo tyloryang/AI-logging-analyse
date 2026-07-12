@@ -29,9 +29,9 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
+from cors_config import add_permissive_cors
 from db import engine, Base, AsyncSessionLocal
 from auth.router import router as auth_router
 from auth.admin_router import router as admin_router
@@ -230,24 +230,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Ops Log Analysis", version="2.0.0", lifespan=lifespan)
 
-_cors_origins = [
-    o.strip()
-    for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
-    if o.strip()
-]
 if _gzip_enabled():
     app.add_middleware(
         SelectiveGZipMiddleware,
         minimum_size=_env_int("GZIP_MIN_SIZE", 1024, min_value=0),
         compresslevel=_env_int("GZIP_COMPRESS_LEVEL", 6, min_value=1, max_value=9),
     )
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Registered last so it is the outermost user middleware.
+add_permissive_cors(app)
 
 app.include_router(auth_router)
 app.include_router(admin_router)
