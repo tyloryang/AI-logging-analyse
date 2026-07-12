@@ -15,7 +15,13 @@ class PrometheusClient:
         self.auth = (username, password) if username else None
         self.timeout = httpx.Timeout(15.0)
         # 复用长连接，避免每次查询新建 TCP 连接
-        kw: dict = {"timeout": self.timeout, "limits": httpx.Limits(max_connections=20)}
+        # trust_env=False: Prometheus 是内网服务, 禁止走环境代理(HTTP_PROXY/ALL_PROXY),
+        # 否则代理连不上内网 IP 会给每个查询叠加数秒延迟。
+        kw: dict = {
+            "timeout": self.timeout,
+            "limits": httpx.Limits(max_connections=20),
+            "trust_env": False,
+        }
         if self.auth:
             kw["auth"] = self.auth
         self._client = httpx.AsyncClient(**kw)

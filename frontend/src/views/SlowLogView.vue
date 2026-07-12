@@ -214,6 +214,20 @@
         </div>
       </div>
 
+      <!-- 已保存的固定配置：点击一键加载，无需每次现填 -->
+      <div class="saved-config-bar">
+        <span class="scb-label">📌 固定配置：</span>
+        <template v-if="savedConfigs.length">
+          <button v-for="c in savedConfigs" :key="c.id" class="scb-chip"
+            :title="`${c.host_ip} · ${c.log_path}`" @click="applyConfig(c)">
+            <span class="scb-name">{{ c.name }}</span>
+            <span class="scb-ip mono">{{ c.host_ip }}</span>
+            <span class="scb-del" title="删除此配置" @click.stop="deleteConfig(c)">✕</span>
+          </button>
+        </template>
+        <span v-else class="scb-empty">暂无保存的配置，填好一行后点该行「存为配置」即可固定下来</span>
+      </div>
+
       <!-- 目标行 -->
       <div class="target-row-wrap" v-for="(t, i) in targets" :key="t.id">
         <div class="target-row">
@@ -251,6 +265,9 @@
             </span>
             <span v-if="t.error" class="target-error" :title="t.error">{{ t.error.slice(0, 60) }}</span>
           </div>
+          <button class="btn-save-cfg" :disabled="!t.host_ip.trim()" @click="saveTargetAsConfig(t)" title="把此行 IP+路径存为固定配置">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          </button>
           <button class="btn-remove" :disabled="targets.length <= 1" @click="removeTarget(i)" title="删除">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
@@ -513,6 +530,7 @@ const cmdbHostsLoading = ref(false)
 const credList         = ref([])
 
 onMounted(async () => {
+  loadSavedConfigs()
   cmdbHostsLoading.value = true
   try {
     const [hostRes, credRes] = await Promise.all([
@@ -790,6 +808,49 @@ const fetching     = ref(false)
 const validTargets = computed(() => targets.value.filter(t => t.host_ip.trim()))
 function addTarget()     { targets.value.push(makeTarget()) }
 function removeTarget(i) { if (targets.value.length > 1) targets.value.splice(i, 1) }
+
+// ── 固定配置：保存/加载/删除 ─────────────────────────────────────────────
+const savedConfigs = ref([])
+async function loadSavedConfigs() {
+  try { savedConfigs.value = (await api.slowlogConfigs()).data || [] }
+  catch { savedConfigs.value = [] }
+}
+// 点击配置芯片：填入第一个空行，没有空行则新增一行
+function applyConfig(c) {
+  let t = targets.value.find(x => !x.host_ip.trim())
+  if (!t) { t = makeTarget(); targets.value.push(t) }
+  t.host_ip  = c.host_ip
+  t.log_path = c.log_path || t.log_path
+  const h = cmdbHosts.value.find(x => x.ip === c.host_ip)
+  t._hostname = h ? (h.hostname || h.instance) : ''
+  if (c.credential_id) {
+    t._credMode = 'lib'
+    t._cred.credential_id = c.credential_id
+  } else if (c.ssh_user) {
+    t._credMode = 'auto'
+  }
+}
+async function saveTargetAsConfig(t) {
+  const name = window.prompt('给这个配置起个名字（如：订单库-主 3306）', t._hostname || t.host_ip)
+  if (name === null) return
+  if (!name.trim()) { alert('配置名不能为空'); return }
+  try {
+    await api.slowlogSaveConfig({
+      name: name.trim(),
+      host_ip: t.host_ip.trim(),
+      log_path: t.log_path.trim(),
+      ssh_port: t._cred?.ssh_port || 22,
+      ssh_user: t._cred?.ssh_user || '',
+      credential_id: t._cred?.credential_id || '',
+    })
+    await loadSavedConfigs()
+  } catch (e) { alert('保存失败：' + (e?.response?.data?.detail || e.message)) }
+}
+async function deleteConfig(c) {
+  if (!confirm(`删除固定配置「${c.name}」？`)) return
+  try { await api.slowlogDeleteConfig(c.id); await loadSavedConfigs() }
+  catch (e) { alert('删除失败：' + (e?.response?.data?.detail || e.message)) }
+}
 
 // IP 输入自动补全
 function suggestHosts(t) {
@@ -1207,6 +1268,20 @@ async function exportEntries(tab, fmt) {
 .btn-remove { background:none; border:none; color:var(--text-muted); cursor:pointer; padding:4px; border-radius:3px; display:flex; flex-shrink:0; transition:color .12s, background .12s; }
 .btn-remove:hover:not(:disabled) { color:var(--error); background:rgba(248,81,73,.1); }
 .btn-remove:disabled { opacity:.3; cursor:not-allowed; }
+.btn-save-cfg { background:none; border:none; color:var(--text-muted); cursor:pointer; padding:4px; border-radius:3px; display:flex; flex-shrink:0; transition:color .12s, background .12s; }
+.btn-save-cfg:hover:not(:disabled) { color:var(--accent, #4f8cff); background:rgba(79,140,255,.1); }
+.btn-save-cfg:disabled { opacity:.3; cursor:not-allowed; }
+
+/* 固定配置栏 */
+.saved-config-bar { display:flex; align-items:center; flex-wrap:wrap; gap:7px; padding:9px 16px; border-bottom:1px solid var(--border-light); }
+.scb-label { font-size:12px; color:var(--text-secondary); flex-shrink:0; }
+.scb-empty { font-size:11.5px; color:var(--text-muted); }
+.scb-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border:1px solid var(--border); border-radius:14px; background:var(--bg-surface); cursor:pointer; font-size:12px; transition:border-color .12s, background .12s; }
+.scb-chip:hover { border-color:var(--accent, #4f8cff); background:rgba(79,140,255,.06); }
+.scb-name { font-weight:600; color:var(--text-primary); }
+.scb-ip { font-size:11px; color:var(--text-muted); }
+.scb-del { color:var(--text-muted); font-size:11px; padding:0 2px; border-radius:3px; }
+.scb-del:hover { color:var(--error); background:rgba(248,81,73,.12); }
 .no-cmdb-hint { padding:12px 16px; font-size:12px; color:var(--text-muted); }
 
 /* ── 按钮 ─────────────────────────────────────────────────────────── */

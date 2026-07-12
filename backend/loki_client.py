@@ -55,6 +55,10 @@ class LokiClient:
 
         client_kwargs: dict = {
             "limits": httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            # 关键: 禁用环境代理。Loki 是内网服务, 若部署环境设了 HTTP_PROXY/ALL_PROXY
+            # (国内环境常见), httpx 默认 trust_env=True 会把每个内网请求都塞进代理,
+            # 代理连不上内网 IP → 每请求固定 2-4s 延迟, context 多子查询叠加到 20s+。
+            "trust_env": False,
         }
         if self.auth:
             client_kwargs["auth"] = self.auth

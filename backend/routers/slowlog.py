@@ -16,10 +16,14 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import uuid
+from pathlib import Path
+
 from slow_log_parser import parse_slow_log, build_summary
 from sql_cluster import cluster_slow_queries
 from state import load_cmdb, load_credentials, decrypt_password, analyzer
 from ssh_utils import ssh_connect_options
+from json_snapshot_store import read_json_file, write_json_file
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,6 +32,8 @@ router = APIRouter()
 _SSH_READ_TIMEOUT = 120
 # 默认读取文件尾部大小（MB）
 _DEFAULT_TAIL_MB = 50
+# 慢日志固定配置持久化文件（只存 IP/路径/凭证引用，不存明文密码）
+_SLOWLOG_CONFIG_FILE = Path(__file__).parent.parent / "data" / "slowlog_configs.json"
 
 
 # ── SSH 读文件辅助 ─────────────────────────────────────────────────────────────
@@ -235,6 +241,68 @@ async def list_mysql_hosts():
             "credential_name": cred_map.get(info.get("credential_id", ""), {}).get("name", ""),
         })
     return {"data": hosts}
+
+
+# ── 固定配置 CRUD（保存多组 IP+慢日志路径，选择性查询）──────────────────────────
+
+class SlowLogConfig(BaseModel):
+    id:            str   = ""
+    name:          str                              # 配置名，如 "订单库-主"
+    host_ip:       str
+    log_path:      str   = "/mysqldata/mysql/data/3306/mysql-slow.log"
+    ssh_port:      int   = 22
+    ssh_user:      str   = ""
+    credential_id: str   = ""
+    threshold_sec: float = 1.0
+    alert_sec:     float = 10.0
+    tail_mb:       float = _DEFAULT_TAIL_MB
+
+
+def _load_slowlog_configs() -> list[dict]:
+    data = read_json_file(_SLOWLOG_CONFIG_FILE, default=[])
+    return data if isinstance(data, list) else []
+
+
+def _save_slowlog_configs(items: list[dict]) -> None:
+    write_json_file(_SLOWLOG_CONFIG_FILE, items, ensure_parent=True)
+
+
+@router.get("/api/slowlog/configs")
+async def list_slowlog_configs():
+    """返回已保存的慢日志固定配置列表"""
+    return {"data": _load_slowlog_configs()}
+
+
+@router.post("/api/slowlog/configs")
+async def upsert_slowlog_config(body: SlowLogConfig):
+    """新增或更新一条固定配置（有 id 则更新，无 id 则新建）"""
+    if not body.name.strip():
+        raise HTTPException(400, detail="配置名不能为空")
+    if not body.host_ip.strip():
+        raise HTTPException(400, detail="主机 IP 不能为空")
+    configs = _load_slowlog_configs()
+    payload = body.model_dump()
+    if payload["id"]:
+        idx = next((i for i, c in enumerate(configs) if c.get("id") == payload["id"]), -1)
+        if idx < 0:
+            raise HTTPException(404, detail="配置不存在")
+        configs[idx] = payload
+    else:
+        payload["id"] = uuid.uuid4().hex[:12]
+        configs.append(payload)
+    _save_slowlog_configs(configs)
+    return {"ok": True, "config": payload}
+
+
+@router.delete("/api/slowlog/configs/{config_id}")
+async def delete_slowlog_config(config_id: str):
+    """删除一条固定配置"""
+    configs = _load_slowlog_configs()
+    remaining = [c for c in configs if c.get("id") != config_id]
+    if len(remaining) == len(configs):
+        raise HTTPException(404, detail="配置不存在")
+    _save_slowlog_configs(remaining)
+    return {"ok": True}
 
 
 @router.get("/api/slowlog/analyze/stream")

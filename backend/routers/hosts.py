@@ -1636,6 +1636,65 @@ _ARTHAS_PRESETS = {
 
 _JAVA_FLAME_EVENTS = {"cpu", "alloc", "lock", "wall"}
 
+# ── Java 诊断工具包上传（离线环境：目标机无 java/curl/外网时，从平台推送）──────────
+_JAVA_TOOLS_REMOTE_DIR = "/tmp/aiops-java-tools"
+_JAVA_TOOL_PKG_DIR = REPORTS_DIR / "java_tool_packages"
+_JAVA_TOOL_PKG_DIR.mkdir(exist_ok=True)
+_JAVA_TOOL_MANIFEST = _JAVA_TOOL_PKG_DIR / "manifest.json"
+_JAVA_TOOL_TYPES = {
+    "java":       {"label": "JDK (java)",                "remote_name": "jdk.tar.gz",            "default_url": "目标机 PATH/JAVA_HOME 自动探测", "accept": ".tar.gz"},
+    "arthas":     {"label": "Arthas",                    "remote_name": "arthas-boot.jar",       "default_url": "https://arthas.aliyun.com/arthas-boot.jar", "accept": ".jar"},
+    "flamegraph": {"label": "火焰图 (async-profiler)",   "remote_name": "async-profiler.tar.gz", "default_url": "github async-profiler v3.0", "accept": ".tar.gz"},
+}
+
+
+def _load_java_tool_manifest() -> dict:
+    from json_snapshot_store import read_json_file
+    data = read_json_file(_JAVA_TOOL_MANIFEST, default={})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_java_tool_manifest(manifest: dict) -> None:
+    from json_snapshot_store import write_json_file
+    write_json_file(_JAVA_TOOL_MANIFEST, manifest, ensure_parent=True)
+
+
+async def _push_java_tool_packages(conn) -> list[str]:
+    """把已上传的工具包 SFTP 推送到目标机 WORKDIR，返回已推送的工具类型列表。
+
+    - java: 推送 tar.gz 并解压到 $WORKDIR/jdk（_find_java 会优先用它）
+    - arthas: 推送为 arthas-boot.jar（脚本 `[ ! -s "$BOOT" ]` 命中即跳过下载）
+    - flamegraph: 推送为 async-profiler.tar.gz（脚本检测已存在即跳过下载）
+    未上传对应包时静默跳过，回退到原有联网下载逻辑。
+    """
+    manifest = _load_java_tool_manifest()
+    if not manifest:
+        return []
+    await conn.run(f"mkdir -p {_JAVA_TOOLS_REMOTE_DIR}", check=False)
+    pushed: list[str] = []
+    async with conn.start_sftp_client() as sftp:
+        for tool_type, meta in _JAVA_TOOL_TYPES.items():
+            entry = manifest.get(tool_type)
+            if not entry or not entry.get("filename"):
+                continue
+            local = _JAVA_TOOL_PKG_DIR / entry["filename"]
+            if not local.exists():
+                continue
+            remote = f"{_JAVA_TOOLS_REMOTE_DIR}/{meta['remote_name']}"
+            try:
+                await sftp.put(str(local), remote)
+                pushed.append(tool_type)
+            except Exception as exc:
+                logger.warning("[java-tools] 推送 %s 失败: %s", tool_type, exc)
+    if "java" in pushed:
+        await conn.run(
+            f"cd {_JAVA_TOOLS_REMOTE_DIR} && rm -rf jdk && mkdir -p jdk && "
+            f"(tar -xzf jdk.tar.gz -C jdk --strip-components=1 2>/dev/null || "
+            f"tar -xzf jdk.tar.gz -C jdk 2>/dev/null || true)",
+            check=False,
+        )
+    return pushed
+
 
 class JavaArthasRequest(BaseModel):
     pid: int
@@ -1724,6 +1783,10 @@ mkdir -p "$WORKDIR"
 
 # 自动探测 java 路径，并为 Arthas 归一化 JAVA_HOME（JDK8 下不能落到 .../jre）
 _find_java() {{
+  # 0. 平台推送的 JDK（离线环境：目标机无 java 时用上传包）
+  for jj in "$WORKDIR"/jdk/bin/java "$WORKDIR"/jdk/*/bin/java; do
+    [ -x "$jj" ] && {{ readlink -f "$jj" 2>/dev/null || echo "$jj"; return; }}
+  done
   # 1. PATH 里直接找，并解析为真实路径
   if command -v java >/dev/null 2>&1; then
     readlink -f "$(command -v java)" 2>/dev/null || command -v java
@@ -1906,6 +1969,9 @@ ARCH="$(uname -m)"
 mkdir -p "$WORKDIR"
 
 _find_java() {{
+  for jj in "$WORKDIR"/jdk/bin/java "$WORKDIR"/jdk/*/bin/java; do
+    [ -x "$jj" ] && {{ readlink -f "$jj" 2>/dev/null || echo "$jj"; return; }}
+  done
   if command -v java >/dev/null 2>&1; then
     readlink -f "$(command -v java)" 2>/dev/null || command -v java
     return
@@ -1978,17 +2044,24 @@ if [ ! -x "$PROFILE_HOME/profiler.sh" ]; then
   cd "$WORKDIR"
   rm -rf "$PROFILE_HOME" async-profiler async-profiler-*.tar.gz async-profiler-*
   URL="https://github.com/async-profiler/async-profiler/releases/download/v3.0/async-profiler-3.0-$PKG.tar.gz"
-  if ! _download_file "$URL" async-profiler.tar.gz; then
-    echo "下载 async-profiler 失败，请检查目标机外网访问或代理配置" >&2
-    exit 2
+  # 平台已推送 async-profiler.tar.gz（离线环境）则跳过下载，直接解压
+  if [ ! -s async-profiler.tar.gz ]; then
+    if ! _download_file "$URL" async-profiler.tar.gz; then
+      echo "下载 async-profiler 失败，请检查目标机外网访问，或在平台上传火焰图工具包" >&2
+      exit 2
+    fi
   fi
   tar -xzf async-profiler.tar.gz
   SRC_DIR="$(find "$WORKDIR" -maxdepth 1 -type d -name 'async-profiler-*' | head -1)"
   if [ -z "$SRC_DIR" ]; then
+    # 上传包可能已是解压好的目录结构（含 profiler.sh），直接探测
+    SRC_DIR="$(find "$WORKDIR" -maxdepth 2 -type f -name 'profiler.sh' -exec dirname {{}} \\; | head -1)"
+  fi
+  if [ -z "$SRC_DIR" ]; then
     echo "async-profiler 解压失败" >&2
     exit 2
   fi
-  mv "$SRC_DIR" "$PROFILE_HOME"
+  [ "$SRC_DIR" != "$PROFILE_HOME" ] && mv "$SRC_DIR" "$PROFILE_HOME"
 fi
 "$PROFILE_HOME/profiler.sh" -d {seconds} -e {event} -f {shlex.quote(remote_output)} {pid}
 """
@@ -2029,6 +2102,7 @@ async def run_java_arthas(host_id: str, body: JavaArthasRequest):
     command = _build_arthas_command(pid, arthas_command)
     try:
         async with await _ssh_run(host, command, timeout=90) as conn:
+            await _push_java_tool_packages(conn)   # 离线：先推送上传的 Arthas/JDK 包
             result = await conn.run(command, timeout=90, check=False)
     except Exception as e:
         raise HTTPException(status_code=400, detail=_ssh_error_msg(e, host))
@@ -2074,6 +2148,7 @@ async def run_java_flamegraph(host_id: str, body: JavaFlamegraphRequest):
 
     try:
         async with await _ssh_run(host, command, timeout=seconds + 120) as conn:
+            await _push_java_tool_packages(conn)   # 离线：先推送上传的 async-profiler/JDK 包
             result = await conn.run(command, timeout=seconds + 120, check=False)
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
@@ -2100,6 +2175,74 @@ async def run_java_flamegraph(host_id: str, body: JavaFlamegraphRequest):
         "download_url": _java_artifact_url(artifact_name),
         "stdout": stdout,
     }
+
+
+@router.get("/api/hosts/java-tools")
+async def list_java_tool_packages():
+    """列出三类 Java 诊断工具包的内置默认 + 已上传状态。"""
+    manifest = _load_java_tool_manifest()
+    tools = []
+    for tool_type, meta in _JAVA_TOOL_TYPES.items():
+        entry = manifest.get(tool_type) or {}
+        tools.append({
+            "type": tool_type,
+            "label": meta["label"],
+            "default_url": meta["default_url"],
+            "accept": meta["accept"],
+            "uploaded": bool(entry.get("filename")),
+            "filename": entry.get("filename", ""),
+            "size": entry.get("size", 0),
+            "uploaded_at": entry.get("uploaded_at", ""),
+        })
+    return {"data": tools}
+
+
+@router.post("/api/hosts/java-tools/{tool_type}")
+async def upload_java_tool_package(tool_type: str, file: UploadFile = File(...)):
+    """上传某类工具包（java/arthas/flamegraph），离线环境下诊断时自动推送到目标机。"""
+    if tool_type not in _JAVA_TOOL_TYPES:
+        raise HTTPException(status_code=400, detail="不支持的工具类型")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(raw) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件过大（>500MB）")
+    orig = Path(file.filename or "").name or f"{tool_type}.bin"
+    # 落地文件名固定为 <type>__<原名>，避免不同工具互相覆盖
+    stored = f"{tool_type}__{orig}"
+    # 清理该类型旧包
+    manifest = _load_java_tool_manifest()
+    old = manifest.get(tool_type) or {}
+    if old.get("filename"):
+        try:
+            (_JAVA_TOOL_PKG_DIR / old["filename"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+    (_JAVA_TOOL_PKG_DIR / stored).write_bytes(raw)
+    manifest[tool_type] = {
+        "filename": stored,
+        "orig_name": orig,
+        "size": len(raw),
+        "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    _save_java_tool_manifest(manifest)
+    return {"ok": True, "type": tool_type, "filename": stored, "size": len(raw)}
+
+
+@router.delete("/api/hosts/java-tools/{tool_type}")
+async def delete_java_tool_package(tool_type: str):
+    """删除已上传的工具包，恢复为内置默认（联网下载）。"""
+    if tool_type not in _JAVA_TOOL_TYPES:
+        raise HTTPException(status_code=400, detail="不支持的工具类型")
+    manifest = _load_java_tool_manifest()
+    entry = manifest.pop(tool_type, None)
+    if entry and entry.get("filename"):
+        try:
+            (_JAVA_TOOL_PKG_DIR / entry["filename"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+    _save_java_tool_manifest(manifest)
+    return {"ok": True}
 
 
 @router.get("/api/hosts/java-diagnostics/artifacts/{filename}")

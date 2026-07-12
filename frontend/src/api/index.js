@@ -60,6 +60,9 @@ export const api = {
   getHostProcesses: (id) => http.get(`/hosts/${id}/processes`),
   javaDiagArthas: (hostId, data) => http.post(`/hosts/${hostId}/java-diagnostics/arthas`, data),
   javaDiagFlamegraph: (hostId, data) => http.post(`/hosts/${hostId}/java-diagnostics/flamegraph`, data),
+  javaTools:        ()   => http.get('/hosts/java-tools'),
+  javaToolUpload:   (type, formData) => http.post(`/hosts/java-tools/${type}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  javaToolDelete:   (type) => http.delete(`/hosts/java-tools/${type}`),
   exportHosts:    ()   => `/api/hosts/export`,
   hostsTemplate:  ()   => `/api/hosts/template`,
   importHosts:    (file, opts = {}) => {
@@ -86,6 +89,9 @@ export const api = {
   // 慢日志分析
   slowlogHosts:   () => http.get('/slowlog/hosts'),
   slowlogFetch:   (data) => http.post('/slowlog/fetch', data),
+  slowlogConfigs:       ()   => http.get('/slowlog/configs'),
+  slowlogSaveConfig:    (data) => http.post('/slowlog/configs', data),
+  slowlogDeleteConfig:  (id) => http.delete(`/slowlog/configs/${id}`),
   // 慢日志报告
   getSlowlogTargets:  () => http.get('/report/slowlog/targets'),
   saveSlowlogTargets: (data) => http.put('/report/slowlog/targets', data),

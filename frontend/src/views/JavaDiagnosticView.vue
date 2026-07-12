@@ -26,6 +26,36 @@
       </div>
     </div>
 
+    <!-- 工具包管理：离线环境上传 java/Arthas/火焰图包，诊断时自动推送到目标机 -->
+    <section class="panel tools-panel">
+      <div class="panel-head">
+        <div class="panel-title">诊断工具包（离线环境）</div>
+        <button class="btn btn-outline btn-xs" @click="toolsOpen = !toolsOpen">{{ toolsOpen ? '收起' : '展开' }}</button>
+      </div>
+      <p class="tools-hint" v-if="toolsOpen">目标机无 java / 无外网时，在此上传对应包，诊断时平台会自动 SFTP 推送并使用；未上传则回退为默认联网下载。</p>
+      <div v-if="toolsOpen" class="tools-grid">
+        <div v-for="t in javaTools" :key="t.type" class="tool-card">
+          <div class="tool-card-head">
+            <strong>{{ t.label }}</strong>
+            <span class="tool-badge" :class="t.uploaded ? 'up' : 'def'">{{ t.uploaded ? '已上传' : '内置默认' }}</span>
+          </div>
+          <div class="tool-default mono" :title="t.default_url">默认：{{ t.default_url }}</div>
+          <div v-if="t.uploaded" class="tool-file">
+            <span class="mono" :title="t.filename">{{ t.filename.replace(t.type + '__', '') }}</span>
+            <span class="tool-size">{{ (t.size / 1048576).toFixed(1) }} MB</span>
+          </div>
+          <div class="tool-actions">
+            <label class="btn btn-outline btn-xs" :class="{ disabled: toolUploading === t.type }">
+              {{ toolUploading === t.type ? '上传中...' : (t.uploaded ? '替换' : '上传包') }}
+              <input type="file" :accept="t.accept" hidden :disabled="toolUploading === t.type"
+                @change="onToolUpload(t.type, $event)" />
+            </label>
+            <button v-if="t.uploaded" class="btn btn-outline btn-xs danger" @click="deleteTool(t.type)">删除</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div class="layout-grid">
       <section class="panel controls-panel">
         <div class="panel-title">目标主机</div>
@@ -204,6 +234,36 @@ const flameRunning = ref(false)
 const result = ref(null)
 const resultError = ref('')
 
+// ── 诊断工具包（离线上传）─────────────────────────────────────────────
+const toolsOpen = ref(false)
+const javaTools = ref([])
+const toolUploading = ref('')
+async function loadJavaTools() {
+  try { javaTools.value = (await api.javaTools()).data || [] }
+  catch { javaTools.value = [] }
+}
+async function onToolUpload(type, e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  toolUploading.value = type
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    await api.javaToolUpload(type, fd)
+    await loadJavaTools()
+  } catch (err) {
+    alert('上传失败：' + (err?.response?.data?.detail || err.message))
+  } finally {
+    toolUploading.value = ''
+    e.target.value = ''
+  }
+}
+async function deleteTool(type) {
+  if (!confirm('删除后将恢复为默认联网下载，确认删除该工具包？')) return
+  try { await api.javaToolDelete(type); await loadJavaTools() }
+  catch (err) { alert('删除失败：' + (err?.response?.data?.detail || err.message)) }
+}
+
 const arthasForm = reactive({
   preset: 'dashboard',
   command: '',
@@ -330,7 +390,7 @@ watch(selectedPid, () => {
   resultError.value = ''
 })
 
-onMounted(loadHosts)
+onMounted(() => { loadHosts(); loadJavaTools() })
 </script>
 
 <style scoped>
@@ -364,6 +424,24 @@ onMounted(loadHosts)
   gap: 8px;
   flex-wrap: wrap;
 }
+.tools-panel { margin-bottom: 16px; }
+.tools-hint { font-size: 12px; color: var(--text-muted); margin: 6px 0 12px; line-height: 1.6; }
+.tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.tool-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--bg-surface); display: flex; flex-direction: column; gap: 8px; }
+.tool-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tool-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 10px; font-weight: 600; }
+.tool-badge.up  { background: rgba(26,127,55,.12); color: var(--success); }
+.tool-badge.def { background: var(--bg-input); color: var(--text-muted); }
+.tool-default { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-file { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-secondary); }
+.tool-file .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-size { color: var(--text-muted); flex-shrink: 0; }
+.tool-actions { display: flex; gap: 6px; margin-top: 2px; }
+.tool-actions label.disabled { opacity: .5; pointer-events: none; }
+.btn-xs { padding: 3px 10px; font-size: 12px; }
+.btn-outline.danger { color: var(--error); border-color: rgba(248,81,73,.4); }
+.btn-outline.danger:hover { background: rgba(248,81,73,.1); }
+
 .notice-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -458,9 +536,15 @@ onMounted(loadHosts)
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow: auto;
+  /* 进程多时可上下滑动，不再无限撑高面板 */
+  max-height: 460px;
+  overflow-y: auto;
   padding-right: 4px;
+  scrollbar-width: thin;
 }
+.process-list::-webkit-scrollbar { width: 7px; }
+.process-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.process-list::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 .process-card {
   display: flex;
   flex-direction: column;
