@@ -217,7 +217,18 @@ SYSTEM_PROMPTS = {
         "3. 调用 count_errors_by_service 了解哪些服务有错误及数量\n"
         "4. 对错误数最多的服务调用 query_error_logs 查看具体报错内容\n"
         "5. 调用 get_host_metrics 检查主机资源（CPU/内存/磁盘）是否异常\n"
-        "6. 综合分析，输出：根因判断、影响范围、修复建议（结合历史案例和历史日报）\n\n"
+        "6. 场景化深挖（按需选择）：\n"
+        "   · 某个 Pod 异常/CrashLoop/OOM → diagnose_k8s_pod（一次拿状态+事件+崩溃日志）；\n"
+        "     排查 OOMKilled/镜像拉取/调度失败 → get_k8s_events\n"
+        "   · 某台服务器慢/负载高/磁盘满 → diagnose_cmdb_host（指标证据包 + SSH 实时快照）\n"
+        "   · Java 应用 CPU 高/卡顿/疑似死锁 → run_java_diagnostics（自动发现 PID 跑 Arthas）\n"
+        "   · 评估影响范围/追依赖链路 → query_knowledge_graph（谁依赖它、谁会被连累）\n"
+        "7. 综合分析，输出：根因判断、影响范围、修复建议（结合历史案例和历史日报）\n\n"
+        "【证据链纪律（重要）】\n"
+        "- 只能基于工具实际返回的证据下结论；未查询到的指标/日志不得当作事实。\n"
+        "- 无数据 ≠ 正常，要明确指出「证据缺口」，例如未接入某指标、SSH 无凭证。\n"
+        "- 结构化指标证据（若上下文含指标证据包）优先于文本推测，异常项要标注当前值与基线。\n"
+        "- 每条根因结论后面附上支撑它的具体证据来源（哪个工具、哪条日志/指标）。\n\n"
         "每次工具调用前简要说明你的分析思路。最终给出结构化的根因分析报告。\n\n"
         "报告全部输出完毕后，另起一行输出且仅输出下面这个 JSON（禁止用代码块包裹，禁止加任何其他文字）：\n"
         '{"affected_services":"涉及的服务名逗号分隔","root_cause":"根因一句话概括","resolution":"处置建议一句话概括"}'
@@ -245,6 +256,10 @@ SYSTEM_PROMPTS = {
         "- 检索历史运维事件（recall_similar_incidents）：从向量库中召回语义相似案例\n"
         "- 查询平台自身信息（get_platform_overview）：平台能力、接入组件、AI 模型、MCP、库存摘要\n"
         "- 查询 Kubernetes 集群状态（节点、Pod、Deployment）\n"
+        "- 一键诊断异常 Pod（diagnose_k8s_pod）/ 查看集群 Warning 事件（get_k8s_events）\n"
+        "- 定位并一键诊断服务器（find_cmdb_host / diagnose_cmdb_host：指标证据+SSH快照）\n"
+        "- Java 进程诊断（run_java_diagnostics：自动发现 PID 跑 Arthas 分析热点/死锁/内存）\n"
+        "- 查询运维知识图谱（query_knowledge_graph：服务/Pod/主机的依赖与影响面）\n"
         "- 查询中间件实例状态（MySQL、Redis、Kafka 等）\n"
         "- 调用已配置的 MCP 工具（Prometheus MCP、Redis MCP 等）\n\n"
         "【工具选择指引】\n"
@@ -475,7 +490,7 @@ def _get_llm(runtime_overrides: dict | None = None):
             api_key=api_key,
             model=model,
             max_tokens=4096,
-            http_async_client=httpx.AsyncClient(trust_env=False),
+            http_async_client=httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(120.0)),
             extra_body=extra or None,
         )
 
@@ -495,7 +510,7 @@ def _get_llm(runtime_overrides: dict | None = None):
         model=model,
         api_key=api_key,
         max_tokens=4096,
-        http_async_client=httpx.AsyncClient(trust_env=False),
+        http_async_client=httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(120.0)),
     )
 
 

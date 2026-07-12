@@ -49,6 +49,9 @@ class LokiClient:
         self.auth = (username, password) if username else None
         self.timeout = httpx.Timeout(60.0)
         self.scan_timeout = httpx.Timeout(120.0)
+        # 上下文查询是交互操作(用户点一条日志等着看), 用短超时快速失败,
+        # 路由层有降级重试 + 最小兜底, 比让用户干等 120s 好
+        self.context_timeout = httpx.Timeout(15.0)
 
         client_kwargs: dict = {
             "limits": httpx.Limits(max_connections=20, max_keepalive_connections=10),
@@ -280,6 +283,7 @@ class LokiClient:
         limit: int = 5000,
         direction: str = "backward",
         use_scan_timeout: bool = False,
+        timeout_override: Optional[httpx.Timeout] = None,
     ) -> list[dict]:
         now = int(time.time() * 1e9)
         start = start_ts if start_ts else now - 86400 * int(1e9)
@@ -288,7 +292,7 @@ class LokiClient:
         results: list[dict] = []
         remaining = limit
         cur_start, cur_end = start, end
-        timeout = self.scan_timeout if use_scan_timeout else self.timeout
+        timeout = timeout_override or (self.scan_timeout if use_scan_timeout else self.timeout)
 
         while remaining > 0:
             page_limit = min(remaining, self.LOKI_PAGE_SIZE)
@@ -568,15 +572,44 @@ class LokiClient:
             label_filters=normalized_filters or None,
         )
 
-        anchor_rows = await self.query_range(
-            query,
-            timestamp_ns,
-            timestamp_ns,
-            max(before + after + 1, 20),
-            direction="forward",
-            use_scan_timeout=True,
+        # 上下文日志绝大多数落在锚点前后几分钟内: 先并行查『近窗』(锚点 ±30min),
+        # 只有不满才并行扩查『远窗』补足 —— Loki 扫描量比直接扫全窗低一个量级,
+        # 且 anchor/before/after 三路并行, 总耗时从三者之和降为最大值。
+        NEAR_WINDOW_NS = int(30 * 60 * 1e9)
+        near_lower = max(lower_bound, timestamp_ns - NEAR_WINDOW_NS)
+        near_upper = min(upper_bound, timestamp_ns + NEAR_WINDOW_NS)
+
+        async def _fetch(start, end, limit, direction):
+            if limit <= 0 or start > end:
+                return []
+            return await self.query_range(
+                query, start, end, limit,
+                direction=direction,
+                timeout_override=self.context_timeout,
+            )
+
+        anchor_rows, before_rows, after_rows = await asyncio.gather(
+            _fetch(timestamp_ns, timestamp_ns, max(before + after + 1, 20), "forward"),
+            _fetch(near_lower, timestamp_ns - 1, before, "backward"),
+            _fetch(timestamp_ns + 1, near_upper, after, "forward"),
         )
+
+        # 近窗不满且还有更远的窗口 → 并行补足两侧
+        need_before = before - len(before_rows) if near_lower > lower_bound else 0
+        need_after = after - len(after_rows) if near_upper < upper_bound else 0
+        if need_before > 0 or need_after > 0:
+            far_before, far_after = await asyncio.gather(
+                _fetch(lower_bound, near_lower - 1, need_before, "backward"),
+                _fetch(near_upper + 1, upper_bound, need_after, "forward"),
+            )
+            before_rows = far_before + before_rows
+            after_rows = after_rows + far_after
+
         anchor_rows.sort(key=lambda item: int(item["timestamp_ns"]))
+        before_rows.sort(key=lambda item: int(item["timestamp_ns"]))
+        before_rows = before_rows[-before:] if before > 0 else []
+        after_rows.sort(key=lambda item: int(item["timestamp_ns"]))
+        after_rows = after_rows[:after] if after > 0 else []
 
         anchor = None
         if line_prefix:
@@ -595,30 +628,6 @@ class LokiClient:
                 "line": line_prefix or "",
                 "labels": anchor_labels,
             }
-
-        before_rows: list[dict] = []
-        if before > 0 and lower_bound < timestamp_ns:
-            before_rows = await self.query_range(
-                query,
-                lower_bound,
-                timestamp_ns - 1,
-                before,
-                direction="backward",
-                use_scan_timeout=True,
-            )
-            before_rows.sort(key=lambda item: int(item["timestamp_ns"]))
-
-        after_rows: list[dict] = []
-        if after > 0 and upper_bound > timestamp_ns:
-            after_rows = await self.query_range(
-                query,
-                timestamp_ns + 1,
-                upper_bound,
-                after,
-                direction="forward",
-                use_scan_timeout=True,
-            )
-            after_rows.sort(key=lambda item: int(item["timestamp_ns"]))
 
         rows = before_rows + [anchor] + after_rows
         return {

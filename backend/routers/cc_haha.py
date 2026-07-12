@@ -182,6 +182,11 @@ async def cc_websocket_proxy(
     session_id: str,
 ):
     """代理 WebSocket 连接到 cc-haha 后端（双向透传）。"""
+    from auth.deps import websocket_has_permission
+    if not await websocket_has_permission(ws, "agent", "view"):
+        await ws.close(code=4403, reason="Agent permission required")
+        return
+
     from auth.session import get_session
     session_cookie = ws.cookies.get("session_id")
     if session_cookie:

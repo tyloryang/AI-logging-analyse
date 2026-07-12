@@ -4,8 +4,9 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ConfigDict
@@ -22,6 +23,26 @@ from state import get_user_allowed_groups, get_user_allowed_k8s_clusters
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _allowed_workspace_roots() -> tuple[Path, ...]:
+    roots = [_REPO_ROOT]
+    for value in os.getenv("AIOPS_AGENT_WORKSPACE_ROOTS", "").split(os.pathsep):
+        value = value.strip()
+        if value:
+            roots.append(Path(value).expanduser().resolve())
+    return tuple(dict.fromkeys(roots))
+
+
+def _resolve_workspace(path: str = "") -> Path:
+    candidate = Path(path.strip()).expanduser() if path.strip() else _REPO_ROOT
+    candidate = candidate.resolve()
+    if not candidate.is_dir():
+        raise HTTPException(status_code=400, detail=f"目录不存在: {candidate}")
+    if not any(candidate == root or root in candidate.parents for root in _allowed_workspace_roots()):
+        raise HTTPException(status_code=403, detail="工作区不在允许的目录范围内")
+    return candidate
 
 # ── Checkpointer 懒初始化 ──────────────────────────────────────────────
 _checkpointer = None
@@ -549,7 +570,7 @@ async def git_status(path: str = "", _: User = require_permission("agent", "view
     import asyncio, shutil
     if not shutil.which("git"):
         return {"ok": False, "error": "git 未安装"}
-    workdir = path.strip() or "."
+    workdir = str(_resolve_workspace(path))
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "-C", workdir, "status", "--porcelain", "-u",
@@ -592,7 +613,7 @@ async def git_diff(path: str = "", file: str = "",
     import asyncio, shutil
     if not shutil.which("git"):
         return {"ok": False, "error": "git 未安装"}
-    workdir = path.strip() or "."
+    workdir = str(_resolve_workspace(path))
     args = ["git", "-C", workdir, "diff", "HEAD", "--", file] if file else \
            ["git", "-C", workdir, "diff", "HEAD"]
     try:
@@ -622,13 +643,18 @@ async def git_diff(path: str = "", file: str = "",
 async def read_claude_md(path: str = "", _: User = require_permission("agent", "view")):
     """读取项目目录（及父目录）中的 CLAUDE.md，向上遍历合并（同 Claude Code 行为）。"""
     import os
-    workdir = path.strip() or "."
+    workdir = str(_resolve_workspace(path))
     if not os.path.isdir(workdir):
         return {"ok": False, "error": f"目录不存在: {workdir}", "content": "", "files": []}
 
     parts = []
     files_found = []
     cur = os.path.abspath(workdir)
+    workspace_path = Path(workdir)
+    boundary = max(
+        (root for root in _allowed_workspace_roots() if workspace_path == root or root in workspace_path.parents),
+        key=lambda root: len(root.parts),
+    )
     visited = set()
     while True:
         if cur in visited:
@@ -643,6 +669,8 @@ async def read_claude_md(path: str = "", _: User = require_permission("agent", "
                     files_found.insert(0, {"path": fp, "name": name})
                 except Exception:
                     pass
+        if Path(cur) == boundary:
+            break
         parent = os.path.dirname(cur)
         if parent == cur:
             break
@@ -662,10 +690,10 @@ class ClaudeMdPayload(BaseModel):
 
 
 @router.put("/claude-md")
-async def write_claude_md(body: ClaudeMdPayload, _: User = require_permission("agent", "view")):
+async def write_claude_md(body: ClaudeMdPayload, _: User = require_permission("agent", "operate")):
     """保存 CLAUDE.md 到项目根目录。"""
     import os
-    workdir = body.path.strip()
+    workdir = str(_resolve_workspace(body.path))
     if not workdir or not os.path.isdir(workdir):
         raise HTTPException(status_code=400, detail=f"目录不存在: {workdir}")
     fp = os.path.join(workdir, "CLAUDE.md")
@@ -677,21 +705,22 @@ async def write_claude_md(body: ClaudeMdPayload, _: User = require_permission("a
 async def context_preview(path: str = "", _: User = require_permission("agent", "view")):
     """预览工作台发送消息时注入的上下文（CLAUDE.md + git 状态）。"""
     import asyncio, os, shutil
-    ctx = {"project_path": path, "claude_md": "", "git": {}, "env": {}}
+    workspace = str(_resolve_workspace(path))
+    ctx = {"project_path": workspace, "claude_md": "", "git": {}, "env": {}}
 
     # CLAUDE.md
     try:
-        r = await read_claude_md(path=path)
+        r = await read_claude_md(path=workspace)
         ctx["claude_md"] = r.get("content", "")
     except Exception:
         pass
 
     # git context
-    if shutil.which("git") and path and os.path.isdir(path):
+    if shutil.which("git"):
         async def _git(args):
             try:
                 p = await asyncio.create_subprocess_exec(
-                    "git", "-C", path, *args,
+                    "git", "-C", workspace, *args,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 o, _ = await asyncio.wait_for(p.communicate(), 5)
                 return o.decode("utf-8", errors="replace").strip()

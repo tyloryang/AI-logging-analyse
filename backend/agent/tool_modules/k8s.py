@@ -355,8 +355,137 @@ async def list_k8s_mcp_tools() -> str:
     return await list_mcp_tools.ainvoke({"mcp_name": str(mcp.get("name", ""))})
 
 
+@tool
+async def diagnose_k8s_pod(pod_name: str, namespace: str = "", config: RunnableConfig = None) -> str:
+    """一键诊断指定 Pod：状态 + 容器就绪/重启原因 + Warning 事件 + 最近错误日志。
+    用户报告某个 Pod 异常、CrashLoop、OOM、启动失败、频繁重启时优先使用本工具，
+    一次调用拿全证据，不需要分别调 pods/logs/events。pod_name 支持模糊匹配。"""
+    import asyncio as _asyncio
+
+    try:
+        from routers.kubernetes import _get_client
+
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
+        cluster = clusters[0]
+        core_v1, _ = _get_client(cluster["id"])
+
+        def _collect() -> str:
+            pods = core_v1.list_pod_for_all_namespaces(timeout_seconds=10).items \
+                if not namespace else core_v1.list_namespaced_pod(namespace, timeout_seconds=10).items
+            target = next((p for p in pods if pod_name in p.metadata.name), None)
+            if target is None:
+                return f"未找到名称包含「{pod_name}」的 Pod（命名空间：{namespace or '全部'}）"
+
+            ns = target.metadata.namespace
+            name = target.metadata.name
+            lines = [
+                f"**Pod 诊断 / {name}**（ns={ns}，节点={target.spec.node_name or '-'}，"
+                f"状态={target.status.phase}，PodIP={target.status.pod_ip or '-'}）",
+            ]
+
+            # 1. 容器状态与重启原因
+            bad_container = ""
+            for cs in target.status.container_statuses or []:
+                state_text = "running"
+                if cs.state and cs.state.waiting:
+                    state_text = f"waiting({cs.state.waiting.reason or '?'})"
+                elif cs.state and cs.state.terminated:
+                    state_text = f"terminated({cs.state.terminated.reason or '?'})"
+                last_reason = ""
+                if cs.last_state and cs.last_state.terminated:
+                    t = cs.last_state.terminated
+                    last_reason = f"，上次退出：{t.reason or '?'}(exit={t.exit_code})"
+                mark = "✅" if cs.ready else "⚠️"
+                lines.append(f"- {mark} 容器 {cs.name}：{state_text}，重启 {cs.restart_count} 次{last_reason}")
+                if not cs.ready and not bad_container:
+                    bad_container = cs.name
+
+            # 2. Warning 事件（最近 8 条）
+            try:
+                events = core_v1.list_namespaced_event(
+                    ns, field_selector=f"involvedObject.name={name}", timeout_seconds=8
+                ).items
+                warnings = [e for e in events if (e.type or "") == "Warning"][-8:]
+                if warnings:
+                    lines.append("**Warning 事件：**")
+                    for e in warnings:
+                        lines.append(f"- [{e.reason}] {(e.message or '')[:160]}（x{e.count or 1}）")
+            except Exception as exc:
+                lines.append(f"- 事件读取失败：{exc}")
+
+            # 3. 最近日志尾部（未就绪容器优先，看崩溃前日志）
+            try:
+                if bad_container:
+                    try:
+                        log_text = core_v1.read_namespaced_pod_log(
+                            name, ns, container=bad_container,
+                            tail_lines=30, timeout_seconds=8, previous=True)
+                        log_label = "上次崩溃前"
+                    except Exception:
+                        log_text = core_v1.read_namespaced_pod_log(
+                            name, ns, container=bad_container,
+                            tail_lines=30, timeout_seconds=8)
+                        log_label = "当前"
+                else:
+                    log_text = core_v1.read_namespaced_pod_log(
+                        name, ns, tail_lines=30, timeout_seconds=8)
+                    log_label = "当前"
+                if log_text:
+                    lines.append(f"**最近日志（{log_label} 30 行尾部）：**")
+                    lines.append("```\n" + log_text.strip()[-1800:] + "\n```")
+            except Exception as exc:
+                lines.append(f"- 日志读取失败：{exc}")
+
+            return "\n".join(lines)
+
+        return await _asyncio.to_thread(_collect)
+    except Exception as e:
+        return f"Pod 诊断失败：{e}"
+
+
+@tool
+async def get_k8s_events(namespace: str = "", only_warning: bool = True,
+                         config: RunnableConfig = None) -> str:
+    """查询 K8s 集群事件（默认只看 Warning）。排查 OOMKilled、镜像拉取失败、
+    调度失败、探针失败等问题时使用；namespace 留空查全部命名空间。"""
+    import asyncio as _asyncio
+
+    try:
+        from routers.kubernetes import _get_client
+
+        clusters = _visible_k8s_clusters(config)
+        if not clusters:
+            return "当前权限范围内没有可访问的 K8s 集群"
+        core_v1, _ = _get_client(clusters[0]["id"])
+
+        def _collect() -> str:
+            items = (core_v1.list_namespaced_event(namespace, timeout_seconds=10).items
+                     if namespace else
+                     core_v1.list_event_for_all_namespaces(timeout_seconds=10).items)
+            if only_warning:
+                items = [e for e in items if (e.type or "") == "Warning"]
+            items = sorted(items, key=lambda e: str(e.last_timestamp or e.event_time or ""))[-20:]
+            if not items:
+                return f"最近没有{'Warning ' if only_warning else ''}事件（命名空间：{namespace or '全部'}）"
+            lines = [f"**K8s {'Warning ' if only_warning else ''}事件（最近 {len(items)} 条）**"]
+            for e in items:
+                obj = e.involved_object
+                ts = str(e.last_timestamp or e.event_time or "")[:19]
+                lines.append(
+                    f"- {ts} [{e.reason}] {obj.kind}/{obj.name}（ns={obj.namespace or '-'}）："
+                    f"{(e.message or '')[:150]}（x{e.count or 1}）")
+            return "\n".join(lines)
+
+        return await _asyncio.to_thread(_collect)
+    except Exception as e:
+        return f"事件查询失败：{e}"
+
+
 __all__ = [
     "get_k8s_summary", "get_k8s_pods", "get_k8s_nodes",
     "get_k8s_namespaces", "get_k8s_deployments", "get_k8s_services",
+    "diagnose_k8s_pod", "get_k8s_events",
     "call_k8s_mcp", "list_k8s_mcp_tools",
 ]

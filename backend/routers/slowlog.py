@@ -144,8 +144,8 @@ def _resolve_credential(
 class FetchRequest(BaseModel):
     host_ip:       str
     log_path:      str = "/mysqldata/mysql/data/3306/mysql-slow.log"
-    date_from:     Optional[str] = None       # "YYYY-MM-DD" 起始（含）
-    date_to:       Optional[str] = None       # "YYYY-MM-DD" 结束（含）
+    date_from:     Optional[str] = None       # "YYYY-MM-DD" 或 "YYYY-MM-DDTHH:MM:SS"
+    date_to:       Optional[str] = None       # 纯日期含全天，也支持精确结束时间
     threshold_sec: float = 1.0
     alert_sec:     float = 10.0
     ssh_port:      int   = 22
@@ -321,6 +321,7 @@ async def export_slow_log(body: ExportRequest):
         date_tag = body.date_from
         if body.date_to and body.date_to != body.date_from:
             date_tag += f"~{body.date_to}"
+    filename_date_tag = (date_tag or "all").replace("T", "_").replace(":", "-").replace(" ", "_")
 
     fmt = (body.fmt or "csv").lower()
 
@@ -348,7 +349,7 @@ async def export_slow_log(body: ExportRequest):
                 e.get("sql", "").replace("\n", " "),
             ])
         content  = "\ufeff" + buf.getvalue()   # BOM 保证 Excel 正确识别 UTF-8
-        filename = f"slowlog_{host}_{date_tag or 'all'}.csv"
+        filename = f"slowlog_{host}_{filename_date_tag}.csv"
         return StreamingResponse(
             iter([content.encode("utf-8-sig")]),
             media_type="text/csv; charset=utf-8-sig",
@@ -378,7 +379,7 @@ async def export_slow_log(body: ExportRequest):
             lines.append(e.get("sql", "").strip() + ";\n\n")
 
         content  = "".join(lines)
-        filename = f"slowlog_{host}_{date_tag or 'all'}.log"
+        filename = f"slowlog_{host}_{filename_date_tag}.log"
         return StreamingResponse(
             iter([content.encode("utf-8")]),
             media_type="text/plain; charset=utf-8",
@@ -395,7 +396,7 @@ async def export_slow_log(body: ExportRequest):
         "entries":   entries,
     }
     content  = json.dumps(payload, ensure_ascii=False, indent=2)
-    filename = f"slowlog_{host}_{date_tag or 'all'}.json"
+    filename = f"slowlog_{host}_{filename_date_tag}.json"
     return StreamingResponse(
         iter([content.encode("utf-8")]),
         media_type="application/json; charset=utf-8",

@@ -12,14 +12,15 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from json_snapshot_store import read_json_file, write_json_file
+from auth.deps import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/es", tags=["elasticsearch"])
+router = APIRouter(prefix="/api/es", tags=["elasticsearch"], dependencies=[Depends(require_admin)])
 
 _DATA_FILE = Path(__file__).parent.parent / "data" / "es_clusters.json"
 

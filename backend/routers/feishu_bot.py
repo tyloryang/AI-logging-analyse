@@ -152,12 +152,14 @@ def _decrypt_event(encrypt_str: str) -> dict[str, Any]:
 def _validate_verification_token(payload: Mapping[str, Any]) -> None:
     verify_token = _env("FEISHU_BOT_VERIFY_TOKEN")
     if not verify_token:
-        return
+        if os.getenv("FEISHU_ALLOW_UNVERIFIED", "").strip().lower() in {"1", "true", "yes", "on"}:
+            return
+        raise ValueError("verification token is not configured")
 
     header = payload.get("header")
     header_token = header.get("token") if isinstance(header, Mapping) else ""
     provided = str(payload.get("token") or header_token or "")
-    if provided and not hmac.compare_digest(provided, verify_token):
+    if not provided or not hmac.compare_digest(provided, verify_token):
         raise ValueError("token mismatch")
 
 

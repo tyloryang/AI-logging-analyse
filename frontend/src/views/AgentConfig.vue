@@ -237,7 +237,12 @@
     <div v-if="activeTab === 'skill'" class="tab-content">
       <div class="card">
         <div class="section-toolbar">
-          <span class="section-count">已启用 {{ skillList.filter(s=>s.enabled).length }} / {{ skillList.length }} 个 Skill</span>
+          <span class="section-count">
+            已启用 {{ skillList.filter(s=>s.enabled).length }} / {{ skillList.length }} 个 Skill
+            <span v-if="installedSkillCount" class="installed-count">已安装 {{ installedSkillCount }}</span>
+            <span v-if="superpowersSkillCount" class="superpowers-count">⚡ Superpowers {{ superpowersSkillCount }}</span>
+            <span v-if="githubHighStarSkillCount" class="github-count">★ GitHub 高星 {{ githubHighStarSkillCount }}</span>
+          </span>
           <div class="section-toolbar-actions">
             <button class="btn btn-outline btn-sm" @click="showAddSkill = !showAddSkill" title="手动新增 Skill">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -283,16 +288,24 @@
             <div class="skill-header">
               <span class="skill-icon">{{ s.icon }}</span>
               <span class="skill-name">{{ s.name }}</span>
-              <button class="skill-delete" @click.stop="removeSkill(s)" title="删除该 Skill">✕</button>
+              <button v-if="!s.installed" class="skill-delete" @click.stop="removeSkill(s)" title="删除该 Skill">✕</button>
               <button class="toggle-switch sm" :class="{ on: s.enabled }" @click="s.enabled = !s.enabled; toggleSkill(s)">
                 <span class="toggle-thumb"></span>
               </button>
             </div>
             <div class="skill-desc">{{ s.desc }}</div>
+            <div v-if="s.installed" class="skill-source-row">
+              <span class="skill-source" :class="{ superpowers: s.source === 'Superpowers', github: s.source_kind === 'github-high-star' }">
+                {{ s.source_kind === 'github-high-star' ? `★ ${s.source}` : (s.source === 'Superpowers' ? '⚡ Superpowers' : '📦 项目技能') }}
+              </span>
+              <span v-if="s.source_stars" class="skill-stars" :title="`Star 快照日期：${s.source_checked_at || '未知'}`">★ {{ formatStars(s.source_stars) }}</span>
+              <code class="skill-path" :title="s.installed_path">{{ s.installed_path }}</code>
+            </div>
             <div class="skill-meta-row">
               <span v-if="s.tool_name" class="skill-tool" :title="`绑定工具：${s.tool_name}`">
                 🔗 {{ s.tool_name }}
               </span>
+              <span v-else-if="s.installed" class="skill-tool installed" title="由 SKILL.md 在编码智能体中按需加载">📄 文件型 Skill</span>
               <span v-else class="skill-tool warn" title="未绑定工具，启用后 LLM 无法实际调用">⚠ 未绑定工具</span>
             </div>
             <div class="skill-tags">
@@ -887,6 +900,15 @@ const newSkill = reactive({ icon: '🛠️', name: '', desc: '', tool_name: '', 
 const newSkillTagsInput = ref('')
 const importSkillsInput = ref(null)
 const importResult = ref(null)
+const installedSkillCount = computed(() => skillList.value.filter(s => s.installed).length)
+const superpowersSkillCount = computed(() => skillList.value.filter(s => s.installed && s.source === 'Superpowers').length)
+const githubHighStarSkillCount = computed(() => skillList.value.filter(s => s.installed && s.source_kind === 'github-high-star').length)
+
+function formatStars(value) {
+  const stars = Number(value || 0)
+  if (stars >= 1000) return `${(stars / 1000).toFixed(stars >= 100000 ? 0 : 1)}k`
+  return String(stars)
+}
 
 const RISK_LABELS = {
   read:        '只读 · 自动放行',
@@ -1379,10 +1401,20 @@ onMounted(async () => {
 .skill-meta-row { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
 .skill-tool { font-size: 11px; padding: 2px 8px; background: var(--bg-hover); border-radius: 4px; color: var(--text-secondary); }
 .skill-tool.warn { background: rgba(245, 158, 11, .12); color: #d97706; }
+.skill-tool.installed { background: rgba(34, 197, 94, .12); color: #16a34a; }
 .skill-delete { background: none; border: 0; cursor: pointer; color: var(--text-muted); font-size: 14px; padding: 2px 6px; border-radius: 4px; }
 .skill-delete:hover { background: rgba(239, 68, 68, .12); color: #dc2626; }
 .skill-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .skill-tag { font-size: 10px; padding: 2px 7px; background: var(--accent-dim); color: var(--accent); border-radius: 3px; }
+.skill-source-row { display: flex; align-items: center; gap: 6px; margin: -2px 0 8px; min-width: 0; }
+.skill-source { flex: 0 0 auto; font-size: 10px; padding: 2px 7px; border-radius: 999px; color: #2563eb; background: rgba(37, 99, 235, .10); }
+.skill-source.superpowers { color: #b45309; background: rgba(245, 158, 11, .14); }
+.skill-source.github { color: #7c3aed; background: rgba(124, 58, 237, .12); }
+.skill-stars { flex: 0 0 auto; font-size: 10px; color: #b45309; }
+.skill-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-muted); background: transparent; }
+.installed-count, .superpowers-count, .github-count { display: inline-flex; margin-left: 8px; padding: 2px 7px; border-radius: 999px; font-size: 10px; background: var(--bg-hover); color: var(--text-secondary); }
+.superpowers-count { color: #b45309; background: rgba(245, 158, 11, .14); }
+.github-count { color: #7c3aed; background: rgba(124, 58, 237, .12); }
 
 /* Skill 工具栏：新增 / 导入 / 导出三件套 */
 .section-toolbar-actions { display: flex; gap: 6px; }

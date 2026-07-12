@@ -75,9 +75,20 @@ from .tool_modules.jenkins import (  # noqa: F401
     jenkins_retry_last_build,
     jenkins_search_jobs,
 )
+from .tool_modules.cmdb import (  # noqa: F401
+    diagnose_cmdb_host,
+    find_cmdb_host,
+    run_java_diagnostics,
+)
+from .tool_modules.graph import (  # noqa: F401
+    query_knowledge_graph,
+    rebuild_knowledge_graph,
+)
 from .tool_modules.k8s import (  # noqa: F401
     call_k8s_mcp,
+    diagnose_k8s_pod,
     get_k8s_deployments,
+    get_k8s_events,
     get_k8s_namespaces,
     get_k8s_nodes,
     get_k8s_pods,
@@ -143,6 +154,15 @@ ALL_TOOLS = [
     get_k8s_namespaces,
     get_k8s_deployments,
     get_k8s_services,
+    diagnose_k8s_pod,
+    get_k8s_events,
+    # CMDB 服务器场景 + Java 诊断
+    find_cmdb_host,
+    diagnose_cmdb_host,
+    run_java_diagnostics,
+    # 知识图谱
+    query_knowledge_graph,
+    rebuild_knowledge_graph,
     # 中间件
     get_middleware_summary,
     get_middleware_instances,

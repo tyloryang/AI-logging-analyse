@@ -99,6 +99,7 @@ export const api = {
   testAlertmanager: (data) => http.post('/settings/test/alertmanager', data),
   testK8s:        ()     => http.get('/settings/test/k8s'),
   testAI:         (data) => http.post('/settings/test/ai', data),
+  discoverAIModels: (data) => http.post('/settings/ai/models', data),
   // Agent 工作台
   getAgentConfig:          () => http.get('/agent-config'),
   saveAgentConfig:         (data) => http.put('/agent-config', data),
@@ -156,6 +157,17 @@ export const api = {
   httpServerMetrics: (data) => http.post('/observability/metrics/http-server', data),
   // 知识拓扑
   topologyKnowledge: () => http.get('/topology/knowledge'),
+  kgStatus: () => http.get('/kg/status'),
+  kgStats: () => http.get('/kg/stats'),
+  kgGraph: (params = {}) => http.get('/kg/graph', { params }),
+  kgNeighbors: (entity, params = {}) => http.get('/kg/neighbors', { params: { entity, ...params } }),
+  kgBuild: () => http.post('/kg/build'),
+  kgUpsertNode: (data) => http.post('/kg/nodes', data),
+  kgDeleteNode: (nodeId) => http.delete('/kg/nodes', { params: { node_id: nodeId } }),
+  kgUpsertRelation: (data) => http.post('/kg/relations', data),
+  kgDeleteRelation: (sourceId, targetId, relation) => http.delete('/kg/relations', {
+    params: { source_id: sourceId, target_id: targetId, relation },
+  }),
   // Grafana 看板管理
   observabilityGrafanaBoards: () => http.get('/observability/grafana/boards'),
   discoverGrafanaBoards: () => http.get('/observability/grafana/discover'),
@@ -294,6 +306,7 @@ export const api = {
   // 事件墙
   listEvents:       (params)     => http.get('/events',       { params }),
   eventStats:       ()           => http.get('/events/stats'),
+  clearEventHistory:()           => http.delete('/events/history'),
   // 中间件
   middlewareSummary:   ()        => http.get('/middleware/summary'),
   middlewareInstances: ()        => http.get('/middleware/instances'),
@@ -358,6 +371,7 @@ export const api = {
   alertGroup:         (id)    => http.get(`/alerts/groups/${id}`),
   alertTriggerRca:    (id, data = {}) => http.post(`/alerts/groups/${id}/rca`, data),
   alertUpdateStatus:  (id, data) => http.put(`/alerts/groups/${id}/status`, data),
+  alertBatchUpdateStatus: (data) => http.put('/alerts/groups/batch-status', data),
   alertStats:         ()      => http.get('/alerts/stats'),
   // 运维知识库
   knowledgeList:      (params = {}) => http.get('/knowledge', { params }),

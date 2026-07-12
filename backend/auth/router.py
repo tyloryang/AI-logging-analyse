@@ -1,4 +1,6 @@
 """认证路由 /api/auth/*"""
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,6 +13,13 @@ from auth.audit import write_audit
 from auth.deps import current_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _login_rate_key(request: Request) -> str:
+    peer = request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    forwarded = forwarded or request.headers.get("x-real-ip", "").strip()
+    return f"{peer}|{forwarded[:64]}" if forwarded else peer
 
 
 @router.post("/register")
@@ -26,18 +35,29 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
 @router.post("/login")
 async def login(body: LoginRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     ip = request.client.host if request.client else ""
+    rate_key = _login_rate_key(request)
+    if await sess.is_ip_limited(rate_key):
+        raise HTTPException(429, detail="登录尝试过于频繁，请稍后再试")
     try:
         user, session_id = await service.login_user(db, body.username, body.password, ip)
     except ValueError as e:
+        await sess.incr_ip_fail(rate_key)
         await write_audit(db, "login", ip=ip, status="fail", detail=str(e))
         raise HTTPException(401, detail=str(e))
 
     perms = await service.get_user_permissions(db, user.id)
     await write_audit(db, "login", user_id=user.id, ip=ip, status="success")
 
+    secure_env = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower()
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    secure_cookie = secure_env in {"1", "true", "yes", "on"} or (
+        not secure_env and (forwarded_proto == "https" or request.url.scheme == "https")
+    )
+
     response.set_cookie(
         "session_id", session_id,
         httponly=True, samesite="lax", path="/",
+        secure=secure_cookie,
         max_age=int(sess.SESSION_TTL),
     )
     return {

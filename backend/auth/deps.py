@@ -1,11 +1,11 @@
 """FastAPI 依赖：current_user / require_permission"""
 import os
 import functools
-from fastapi import Request, HTTPException, Depends
+from fastapi import Request, WebSocket, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from cachetools import TTLCache
-from db import get_db
+from db import get_db, AsyncSessionLocal
 from auth.models import User, Permission
 from auth.session import get_session
 
@@ -19,6 +19,9 @@ _perm_cache: TTLCache = TTLCache(maxsize=256, ttl=60)
 
 
 async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+    state_user = getattr(request.state, "user", None)
+    if state_user is not None:
+        return state_user
     session_id = request.cookies.get("session_id")
     if not session_id:
         raise HTTPException(status_code=401, detail="未登录")
@@ -31,6 +34,32 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
     if not user or user.status != "active":
         raise HTTPException(status_code=401, detail="账号不可用")
     return user
+
+
+async def websocket_user(websocket: WebSocket) -> User | None:
+    session_id = websocket.cookies.get("session_id")
+    if not session_id:
+        return None
+    data = await get_session(session_id)
+    if not data:
+        return None
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.id == data.get("user_id")))
+        user = result.scalar_one_or_none()
+    if not user or user.status != "active":
+        return None
+    return user
+
+
+async def websocket_has_permission(websocket: WebSocket, module: str, level: str = "view") -> bool:
+    user = await websocket_user(websocket)
+    if user is None:
+        return False
+    if user.is_superuser:
+        return True
+    async with AsyncSessionLocal() as db:
+        permissions = await _get_permissions(user.id, db)
+    return LEVEL_RANK.get(permissions.get(module, "none"), 0) >= LEVEL_RANK.get(level, 0)
 
 
 async def _get_permissions(user_id: str, db: AsyncSession) -> dict:

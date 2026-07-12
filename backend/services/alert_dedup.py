@@ -437,6 +437,45 @@ def update_group_status(
     return True
 
 
+def update_groups_status(group_ids: list[str], status: str) -> dict[str, list[str] | int]:
+    """批量更新告警组状态，并且只执行一次持久化。"""
+    state = _load()
+    groups = state["groups"]
+    updated: list[str] = []
+    skipped: list[str] = []
+    missing: list[str] = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    for group_id in dict.fromkeys(group_ids):
+        group = groups.get(group_id)
+        if not group:
+            missing.append(group_id)
+            continue
+
+        current_status = group.get("status")
+        if current_status == status or (status == "suppressed" and current_status == "resolved"):
+            skipped.append(group_id)
+            continue
+
+        group["status"] = status
+        if status == "resolved":
+            group["resolved_at"] = now
+        elif status == "suppressed":
+            group["suppressed_at"] = now
+            state["suppressed"][f"rca|{group_id}"] = time.time() + _SUPPRESS_TTL
+        updated.append(group_id)
+
+    if updated:
+        _save(state)
+
+    return {
+        "requested": len(dict.fromkeys(group_ids)),
+        "updated": updated,
+        "skipped": skipped,
+        "missing": missing,
+    }
+
+
 def stats() -> dict:
     groups = [_normalize_group_alert_type(g) for g in _load()["groups"].values()]
     active = [g for g in groups if g["status"] not in ("resolved", "suppressed")]

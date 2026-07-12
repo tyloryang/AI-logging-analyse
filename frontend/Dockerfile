@@ -17,7 +17,6 @@ RUN apk add --no-cache \
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 RUN mkdir -p /opt/aiops/config /opt/aiops/es
-COPY config/ /opt/aiops/config/
 COPY k8s/elasticsearch-eck.yaml /opt/aiops/es/elasticsearch-eck.yaml
 
 ENV AIOPS_EMBEDDED_CONFIG_DIR=/opt/aiops/config

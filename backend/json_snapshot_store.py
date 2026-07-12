@@ -106,10 +106,19 @@ def load_json_snapshot(path: Path) -> Any | None:
         return None
 
 
+_SAVED_HASHES: dict[str, int] = {}
+
+
 def save_json_snapshot(path: Path, data: Any) -> None:
     _ensure_table()
     try:
         payload = json.dumps(data, ensure_ascii=False, indent=2)
+        # 内容未变化则跳过写库: read_json_file 每次读都会调本函数,
+        # k8s/CMDB 等高频路径反复读同一配置, 无节流会造成 SQLite 写放大
+        key = snapshot_key(path)
+        digest = hash(payload)
+        if _SAVED_HASHES.get(key) == digest:
+            return
         now = datetime.now(timezone.utc).isoformat()
         with _connect() as conn:
             conn.execute(
@@ -121,8 +130,9 @@ def save_json_snapshot(path: Path, data: Any) -> None:
                     payload=excluded.payload,
                     updated_at=excluded.updated_at
                 """,
-                (snapshot_key(path), str(path), payload, now),
+                (key, str(path), payload, now),
             )
+        _SAVED_HASHES[key] = digest
     except Exception as exc:
         logger.warning("[json_snapshot] save failed for %s: %s", path, exc)
 

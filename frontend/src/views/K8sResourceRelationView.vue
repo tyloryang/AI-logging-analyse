@@ -22,6 +22,12 @@
             知识关系
           </button>
           <button
+            :class="['kg-tab', { active: mode === 'neo4j' }]"
+            @click="switchMode('neo4j')"
+          >
+            Neo4j 关系
+          </button>
+          <button
             :class="['kg-tab', { active: mode === 'runtime' }]"
             @click="switchMode('runtime')"
           >
@@ -30,6 +36,7 @@
         </div>
 
         <div class="kg-controls">
+          <span v-if="pinnedId" class="kg-pin-hint" @click="clearPin" title="点击取消固定">📌 已固定 · 点此取消</span>
           <label class="kg-toggle">
             <input v-model="animOn" type="checkbox">
             <span>流动效果</span>
@@ -38,6 +45,31 @@
             <input v-model="showLabels" type="checkbox">
             <span>说明浮层</span>
           </label>
+          <button
+            v-if="mode === 'neo4j'"
+            class="kg-btn kg-btn-primary"
+            @click="syncNeo4j"
+            :disabled="loading || syncing || !neo4jConfigured"
+          >
+            <span v-if="syncing" class="kg-spinner"></span>
+            <span v-else>同步图谱</span>
+          </button>
+          <button
+            v-if="mode === 'neo4j'"
+            class="kg-btn"
+            @click="openRelationDialog"
+            :disabled="loading || !neo4jConnected || nodes.length < 2"
+          >
+            新增关系
+          </button>
+          <button
+            v-if="mode === 'neo4j' && selectedEdge"
+            class="kg-btn kg-btn-danger"
+            @click="removeSelectedRelation"
+            :disabled="relationSaving"
+          >
+            删除关系
+          </button>
           <button class="kg-btn" @click="loadGraph" :disabled="loading">
             <span v-if="loading" class="kg-spinner"></span>
             <span v-else>刷新</span>
@@ -55,6 +87,7 @@
         </span>
       </div>
       <div class="kg-source">{{ sourceLabel }}</div>
+      <div v-if="actionMessage" class="kg-action-message">{{ actionMessage }}</div>
     </div>
 
     <div class="kg-legend">
@@ -123,8 +156,8 @@
           </marker>
         </defs>
 
-        <rect width="100%" height="100%" fill="url(#kg-bg)" />
-        <rect width="100%" height="100%" fill="url(#kg-grid)" />
+        <rect width="100%" height="100%" fill="url(#kg-bg)" @click="clearPin" />
+        <rect width="100%" height="100%" fill="url(#kg-grid)" @click="clearPin" />
 
         <g class="kg-zones">
           <rect
@@ -164,7 +197,8 @@
             :stroke-dasharray="edge.dash || null"
             :opacity="hoveredId ? (isEdgeRelated(edge) ? 1 : 0.12) : 1"
             :marker-end="`url(#${edge.markerId})`"
-            class="kg-edge"
+            :class="['kg-edge', { selected: selectedEdge?.id === edge.id }]"
+            @click.stop="selectEdge(edge)"
           />
 
           <g v-if="hoveredId">
@@ -223,8 +257,10 @@
             class="kg-node"
             :transform="`translate(${node.x},${node.y})`"
             :opacity="hoveredId && hoveredId !== node.id && !isNodeConnected(node.id) ? 0.16 : 1"
+            :class="{ pinned: pinnedId === node.id }"
             @mouseenter="hoveredId = node.id"
-            @mouseleave="hoveredId = null"
+            @mouseleave="hoveredId = pinnedId"
+            @click.stop="togglePin(node.id)"
           >
             <circle
               v-if="node.pulse || hoveredId === node.id"
@@ -233,6 +269,17 @@
               :r="node.r + (hoveredId === node.id ? 14 : 10)"
               :fill="withAlpha(node.color, hoveredId === node.id ? 0.2 : 0.12)"
               :class="{ 'kg-pulse': hoveredId !== node.id }"
+            />
+
+            <circle
+              v-if="pinnedId === node.id"
+              cx="0"
+              cy="0"
+              :r="node.r + 6"
+              fill="none"
+              :stroke="node.color"
+              stroke-width="1.6"
+              stroke-dasharray="3 3"
             />
 
             <circle
@@ -294,9 +341,60 @@
       <div v-else-if="!loading && !nodes.length" class="kg-overlay">
         <div class="kg-overlay-card">
           <div class="kg-overlay-title">暂无拓扑数据</div>
-          <div class="kg-overlay-text">当前模式没有可展示的节点或关系。</div>
+          <div class="kg-overlay-text">{{ emptyMessage }}</div>
         </div>
       </div>
+    </div>
+
+    <div v-if="relationDialogOpen" class="kg-dialog-backdrop" @click.self="closeRelationDialog">
+      <form class="kg-dialog" @submit.prevent="saveRelation">
+        <div class="kg-dialog-head">
+          <div>
+            <div class="kg-dialog-title">新增 Neo4j 关系</div>
+            <div class="kg-dialog-subtitle">在两个知识实体之间建立有向关系</div>
+          </div>
+          <button type="button" class="kg-dialog-close" title="关闭" @click="closeRelationDialog">×</button>
+        </div>
+
+        <label class="kg-field">
+          <span>源节点</span>
+          <select v-model="relationForm.source_id" required>
+            <option v-for="node in nodes" :key="`src-${node.id}`" :value="node.id">
+              {{ node.name }} · {{ node.metadata?.kind || node.id }}
+            </option>
+          </select>
+        </label>
+        <label class="kg-field">
+          <span>目标节点</span>
+          <select v-model="relationForm.target_id" required>
+            <option v-for="node in nodes" :key="`dst-${node.id}`" :value="node.id">
+              {{ node.name }} · {{ node.metadata?.kind || node.id }}
+            </option>
+          </select>
+        </label>
+        <label class="kg-field">
+          <span>关系类型</span>
+          <input
+            v-model.trim="relationForm.relation"
+            maxlength="64"
+            pattern="[A-Za-z][A-Za-z0-9_]*"
+            placeholder="例如 DEPENDS_ON"
+            required
+          >
+        </label>
+        <label class="kg-field">
+          <span>关系属性（JSON）</span>
+          <textarea v-model="relationForm.propsText" rows="4" spellcheck="false"></textarea>
+        </label>
+        <div v-if="relationFormError" class="kg-form-error">{{ relationFormError }}</div>
+        <div class="kg-dialog-actions">
+          <button type="button" class="kg-btn" @click="closeRelationDialog">取消</button>
+          <button type="submit" class="kg-btn kg-btn-primary" :disabled="relationSaving">
+            <span v-if="relationSaving" class="kg-spinner"></span>
+            <span v-else>保存关系</span>
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 </template>
@@ -319,14 +417,33 @@ const RUNTIME_RELATIONS = [
   { id: 'dependency', label: '外部依赖', color: '#fbbf24' },
 ]
 
+const GRAPH_PALETTE = ['#38bdf8', '#22c55e', '#f59e0b', '#f87171', '#a78bfa', '#14b8a6', '#94a3b8', '#e879f9']
+
 const mode = ref('knowledge')
 const loading = ref(false)
+const syncing = ref(false)
+const relationSaving = ref(false)
 const loadError = ref('')
+const actionMessage = ref('')
 const animOn = ref(true)
 const showLabels = ref(true)
 const hoveredId = ref(null)
+const pinnedId = ref(null)
+const selectedEdge = ref(null)
+const relationDialogOpen = ref(false)
+const relationFormError = ref('')
 const graph = ref(emptyGraph())
 const svgEl = ref(null)
+
+const relationForm = reactive({
+  source_id: '',
+  target_id: '',
+  relation: 'DEPENDS_ON',
+  propsText: '{}',
+})
+
+const neo4jConfigured = computed(() => Boolean(graph.value.configured))
+const neo4jConnected = computed(() => Boolean(graph.value.connected))
 
 const vb = reactive({ x: 0, y: 0, w: W, h: H })
 const drag = reactive({ active: false, sx: 0, sy: 0, vbx0: 0, vby0: 0 })
@@ -628,7 +745,21 @@ function onDragEnd() {
 function switchMode(nextMode) {
   if (mode.value === nextMode) return
   mode.value = nextMode
+  selectedEdge.value = null
+  pinnedId.value = null
+  actionMessage.value = ''
+  closeRelationDialog()
   loadGraph()
+}
+
+// 点击固定节点：高亮与提示常驻，再次点击或点空白取消
+function togglePin(nodeId) {
+  pinnedId.value = pinnedId.value === nodeId ? null : nodeId
+  hoveredId.value = pinnedId.value
+}
+function clearPin() {
+  pinnedId.value = null
+  hoveredId.value = null
 }
 
 function classifyRuntimeNode(node) {
@@ -676,6 +807,126 @@ function normalizeKnowledgeGraph(data) {
     groups: normalized.stats?.groups ?? normalized.groups.length,
   }
   return normalized
+}
+
+function normalizeNeo4jGraph(raw) {
+  const rawNodes = safeArray(raw?.nodes)
+  const rawEdges = safeArray(raw?.edges)
+  const kindNames = [...new Set(rawNodes.map((node) => String(node?.kind || 'entity')))]
+  const kindIndex = Object.fromEntries(kindNames.map((kind, index) => [kind, index]))
+  const groups = kindNames.map((kind, index) => ({
+    id: sanitizeId(kind),
+    kind,
+    label: kind,
+    color: GRAPH_PALETTE[index % GRAPH_PALETTE.length],
+  }))
+  const groupByKind = Object.fromEntries(groups.map((group) => [group.kind, group]))
+  const groupedNodes = Object.fromEntries(kindNames.map((kind) => [kind, []]))
+  rawNodes.forEach((node) => {
+    const kind = String(node?.kind || 'entity')
+    if (!groupedNodes[kind]) groupedNodes[kind] = []
+    groupedNodes[kind].push(node)
+  })
+
+  const columnCount = Math.min(3, Math.max(1, groups.length))
+  const rowCount = Math.max(1, Math.ceil(groups.length / columnCount))
+  const gapX = 24
+  const gapY = 28
+  const marginX = 42
+  const marginY = 58
+  const zoneW = (W - marginX * 2 - gapX * (columnCount - 1)) / columnCount
+  const zoneH = (H - marginY * 2 - gapY * (rowCount - 1)) / rowCount
+
+  const zones = groups.map((group, index) => ({
+    id: group.id,
+    label: group.label,
+    color: group.color,
+    x: marginX + (index % columnCount) * (zoneW + gapX),
+    y: marginY + Math.floor(index / columnCount) * (zoneH + gapY),
+    w: zoneW,
+    h: zoneH,
+  }))
+  const zoneByKind = Object.fromEntries(groups.map((group, index) => [group.kind, zones[index]]))
+
+  const positionedNodes = []
+  kindNames.forEach((kind) => {
+    const items = groupedNodes[kind] || []
+    const zone = zoneByKind[kind]
+    if (!zone) return
+    const columns = Math.max(1, Math.ceil(Math.sqrt(items.length * Math.max(zone.w / zone.h, 1))))
+    const rows = Math.max(1, Math.ceil(items.length / columns))
+    const cellW = (zone.w - 48) / columns
+    const cellH = (zone.h - 62) / rows
+    const radius = Math.max(16, Math.min(28, Math.min(cellW, cellH) * 0.28))
+    items.forEach((node, index) => {
+      const props = node?.props && typeof node.props === 'object' ? node.props : {}
+      const summary = []
+      if (node?.env) summary.push(`环境: ${node.env}`)
+      Object.entries(props).slice(0, 4).forEach(([key, value]) => summary.push(`${key}: ${String(value)}`))
+      positionedNodes.push({
+        id: String(node.id),
+        name: String(node.name || node.id),
+        subtitle: kind,
+        abbr: deriveNodeAbbr(node.name || node.id),
+        group: groupByKind[kind]?.id || sanitizeId(kind),
+        zone: groupByKind[kind]?.id || sanitizeId(kind),
+        x: zone.x + 24 + cellW * (index % columns + 0.5),
+        y: zone.y + 42 + cellH * (Math.floor(index / columns) + 0.5),
+        size: radius,
+        summary,
+        metadata: { kind, scope: node.source || 'neo4j', env: node.env || '' },
+      })
+    })
+  })
+
+  const relationNames = [...new Set(rawEdges.map((edge) => String(edge?.relation || 'RELATED_TO')))]
+  const relationLegend = relationNames.map((relation, index) => ({
+    id: sanitizeId(relation),
+    relation,
+    label: relation,
+    color: GRAPH_PALETTE[(index + 2) % GRAPH_PALETTE.length],
+  }))
+  const relationByName = Object.fromEntries(relationLegend.map((item) => [item.relation, item]))
+  const edges = rawEdges.map((edge, index) => {
+    const relation = String(edge?.relation || 'RELATED_TO')
+    return {
+      ...edge,
+      id: String(edge?.id || `neo4j-edge-${index}`),
+      source: String(edge?.source || ''),
+      target: String(edge?.target || ''),
+      label: relation,
+      relation,
+      category: relationByName[relation]?.id || sanitizeId(relation),
+      metadata: edge?.props || {},
+    }
+  })
+
+  return {
+    graph_id: 'neo4j-knowledge-graph',
+    title: 'Neo4j 知识图谱',
+    subtitle: raw?.connected
+      ? `数据库 ${raw?.database || 'neo4j'} · 可管理实体关系`
+      : (raw?.message || raw?.error || 'Neo4j 未连接'),
+    source: 'neo4j',
+    configured: Boolean(raw?.configured),
+    connected: Boolean(raw?.connected),
+    error: raw?.error || '',
+    groups,
+    relation_legend: relationLegend,
+    zones,
+    nodes: positionedNodes,
+    edges,
+    stats: {
+      nodes: positionedNodes.length,
+      edges: edges.length,
+      zones: zones.length,
+      groups: groups.length,
+      details: [
+        { label: '连接', value: raw?.connected ? '正常' : (raw?.configured ? '失败' : '未配置') },
+        { label: '数据库', value: raw?.database || '-' },
+      ],
+    },
+  }
 }
 
 function normalizeRuntimeGraph(raw) {
@@ -778,36 +1029,141 @@ function normalizeRuntimeGraph(raw) {
   }
 }
 
+function getErrorMessage(error) {
+  return String(error?.response?.data?.detail || error?.message || error || '未知错误')
+}
+
+function selectEdge(edge) {
+  if (mode.value !== 'neo4j') return
+  selectedEdge.value = selectedEdge.value?.id === edge.id ? null : edge
+}
+
+function openRelationDialog() {
+  if (nodes.value.length < 2) return
+  relationForm.source_id = selectedEdge.value?.source || nodes.value[0].id
+  relationForm.target_id = selectedEdge.value?.target || nodes.value.find((node) => node.id !== relationForm.source_id)?.id || ''
+  relationForm.relation = selectedEdge.value?.relation || 'DEPENDS_ON'
+  relationForm.propsText = '{}'
+  relationFormError.value = ''
+  relationDialogOpen.value = true
+}
+
+function closeRelationDialog() {
+  relationDialogOpen.value = false
+  relationFormError.value = ''
+}
+
+async function saveRelation() {
+  relationFormError.value = ''
+  if (relationForm.source_id === relationForm.target_id) {
+    relationFormError.value = '源节点和目标节点不能相同'
+    return
+  }
+  let props = {}
+  try {
+    props = JSON.parse(relationForm.propsText || '{}')
+    if (!props || Array.isArray(props) || typeof props !== 'object') throw new Error('invalid object')
+  } catch {
+    relationFormError.value = '关系属性必须是 JSON 对象'
+    return
+  }
+
+  relationSaving.value = true
+  try {
+    await api.kgUpsertRelation({
+      source_id: relationForm.source_id,
+      target_id: relationForm.target_id,
+      relation: relationForm.relation.toUpperCase(),
+      props,
+    })
+    closeRelationDialog()
+    actionMessage.value = 'Neo4j 关系已保存'
+    await loadGraph()
+  } catch (error) {
+    relationFormError.value = getErrorMessage(error)
+  } finally {
+    relationSaving.value = false
+  }
+}
+
+async function removeSelectedRelation() {
+  const edge = selectedEdge.value
+  if (!edge) return
+  if (!confirm(`确认删除关系 ${edge.source} -[${edge.relation}]-> ${edge.target}？`)) return
+  relationSaving.value = true
+  try {
+    await api.kgDeleteRelation(edge.source, edge.target, edge.relation)
+    selectedEdge.value = null
+    actionMessage.value = 'Neo4j 关系已删除'
+    await loadGraph()
+  } catch (error) {
+    actionMessage.value = `删除失败：${getErrorMessage(error)}`
+  } finally {
+    relationSaving.value = false
+  }
+}
+
+async function syncNeo4j() {
+  syncing.value = true
+  actionMessage.value = ''
+  try {
+    const result = await api.kgBuild()
+    if (result?.neo4j?.error) throw new Error(result.neo4j.error)
+    actionMessage.value = `同步完成：${result?.nodes || 0} 个节点，${result?.edges || 0} 条关系`
+    await loadGraph()
+  } catch (error) {
+    actionMessage.value = `同步失败：${getErrorMessage(error)}`
+  } finally {
+    syncing.value = false
+  }
+}
+
 async function loadGraph() {
   loading.value = true
   loadError.value = ''
   hoveredId.value = null
-  const isKnowledgeMode = mode.value === 'knowledge'
+  selectedEdge.value = null
 
   try {
-    graph.value = isKnowledgeMode
-      ? normalizeKnowledgeGraph(await api.topologyKnowledge())
-      : normalizeRuntimeGraph(await api.swGetTopology({ hours: 1 }))
+    if (mode.value === 'knowledge') {
+      graph.value = normalizeKnowledgeGraph(await api.topologyKnowledge())
+    } else if (mode.value === 'neo4j') {
+      graph.value = normalizeNeo4jGraph(await api.kgGraph({ limit: 240 }))
+      if (graph.value.error) loadError.value = graph.value.error
+    } else {
+      graph.value = normalizeRuntimeGraph(await api.swGetTopology({ hours: 1 }))
+    }
     fitView()
   } catch (error) {
-    const message = String(error || '未知错误')
+    const message = getErrorMessage(error)
     loadError.value = message
-    graph.value = isKnowledgeMode
+    graph.value = mode.value === 'knowledge'
       ? buildKnowledgeFallbackGraph(message)
       : emptyGraph()
-    if (isKnowledgeMode) fitView()
+    if (mode.value === 'knowledge') fitView()
   } finally {
     loading.value = false
   }
 }
 
-const graphTitle = computed(() => graph.value.title || (mode.value === 'knowledge' ? '知识拓扑图' : '运行拓扑图'))
+const graphTitle = computed(() => {
+  if (graph.value.title) return graph.value.title
+  if (mode.value === 'neo4j') return 'Neo4j 知识图谱'
+  return mode.value === 'knowledge' ? '知识拓扑图' : '运行拓扑图'
+})
 const graphSubtitle = computed(() => graph.value.subtitle || '')
 const sourceLabel = computed(() => {
   if (graph.value.source === 'knowledge-fallback') return 'Source: frontend fallback graph'
-  return mode.value === 'knowledge'
-    ? 'Source: backend /api/topology/knowledge'
-    : 'Source: SkyWalking /api/sw/topology'
+  if (mode.value === 'knowledge') return 'Source: backend /api/topology/knowledge'
+  if (mode.value === 'neo4j') return `Source: Neo4j / ${graph.value.connected ? 'connected' : 'disconnected'}`
+  return 'Source: SkyWalking /api/sw/topology'
+})
+
+const emptyMessage = computed(() => {
+  if (mode.value !== 'neo4j') return '当前模式没有可展示的节点或关系。'
+  if (!graph.value.configured) return '尚未配置 Neo4j 连接，请先设置后端环境变量。'
+  if (!graph.value.connected) return graph.value.error || 'Neo4j 当前无法连接。'
+  return 'Neo4j 中暂无节点，请点击“同步图谱”。'
 })
 
 const nodeGroups = computed(() => safeArray(graph.value.groups))
@@ -815,7 +1171,7 @@ const groupMap = computed(() => Object.fromEntries(nodeGroups.value.map((group) 
 const relationLegend = computed(() => {
   const items = safeArray(graph.value.relation_legend)
   if (items.length) return items
-  return mode.value === 'knowledge' ? [] : RUNTIME_RELATIONS
+  return mode.value === 'runtime' ? RUNTIME_RELATIONS : []
 })
 const relationMap = computed(() => Object.fromEntries(relationLegend.value.map((item) => [item.id, item])))
 const zones = computed(() => safeArray(graph.value.zones))
@@ -930,11 +1286,12 @@ const tooltipPos = computed(() => {
 })
 
 const statsChips = computed(() => {
+  const modeLabel = mode.value === 'knowledge' ? 'Knowledge' : mode.value === 'neo4j' ? 'Neo4j' : 'Runtime'
   const base = [
     { label: '节点', value: graph.value.stats?.nodes ?? nodes.value.length },
     { label: '关系', value: graph.value.stats?.edges ?? edges.value.length },
     { label: '分区', value: graph.value.stats?.zones ?? zones.value.length },
-    { label: '模式', value: mode.value === 'knowledge' ? 'Knowledge' : 'Runtime' },
+    { label: '模式', value: modeLabel },
   ]
   const details = safeArray(graph.value.stats?.details)
     .filter((item) => item && item.label != null && item.value != null)
@@ -1083,6 +1440,21 @@ onMounted(() => {
   accent-color: var(--accent);
 }
 
+.kg-pin-hint {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  color: #7ee0ff;
+  background: rgba(56, 139, 253, 0.12);
+  border: 1px solid rgba(56, 139, 253, 0.4);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.kg-node { cursor: pointer; }
+.kg-node.pinned { cursor: default; }
+
 .kg-btn {
   min-width: 56px;
   padding: 8px 12px;
@@ -1102,6 +1474,18 @@ onMounted(() => {
 .kg-btn:disabled {
   opacity: 0.7;
   cursor: wait;
+}
+
+.kg-btn-primary {
+  color: #f8fbff;
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(14, 116, 144, 0.3);
+}
+
+.kg-btn-danger {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.36);
+  background: rgba(127, 29, 29, 0.22);
 }
 
 .kg-spinner {
@@ -1156,6 +1540,12 @@ onMounted(() => {
 .kg-source {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.kg-action-message {
+  color: #7dd3fc;
+  font-size: 12px;
+  flex-basis: 100%;
 }
 
 .kg-legend {
@@ -1214,6 +1604,12 @@ onMounted(() => {
 
 .kg-edge {
   animation: kgDash 9s linear infinite;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.kg-edge.selected {
+  filter: drop-shadow(0 0 6px currentColor);
 }
 
 .kg-edge-label {
@@ -1301,6 +1697,107 @@ onMounted(() => {
   font-size: 13px;
   line-height: 1.6;
   white-space: pre-wrap;
+}
+
+.kg-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(3, 7, 18, 0.72);
+}
+
+.kg-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding: 20px;
+  border: 1px solid rgba(126, 142, 171, 0.24);
+  border-radius: 8px;
+  background: #0d1524;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.42);
+}
+
+.kg-dialog-head,
+.kg-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kg-dialog-head {
+  margin-bottom: 18px;
+}
+
+.kg-dialog-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.kg-dialog-subtitle {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.kg-dialog-close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(126, 142, 171, 0.2);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.kg-field {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.kg-field input,
+.kg-field select,
+.kg-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(126, 142, 171, 0.24);
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+  font: inherit;
+}
+
+.kg-field textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.kg-field input:focus,
+.kg-field select:focus,
+.kg-field textarea:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.62);
+}
+
+.kg-form-error {
+  margin: -4px 0 14px;
+  color: #fca5a5;
+  font-size: 12px;
+}
+
+.kg-dialog-actions {
+  justify-content: flex-end;
+  padding-top: 4px;
 }
 
 @keyframes kgDash {

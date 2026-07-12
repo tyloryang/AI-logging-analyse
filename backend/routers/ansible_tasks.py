@@ -29,14 +29,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from json_snapshot_store import read_json_file, write_json_file
+from auth.deps import require_admin
 from ssh_utils import ssh_connect_options
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ansible", tags=["ansible"])
+router = APIRouter(prefix="/api/ansible", tags=["ansible"], dependencies=[Depends(require_admin)])
 
 _DATA_DIR   = Path(__file__).parent.parent / "data"
 _TASKS_FILE = _DATA_DIR / "ansible_tasks.json"

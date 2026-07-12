@@ -16,6 +16,6 @@
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "esbuild": "^0.20.0"
+    "esbuild": "^0.28.1"
   }
 }

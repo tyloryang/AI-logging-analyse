@@ -79,21 +79,65 @@
 
         <!-- 时间段 + 阈值（始终显示） -->
         <div class="cred-grid" style="margin-top: 12px;">
-          <div class="field">
-            <label>起始日期</label>
-            <input v-model="cred.date_from" type="date" />
+          <div class="field field-wide range-paste-field">
+            <label>粘贴时间段</label>
+            <div class="range-paste-control">
+              <input
+                v-model="dateRangePaste"
+                type="text"
+                placeholder="如 2026-07-10 14:25:00 ~ 2026-07-10 14:30:00"
+                title="支持单个时间、单个日期或起止时间段；粘贴后立即生效"
+                @paste="onDateRangePaste"
+                @keyup.enter="applyDateRangePaste"
+              />
+              <button type="button" class="btn-ghost range-apply-btn" @click="applyDateRangePaste">应用</button>
+              <button type="button" class="btn-ghost range-apply-btn" @click="copyDateRange">
+                {{ dateRangeCopied ? '已复制' : '复制' }}
+              </button>
+            </div>
+            <span v-if="dateRangePasteError" class="range-paste-error">{{ dateRangePasteError }}</span>
           </div>
           <div class="field">
-            <label>结束日期</label>
-            <input v-model="cred.date_to" type="date" />
+            <label>起始时间</label>
+            <input
+              v-model="cred.date_from"
+              type="text"
+              class="date-time-text"
+              placeholder="YYYY-MM-DD HH:mm:ss"
+              aria-label="慢日志起始时间"
+              autocomplete="off"
+              @blur="commitDateTimeField('date_from')"
+              @keyup.enter="commitDateTimeField('date_from')"
+              @paste="onDateTimeFieldPaste('date_from', $event)"
+              title="可直接粘贴完整起始时间，如 2026-07-10 23:29:48"
+            />
+          </div>
+          <div class="field">
+            <label>结束时间</label>
+            <input
+              v-model="cred.date_to"
+              type="text"
+              class="date-time-text"
+              placeholder="YYYY-MM-DD HH:mm:ss"
+              aria-label="慢日志结束时间"
+              autocomplete="off"
+              @blur="commitDateTimeField('date_to')"
+              @keyup.enter="commitDateTimeField('date_to')"
+              @paste="onDateTimeFieldPaste('date_to', $event)"
+              title="可直接粘贴完整结束时间，如 2026-07-10 23:39:48"
+            />
+            <span v-if="dateTimeInputError" class="range-paste-error">{{ dateTimeInputError }}</span>
           </div>
           <div class="field" style="justify-content: flex-end; padding-top: 18px;">
             <div class="quick-dates">
+              <button class="btn-ghost" @click="setRecentMinutes(5)">近5分钟</button>
+              <button class="btn-ghost" @click="setRecentMinutes(15)">近15分钟</button>
+              <button class="btn-ghost" @click="setRecentMinutes(60)">近1小时</button>
               <button class="btn-ghost" @click="setRange(0)">今天</button>
               <button class="btn-ghost" @click="setRange(1)">昨天</button>
               <button class="btn-ghost" @click="setRange(7)">近7天</button>
               <button class="btn-ghost" @click="setRange(30)">近30天</button>
-              <button class="btn-ghost" @click="cred.date_from=''; cred.date_to=''">不限</button>
+              <button class="btn-ghost" @click="clearDateRange">不限</button>
             </div>
           </div>
           <div class="field field-narrow">
@@ -459,7 +503,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api/index.js'
 
@@ -484,6 +528,13 @@ onMounted(async () => {
 // ── 共享凭证（持久化） ─────────────────────────────────────────────────────
 const CRED_KEY = 'slowlog_cred2'
 const saved = (() => { try { return JSON.parse(sessionStorage.getItem(CRED_KEY) || '{}') } catch { return {} } })()
+const formatLocalDateTime = (date) => {
+  const pad = value => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    ` ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+const defaultSlowlogEnd = new Date()
+const defaultSlowlogStart = new Date(defaultSlowlogEnd.getTime() - 5 * 60 * 1000)
 const credOpen = ref(true)
 const credMode = ref(saved.credMode ?? 'auto')   // 'auto' | 'lib' | 'manual'
 const cred = reactive({
@@ -493,8 +544,8 @@ const cred = reactive({
   ssh_port:      saved.ssh_port      ?? 22,
   threshold_sec: saved.threshold_sec ?? 1.0,
   alert_sec:     saved.alert_sec     ?? 10.0,
-  date_from:     saved.date_from     ?? '',
-  date_to:       saved.date_to       ?? '',
+  date_from:     formatLocalDateTime(defaultSlowlogStart),
+  date_to:       formatLocalDateTime(defaultSlowlogEnd),
   tail_mb:       saved.tail_mb       ?? 50,
 })
 watch([credMode, cred], () => {
@@ -506,18 +557,178 @@ const selectedCredName = computed(() => {
   return c ? c.name : ''
 })
 
+const dateRangePaste = ref('')
+const dateRangePasteError = ref('')
+const dateTimeInputError = ref('')
+const dateRangeCopied = ref(false)
+
+function parsePastedDateTime(value) {
+  const match = String(value || '').match(
+    /(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[\sT]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/,
+  )
+  if (!match) return null
+  const [, year, month, day, hour, minute, second] = match
+  const hasTime = hour != null
+  const candidate = new Date(
+    Number(year), Number(month) - 1, Number(day),
+    Number(hour || 0), Number(minute || 0), Number(second || 0),
+  )
+  if (
+    candidate.getFullYear() !== Number(year) ||
+    candidate.getMonth() !== Number(month) - 1 ||
+    candidate.getDate() !== Number(day) ||
+    (hasTime && (
+      candidate.getHours() !== Number(hour) ||
+      candidate.getMinutes() !== Number(minute) ||
+      candidate.getSeconds() !== Number(second || 0)
+    ))
+  ) return null
+  return { date: candidate, hasTime }
+}
+
+function applyDateRangePaste() {
+  dateRangePasteError.value = ''
+  dateTimeInputError.value = ''
+  const matches = String(dateRangePaste.value || '').match(
+    /\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[\sT]+\d{1,2}:\d{2}(?::\d{2})?)?/g,
+  ) || []
+  const parsed = matches.slice(0, 2).map(parsePastedDateTime).filter(Boolean)
+  if (!parsed.length) {
+    dateRangePasteError.value = '无法识别，请粘贴标准日期、时间或“开始时间 ~ 结束时间”'
+    return
+  }
+
+  let from
+  let to
+  if (parsed.length === 1 && parsed[0].hasTime) {
+    to = parsed[0].date
+    from = new Date(to.getTime() - 5 * 60 * 1000)
+  } else {
+    const starts = parsed.map(item => {
+      const date = new Date(item.date)
+      if (!item.hasTime) date.setHours(0, 0, 0, 0)
+      return date.getTime()
+    })
+    const ends = parsed.map(item => {
+      const date = new Date(item.date)
+      if (!item.hasTime) date.setHours(23, 59, 59, 0)
+      return date.getTime()
+    })
+    from = new Date(Math.min(...starts))
+    to = new Date(Math.max(...ends))
+  }
+  cred.date_from = formatLocalDateTime(from)
+  cred.date_to = formatLocalDateTime(to)
+}
+
+function parseCompleteDateTime(value) {
+  const parsed = parsePastedDateTime(value)
+  return parsed?.hasTime ? parsed.date : null
+}
+
+function validateDateTimeOrder() {
+  if (!cred.date_from || !cred.date_to) return true
+  const from = parseCompleteDateTime(cred.date_from)
+  const to = parseCompleteDateTime(cred.date_to)
+  if (from && to && to < from) {
+    dateTimeInputError.value = '结束时间不能早于起始时间'
+    return false
+  }
+  return true
+}
+
+function commitDateTimeField(field) {
+  const value = String(cred[field] || '').trim()
+  if (!value) {
+    cred[field] = ''
+    dateTimeInputError.value = ''
+    return validateDateTimeOrder()
+  }
+
+  const parsed = parseCompleteDateTime(value)
+  if (!parsed) {
+    dateTimeInputError.value = `${field === 'date_from' ? '起始' : '结束'}时间格式无效，请输入 YYYY-MM-DD HH:mm:ss`
+    return false
+  }
+  cred[field] = formatLocalDateTime(parsed)
+  dateTimeInputError.value = ''
+  return validateDateTimeOrder()
+}
+
+function onDateTimeFieldPaste(field, event) {
+  const text = event?.clipboardData?.getData('text')
+  if (text == null) return
+  event.preventDefault()
+  cred[field] = text.trim()
+  nextTick(() => commitDateTimeField(field))
+}
+
+function validateDateTimeRange() {
+  return commitDateTimeField('date_from') && commitDateTimeField('date_to') && validateDateTimeOrder()
+}
+
+function onDateRangePaste(event) {
+  const text = event?.clipboardData?.getData('text')
+  if (text != null) {
+    dateRangePaste.value = text
+    event.preventDefault()
+  }
+  nextTick(applyDateRangePaste)
+}
+
+function clearDateRange() {
+  cred.date_from = ''
+  cred.date_to = ''
+  dateRangePaste.value = ''
+  dateRangePasteError.value = ''
+  dateTimeInputError.value = ''
+}
+
+async function copyDateRange() {
+  if (!cred.date_from || !cred.date_to) {
+    dateRangePasteError.value = '请先填写完整的起始时间和结束时间'
+    return
+  }
+  const text = `${cred.date_from.replace('T', ' ')} ~ ${cred.date_to.replace('T', ' ')}`
+  try {
+    await navigator.clipboard.writeText(text)
+    dateRangeCopied.value = true
+    setTimeout(() => { dateRangeCopied.value = false }, 1500)
+  } catch {
+    dateRangePasteError.value = '浏览器不允许访问剪贴板，请手动复制时间段'
+  }
+}
+
+function resetRangePasteState() {
+  dateRangePaste.value = ''
+  dateRangePasteError.value = ''
+  dateTimeInputError.value = ''
+}
+
+function setRecentMinutes(minutes) {
+  const to = new Date()
+  const from = new Date(to.getTime() - minutes * 60 * 1000)
+  cred.date_from = formatLocalDateTime(from)
+  cred.date_to = formatLocalDateTime(to)
+  resetRangePasteState()
+}
+
 function setRange(days) {
   const to = new Date(), from = new Date()
   if (days === 0) {
-    cred.date_from = cred.date_to = to.toISOString().slice(0, 10)
+    from.setHours(0, 0, 0, 0)
   } else if (days === 1) {
     from.setDate(from.getDate() - 1)
-    cred.date_from = cred.date_to = from.toISOString().slice(0, 10)
+    from.setHours(0, 0, 0, 0)
+    to.setDate(to.getDate() - 1)
+    to.setHours(23, 59, 59, 0)
   } else {
     from.setDate(from.getDate() - (days - 1))
-    cred.date_from = from.toISOString().slice(0, 10)
-    cred.date_to   = to.toISOString().slice(0, 10)
+    from.setHours(0, 0, 0, 0)
   }
+  cred.date_from = formatLocalDateTime(from)
+  cred.date_to = formatLocalDateTime(to)
+  resetRangePasteState()
 }
 
 // ── 批量选择面板 ─────────────────────────────────────────────────────────
@@ -664,6 +875,7 @@ async function _fetchTarget(t) {
 async function fetchAll() {
   const list = validTargets.value
   if (!list.length) return
+  if (!validateDateTimeRange()) return
   fetching.value = true
   aiText.value   = ''
 
@@ -904,6 +1116,17 @@ async function exportEntries(tab, fmt) {
 .field-wide { flex:2; min-width:260px; }
 .field-narrow { flex:0 0 100px; }
 .field-hint { font-size:11px; color:var(--text-muted); align-self:center; }
+.range-paste-field { flex-basis: 320px; }
+.range-paste-control { display:flex; gap:6px; }
+.range-paste-control input { min-width:0; flex:1; }
+.range-apply-btn { flex-shrink:0; }
+.range-paste-error { color:var(--error); font-size:11px; line-height:1.35; }
+.date-time-text {
+  min-width:190px;
+  font-family:ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace !important;
+  font-variant-numeric:tabular-nums;
+  letter-spacing:0;
+}
 .link { color:var(--accent); text-decoration:none; }
 .link:hover { text-decoration:underline; }
 .quick-dates { display:flex; gap:4px; flex-wrap:wrap; }

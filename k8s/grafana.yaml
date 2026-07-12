@@ -1,4 +1,6 @@
 ---
+# Create grafana-secret before deployment; do not commit the password:
+# kubectl -n monitoring create secret generic grafana-secret --from-literal=admin-user=admin --from-literal=admin-password='<strong-password>'
 # Grafana deployment for iframe embedding inside the AIOps frontend.
 # Browser URL: http://192.168.9.221:30300
 apiVersion: apps/v1
@@ -39,13 +41,11 @@ spec:
                 secretKeyRef:
                   name: grafana-secret
                   key: admin-user
-                  optional: true
             - name: GF_SECURITY_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: grafana-secret
                   key: admin-password
-                  optional: true
           volumeMounts:
             - name: grafana-storage
               mountPath: /var/lib/grafana
@@ -100,14 +100,3 @@ spec:
     - port: 3000
       targetPort: 3000
       nodePort: 30300
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: grafana-secret
-  namespace: monitoring
-type: Opaque
-data:
-  admin-user: YWRtaW4=
-  admin-password: YWRtaW4=

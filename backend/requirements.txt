@@ -18,12 +18,13 @@ aiomysql>=0.2.0
 asyncpg>=0.29.0
 redis[hiredis]>=5.0.0
 aiokafka>=0.10.0
+neo4j>=5.26.0,<7.0.0
 bcrypt>=4.1.0
-cachetools>=4.2.1
+cachetools==4.2.1
 aiohttp>=3.9.0
 langgraph>=0.2.35
 langgraph-checkpoint-sqlite>=2.0.0
-# pymilvus>=2.4.0  # 可选：AI Agent 报告检索功能，需要独立部署 Milvus，安装时取消注释
+# pymilvus>=2.4.0,<2.6.0  # 可选：2.6+ 的 cachetools 要求与 drain3 0.9.11 冲突
 langchain-core>=0.3.0
 langchain-anthropic>=0.3.0
 langchain-openai>=0.2.0

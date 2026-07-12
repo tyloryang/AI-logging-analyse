@@ -37,6 +37,24 @@ services:
       timeout: 3s
       retries: 5
 
+  neo4j:
+    image: neo4j:5-community
+    profiles: [neo4j]
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD}"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#*/}\" \"RETURN 1\" >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   grafana:
     image: grafana/grafana:latest
     profiles: [grafana]
@@ -47,7 +65,7 @@ services:
       GF_SECURITY_ALLOW_EMBEDDING: "true"
       GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3000}"
       GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
-      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
     volumes:
       - grafana_data:/var/lib/grafana
     healthcheck:
@@ -63,8 +81,8 @@ services:
     environment:
       MYSQL_DATABASE: aiops
       MYSQL_USER: aiops
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-aiops123}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -79,7 +97,7 @@ services:
     environment:
       POSTGRES_DB: aiops
       POSTGRES_USER: aiops
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiops123}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -89,6 +107,8 @@ services:
 
 volumes:
   redis_data:
+  neo4j_data:
+  neo4j_logs:
   mysql_data:
   pg_data:
   grafana_data:

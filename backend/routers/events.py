@@ -12,16 +12,21 @@ from pathlib import Path
 from typing import Any
 
 from cachetools import TTLCache
-from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 
 from json_snapshot_store import read_json_file, write_json_file
+from services.webhook_security import require_ingest_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/events", tags=["events"])
 
 _SEVERITY_ORDER = {"critical": 0, "error": 1, "warning": 2, "info": 3}
 _stats_cache: TTLCache = TTLCache(maxsize=1, ttl=30)
+# Loki 错误日志扫描是 24h 全流正则查询, 会把单机 Loki 打满数秒并拖慢
+# 其他交互查询(如日志上下文); 事件流不需要秒级新鲜度, 缓存 60s 分摊
+_loki_events_cache: TTLCache = TTLCache(maxsize=32, ttl=60)
 _EXTERNAL_EVENTS_FILE = Path(__file__).parent.parent / "data" / "events_external.json"
+_EVENT_CLEAR_STATE_FILE = Path(__file__).parent.parent / "data" / "events_clear_state.json"
 _EVENT_ERROR_KEYWORD_ALIASES: dict[str, tuple[str, ...]] = {
     "NullPointerException": ("NullPointerException",),
     "ArrayIndexOutOfBoundException": ("ArrayIndexOutOfBoundException", "ArrayIndexOutOfBoundsException"),
@@ -74,6 +79,57 @@ def _save_external_events(events: list[dict]) -> None:
     write_json_file(_EXTERNAL_EVENTS_FILE, events[:1000], ensure_parent=True)
 
 
+def _load_event_clear_before() -> datetime | None:
+    state = read_json_file(_EVENT_CLEAR_STATE_FILE, default={})
+    if not isinstance(state, dict):
+        return None
+    return _parse_ts(state.get("clear_before"))
+
+
+def _save_event_clear_before(value: datetime) -> str:
+    clear_before = value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    write_json_file(
+        _EVENT_CLEAR_STATE_FILE,
+        {"clear_before": clear_before},
+        ensure_parent=True,
+    )
+    return clear_before
+
+
+async def _require_event_operator(request: Request) -> Any:
+    """按请求懒加载数据库权限依赖，避免事件归一化工具被数据库驱动绑死。"""
+    from sqlalchemy import select
+
+    from auth.models import Permission, User
+    from auth.session import get_session
+    from db import AsyncSessionLocal
+
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="未登录")
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="会话已过期，请重新登录")
+
+    async with AsyncSessionLocal() as db:
+        user_result = await db.execute(select(User).where(User.id == session["user_id"]))
+        user = user_result.scalar_one_or_none()
+        if not user or user.status != "active":
+            raise HTTPException(status_code=401, detail="账号不可用")
+        if user.is_superuser:
+            return user
+
+        permission_result = await db.execute(
+            select(Permission.level).where(
+                Permission.user_id == user.id,
+                Permission.module_id == "events",
+            )
+        )
+        if permission_result.scalar_one_or_none() != "operate":
+            raise HTTPException(status_code=403, detail="无权限：events.operate")
+        return user
+
+
 def _safe_get(payload: dict[str, Any], path: str, default: Any = "") -> Any:
     cur: Any = payload
     for part in path.split("."):
@@ -113,6 +169,13 @@ def _parse_ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _event_is_visible_after_clear(event: dict[str, Any], clear_before: datetime | None) -> bool:
+    if clear_before is None or event.get("status") == "firing":
+        return True
+    occurred = _parse_ts(event.get("time"))
+    return occurred is None or occurred > clear_before
 
 
 def _event_time(payload: dict[str, Any]) -> str:
@@ -203,14 +266,12 @@ def _normalize_external_event(source_code: str, payload: dict[str, Any]) -> dict
 
 
 def _check_ingest_token(x_event_token: str | None, authorization: str | None) -> None:
-    expected = os.getenv("EVENTS_INGEST_TOKEN", "").strip()
-    if not expected:
-        return
-    auth = (authorization or "").strip()
-    token = (x_event_token or "").strip()
-    if token == expected or auth == f"Bearer {expected}":
-        return
-    raise HTTPException(status_code=401, detail="invalid event ingest token")
+    require_ingest_token(
+        token_env="EVENTS_INGEST_TOKEN",
+        direct_token=x_event_token,
+        authorization=authorization,
+        allow_unauthenticated_env="EVENTS_ALLOW_UNAUTHENTICATED",
+    )
 
 
 @router.get("/sources")
@@ -225,7 +286,7 @@ async def event_sources():
         "external": _EXTERNAL_SOURCES,
         "error_keywords": list(_EVENT_ERROR_KEYWORDS),
         "ingest_endpoint": "/api/events/ingest/{source}",
-        "auth": "X-Event-Token or Authorization: Bearer <token>" if token_required else "disabled in current environment",
+        "auth": "X-Event-Token or Authorization: Bearer <token>" if token_required else "not configured",
     }
 
 
@@ -250,6 +311,30 @@ async def ingest_external_event(
     _save_external_events(events)
     _stats_cache.clear()
     return {"ok": True, "status": status, "event": event}
+
+
+@router.delete("/history")
+async def clear_event_history(_: Any = Depends(_require_event_operator)):
+    """清空事件墙历史快照；实时 firing 告警仍由监控源继续返回。"""
+    cleared_at = datetime.now(timezone.utc)
+    clear_before = _save_event_clear_before(cleared_at)
+
+    external_events = _load_external_events()
+    remaining_events = []
+    for event in external_events:
+        occurred = _parse_ts(event.get("time"))
+        if occurred is not None and occurred > cleared_at:
+            remaining_events.append(event)
+    _save_external_events(remaining_events)
+    _stats_cache.clear()
+
+    removed_external = len(external_events) - len(remaining_events)
+    return {
+        "ok": True,
+        "clear_before": clear_before,
+        "removed_external": removed_external,
+        "message": "历史事件已清理，当前 firing 告警和之后新产生的事件会继续展示",
+    }
 
 
 @router.get("")
@@ -291,14 +376,18 @@ async def list_events(
     if not source or source == "loki":
         try:
             error_keywords = _resolve_error_keywords(error_keyword)
-            logs = await loki.query_logs(
-                service="",
-                hours=hours,
-                limit=limit,
-                level="error",
-                keywords=error_keywords or None,
-                keyword_mode="or",
-            )
+            cache_key = (hours, limit, tuple(error_keywords or ()))
+            logs = _loki_events_cache.get(cache_key)
+            if logs is None:
+                logs = await loki.query_logs(
+                    service="",
+                    hours=hours,
+                    limit=limit,
+                    level="error",
+                    keywords=error_keywords or None,
+                    keyword_mode="or",
+                )
+                _loki_events_cache[cache_key] = logs
             for log in logs:
                 message = log.get("message", "")
                 if not _event_matches_error_keywords(message, error_keywords):
@@ -333,6 +422,10 @@ async def list_events(
             events.append(event)
 
     # ── Filter & sort ─────────────────────────────────────────────────
+    clear_before = _load_event_clear_before()
+    if clear_before is not None:
+        events = [event for event in events if _event_is_visible_after_clear(event, clear_before)]
+
     if severity:
         events = [e for e in events if e["severity"] == severity]
 
@@ -349,6 +442,7 @@ async def event_stats():
         return _stats_cache["stats"]
 
     stats = {"critical": 0, "error": 0, "warning": 0, "info": 0, "total": 0}
+    clear_before = _load_event_clear_before()
 
     try:
         result = await prom.query_instant('ALERTS{alertstate="firing"}')
@@ -362,6 +456,14 @@ async def event_stats():
 
     try:
         logs = await loki.query_logs(service="", hours=1, limit=500, level="error")
+        if clear_before is not None:
+            logs = [
+                log for log in logs
+                if _event_is_visible_after_clear(
+                    {"time": log.get("timestamp"), "status": "active"},
+                    clear_before,
+                )
+            ]
         stats["error"] += len(logs)
         stats["total"] += len(logs)
     except Exception:
@@ -369,6 +471,8 @@ async def event_stats():
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     for event in _load_external_events():
+        if not _event_is_visible_after_clear(event, clear_before):
+            continue
         occurred = _parse_ts(event.get("time"))
         if occurred and occurred < cutoff:
             continue

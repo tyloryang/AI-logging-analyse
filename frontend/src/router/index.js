@@ -78,6 +78,7 @@ const routes = [
   { path: '/aiops/alerts',    component: () => import('../views/AlertCenterView.vue'),    name: 'aiops-alerts' },
   { path: '/aiops/rca',       component: () => import('../views/RCAView.vue'),            name: 'aiops-rca' },
   { path: '/aiops/anomaly',   component: () => import('../views/AnomalyView.vue'),        name: 'aiops-anomaly' },
+  { path: '/aiops/knowledge-graph', component: () => import('../views/KnowledgeGraphView.vue'), name: 'aiops-kgraph' },
   { path: '/aiops/workbench', component: () => import('../views/AIWorkbenchView.vue'),    name: 'aiops-workbench', meta: { module: 'agent' } },
   // Claude 模块已下线（保留智能助手），组件文件保留；旧路径重定向到智能助手
   { path: '/aiops/claude',    redirect: '/aiops/assistant' },

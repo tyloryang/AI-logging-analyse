@@ -24,6 +24,9 @@
         <button class="btn btn-outline" @click="goEs">
           ES 管理
         </button>
+        <button class="btn btn-outline" @click="goKafka">
+          Kafka 管理
+        </button>
         <button class="btn btn-outline" :disabled="loading" @click="resetView">
           重置视图
         </button>
@@ -101,6 +104,35 @@
         <div class="mw-manage-actions">
           <button class="btn btn-primary btn-sm" type="button" @click="goEs">
             打开 ES 管理 →
+          </button>
+        </div>
+      </article>
+
+      <!-- Kafka 管理卡 -->
+      <article class="card mw-manage-card mw-manage-kafka">
+        <div class="mw-manage-head">
+          <div class="mw-manage-icon-wrap kafka-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="12" r="2.2"/><line x1="7.8" y1="6.2" x2="16.2" y2="10.9"/><line x1="7.8" y1="17.8" x2="16.2" y2="13.1"/></svg>
+          </div>
+          <div>
+            <span class="mw-manage-eyebrow">Messaging Management</span>
+            <h3>Kafka 集群管理</h3>
+          </div>
+          <span class="mw-manage-badge kafka-badge">{{ kafkaClusterCount }} 个集群</span>
+        </div>
+        <p class="mw-manage-text">
+          支持多集群接入，可查看 Broker/Topic/分区、消费组 Lag、消息内容浏览，并支持创建与删除 Topic。
+        </p>
+        <div class="mw-manage-stats" v-if="kafkaClusterCount">
+          <div class="mws-item" v-for="c in kafkaPreview" :key="c.id">
+            <span class="mws-dot ok"></span>
+            <span class="mws-name">{{ c.name }}</span>
+            <span class="mws-mode">{{ c.addr }}</span>
+          </div>
+        </div>
+        <div class="mw-manage-actions">
+          <button class="btn btn-primary btn-sm" type="button" @click="goKafka">
+            打开 Kafka 管理 →
           </button>
         </div>
       </article>
@@ -556,11 +588,13 @@ function closeMetrics() {
   activeMetrics.value = null
 }
 
-// ── 管理卡片：Redis + ES ──────────────────────────────────────────────────────
+// ── 管理卡片：Redis + ES + Kafka ─────────────────────────────────────────────
 const redisPreview    = ref([])
 const esPreview       = ref([])
+const kafkaPreview    = ref([])
 const redisClusterCount = computed(() => redisPreview.value.length)
 const esClusterCount    = computed(() => esPreview.value.length)
+const kafkaClusterCount = computed(() => kafkaPreview.value.length)
 
 async function loadManagePreview() {
   try {
@@ -579,6 +613,14 @@ async function loadManagePreview() {
       health: 'unknown',  // 不额外请求 health，只展示已配置的集群
     }))
   } catch { esPreview.value = [] }
+
+  try {
+    const r = await api.kafkaClusters()
+    kafkaPreview.value = (r || []).map(c => ({
+      id: c.id, name: c.name,
+      addr: (c.bootstrap_servers || [])[0] || '',
+    }))
+  } catch { kafkaPreview.value = [] }
 }
 
 function goRedisCluster() {
@@ -587,6 +629,10 @@ function goRedisCluster() {
 
 function goEs() {
   router.push('/middleware/es')
+}
+
+function goKafka() {
+  router.push('/middleware/kafka')
 }
 
 function handleAnomalyClick(item) {
@@ -724,6 +770,14 @@ onMounted(() => {
   box-shadow: inset 0 0 0 1px rgba(165, 180, 252, 0.3);
 }
 
+/* Kafka 卡片 */
+.mw-manage-kafka {
+  background:
+    radial-gradient(circle at top right, rgba(13, 148, 136, 0.1), transparent 40%),
+    linear-gradient(180deg, rgba(240, 253, 250, 0.96), rgba(255, 255, 255, 0.98));
+  box-shadow: inset 0 0 0 1px rgba(94, 234, 212, 0.3);
+}
+
 /* 图标 */
 .mw-manage-icon-wrap {
   width: 40px; height: 40px; border-radius: 10px;
@@ -732,6 +786,7 @@ onMounted(() => {
 }
 .redis-icon { background: rgba(220,38,38,.12); color: #dc2626; }
 .es-icon    { background: rgba(79,70,229,.12);  color: #4f46e5; }
+.kafka-icon { background: rgba(13,148,136,.12); color: #0d9488; }
 
 /* 集群预览列表 */
 .mw-manage-stats {
@@ -762,6 +817,7 @@ onMounted(() => {
 /* badge 颜色区分 */
 .redis-badge { background: rgba(220,38,38,.1);   color: #dc2626; }
 .es-badge    { background: rgba(79,70,229,.1);    color: #4f46e5; }
+.kafka-badge { background: rgba(13,148,136,.1);   color: #0d9488; }
 
 .mw-manage-eyebrow {
   display: inline-block;

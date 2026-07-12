@@ -229,9 +229,33 @@ def _build_result_markdown(record: dict) -> str:
         for command in item.get("commands", [])[:3]:
             lines.append(f"- 建议命令：`{command}`")
 
+    metric_evidence = context.get("metric_evidence") if isinstance(context, dict) else None
+    if isinstance(metric_evidence, dict) and metric_evidence.get("pack"):
+        pack = metric_evidence["pack"]
+        summary = pack.get("summary", {})
+        lines.append("")
+        lines.append("## 指标证据链")
+        lines.append(
+            f"- 查询计划：{summary.get('planned', 0)} 条（预算 {summary.get('budget', 8)} 条），"
+            f"执行 {summary.get('executed', 0)} 条，窗口 {summary.get('window_minutes', 60)} 分钟"
+        )
+        for ev in pack.get("evidence", []):
+            if ev["status"] == "no_data":
+                lines.append(f"- ❓ {ev['name']}：{ev['detail'] or '无数据'}（证据缺失，不代表正常）")
+            else:
+                mark = "⚠️" if ev["status"] == "abnormal" else "✅"
+                trend_text = {"up": "↑", "down": "↓", "flat": "→"}.get(ev["trend"], "")
+                lines.append(
+                    f"- {mark} {ev['name']}：当前 {ev['latest']}{ev['unit']} {trend_text}"
+                    f"（基线 {ev['baseline']}{ev['unit']}，峰值 {ev['peak']}{ev['unit']}"
+                    + (f"，{ev['detail']}" if ev["detail"] else "") + "）"
+                )
+        for gap in pack.get("gaps", [])[:4]:
+            lines.append(f"- 缺口：{gap}")
+
     lines.append("")
     lines.append("## 关键上下文")
-    for key in ("loki", "prometheus", "skywalking", "cmdb", "changes", "codebase", "inspection", "similar_cases"):
+    for key in ("loki", "prometheus", "skywalking", "cmdb", "changes", "codebase", "inspection", "similar_cases", "metric_evidence"):
         section = context.get(key) if isinstance(context, dict) else None
         if not isinstance(section, dict):
             continue
@@ -791,7 +815,8 @@ def _run_git_command(args: list[str]) -> list[str]:
         )
         if completed.returncode != 0:
             return []
-        return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        stdout = _text_or_empty(getattr(completed, "stdout", None))
+        return [line.strip() for line in stdout.splitlines() if line.strip()]
     except Exception:
         return []
 
@@ -873,7 +898,8 @@ def _rg_code_hits(terms: list[str]) -> list[str]:
             )
         except Exception:
             continue
-        for line in completed.stdout.splitlines()[:4]:
+        stdout = _text_or_empty(getattr(completed, "stdout", None))
+        for line in stdout.splitlines()[:4]:
             line = line.strip()
             if line and line not in hits:
                 hits.append(line[:260])
@@ -986,6 +1012,52 @@ def _match_similar_cases(
     return matches[:limit]
 
 
+async def _collect_metric_evidence(
+    service: str | None,
+    labels: dict[str, str],
+    hours: float,
+) -> dict:
+    """指标证据包（services.evidence）：模板化计划 + 预算 + 压缩 + 缺口。
+
+    section 形状与其他上下文一致（title/summary/items），并携带原始 pack
+    供前端和 markdown 渲染证据链。失败返回空 dict（不阻塞 RCA）。
+    """
+    try:
+        from services.evidence import build_metric_evidence, evidence_to_text
+
+        pack = await asyncio.wait_for(
+            build_metric_evidence(
+                service=service if service and service != "global" else None,
+                instance=labels.get("instance") or labels.get("node") or None,
+                hostname=labels.get("hostname") or labels.get("host") or None,
+                pod=labels.get("pod") or None,
+                namespace=labels.get("namespace") or None,
+                window_minutes=max(15, min(int(hours * 60), 24 * 60)),
+            ),
+            timeout=30,
+        )
+        summary = pack.get("summary", {})
+        items = []
+        for ev in pack.get("evidence", []):
+            if ev["status"] == "abnormal":
+                items.append(f"[异常] {ev['name']}: 当前 {ev['latest']}{ev['unit']}，"
+                             f"基线 {ev['baseline']}{ev['unit']}，{ev['detail']}")
+            elif ev["status"] == "normal":
+                items.append(f"[正常] {ev['name']}: {ev['latest']}{ev['unit']}（可作反证）")
+        items += [f"[缺口] {gap}" for gap in pack.get("gaps", [])[:4]]
+        return {
+            "title": "指标证据链",
+            "summary": (f"计划 {summary.get('planned', 0)} 条 / 执行 {summary.get('executed', 0)} 条，"
+                        f"异常 {summary.get('abnormal', 0)} 条，缺失 {summary.get('missing', 0)} 条。"),
+            "items": items[:10],
+            "pack": pack,
+            "prompt_text": evidence_to_text(pack),
+        }
+    except Exception as exc:
+        logger.warning("[rca] metric evidence failed: %s", exc)
+        return {}
+
+
 async def collect_context(
     *,
     service: str | None,
@@ -1005,13 +1077,15 @@ async def collect_context(
     sw_task = _collect_skywalking(service)
     cmdb_task = _collect_cmdb(service)
     changes_task = asyncio.to_thread(_collect_change_context, service)
+    evidence_task = _collect_metric_evidence(service, labels, hours)
 
-    loki, prometheus, skywalking, cmdb, changes = await asyncio.gather(
+    loki, prometheus, skywalking, cmdb, changes, metric_evidence = await asyncio.gather(
         loki_task,
         prom_task,
         sw_task,
         cmdb_task,
         changes_task,
+        evidence_task,
     )
     code_signal = " ".join(
         [
@@ -1031,6 +1105,8 @@ async def collect_context(
         "changes": changes,
         "codebase": codebase,
     }
+    if metric_evidence:
+        context["metric_evidence"] = metric_evidence
 
     if extra_context.strip():
         context["extra"] = {
@@ -1152,6 +1228,25 @@ def _candidate_base_scores(record: dict) -> dict[str, tuple[int, list[str]]]:
 
     evidence_map: dict[str, list[str]] = {key: [] for key in _CATEGORY_META}
     score_map = {key: 18 for key in _CATEGORY_META}
+
+    # 指标证据包异常项 → 直接给资源类假设加权（结构化证据优先于文本信号）
+    evidence_pack = context.get("metric_evidence", {}).get("pack", {}) \
+        if isinstance(context.get("metric_evidence"), dict) else {}
+    for ev_item in evidence_pack.get("evidence", []):
+        if ev_item.get("status") != "abnormal":
+            continue
+        name = str(ev_item.get("name", ""))
+        note = (f"指标证据：{name} 当前 {ev_item.get('latest')}{ev_item.get('unit', '')}，"
+                f"基线 {ev_item.get('baseline')}{ev_item.get('unit', '')}（{ev_item.get('detail', '')}）")
+        if any(k in name for k in ("CPU", "内存", "负载", "磁盘", "分区")):
+            score_map["resource_bottleneck"] += 20
+            evidence_map["resource_bottleneck"].append(note)
+        elif any(k in name for k in ("错误率", "5xx", "延迟", "P95")):
+            score_map["application_bug"] += 16
+            evidence_map["application_bug"].append(note)
+        elif any(k in name for k in ("重启", "down")):
+            score_map["platform_host_issue"] += 16
+            evidence_map["platform_host_issue"].append(note)
 
     if has_any("exception", "traceback", "nullpointer", "panic", "illegal", "stack", "500", "5xx"):
         score_map["application_bug"] += 24
@@ -1314,7 +1409,8 @@ async def analyze_stream(
         extra_context=extra_context,
         source_type="manual",
     )
-    for line in (get_rca(record) or {}).get("result", "").splitlines(True):
+    result_text = _text_or_empty((get_rca(record) or {}).get("result"))
+    for line in result_text.splitlines(True):
         yield line
 
 

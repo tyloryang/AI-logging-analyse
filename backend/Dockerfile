@@ -19,7 +19,6 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ ./
-COPY config/ ./config/
 RUN mkdir -p ./config/es
 COPY k8s/elasticsearch-eck.yaml ./config/es/elasticsearch-eck.yaml
 

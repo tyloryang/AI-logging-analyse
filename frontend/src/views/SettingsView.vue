@@ -241,7 +241,7 @@
         <div class="field-group">
           <div class="field-row">
             <div class="field">
-              <label>Provider</label>
+              <label>模型类型 / Provider</label>
               <select v-model="form.ai_provider">
                 <option value="">请选择 Provider</option>
                 <option value="anthropic">Anthropic (Claude)</option>
@@ -250,7 +250,26 @@
             </div>
             <div class="field">
               <label>模型名称</label>
-              <input v-model="form.ai_model" placeholder="例如 claude-3-7-sonnet / gpt-4o-mini / qwen-plus / 自定义模型ID" />
+              <div class="input-row">
+                <input
+                  v-model="form.ai_model"
+                  list="model-id-global"
+                  placeholder="点击自动获取后可下拉选择，也支持手工输入 Model ID"
+                />
+                <button
+                  type="button"
+                  class="btn btn-outline btn-sm"
+                  :disabled="modelDiscovery.global.loading || !form.ai_provider"
+                  @click="discoverModels('global', form)"
+                >
+                  {{ modelDiscovery.global.loading ? '获取中...' : '自动获取' }}
+                </button>
+              </div>
+              <div
+                v-if="modelDiscovery.global.message"
+                class="model-discovery-msg"
+                :class="modelDiscovery.global.ok ? 'ok' : 'err'"
+              >{{ modelDiscovery.global.message }}</div>
             </div>
           </div>
           <div class="field" v-if="form.ai_provider === 'openai'">
@@ -335,12 +354,21 @@
         </div>
         <div class="field-group" style="padding-top:0">
 
-        <!-- 常用建议：datalist（新增/编辑共用） -->
-        <datalist id="model-id-openai">
-          <option v-for="m in MODEL_SUGGESTIONS.openai" :key="m" :value="m" />
+        <!-- 自动获取结果 + 常用建议：仍允许手工填写任意 Model ID -->
+        <datalist id="model-id-global">
+          <option v-for="m in modelOptions('global', form.ai_provider)" :key="m.id" :value="m.id">
+            {{ modelOptionLabel(m) }}
+          </option>
         </datalist>
-        <datalist id="model-id-anthropic">
-          <option v-for="m in MODEL_SUGGESTIONS.anthropic" :key="m" :value="m" />
+        <datalist id="model-id-new">
+          <option v-for="m in modelOptions('new', newModel.runtime_provider)" :key="m.id" :value="m.id">
+            {{ modelOptionLabel(m) }}
+          </option>
+        </datalist>
+        <datalist id="model-id-edit">
+          <option v-for="m in modelOptions('edit', editModel.runtime_provider)" :key="m.id" :value="m.id">
+            {{ modelOptionLabel(m) }}
+          </option>
         </datalist>
         <datalist id="model-base-url">
           <option v-for="u in BASE_URL_SUGGESTIONS" :key="u" :value="u" />
@@ -355,7 +383,7 @@
               <input v-model="newModel.name" class="form-input" placeholder="例如 私有推理模型 / Claude / Gemini" />
             </label>
             <label class="mf-field">
-              <span>运行协议 <em class="req">*</em></span>
+              <span>模型类型 / 运行协议 <em class="req">*</em></span>
               <select v-model="newModel.runtime_provider" class="form-input">
                 <option value="openai">openai-compatible</option>
                 <option value="anthropic">anthropic</option>
@@ -363,9 +391,26 @@
             </label>
             <label class="mf-field mf-full">
               <span>Model ID <em class="req">*</em></span>
-              <input v-model="newModel.runtime_model" class="form-input mono"
-                :list="newModel.runtime_provider === 'anthropic' ? 'model-id-anthropic' : 'model-id-openai'"
-                :placeholder="newModel.runtime_provider === 'anthropic' ? '如 claude-opus-4-6' : '如 gpt-4o / qwen3-32b / your-model-id'" />
+              <div class="input-row">
+                <input
+                  v-model="newModel.runtime_model"
+                  class="form-input mono"
+                  list="model-id-new"
+                  placeholder="自动获取后可下拉选择，也支持手工输入"
+                  @change="applyDiscoveredModelMeta('new', newModel)"
+                />
+                <button
+                  type="button"
+                  class="btn btn-outline btn-sm"
+                  :disabled="modelDiscovery.new.loading"
+                  @click="discoverModels('new', newModel)"
+                >{{ modelDiscovery.new.loading ? '获取中...' : '自动获取' }}</button>
+              </div>
+              <span
+                v-if="modelDiscovery.new.message"
+                class="model-discovery-msg"
+                :class="modelDiscovery.new.ok ? 'ok' : 'err'"
+              >{{ modelDiscovery.new.message }}</span>
             </label>
             <label v-if="newModel.runtime_provider === 'openai'" class="mf-field mf-full">
               <span>Base URL</span>
@@ -479,7 +524,7 @@
                           <input v-model="editModel.name" class="form-input" />
                         </label>
                         <label class="mf-field">
-                          <span>运行协议</span>
+                          <span>模型类型 / 运行协议</span>
                           <select v-model="editModel.runtime_provider" class="form-input">
                             <option value="openai">openai-compatible</option>
                             <option value="anthropic">anthropic</option>
@@ -487,8 +532,25 @@
                         </label>
                         <label class="mf-field mf-full">
                           <span>Model ID</span>
-                          <input v-model="editModel.runtime_model" class="form-input mono"
-                            :list="editModel.runtime_provider === 'anthropic' ? 'model-id-anthropic' : 'model-id-openai'" />
+                          <div class="input-row">
+                            <input
+                              v-model="editModel.runtime_model"
+                              class="form-input mono"
+                              list="model-id-edit"
+                              @change="applyDiscoveredModelMeta('edit', editModel)"
+                            />
+                            <button
+                              type="button"
+                              class="btn btn-outline btn-sm"
+                              :disabled="modelDiscovery.edit.loading"
+                              @click="discoverModels('edit', editModel, editingModelId)"
+                            >{{ modelDiscovery.edit.loading ? '获取中...' : '自动获取' }}</button>
+                          </div>
+                          <span
+                            v-if="modelDiscovery.edit.message"
+                            class="model-discovery-msg"
+                            :class="modelDiscovery.edit.ok ? 'ok' : 'err'"
+                          >{{ modelDiscovery.edit.message }}</span>
                         </label>
                         <label v-if="editModel.runtime_provider === 'openai'" class="mf-field mf-full">
                           <span>Base URL</span>
@@ -549,7 +611,7 @@
                         <button class="btn btn-primary btn-sm" @click="saveEditModel" :disabled="modelSaving">
                           {{ modelSaving ? '保存中...' : '保存' }}
                         </button>
-                        <button class="btn btn-outline btn-sm" @click="editingModelId = null">取消</button>
+                        <button class="btn btn-outline btn-sm" @click="cancelEditModel">取消</button>
                         <span v-if="modelFormMsg" class="model-form-msg" :class="modelFormOk ? 'ok' : 'err'">{{ modelFormMsg }}</span>
                       </div>
                     </div>
@@ -951,6 +1013,95 @@ const BASE_URL_SUGGESTIONS = [
   'http://192.168.x.x:11434/v1',
 ]
 
+const modelDiscovery = reactive({
+  global: { loading: false, items: [], message: '', ok: false, requestId: 0 },
+  new:    { loading: false, items: [], message: '', ok: false, requestId: 0 },
+  edit:   { loading: false, items: [], message: '', ok: false, requestId: 0 },
+})
+
+function clearModelDiscovery(scope) {
+  const state = modelDiscovery[scope]
+  if (!state) return
+  state.requestId += 1
+  state.loading = false
+  state.items = []
+  state.message = ''
+  state.ok = false
+}
+
+function modelOptions(scope, provider) {
+  const discovered = modelDiscovery[scope]?.items || []
+  const suggestions = (MODEL_SUGGESTIONS[provider] || []).map(id => ({
+    id, name: id, type: 'suggestion', owned_by: '',
+  }))
+  const unique = new Map()
+  for (const item of [...discovered, ...suggestions]) {
+    if (item?.id && !unique.has(item.id)) unique.set(item.id, item)
+  }
+  return [...unique.values()]
+}
+
+function modelOptionLabel(model) {
+  const name = model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id
+  const meta = [
+    model.owned_by,
+    !['model', 'suggestion'].includes(model.type) ? model.type : '',
+  ].filter(Boolean)
+  return meta.length ? `${name} · ${meta.join(' / ')}` : name
+}
+
+function applyDiscoveredModelMeta(scope, target) {
+  if (scope === 'global') return
+  const selected = modelDiscovery[scope]?.items.find(item => item.id === target.runtime_model)
+  if (!selected) return
+  if (!target.name) target.name = selected.name || selected.id
+  if (!target.provider && selected.owned_by) target.provider = selected.owned_by
+}
+
+async function discoverModels(scope, target, modelId = '') {
+  const state = modelDiscovery[scope]
+  if (!state) return
+  const isGlobal = scope === 'global'
+  const provider = isGlobal ? target.ai_provider : target.runtime_provider
+  if (!provider) {
+    state.ok = false
+    state.message = '请先选择模型类型 / Provider'
+    return
+  }
+
+  const requestId = ++state.requestId
+  state.loading = true
+  state.message = ''
+  state.ok = false
+  try {
+    const result = await api.discoverAIModels({
+      provider,
+      base_url: isGlobal ? target.ai_base_url : target.base_url,
+      api_key: isGlobal ? target.ai_api_key : target.api_key,
+      model_id: modelId || '',
+    })
+    if (requestId !== state.requestId) return
+    state.items = Array.isArray(result?.models) ? result.models : []
+    state.ok = state.items.length > 0
+    state.message = state.ok
+      ? `已获取 ${state.items.length} 个模型，可在输入框下拉选择，也可继续手工输入`
+      : '模型服务没有返回可用模型'
+
+    const modelField = isGlobal ? 'ai_model' : 'runtime_model'
+    if (!target[modelField] && state.items.length) {
+      target[modelField] = state.items[0].id
+      applyDiscoveredModelMeta(scope, target)
+    }
+  } catch (e) {
+    if (requestId !== state.requestId) return
+    state.items = []
+    state.ok = false
+    state.message = '获取失败：' + (typeof e === 'string' ? e : e?.message || '未知错误')
+  } finally {
+    if (requestId === state.requestId) state.loading = false
+  }
+}
+
 // runtime_provider 切换时联动清空/预填对应字段
 function applyProviderPreset(target) {
   if (target.runtime_provider === 'anthropic') {
@@ -963,8 +1114,18 @@ function applyProviderPreset(target) {
     if (!target.base_url) target.base_url = 'https://api.openai.com/v1'
   }
 }
-watch(() => newModel.runtime_provider,   () => applyProviderPreset(newModel))
-watch(() => editModel.runtime_provider,  () => applyProviderPreset(editModel))
+watch(() => form.ai_provider, () => clearModelDiscovery('global'))
+watch(() => form.ai_base_url, () => clearModelDiscovery('global'))
+watch(() => newModel.runtime_provider, () => {
+  applyProviderPreset(newModel)
+  clearModelDiscovery('new')
+})
+watch(() => newModel.base_url, () => clearModelDiscovery('new'))
+watch(() => editModel.runtime_provider, () => {
+  applyProviderPreset(editModel)
+  clearModelDiscovery('edit')
+})
+watch(() => editModel.base_url, () => clearModelDiscovery('edit'))
 
 // 新增模型测试连接
 const newModelTesting = ref(false)
@@ -1015,6 +1176,7 @@ function cancelAddModel() {
   })
   newModelTestMsg.value = ''
   modelFormMsg.value = ''
+  clearModelDiscovery('new')
 }
 
 async function addModel() {
@@ -1082,6 +1244,7 @@ async function addModel() {
 }
 
 function startEditModel(m) {
+  clearModelDiscovery('edit')
   editingModelId.value = m.id
   Object.assign(editModel, {
     name: m.name || '', provider: m.provider || '',
@@ -1097,6 +1260,13 @@ function startEditModel(m) {
   showAdvanced.value = false
   newModelTestMsg.value = ''
   modelFormMsg.value = ''
+}
+
+function cancelEditModel() {
+  editingModelId.value = null
+  modelFormMsg.value = ''
+  newModelTestMsg.value = ''
+  clearModelDiscovery('edit')
 }
 
 // 编辑面板复用测试连接：拿 editModel 里的参数打 testAI
@@ -1757,6 +1927,14 @@ code {
 .model-form-msg { font-size: 12px; }
 .model-form-msg.ok  { color: var(--success, #22c55e); }
 .model-form-msg.err { color: var(--error); }
+.model-discovery-msg {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.model-discovery-msg.ok { color: var(--success, #22c55e); }
+.model-discovery-msg.err { color: var(--error); }
 .model-loading { font-size: 12px; color: var(--text-muted); padding: 12px 0; }
 .model-empty   { font-size: 12px; color: var(--text-muted); padding: 12px 0; font-style: italic; }
 .model-table-wrap { overflow-x: auto; }

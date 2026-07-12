@@ -17,12 +17,16 @@ _EXPOSED_RESPONSE_HEADERS = [
 
 
 def add_permissive_cors(app: FastAPI) -> None:
-    """Allow requests from every Origin, including credentialed requests.
+    """Allow browser requests from every Origin, including credentialed ones.
 
-    A full-match regular expression makes Starlette echo the concrete request
-    Origin instead of returning ``*``, which is required when browsers send
-    credentials. Register this after other user middleware so authentication
-    and authorization error responses also receive CORS headers.
+    ``allow_origins=["*"]`` cannot be combined reliably with cookie
+    credentials.  A full-match regular expression makes Starlette echo the
+    concrete request Origin instead, so browsers receive an explicit
+    ``Access-Control-Allow-Origin`` value together with
+    ``Access-Control-Allow-Credentials: true``.
+
+    Call this after other ``add_middleware`` calls so CORS is the outermost
+    user middleware and also decorates authentication error responses.
     """
 
     app.add_middleware(
@@ -31,6 +35,9 @@ def add_permissive_cors(app: FastAPI) -> None:
         allow_origin_regex=r".*",
         allow_credentials=True,
         allow_methods=_ALL_HTTP_METHODS,
+        # Starlette mirrors the browser's requested header names when this is
+        # set, allowing uploads, API tokens, SSE reconnect headers, and future
+        # custom headers without per-route CORS changes.
         allow_headers=["*"],
         expose_headers=_EXPOSED_RESPONSE_HEADERS,
         max_age=86400,

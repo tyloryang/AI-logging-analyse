@@ -22,7 +22,7 @@
       <div class="topbar-right">
         <button class="btn btn-outline btn-sm" @click="openEditInstance(activeInstance)" :disabled="!activeInstance">管理实例</button>
         <button class="btn btn-primary btn-sm" @click="openBuild(null)">▶ 触发构建</button>
-        <button class="btn btn-outline btn-sm" @click="reload" :disabled="loading">↺</button>
+        <button class="btn btn-outline btn-sm" @click="reload" :disabled="loading || (tab === 'embedded' && embedLoading)">↺</button>
       </div>
     </div>
 
@@ -30,7 +30,7 @@
     <div class="jenkins-body">
 
       <!-- 左侧：Views 分类 -->
-      <aside class="views-sidebar">
+      <aside v-show="tab !== 'embedded'" class="views-sidebar">
         <div class="views-title">视图分类</div>
         <div v-if="loadingViews" class="views-loading"><div class="spinner-sm"></div></div>
         <div v-else class="views-list">
@@ -59,7 +59,7 @@
       <!-- 右侧：Job 列表 -->
       <div class="jobs-panel">
         <!-- 统计 -->
-        <div class="stats-row">
+        <div v-show="tab !== 'embedded'" class="stats-row">
           <div class="stat-card">
             <div class="stat-val">{{ jobs.length }}</div>
             <div class="stat-label">{{ selectedView || 'Jobs' }}</div>
@@ -89,6 +89,7 @@
           <button class="tab-btn" :class="{ active: tab === 'jobs' }"    @click="tab='jobs'">Job 列表</button>
           <button class="tab-btn" :class="{ active: tab === 'running' }" @click="tab='running'; loadRunning()">运行中</button>
           <button class="tab-btn" :class="{ active: tab === 'queue' }"   @click="tab='queue'; loadQueue()">队列</button>
+          <button class="tab-btn" :class="{ active: tab === 'embedded' }" @click="showEmbeddedJenkins">Jenkins 原生界面</button>
         </div>
 
         <!-- Job 表格 -->
@@ -177,6 +178,53 @@
             </tbody>
           </table>
         </div>
+
+        <!-- Jenkins 原生 Web 界面 -->
+        <section v-show="tab === 'embedded'" class="jenkins-embed-panel">
+          <div class="embed-toolbar">
+            <div class="embed-address" :title="embeddedJenkinsUrl">
+              <span class="embed-status-dot" :class="connStatus[activeId]"></span>
+              <span class="embed-instance-name">{{ activeInstance?.name || '未选择实例' }}</span>
+              <code v-if="embeddedJenkinsUrl">{{ embeddedJenkinsUrl }}</code>
+            </div>
+            <div class="embed-actions">
+              <button class="btn btn-outline btn-sm" :disabled="!embeddedJenkinsUrl || embedLoading" @click="refreshEmbeddedJenkins">↺ 刷新</button>
+              <a
+                v-if="embeddedJenkinsUrl"
+                class="btn btn-outline btn-sm embed-open-link"
+                :href="embeddedJenkinsUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+              >新窗口打开 ↗</a>
+            </div>
+          </div>
+
+          <div v-if="!embeddedJenkinsUrl" class="embed-empty">
+            <span class="icon">🔌</span>
+            <p>请先添加 Jenkins 实例并填写 Jenkins URL</p>
+            <button class="btn btn-primary btn-sm" @click="openAddInstance">添加实例</button>
+          </div>
+          <div v-else class="embed-frame-wrap">
+            <div v-if="embedLoading" class="embed-loading">
+              <div class="spinner"></div>
+              <span>正在加载 Jenkins 原生界面…</span>
+            </div>
+            <iframe
+              :key="embeddedFrameKey"
+              class="jenkins-embed-frame"
+              :src="embeddedJenkinsUrl"
+              :title="`${activeInstance?.name || 'Jenkins'} 原生界面`"
+              allow="clipboard-read; clipboard-write"
+              referrerpolicy="strict-origin-when-cross-origin"
+              @load="handleEmbeddedLoad"
+            ></iframe>
+          </div>
+
+          <div v-if="embeddedJenkinsUrl" class="embed-help">
+            若页面显示空白、拒绝连接或无法登录，请确认 Jenkins 允许被 iframe 嵌入，并检查
+            <code>X-Frame-Options</code>、<code>Content-Security-Policy</code> 与 HTTPS 混合内容策略；也可使用“新窗口打开”。
+          </div>
+        </section>
       </div>
 
     </div>
@@ -319,8 +367,16 @@ import { api } from '../api/index.js'
 const instances   = ref([])
 const activeId    = ref('')
 const connStatus  = ref({})   // {id: 'ok'|'err'|''}
+const embedRefreshKey = ref(0)
+const embedLoading = ref(false)
 
 const activeInstance = computed(() => instances.value.find(i => i.id === activeId.value) || null)
+const embeddedJenkinsUrl = computed(() => {
+  const url = String(activeInstance.value?.url || '').trim()
+  if (!url) return ''
+  return url.endsWith('/') ? url : `${url}/`
+})
+const embeddedFrameKey = computed(() => `${activeId.value}:${embedRefreshKey.value}`)
 
 async function loadInstances() {
   try {
@@ -335,6 +391,10 @@ async function loadInstances() {
 
 async function switchInstance(id) {
   activeId.value = id
+  if (tab.value === 'embedded') {
+    embedLoading.value = true
+    embedRefreshKey.value += 1
+  }
   views.value = []
   jobs.value  = []
   selectedJob.value = null
@@ -594,7 +654,26 @@ async function cancelQueue(id) {
 function reload() {
   if (tab.value === 'jobs') { loadViews(); loadJobs() }
   else if (tab.value === 'running') loadRunning()
-  else loadQueue()
+  else if (tab.value === 'queue') loadQueue()
+  else refreshEmbeddedJenkins()
+}
+
+function showEmbeddedJenkins() {
+  tab.value = 'embedded'
+  refreshEmbeddedJenkins()
+}
+
+function refreshEmbeddedJenkins() {
+  if (!embeddedJenkinsUrl.value) {
+    embedLoading.value = false
+    return
+  }
+  embedLoading.value = true
+  embedRefreshKey.value += 1
+}
+
+function handleEmbeddedLoad() {
+  embedLoading.value = false
 }
 
 // ── 格式化 ────────────────────────────────────────────────────────────────────
@@ -817,6 +896,23 @@ onMounted(async () => {
 .tab-btn { padding: 5px 14px; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; }
 .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .table-wrap { flex: 1; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
+.jenkins-embed-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.embed-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; flex-shrink: 0; }
+.embed-address { min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.embed-address code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.embed-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+.embed-status-dot.ok { background: var(--success); }
+.embed-status-dot.err { background: var(--error); }
+.embed-instance-name { color: var(--text-primary); font-weight: 600; white-space: nowrap; }
+.embed-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.embed-open-link { text-decoration: none; }
+.embed-frame-wrap { position: relative; flex: 1; min-height: 320px; overflow: hidden; background: #fff; border: 1px solid var(--border); border-radius: 8px; }
+.jenkins-embed-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.embed-loading { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--bg-card); color: var(--text-muted); font-size: 13px; }
+.embed-empty { flex: 1; min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); }
+.embed-empty .icon { font-size: 30px; }
+.embed-help { flex-shrink: 0; padding: 7px 10px; border: 1px solid rgba(210,153,34,.3); border-radius: 7px; background: rgba(210,153,34,.08); color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.embed-help code { color: var(--warning); }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table thead { position: sticky; top: 0; }
 .data-table th { background: var(--bg-header, var(--bg-base)); padding: 8px 12px; text-align: left; font-size: 11px; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -947,4 +1043,11 @@ onMounted(async () => {
 .suggest-name { color: var(--text-primary); }
 .suggest-path { color: var(--text-muted); font-size: 11px; word-break: break-all; }
 .form-group { position: relative; }
+
+@media (max-width: 760px) {
+  .embed-toolbar { align-items: flex-start; flex-direction: column; }
+  .embed-address { width: 100%; }
+  .embed-actions { width: 100%; }
+  .embed-actions .btn { flex: 1; justify-content: center; }
+}
 </style>

@@ -41,6 +41,10 @@ _SUMMARY_LOCKS: dict[str, asyncio.Lock] = {}
 # 优先 Redis（共享缓存，多副本一致），无 Redis 时降级到本地 TTLCache。
 _RES_TTL_SEC = int(os.getenv("K8S_RES_CACHE_TTL", "30"))
 _K8S_CLIENT_POOL_SIZE = int(os.getenv("K8S_CLIENT_POOL_SIZE", "16"))
+_K8S_CONNECT_TIMEOUT = float(os.getenv("K8S_CONNECT_TIMEOUT", "5"))
+_K8S_READ_TIMEOUT = float(os.getenv("K8S_READ_TIMEOUT", "60"))
+# loader 兜底: 即使底层出现未知阻塞, 锁最多持有这么久, 之后释放并对外报错
+_K8S_LOAD_TIMEOUT = float(os.getenv("K8S_LOAD_TIMEOUT", "90"))
 _RES_LOCAL_CACHE: TTLCache = TTLCache(maxsize=256, ttl=_RES_TTL_SEC)
 _RES_LOCKS: dict[str, asyncio.Lock] = {}
 
@@ -109,7 +113,9 @@ async def _list_with_cache(kind: str, cluster_id: str, namespace: str, force: bo
             cached = await _cache_get(key)
             if cached is not None:
                 return cached
-        data = await loader()
+        # wait_for 兜底: loader 若因未知原因阻塞, 超时后释放锁让后续请求可重试,
+        # 而不是把锁焊死导致所有同类请求无限 pending
+        data = await asyncio.wait_for(loader(), timeout=_K8S_LOAD_TIMEOUT)
         await _cache_set(key, data)
         return data
 
@@ -579,11 +585,17 @@ def _get_api_client(cluster_id: str | None = None):
     # 关键: 重建底层 PoolManager，使用 SECLEVEL=0 的 SSL context (与 ws 路径共用同一构造)
     ssl_ctx = _build_seclevel0_ssl_context(cfg)
 
+    # 默认超时兜底: 无超时的同步调用一旦挂在半开连接/TLS 握手上会永久占住线程,
+    # 并把 _RES_LOCKS 等 asyncio.Lock 焊死, 导致所有 k8s 接口无限 pending。
+    # follow=True 等长连接调用需显式传 _request_timeout=(N, None) 覆盖此默认值。
     api_client.rest_client.pool_manager = urllib3.PoolManager(
         num_pools=_K8S_CLIENT_POOL_SIZE,
         maxsize=_K8S_CLIENT_POOL_SIZE,
         ssl_context=ssl_ctx,
         cert_reqs="CERT_NONE",
+        timeout=urllib3.Timeout(connect=_K8S_CONNECT_TIMEOUT, read=_K8S_READ_TIMEOUT),
+        # 默认 Retry(3) 会让断网时单个 list 调用拖到 90s+ 才报错; 降为 1 次快速失败
+        retries=urllib3.util.Retry(total=1, backoff_factor=0.3),
     )
 
     return api_client
@@ -1184,20 +1196,38 @@ def _serialize_cronjobs(items: list, pod_index: list[dict]) -> list[dict]:
 def _serialize_services(svc_items: list, endpoint_items: list, pod_index: list[dict]) -> list[dict]:
     name_to_ip = _node_ip_map(pod_index)
     ep_nodes: dict[tuple[str, str], list[dict]] = {}
+    ep_info: dict[tuple[str, str], dict] = {}
     for ep in endpoint_items:
         nodes_seen: dict[str, dict] = {}
+        addresses: list[dict] = []
+        not_ready = 0
         for subset in (ep.subsets or []):
+            ports_txt = ",".join(str(p.port) for p in (subset.ports or []) if p.port)
             for addr in (subset.addresses or []):
                 node_name = getattr(addr, "node_name", None) or ""
-                if not node_name:
-                    continue
-                nodes_seen.setdefault(node_name, {
-                    "name": node_name,
-                    "ip": name_to_ip.get(node_name, ""),
+                if node_name:
+                    nodes_seen.setdefault(node_name, {
+                        "name": node_name,
+                        "ip": name_to_ip.get(node_name, ""),
+                    })
+                target = getattr(addr, "target_ref", None)
+                addresses.append({
+                    "ip": addr.ip or "",
+                    "ports": ports_txt,
+                    "pod": (target.name if target and target.kind == "Pod" else ""),
+                    "node": node_name,
                 })
-        ep_nodes[(ep.metadata.namespace, ep.metadata.name)] = sorted(
+            not_ready += len(subset.not_ready_addresses or [])
+        key = (ep.metadata.namespace, ep.metadata.name)
+        ep_nodes[key] = sorted(
             nodes_seen.values(), key=lambda x: (x["ip"] or "", x["name"])
         )
+        ep_info[key] = {
+            "ready": len(addresses),
+            "notReady": not_ready,
+            # 大 service (如 headless 上千地址) 只回传前 30 条, 汇总数不受影响
+            "addresses": sorted(addresses, key=lambda a: a["ip"])[:30],
+        }
 
     result = []
     for item in svc_items:
@@ -1222,6 +1252,10 @@ def _serialize_services(svc_items: list, endpoint_items: list, pod_index: list[d
             "ports": ports,
             "age": _safe_age(item.metadata.creation_timestamp),
             "node_list": ep_nodes.get((item.metadata.namespace, item.metadata.name), []),
+            "endpoints": ep_info.get(
+                (item.metadata.namespace, item.metadata.name),
+                {"ready": 0, "notReady": 0, "addresses": []},
+            ),
         })
     return result
 
@@ -3075,6 +3109,8 @@ async def pod_logs_stream(
                     container=(container or None),
                     tail_lines=value, follow=True, _preload_content=False,
                     timestamps=True,
+                    # 长连接流: 覆盖 PoolManager 默认 read 超时, 否则安静 60s 就被掐断
+                    _request_timeout=(_K8S_CONNECT_TIMEOUT, None),
                 )
                 for line_bytes in w.stream(amt=None, decode_content=True):
                     if stop_event.is_set():
@@ -3287,12 +3323,14 @@ async def _get_pod_placement_index(cluster_id: str, namespace: str = "") -> list
     cached = _POD_INDEX_CACHE.get(key)
     if cached is not None:
         return cached
-    lock = _POD_LOCKS.setdefault(key, asyncio.Lock())
+    # 注意: _get_pods_raw 内部会拿 _POD_LOCKS 中同一个 key 的锁 (asyncio.Lock 不可重入),
+    # 必须在锁外调用, 否则 raw 缓存 miss 时会自我死锁
+    pods = await _get_pods_raw(cluster_id, namespace)
+    lock = _POD_LOCKS.setdefault(f"index::{key}", asyncio.Lock())
     async with lock:
         cached = _POD_INDEX_CACHE.get(key)
         if cached is not None:
             return cached
-        pods = await _get_pods_raw(cluster_id, namespace)
         index = await asyncio.to_thread(_build_pod_placement_index_from_items, pods.items)
         _POD_INDEX_CACHE[key] = index
         return index

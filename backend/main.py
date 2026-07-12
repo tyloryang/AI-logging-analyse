@@ -31,11 +31,12 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 
-from cors_config import add_permissive_cors
 from db import engine, Base, AsyncSessionLocal
 from auth.router import router as auth_router
 from auth.admin_router import router as admin_router
 from auth import service as auth_service
+from auth.middleware import AuthenticationMiddleware
+from cors_config import add_permissive_cors
 from state import SCHEDULE_CRON, SCHEDULE_CHANNELS, REPORTS_DIR
 from scheduler import scheduled_report_job, run_group_schedule_job
 from routers.logs import router as logs_router
@@ -62,6 +63,7 @@ from routers.redis_clusters import router as redis_router
 from routers.kafka_clusters import router as kafka_router
 from routers.alerts import router as alerts_router
 from routers.rca import router as rca_router
+from routers.knowledge_graph import router as kg_router
 from routers.jenkins import router as jenkins_router
 from routers.topology import router as topology_router
 from routers.cc_haha import router as cc_haha_router
@@ -115,13 +117,21 @@ async def _migrate_add_columns(conn) -> None:
     import sqlalchemy as sa
 
     migrations = [
-        # (table, column, sqlite_type_ddl)
+        # (table, column, portable_type_ddl)
         ("agent_conversations", "project_path", "VARCHAR(500) DEFAULT ''"),
     ]
     for table, col, col_ddl in migrations:
         try:
-            result = await conn.execute(sa.text(f"PRAGMA table_info('{table}')"))
-            existing_cols = {row[1] for row in result.fetchall()}
+            def inspect_columns(sync_conn):
+                inspector = sa.inspect(sync_conn)
+                if not inspector.has_table(table):
+                    return None
+                return {column["name"] for column in inspector.get_columns(table)}
+
+            existing_cols = await conn.run_sync(inspect_columns)
+            if existing_cols is None:
+                logger.debug("[migration] table %s does not exist, skip", table)
+                continue
             if col not in existing_cols:
                 await conn.execute(
                     sa.text(f"ALTER TABLE {table} ADD COLUMN {col} {col_ddl}")
@@ -236,7 +246,9 @@ if _gzip_enabled():
         minimum_size=_env_int("GZIP_MIN_SIZE", 1024, min_value=0),
         compresslevel=_env_int("GZIP_COMPRESS_LEVEL", 6, min_value=1, max_value=9),
     )
-# Registered last so it is the outermost user middleware.
+app.add_middleware(AuthenticationMiddleware)
+# Must be registered last: Starlette's last added middleware is outermost, so
+# authentication failures and every Router response receive CORS headers.
 add_permissive_cors(app)
 
 app.include_router(auth_router)
@@ -266,6 +278,7 @@ app.include_router(redis_router)
 app.include_router(kafka_router)
 app.include_router(alerts_router)
 app.include_router(rca_router)
+app.include_router(kg_router)
 app.include_router(jenkins_router)
 app.include_router(cc_haha_router)
 app.include_router(topology_router)

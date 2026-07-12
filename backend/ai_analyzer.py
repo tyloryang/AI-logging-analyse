@@ -40,7 +40,7 @@ class AnthropicProvider(BaseAIProvider):
         import anthropic, httpx
         self.client = anthropic.AsyncAnthropic(
             api_key=api_key,
-            http_client=httpx.AsyncClient(trust_env=False),
+            http_client=httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(120.0)),
         )
         self.model = model
 
@@ -69,7 +69,7 @@ class OpenAICompatProvider(BaseAIProvider):
         self.client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key or "EMPTY",   # 本地模型通常不需要 key，传占位符
-            http_client=httpx.AsyncClient(trust_env=False),
+            http_client=httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(120.0)),
         )
         self.model = model
         self.wire_api = wire_api  # "chat" = /chat/completions, "responses" = /responses

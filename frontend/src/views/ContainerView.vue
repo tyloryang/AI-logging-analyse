@@ -58,7 +58,8 @@
       <!-- 折叠态: 紧凑头, 显示徽章 + 展开按钮 -->
       <div v-if="!aiCmd.expanded" class="ai-cmd-collapsed" @click="aiCmd.expanded = true">
         <span class="ai-cmd-icon">🤖</span>
-        <span class="ai-cmd-collapsed-title">AI 助手</span>
+        <span class="ai-cmd-collapsed-title">K8s 管理助手</span>
+        <span class="ai-cmd-collapsed-sub">巡检 · 自然语言增删改（改动需你审批）</span>
         <span class="ai-cmd-mode-mini">{{ aiCmd.smart ? '🧠 智能' : '⚡ 正则' }}</span>
         <span v-if="aiCmd.pendingActions.length" class="ai-cmd-badge danger">
           ⚠️ {{ aiCmd.pendingActions.length }} 待审批
@@ -73,7 +74,7 @@
       <div v-else class="ai-cmd-input-wrap">
         <span class="ai-cmd-icon" @click="aiCmd.expanded = false" title="点击折叠 AI 命令栏">🤖</span>
         <input v-model="aiCmd.text" class="ai-cmd-input"
-          :placeholder="aiCmd.smart ? '智能模式: 自由对话, Claude 自主调用工具...' : aiCmd.examples[aiCmd.exampleIdx]"
+          :placeholder="aiCmd.smart ? 'K8s 管理助手：巡检 / 查异常 / 扩缩容 / 重启 / 改镜像（改动会先请你审批）...' : aiCmd.examples[aiCmd.exampleIdx]"
           @keyup.enter="aiCmd.smart ? runSmartChat() : parseAICmd()"
           :disabled="aiCmd.parsing || aiCmd.executing || aiCmd.chatting" />
         <button class="ai-mode-toggle" :class="{ active: aiCmd.smart }" @click="aiCmd.smart = !aiCmd.smart"
@@ -87,6 +88,16 @@
         <button v-if="aiCmd.intent || aiCmd.chatHistory.length" class="btn-ghost btn-xs" @click="clearAICmd">清空</button>
         <button class="btn-ghost btn-xs" @click="aiCmd.expanded = false" title="折叠">▴</button>
       </div>
+
+      <!-- 智能模式: 巡检快捷入口 (一键发起常用只读诊断) -->
+      <div v-if="aiCmd.smart && aiCmd.expanded" class="ai-quick-row">
+        <span class="ai-quick-label">快捷巡检：</span>
+        <button v-for="q in aiQuickActions" :key="q.text" class="ai-quick-chip"
+          :disabled="aiCmd.chatting" @click="runQuickAsk(q.text)">
+          {{ q.icon }} {{ q.label }}
+        </button>
+      </div>
+
       <!-- 智能模式: 写工具待审批卡片 (折叠态也显示, 因为是高危必须看到) -->
       <transition name="ai-intent-fade">
         <div v-if="aiCmd.pendingActions.length && aiCmd.expanded" class="ai-pending-actions">
@@ -836,13 +847,13 @@
                   <input type="checkbox" :checked="allCurrentSelected" @change="toggleAllCurrent"
                     :disabled="!filteredServices.length" title="全选 / 取消全选" />
                 </th>
-                <th>名称</th><th>命名空间</th><th>类型</th><th>ClusterIP</th><th>端口</th><th>后端节点 IP</th><th>创建时间</th><th>操作</th>
+                <th>名称</th><th>命名空间</th><th>类型</th><th>ClusterIP</th><th>端口</th><th>Endpoints</th><th>后端节点 IP</th><th>创建时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!filteredServices.length"><td colspan="9" class="empty">暂无数据</td></tr>
-              <tr v-for="service in limitRows(filteredServices)" :key="service.namespace + '/' + service.name"
-                  :class="{ 'row-selected': isRowSelected('service', service) }">
+              <tr v-if="!filteredServices.length"><td colspan="10" class="empty">暂无数据</td></tr>
+              <template v-for="service in limitRows(filteredServices)" :key="service.namespace + '/' + service.name">
+              <tr :class="{ 'row-selected': isRowSelected('service', service) }">
                 <td class="select-col">
                   <input type="checkbox" :checked="isRowSelected('service', service)"
                     @change="toggleRowSelected('service', service)" />
@@ -852,6 +863,14 @@
                 <td><span class="svc-type" :class="service.type.toLowerCase()">{{ service.type }}</span></td>
                 <td class="mono small">{{ service.clusterIP }}</td>
                 <td class="mono small">{{ service.ports.join(', ') }}</td>
+                <td class="ep-cell" :title="endpointTitle(service)">
+                  <span class="ep-badge" :class="[endpointClass(service), { clickable: hasEndpointAddrs(service) }]"
+                        @click.stop="toggleEpExpand(service)">
+                    {{ endpointText(service) }}
+                    <span v-if="hasEndpointAddrs(service)" class="ep-caret">{{ isEpExpanded(service) ? '▴' : '▾' }}</span>
+                  </span>
+                  <span v-if="firstEndpointAddr(service)" class="ep-addr mono">{{ firstEndpointAddr(service) }}</span>
+                </td>
                 <td class="mono small node-list-cell" :title="nodesTitle(service)">{{ nodesText(service) }}</td>
                 <td class="muted mono small" :title="formatRelative(service.age)">{{ formatDateTime(service.age) }}</td>
                 <td class="action-cell">
@@ -860,6 +879,28 @@
                   </div>
                 </td>
               </tr>
+              <tr v-if="isEpExpanded(service)" class="ep-detail-row">
+                <td colspan="10">
+                  <div class="ep-detail">
+                    <div class="ep-detail-head">
+                      Endpoint 地址（{{ service.endpoints.ready }} 就绪<template v-if="service.endpoints.notReady">
+                        · <span class="ep-detail-warn">{{ service.endpoints.notReady }} 未就绪</span></template>）
+                      <span v-if="service.endpoints.ready > service.endpoints.addresses.length" class="muted">
+                        仅展示前 {{ service.endpoints.addresses.length }} 条
+                      </span>
+                    </div>
+                    <div class="ep-detail-grid">
+                      <div v-for="a in service.endpoints.addresses" :key="a.ip + a.pod" class="ep-detail-item">
+                        <span class="ep-dot"></span>
+                        <span class="mono ep-detail-addr">{{ a.ip }}{{ a.ports ? ':' + a.ports : '' }}</span>
+                        <span v-if="a.pod" class="ep-detail-pod" :title="'Pod: ' + a.pod">{{ a.pod }}</span>
+                        <span v-if="a.node" class="ep-detail-node">@ {{ a.node }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -1710,8 +1751,8 @@ const aiCmd = reactive({
   // 巡检报告
   inspectReport: '',
   inspectReportHtml: '',
-  // 智能模式 (Phase 1: Claude tool_use)
-  smart: false,
+  // 智能模式 (Phase 1: Claude tool_use) — K8s 管理助手默认走智能模式
+  smart: true,
   chatting: false,
   chatHistory: [],   // [{ role: 'user'|'assistant'|'tool'|'warn', content?, name?, input?, result?, failed? }]
   pendingActions: [],   // 写工具待审批: [{ name, input, cluster_id, tool_use_id }]
@@ -2074,6 +2115,66 @@ function nodeSearchParts(item) {
   return (item.node_list || []).flatMap((n) => [n.name, n.ip])
 }
 
+// ── Service Endpoints 展示 ───────────────────────────────────────────────
+const expandedEpKey = ref(null)   // 当前展开 endpoint 明细的 service（namespace/name）
+
+function epKey(svc) {
+  return `${svc.namespace}/${svc.name}`
+}
+
+function hasEndpointAddrs(svc) {
+  return (svc.endpoints?.addresses || []).length > 0
+}
+
+function isEpExpanded(svc) {
+  return expandedEpKey.value === epKey(svc)
+}
+
+function toggleEpExpand(svc) {
+  if (!hasEndpointAddrs(svc)) return
+  expandedEpKey.value = isEpExpanded(svc) ? null : epKey(svc)
+}
+
+function endpointText(svc) {
+  const ep = svc.endpoints
+  if (!ep) return '-'
+  const total = (ep.ready || 0) + (ep.notReady || 0)
+  if (!total) return '无后端'
+  return `${ep.ready}/${total} 就绪`
+}
+
+function endpointClass(svc) {
+  const ep = svc.endpoints
+  if (!ep) return 'none'
+  const total = (ep.ready || 0) + (ep.notReady || 0)
+  if (!total) return 'none'
+  if (!ep.ready) return 'err'
+  return ep.notReady ? 'warn' : 'ok'
+}
+
+function firstEndpointAddr(svc) {
+  const list = svc.endpoints?.addresses || []
+  if (!list.length) return ''
+  const a = list[0]
+  const addr = a.ports ? `${a.ip}:${a.ports}` : a.ip
+  return list.length > 1 ? `${addr} +${list.length - 1}` : addr
+}
+
+function endpointTitle(svc) {
+  const ep = svc.endpoints
+  if (!ep) return ''
+  const list = ep.addresses || []
+  if (!list.length) return ep.notReady ? `${ep.notReady} 个地址未就绪` : '无 Endpoint 地址（检查 selector 或 Pod 状态）'
+  const lines = list.map((a) => {
+    const addr = a.ports ? `${a.ip}:${a.ports}` : a.ip
+    const extra = [a.pod, a.node].filter(Boolean).join(' @ ')
+    return extra ? `${addr}  (${extra})` : addr
+  })
+  if (ep.ready > list.length) lines.push(`... 共 ${ep.ready} 个就绪地址`)
+  if (ep.notReady) lines.push(`⚠ 另有 ${ep.notReady} 个地址未就绪`)
+  return lines.join('\n')
+}
+
 // ── 「只看异常」过滤 + 大列表渲染上限 ────────────────────────────────────
 const onlyAbnormal = ref(false)
 const showAllRows = ref(false)
@@ -2148,6 +2249,7 @@ const filteredCronJobs = computed(() =>
 const filteredServices = computed(() =>
   services.value.filter((item) => matchesSearch([
     item.name, item.namespace, item.type, item.clusterIP, ...(item.ports || []), ...nodeSearchParts(item),
+    ...(item.endpoints?.addresses || []).flatMap((a) => [a.ip, a.pod]),
   ]))
 )
 const filteredConfigMaps = computed(() =>
@@ -2410,6 +2512,22 @@ async function rejectAllPending() {
 }
 
 // 智能模式: Claude tool_use
+// K8s 管理助手：一键巡检快捷入口（走智能模式，只读诊断，不产生写操作）
+const aiQuickActions = [
+  { icon: '🩺', label: '巡检集群', text: '巡检一下集群，有哪些问题？节点/Pod/重启/Deployment就绪/Warning事件都看一下' },
+  { icon: '⚠️', label: '异常 Pod', text: '列出当前所有非 Running 或频繁重启的异常 Pod，并说明可能原因' },
+  { icon: '📋', label: 'Warning 事件', text: '看看集群最近的 Warning 事件（OOMKilled/镜像拉取失败/调度失败等）' },
+  { icon: '🔻', label: '未就绪工作负载', text: '哪些 Deployment/StatefulSet 副本没有全部就绪？分别缺多少' },
+]
+
+function runQuickAsk(text) {
+  if (aiCmd.chatting) return
+  aiCmd.smart = true
+  aiCmd.expanded = true
+  aiCmd.text = text
+  runSmartChat()
+}
+
 async function runSmartChat() {
   const msg = aiCmd.text.trim()
   if (!msg) return
@@ -4520,6 +4638,29 @@ onBeforeUnmount(() => { _destroyExec() })
 .svc-type.nodeport { background: rgba(154,103,0,0.1); color: var(--warning); border: 1px solid rgba(154,103,0,0.2); }
 .svc-type.loadbalancer { background: rgba(26,127,55,0.1); color: var(--success); border: 1px solid rgba(26,127,55,0.2); }
 
+.ep-cell { white-space: nowrap; cursor: default; }
+.ep-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px; font-weight: 600; }
+.ep-badge.ok   { background: rgba(26,127,55,0.1);  color: var(--success); border: 1px solid rgba(26,127,55,0.2); }
+.ep-badge.warn { background: rgba(154,103,0,0.1);  color: var(--warning); border: 1px solid rgba(154,103,0,0.2); }
+.ep-badge.err  { background: rgba(209,36,47,0.1);  color: var(--error);   border: 1px solid rgba(209,36,47,0.2); }
+.ep-badge.none { background: var(--bg-surface);    color: var(--text-muted); border: 1px solid var(--border); }
+.ep-addr { margin-left: 6px; font-size: 10.5px; color: var(--text-secondary); }
+.ep-badge.clickable { cursor: pointer; user-select: none; }
+.ep-badge.clickable:hover { filter: brightness(1.12); }
+.ep-caret { margin-left: 2px; font-size: 9px; opacity: 0.8; }
+
+/* Endpoint 明细展开行 */
+.ep-detail-row td { background: var(--bg-surface); padding: 0; }
+.ep-detail { padding: 10px 14px 12px 40px; border-left: 3px solid var(--accent, #4f8cff); }
+.ep-detail-head { font-size: 11.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
+.ep-detail-warn { color: var(--warning); }
+.ep-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 4px 18px; }
+.ep-detail-item { display: flex; align-items: center; gap: 8px; font-size: 12px; min-width: 0; }
+.ep-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex-shrink: 0; }
+.ep-detail-addr { color: var(--text-primary); font-weight: 500; white-space: nowrap; }
+.ep-detail-pod { color: var(--text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-detail-node { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .status-dot.ok { background: var(--success); }
 .status-dot.warn { background: var(--warning); }
@@ -5313,6 +5454,36 @@ onBeforeUnmount(() => { _destroyExec() })
   font-size: 13px; font-weight: 600;
   color: var(--text-primary);
 }
+.ai-cmd-collapsed-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ai-quick-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 4px;
+}
+.ai-quick-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ai-quick-chip {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all .12s;
+}
+.ai-quick-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ai-quick-chip:disabled { opacity: .5; cursor: not-allowed; }
 .ai-cmd-mode-mini {
   font-size: 11px; font-weight: 600;
   color: var(--text-muted);

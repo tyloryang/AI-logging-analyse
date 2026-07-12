@@ -631,7 +631,12 @@ function healthClass(score) {
 
 function renderText(t) {
   if (!t) return ''
-  return t
+  return String(t)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/⚠️/g, '<span class="ai-warn">⚠️</span>')
     .replace(/✅/g, '<span class="ai-ok">✅</span>')

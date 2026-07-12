@@ -19,13 +19,14 @@ from typing import Any
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from json_snapshot_store import read_json_file, write_json_file
+from auth.deps import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/kafka", tags=["kafka"])
+router = APIRouter(prefix="/api/kafka", tags=["kafka"], dependencies=[Depends(require_admin)])
 
 _DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "kafka_clusters.json"
 

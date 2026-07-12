@@ -1,5 +1,6 @@
 """Jenkins REST API 客户端（基于 httpx，支持多级文件夹 Pipeline）。"""
 import logging
+import os
 from typing import Optional
 import httpx
 
@@ -42,6 +43,9 @@ class JenkinsClient:
         self.url = url.rstrip("/")
         self.auth = (username, token) if username and token else None
         self._crumb: dict | None = None
+        self.verify_tls = os.getenv("JENKINS_VERIFY_TLS", "1").strip().lower() not in {
+            "0", "false", "no", "off",
+        }
 
     def _headers(self) -> dict:
         return {"Accept": "application/json"}
@@ -61,7 +65,7 @@ class JenkinsClient:
         return {}
 
     async def _get(self, path: str, params: dict | None = None) -> dict | list:
-        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=30) as client:
+        async with httpx.AsyncClient(auth=self.auth, verify=self.verify_tls, timeout=30) as client:
             try:
                 r = await client.get(f"{self.url}{path}", params=params, headers=self._headers())
             except httpx.ConnectError:
@@ -76,7 +80,7 @@ class JenkinsClient:
             return r.json()
 
     async def _post(self, path: str, params: dict | None = None, data: dict | None = None) -> httpx.Response:
-        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=30) as client:
+        async with httpx.AsyncClient(auth=self.auth, verify=self.verify_tls, timeout=30) as client:
             crumb = await self._get_crumb(client)
             headers = {**self._headers(), **crumb}
             r = await client.post(f"{self.url}{path}", params=params, data=data, headers=headers)
@@ -89,14 +93,14 @@ class JenkinsClient:
             return r
 
     async def _get_text(self, path: str) -> str:
-        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=30) as client:
+        async with httpx.AsyncClient(auth=self.auth, verify=self.verify_tls, timeout=30) as client:
             r = await client.get(f"{self.url}{path}", headers={"Accept": "text/plain"})
             r.raise_for_status()
             return r.text
 
     async def _post_xml(self, path: str, xml_body: str) -> httpx.Response:
         """POST application/xml body（用于 config.xml 上传 / job 创建）"""
-        async with httpx.AsyncClient(auth=self.auth, verify=False, timeout=30) as client:
+        async with httpx.AsyncClient(auth=self.auth, verify=self.verify_tls, timeout=30) as client:
             crumb = await self._get_crumb(client)
             headers = {**self._headers(), **crumb, "Content-Type": "application/xml"}
             r = await client.post(f"{self.url}{path}", content=xml_body, headers=headers)

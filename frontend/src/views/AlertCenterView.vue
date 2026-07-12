@@ -14,26 +14,26 @@
         :key="t.key"
         class="tab"
         :class="{ active: tab === t.key }"
-        @click="tab = t.key"
+        @click="switchTab(t.key)"
       >
         {{ t.label }}
         <span v-if="t.key !== 'all'" class="tab-count">{{ countByStatus(t.key) }}</span>
       </button>
 
       <div class="alert-filters">
-        <select v-model="filterType" @change="load" class="filter-select" title="告警类型">
+        <select v-model="filterType" @change="applyFilters" class="filter-select" title="告警类型">
           <option value="">全部告警类型</option>
           <option v-for="type in filterOptions.alert_types" :key="type.key" :value="type.key">{{ type.label }}</option>
         </select>
-        <select v-model="filterNs" @change="load" class="filter-select" title="K8s Namespace">
+        <select v-model="filterNs" @change="applyFilters" class="filter-select" title="K8s Namespace">
           <option value="">全部 Namespace</option>
           <option v-for="ns in filterOptions.namespaces" :key="ns" :value="ns">{{ ns }}</option>
         </select>
-        <select v-model="filterEnv" @change="load" class="filter-select" title="环境">
+        <select v-model="filterEnv" @change="applyFilters" class="filter-select" title="环境">
           <option value="">全部环境</option>
           <option v-for="env in filterOptions.envs" :key="env" :value="env">{{ env }}</option>
         </select>
-        <input v-model="filterSvc" @input="load" class="filter-input" placeholder="服务名过滤..." />
+        <input v-model="filterSvc" @input="applyFilters" class="filter-input" placeholder="服务名过滤..." />
       </div>
     </div>
 
@@ -66,9 +66,56 @@
       <div>当前筛选条件下暂无告警</div>
     </div>
 
-    <div v-else class="groups-list">
-      <div v-for="group in filtered" :key="group.id" class="group-card" :class="group.severity">
+    <div v-else class="alert-results">
+      <div class="batch-toolbar">
+        <label class="select-all">
+          <input
+            type="checkbox"
+            :checked="allFilteredSelected"
+            :indeterminate="partlyFilteredSelected"
+            @change="toggleSelectAll"
+          />
+          <span>全选当前结果</span>
+        </label>
+        <span class="selected-count">已选 {{ selectedCount }} 条</span>
+        <div class="batch-actions">
+          <button
+            class="btn btn-sm btn-outline"
+            :disabled="!suppressibleCount || batchUpdating"
+            @click="batchUpdate('suppressed')"
+          >
+            批量抑制<span v-if="suppressibleCount">（{{ suppressibleCount }}）</span>
+          </button>
+          <button
+            class="btn btn-sm btn-primary"
+            :disabled="!resolvableCount || batchUpdating"
+            @click="batchUpdate('resolved')"
+          >
+            批量解决<span v-if="resolvableCount">（{{ resolvableCount }}）</span>
+          </button>
+          <button v-if="selectedCount" class="btn btn-sm btn-ghost" :disabled="batchUpdating" @click="clearSelection">
+            取消选择
+          </button>
+        </div>
+      </div>
+
+      <div v-if="batchNotice.text" class="batch-notice" :class="batchNotice.type">{{ batchNotice.text }}</div>
+
+      <div class="groups-list">
+      <div
+        v-for="group in filtered"
+        :key="group.id"
+        class="group-card"
+        :class="[group.severity, { selected: selectedIds.has(group.id) }]"
+      >
         <div class="group-head">
+          <input
+            class="group-select"
+            type="checkbox"
+            :checked="selectedIds.has(group.id)"
+            :aria-label="`选择告警 ${group.alertname || group.id}`"
+            @change="toggleSelection(group.id)"
+          />
           <span class="sev-dot" :class="group.severity"></span>
           <span class="group-name">{{ group.alertname || 'Unknown Alert' }}</span>
           <span class="type-chip" :class="`type-${group.alert_type || 'infra'}`">
@@ -133,6 +180,7 @@
           </div>
         </div>
       </div>
+      </div>
     </div>
   </div>
 </template>
@@ -193,6 +241,9 @@ const filterEnv = ref('')
 const filterSvc = ref('')
 const filterOptions = ref({ namespaces: [], envs: [], alert_types: [] })
 const typeStats = ref({})
+const selectedIds = ref(new Set())
+const batchUpdating = ref(false)
+const batchNotice = ref({ type: '', text: '' })
 
 const webhookUrl = computed(() => `${window.location.protocol}//${window.location.host}/api/alerts/webhook`)
 const alertTypeOptions = computed(() => {
@@ -205,6 +256,18 @@ const filtered = computed(() => {
   if (tab.value === 'all') return groups.value
   return groups.value.filter(group => group.status === tab.value)
 })
+const selectedGroups = computed(() => groups.value.filter(group => selectedIds.value.has(group.id)))
+const selectedCount = computed(() => selectedIds.value.size)
+const allFilteredSelected = computed(() => (
+  filtered.value.length > 0 && filtered.value.every(group => selectedIds.value.has(group.id))
+))
+const partlyFilteredSelected = computed(() => (
+  !allFilteredSelected.value && filtered.value.some(group => selectedIds.value.has(group.id))
+))
+const suppressibleCount = computed(() => selectedGroups.value.filter(
+  group => !['suppressed', 'resolved'].includes(group.status),
+).length)
+const resolvableCount = computed(() => selectedGroups.value.filter(group => group.status !== 'resolved').length)
 
 function countByStatus(status) {
   return groups.value.filter(group => group.status === status).length
@@ -217,7 +280,39 @@ function countByType(type) {
 
 async function switchType(type) {
   filterType.value = filterType.value === type ? '' : type
+  clearSelection()
   await load()
+}
+
+function switchTab(nextTab) {
+  tab.value = nextTab
+  clearSelection()
+}
+
+async function applyFilters() {
+  clearSelection()
+  await load()
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
+}
+
+function toggleSelection(id) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedIds.value = next
+}
+
+function toggleSelectAll() {
+  const next = new Set(selectedIds.value)
+  if (allFilteredSelected.value) {
+    filtered.value.forEach(group => next.delete(group.id))
+  } else {
+    filtered.value.forEach(group => next.add(group.id))
+  }
+  selectedIds.value = next
 }
 
 function fmt(iso) {
@@ -250,6 +345,8 @@ async function load() {
       api.alertStats().catch(() => ({ by_type: {} })),
     ])
     groups.value = result.groups || []
+    const visibleIds = new Set(groups.value.map(group => group.id))
+    selectedIds.value = new Set([...selectedIds.value].filter(id => visibleIds.has(id)))
     filterOptions.value = options
     typeStats.value = stats.by_type || {}
   } catch (error) {
@@ -267,6 +364,40 @@ async function resolve(group) {
 async function suppress(group) {
   await api.alertUpdateStatus(group.id, { status: 'suppressed' })
   await load()
+}
+
+async function batchUpdate(status) {
+  const isSuppress = status === 'suppressed'
+  const targetGroups = selectedGroups.value.filter(group => (
+    isSuppress ? !['suppressed', 'resolved'].includes(group.status) : group.status !== 'resolved'
+  ))
+  if (!targetGroups.length) return
+
+  const actionLabel = isSuppress ? '抑制' : '解决'
+  if (!window.confirm(`确认批量${actionLabel}已选中的 ${targetGroups.length} 条告警吗？`)) return
+
+  batchUpdating.value = true
+  batchNotice.value = { type: '', text: '' }
+  try {
+    const result = await api.alertBatchUpdateStatus({
+      group_ids: targetGroups.map(group => group.id),
+      status,
+    })
+    const updated = result.updated?.length || 0
+    const skipped = result.skipped?.length || 0
+    const missing = result.missing?.length || 0
+    batchNotice.value = {
+      type: missing ? 'warning' : 'success',
+      text: `批量${actionLabel}完成：成功 ${updated} 条，跳过 ${skipped} 条${missing ? `，未找到 ${missing} 条` : ''}`,
+    }
+    clearSelection()
+    await load()
+  } catch (error) {
+    const detail = error?.response?.data?.detail || error?.message || '请求失败'
+    batchNotice.value = { type: 'error', text: `批量${actionLabel}失败：${detail}` }
+  } finally {
+    batchUpdating.value = false
+  }
 }
 
 async function openRca(group) {
@@ -364,6 +495,20 @@ onMounted(load)
 .type-card.type-log_exception b { color: var(--error); }
 
 .groups-list { display: flex; flex-direction: column; gap: 10px; }
+.alert-results { display: flex; flex-direction: column; gap: 10px; }
+.batch-toolbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-card); position: sticky; top: 0; z-index: 5;
+}
+.select-all { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer; }
+.select-all input, .group-select { accent-color: var(--accent); cursor: pointer; }
+.selected-count { font-size: 12px; color: var(--text-muted); }
+.batch-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.batch-notice { padding: 8px 12px; border-radius: var(--radius); font-size: 12px; }
+.batch-notice.success { background: rgba(26,127,55,.1); color: var(--success); }
+.batch-notice.warning { background: rgba(245,158,11,.12); color: var(--warning); }
+.batch-notice.error { background: rgba(239,68,68,.12); color: var(--error); }
 
 .group-card {
   background: var(--bg-card);
@@ -377,11 +522,13 @@ onMounted(load)
   transition: box-shadow .15s;
 }
 .group-card:hover { box-shadow: var(--shadow-sm); }
+.group-card.selected { box-shadow: 0 0 0 1px var(--accent); background: var(--accent-dim); }
 .group-card.critical { border-left-color: var(--error); }
 .group-card.warning { border-left-color: var(--warning); }
 .group-card.info { border-left-color: var(--accent); }
 
 .group-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.group-select { width: 15px; height: 15px; flex-shrink: 0; }
 .sev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .sev-dot.critical, .sev-dot.error { background: var(--error); }
 .sev-dot.warning { background: var(--warning); }
@@ -480,5 +627,6 @@ onMounted(load)
 @media (max-width: 720px) {
   .type-strip { grid-template-columns: 1fr; }
   .alert-filters { width: 100%; margin-left: 0; flex-wrap: wrap; }
+  .batch-actions { width: 100%; margin-left: 0; }
 }
 </style>

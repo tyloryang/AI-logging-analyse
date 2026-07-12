@@ -9,14 +9,15 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from json_snapshot_store import read_json_file, write_json_file
 from jenkins_client import JenkinsClient
+from auth.deps import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 _JENKINS_FILE = Path(__file__).resolve().parent.parent / "data" / "jenkins.json"
 

@@ -17,8 +17,8 @@
         </div>
         <!-- 系统架构子模式 -->
         <div v-if="view === 'arch'" class="view-tabs" style="margin-left:4px">
-          <button :class="['vtab', { active: archMode === 'app' }]" @click="archMode='app'">应用架构</button>
-          <button :class="['vtab', { active: archMode === 'deploy' }]" @click="archMode='deploy'">K8s 部署流程</button>
+          <button :class="['vtab', { active: archMode === 'app' }]" @click="archMode='app'; clearArchPin()">应用架构</button>
+          <button :class="['vtab', { active: archMode === 'deploy' }]" @click="archMode='deploy'; clearArchPin()">K8s 部署流程</button>
         </div>
         <!-- 缩放控制 -->
         <div v-if="view === 'arch'" class="zoom-btns">
@@ -113,8 +113,8 @@
         </defs>
 
         <!-- 背景 -->
-        <rect width="100%" height="100%" fill="#0d1117"/>
-        <rect width="100%" height="100%" fill="url(#grid)"/>
+        <rect width="100%" height="100%" fill="#0d1117" @click="clearArchPin"/>
+        <rect width="100%" height="100%" fill="url(#grid)" @click="clearArchPin"/>
 
         <!-- 层标签 -->
         <g class="layer-labels">
@@ -178,15 +178,21 @@
         <g class="nodes" filter="url(#node-shadow)">
           <g v-for="nd in archNodes" :key="nd.id"
             class="arch-node"
-            :class="{ hovered: hoveredNode === nd.id }"
+            :class="{ hovered: hoveredNode === nd.id, pinned: pinnedNode === nd.id }"
             :transform="`translate(${nd.x},${nd.y})`"
             :opacity="hoveredNode && hoveredNode !== nd.id && !isNodeConnected(nd.id) ? 0.18 : 1"
             :style="{ transition: 'opacity .2s' }"
             @mouseenter="hoveredNode=nd.id; showTooltip(nd, $event)"
-            @mouseleave="hoveredNode=null; tooltip.show=false"
+            @mouseleave="onArchNodeLeave"
+            @click.stop="toggleArchPin(nd, $event)"
           >
             <!-- 光晕脉冲背景 -->
             <circle v-if="nd.pulse" cx="0" cy="0" :r="nd.w*0.6" :fill="nd.color+'15'" class="node-pulse"/>
+
+            <!-- 固定高亮描边 -->
+            <rect v-if="pinnedNode === nd.id"
+              :x="-nd.w/2 - 5" :y="-nd.h/2 - 5" :width="nd.w + 10" :height="nd.h + 10"
+              rx="15" fill="none" :stroke="nd.color" stroke-width="1.6" stroke-dasharray="4 3"/>
 
             <!-- 节点背景 -->
             <rect :x="-nd.w/2" :y="-nd.h/2" :width="nd.w" :height="nd.h"
@@ -569,6 +575,7 @@ const archMode = ref('app')   // 'app' | 'deploy'
 const animOn   = ref(true)
 const loading  = ref(false)
 const hoveredNode = ref(null)
+const pinnedNode = ref(null)   // 点击固定的节点，高亮常驻
 const pageEl   = ref(null)
 const archWrap = ref(null)
 const archSvg  = ref(null)
@@ -611,6 +618,19 @@ function onArchDragMove(e) {
   vb.y = svgDrag.vby0 - (e.clientY - svgDrag.sy) * sy
 }
 function onArchDragEnd() { svgDrag.active = false }
+
+// 点击固定节点：高亮常驻，再次点击或点空白取消
+function toggleArchPin(nd, e) {
+  pinnedNode.value = pinnedNode.value === nd.id ? null : nd.id
+  hoveredNode.value = pinnedNode.value
+  if (pinnedNode.value) showTooltip(nd, e)
+  else tooltip.value.show = false
+}
+function clearArchPin() { pinnedNode.value = null; hoveredNode.value = null; tooltip.value.show = false }
+function onArchNodeLeave() {
+  hoveredNode.value = pinnedNode.value
+  if (!pinnedNode.value) tooltip.value.show = false
+}
 
 // ── K8s 数据 refs（必须在所有依赖它们的 computed/watch 之前）────────
 const k8sNodes       = ref([])

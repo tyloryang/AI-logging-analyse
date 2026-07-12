@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Header, Query
 from pydantic import BaseModel
 
 from notifier import send_feishu_alert_group
@@ -20,8 +20,10 @@ from services.alert_dedup import (
     list_namespaces,
     stats,
     update_group_status,
+    update_groups_status,
 )
 from state import load_groups
+from services.webhook_security import require_ingest_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -170,7 +172,17 @@ def _build_alert_rca_context(group: dict, labels: dict[str, str], extra_context:
 
 
 @router.post("/api/alerts/webhook")
-async def alertmanager_webhook(payload: dict = Body(...)):
+async def alertmanager_webhook(
+    payload: dict = Body(...),
+    x_alert_token: str | None = Header(default=None, alias="X-Alert-Token"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    require_ingest_token(
+        token_env="ALERTS_INGEST_TOKEN",
+        direct_token=x_alert_token,
+        authorization=authorization,
+        allow_unauthenticated_env="ALERTS_ALLOW_UNAUTHENTICATED",
+    )
     raw_alerts = payload.get("alerts", [])
     if not raw_alerts:
         return {"ok": True, "message": "no alerts"}
@@ -477,6 +489,11 @@ class StatusUpdate(BaseModel):
     rca_id: str | None = None
 
 
+class BatchStatusUpdate(BaseModel):
+    group_ids: list[str]
+    status: str
+
+
 class AlertRCATriggerRequest(BaseModel):
     hours: float = 0.5
     extra_context: str = ""
@@ -490,6 +507,22 @@ async def update_alert_status(group_id: str, body: StatusUpdate):
 
         raise HTTPException(status_code=404, detail="alert group not found")
     return {"ok": True}
+
+
+@router.put("/api/alerts/groups/batch-status")
+async def batch_update_alert_status(body: BatchStatusUpdate):
+    from fastapi import HTTPException
+
+    group_ids = list(dict.fromkeys(group_id.strip() for group_id in body.group_ids if group_id.strip()))
+    if not group_ids:
+        raise HTTPException(status_code=400, detail="group_ids cannot be empty")
+    if len(group_ids) > 200:
+        raise HTTPException(status_code=400, detail="up to 200 alert groups can be updated at once")
+    if body.status not in {"suppressed", "resolved"}:
+        raise HTTPException(status_code=400, detail="batch status must be suppressed or resolved")
+
+    result = update_groups_status(group_ids, body.status)
+    return {"ok": True, **result}
 
 
 @router.post("/api/alerts/groups/{group_id}/rca")

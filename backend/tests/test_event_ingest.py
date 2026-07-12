@@ -1,7 +1,9 @@
 import unittest
+from datetime import datetime, timezone
 
 from routers.events import (
     _EVENT_ERROR_KEYWORDS,
+    _event_is_visible_after_clear,
     _event_matches_error_keywords,
     _normalize_external_event,
     _resolve_error_keywords,
@@ -53,6 +55,24 @@ class EventIngestNormalizeCase(unittest.TestCase):
         self.assertTrue(_event_matches_error_keywords("java.lang.IllegalAccessException", access_keywords))
         self.assertTrue(_event_matches_error_keywords("java.lang.ArrayIndexOutOfBoundsException", bounds_keywords))
         self.assertFalse(_event_matches_error_keywords("plain error without java exception", memory_keywords))
+
+    def test_clear_cutoff_hides_history_but_keeps_new_events(self):
+        cutoff = datetime(2026, 7, 10, 8, 0, tzinfo=timezone.utc)
+        self.assertFalse(_event_is_visible_after_clear(
+            {"time": "2026-07-10T07:59:59Z", "status": "active"},
+            cutoff,
+        ))
+        self.assertTrue(_event_is_visible_after_clear(
+            {"time": "2026-07-10T08:00:01Z", "status": "active"},
+            cutoff,
+        ))
+
+    def test_clear_cutoff_keeps_current_firing_alerts(self):
+        cutoff = datetime(2026, 7, 10, 8, 0, tzinfo=timezone.utc)
+        self.assertTrue(_event_is_visible_after_clear(
+            {"time": "2026-07-10T07:00:00Z", "status": "firing"},
+            cutoff,
+        ))
 
 
 if __name__ == "__main__":

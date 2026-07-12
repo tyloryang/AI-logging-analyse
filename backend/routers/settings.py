@@ -8,11 +8,12 @@ import os
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict
 
 from auth.deps import require_admin
 from json_snapshot_store import read_json_file, write_json_file
+from services.ai_model_discovery import model_discovery_url, normalize_discovered_models
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_admin)])
@@ -538,6 +539,118 @@ class TestAIPayload(BaseModel):
     api_key: str = ""
     wire_api: str = ""
     enable_thinking: bool | str | None = None
+
+
+class DiscoverAIModelsPayload(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    provider: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    model_id: str = ""
+
+
+def _load_model_discovery_defaults(model_id: str = "") -> dict[str, str]:
+    defaults: dict[str, str] = {}
+    if model_id:
+        try:
+            from routers.agent_config import _load as load_agent_config
+
+            model = next(
+                (item for item in load_agent_config().get("models", []) if item.get("id") == model_id),
+                None,
+            )
+            if model:
+                defaults = {
+                    "provider": str(model.get("runtime_provider") or ""),
+                    "base_url": str(model.get("base_url") or ""),
+                    "api_key": str(model.get("api_key") or ""),
+                }
+        except Exception as exc:
+            logger.warning("[settings] load model discovery defaults failed: %s", exc)
+    return defaults
+
+
+@router.post("/api/settings/ai/models")
+async def discover_ai_models(body: DiscoverAIModelsPayload):
+    """从模型服务读取可用模型列表，统一为前端下拉选项。"""
+    saved = _load()
+    model_defaults = _load_model_discovery_defaults(body.model_id.strip())
+    provider = str(
+        body.provider
+        or model_defaults.get("provider")
+        or saved.get("ai_provider")
+        or os.getenv("AI_PROVIDER", "")
+    ).strip().lower()
+    if provider not in {"openai", "anthropic"}:
+        raise HTTPException(status_code=400, detail="模型类型仅支持 openai 或 anthropic")
+
+    if provider == "anthropic":
+        base_url = ""
+        api_key = str(
+            body.api_key
+            or model_defaults.get("api_key")
+            or saved.get("ai_api_key")
+            or os.getenv("ANTHROPIC_API_KEY", "")
+        ).strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="请先填写 Anthropic API Key")
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "accept": "application/json",
+        }
+        params = {"limit": 1000}
+    else:
+        base_url = str(
+            body.base_url
+            or model_defaults.get("base_url")
+            or saved.get("ai_base_url")
+            or os.getenv("AI_BASE_URL", "")
+        ).strip()
+        api_key = str(
+            body.api_key
+            or model_defaults.get("api_key")
+            or saved.get("ai_api_key")
+            or os.getenv("AI_API_KEY", "")
+        ).strip()
+        headers = {"accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        params = None
+
+    try:
+        url = model_discovery_url(provider, base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="请先填写 Base URL") from exc
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, params=params)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"获取模型列表失败：{exc}") from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip().replace("\n", " ")[:300]
+        raise HTTPException(
+            status_code=502,
+            detail=f"模型服务返回 HTTP {response.status_code}：{detail or '无错误详情'}",
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="模型服务没有返回有效 JSON") from exc
+
+    models = normalize_discovered_models(payload)
+    if not models:
+        raise HTTPException(status_code=502, detail="模型服务响应成功，但没有返回可用模型")
+    return {
+        "ok": True,
+        "provider": provider,
+        "provider_label": "Anthropic" if provider == "anthropic" else "OpenAI Compatible",
+        "source": url,
+        "count": len(models),
+        "models": models,
+    }
 
 
 @router.post("/api/settings/test/ai")

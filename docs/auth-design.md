@@ -254,7 +254,7 @@ docker compose --profile postgres up -d --build # PostgreSQL
 DATABASE_URL=sqlite+aiosqlite:///./data/aiops.db
 REDIS_URL=redis://redis:6379/0
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=Admin@123456
+ADMIN_PASSWORD=
 SESSION_TTL_SECONDS=28800
 LOGIN_FAIL_MAX=5
 LOGIN_FAIL_WINDOW=600

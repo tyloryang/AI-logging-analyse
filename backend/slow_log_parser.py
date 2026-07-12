@@ -67,6 +67,25 @@ def _parse_time(raw: str) -> Optional[datetime]:
     return None
 
 
+def _parse_range_bound(raw: Optional[str], *, end_of_day: bool = False) -> Optional[datetime]:
+    """解析日期或日期时间边界；纯日期结束边界按当天 23:59:59.999999 处理。"""
+    value = str(raw or "").strip()
+    if not value:
+        return None
+
+    is_date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    if is_date_only and end_of_day:
+        parsed = parsed + timedelta(days=1) - timedelta(microseconds=1)
+    return parsed
+
+
 def _is_ignore(sql: str) -> bool:
     return any(kw in sql for kw in IGNORE_KWS)
 
@@ -126,8 +145,8 @@ def parse_slow_log(
     date: Optional[str] = None,          # 兼容旧调用：单日期 "YYYY-MM-DD"
     threshold_sec: float = DEFAULT_THRESHOLD,
     alert_sec: float = DEFAULT_ALERT_SEC,
-    date_from: Optional[str] = None,     # 时间段起始 "YYYY-MM-DD"
-    date_to: Optional[str] = None,       # 时间段结束 "YYYY-MM-DD"（含）
+    date_from: Optional[str] = None,     # 起始 "YYYY-MM-DD" 或 "YYYY-MM-DDTHH:MM:SS"
+    date_to: Optional[str] = None,       # 结束 "YYYY-MM-DD"（含全天）或日期时间
 ) -> List[Dict]:
     """
     解析慢日志文本，返回结构化列表，每条包含：
@@ -135,27 +154,17 @@ def parse_slow_log(
       query_time, lock_time, rows_sent, rows_examined,
       sql, is_ignore, is_alert, severity
 
-    日期过滤优先级：date_from/date_to > date（单日兼容）
+    时间过滤优先级：date_from/date_to > date（单日兼容）
     """
-    from datetime import date as date_type
-
-    dt_from: Optional[date_type] = None
-    dt_to:   Optional[date_type] = None
+    dt_from: Optional[datetime] = None
+    dt_to:   Optional[datetime] = None
 
     if date_from or date_to:
-        try:
-            if date_from:
-                dt_from = datetime.strptime(date_from, "%Y-%m-%d").date()
-            if date_to:
-                dt_to = datetime.strptime(date_to, "%Y-%m-%d").date()
-        except ValueError:
-            pass
+        dt_from = _parse_range_bound(date_from)
+        dt_to = _parse_range_bound(date_to, end_of_day=True)
     elif date:
-        try:
-            d = datetime.strptime(date, "%Y-%m-%d").date()
-            dt_from = dt_to = d
-        except ValueError:
-            pass
+        dt_from = _parse_range_bound(date)
+        dt_to = _parse_range_bound(date, end_of_day=True)
 
     results = []
     idx = 0
@@ -170,12 +179,11 @@ def parse_slow_log(
 
         time_dt: Optional[datetime] = entry.get("time_dt")
 
-        # 日期范围过滤
+        # 日期/时间范围过滤
         if (dt_from or dt_to) and time_dt:
-            entry_date = time_dt.date()
-            if dt_from and entry_date < dt_from:
+            if dt_from and time_dt < dt_from:
                 continue
-            if dt_to and entry_date > dt_to:
+            if dt_to and time_dt > dt_to:
                 continue
 
         # 格式化时间

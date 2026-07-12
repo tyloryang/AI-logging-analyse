@@ -165,7 +165,7 @@ class ResponsesApiChatModel(BaseChatModel):
         client = AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
-            http_client=httpx.AsyncClient(trust_env=False),
+            http_client=httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(120.0)),
         )
         inp = self._to_input(messages)
         req: dict = {
@@ -225,7 +225,7 @@ class ResponsesApiChatModel(BaseChatModel):
         client = AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
-            http_client=httpx.AsyncClient(trust_env=False),
+            http_client=httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(120.0)),
         )
         inp = self._to_input(messages)
         req: dict = {

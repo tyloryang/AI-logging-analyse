@@ -464,7 +464,7 @@ docker-compose up -d
 | 后端 API | http://localhost:8000 | FastAPI |
 | API 文档 | http://localhost:8000/docs | Swagger UI |
 
-**默认账号：** `admin` / `Admin@123456`（首次登录后请修改密码）
+**初始账号：** `admin`；密码由 `ADMIN_PASSWORD` 指定，留空时首次启动会生成一次性随机密码并写入启动日志。
 
 ### 4. 本地开发模式
 
@@ -500,13 +500,13 @@ docker-compose --profile grafana up -d
 ```bash
 docker-compose --profile mysql up -d
 # 同时在 .env 中设置：
-# DATABASE_URL=mysql+aiomysql://aiops:aiops123@localhost/aiops
+# DATABASE_URL=mysql+aiomysql://aiops:<strong-password>@localhost/aiops
 ```
 
 **带 PostgreSQL：**
 ```bash
 docker-compose --profile postgres up -d
-# DATABASE_URL=postgresql+asyncpg://aiops:aiops123@localhost/aiops
+# DATABASE_URL=postgresql+asyncpg://aiops:<strong-password>@localhost/aiops
 ```
 
 ---
@@ -547,7 +547,7 @@ data:
 ```yaml
 stringData:
   AI_API_KEY: "sk-xxxxxxxx"
-  ADMIN_PASSWORD: "Admin@123456"
+  ADMIN_PASSWORD: ""
 ```
 
 ### 2. 一键部署
@@ -614,7 +614,7 @@ kubectl -n aiops rollout restart deployment/frontend
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/aiops.db` | 数据库连接串，支持 SQLite/MySQL/PostgreSQL |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis 连接串（会话存储）|
 | `ADMIN_USERNAME` | `admin` | 初始管理员账号 |
-| `ADMIN_PASSWORD` | `Admin@123456` | 初始管理员密码（**生产必改**）|
+| `ADMIN_PASSWORD` | 空（自动生成） | 初始管理员密码；生产环境建议通过 Secret 显式设置强密码 |
 | `APP_URL` | `http://localhost:5173` | 前端地址（CORS 白名单）|
 | `REPORTS_DIR` | `./reports` | 日报文件存储目录 |
 

@@ -7,7 +7,7 @@
         <!-- 时间模式切换 -->
         <div class="time-mode-tabs">
           <button class="tmode-btn" :class="{ active: timeMode === 'relative' }" @click="timeMode = 'relative'; onTimeModeChange()">快速</button>
-          <button class="tmode-btn" :class="{ active: timeMode === 'custom' }" @click="timeMode = 'custom'">自定义</button>
+          <button class="tmode-btn" :class="{ active: timeMode === 'custom' }" @click="timeMode = 'custom'; onTimeModeChange()">自定义</button>
         </div>
         <!-- 相对时间选择 -->
         <select v-if="timeMode === 'relative'" v-model="hours" class="time-select" @change="onParamChange">
@@ -28,11 +28,14 @@
               type="text"
               v-model="tsPasteInput"
               class="dt-input ts-paste"
-              placeholder="粘贴时间戳快速定位，如 2026-07-09 10:31:12 或 1783564176796001726"
+              placeholder="粘贴时间或时间段，如 2026-07-10 00:00:00 ~ 2026-07-10 14:30:00"
               @paste="onTsPaste"
               @keyup.enter="applyTsPaste()"
-              title="粘贴标准时间/时间戳后回车，自动填充时间范围" />
-            <button class="ts-apply-btn" @click="applyTsPaste()" title="解析并应用">应用</button>
+              title="支持单个时间、时间戳或起止时间段；粘贴后自动生效并查询" />
+            <button type="button" class="ts-apply-btn" @click="applyTsPaste()" title="解析并应用">应用</button>
+            <button type="button" class="ts-apply-btn" @click="copyCustomTimeRange" title="复制当前起止时间">
+              {{ customTimeRangeCopied ? '已复制' : '复制' }}
+            </button>
           </div>
           <div v-if="tsPasteError" class="ts-paste-err">{{ tsPasteError }}</div>
           <div v-if="tsCenterText" class="ts-range-chips">
@@ -42,10 +45,31 @@
                     @click="applyCenterRange(m.v)">{{ m.label }}</button>
           </div>
           <div class="custom-time-inputs">
-            <input type="datetime-local" v-model="customStart" class="dt-input" @change="onCustomTimeChange" title="开始时间" />
+            <input
+              type="text"
+              v-model="customStart"
+              class="dt-input custom-time-text"
+              placeholder="开始时间 YYYY-MM-DD HH:mm:ss"
+              aria-label="开始时间"
+              autocomplete="off"
+              @blur="onCustomTimeFieldCommit"
+              @keyup.enter="onCustomTimeFieldCommit"
+              @paste="onCustomTimeFieldPaste('start', $event)"
+              title="可直接粘贴完整开始时间，如 2026-07-10 23:29:48" />
             <span class="dt-sep">→</span>
-            <input type="datetime-local" v-model="customEnd"   class="dt-input" @change="onCustomTimeChange" title="结束时间" />
+            <input
+              type="text"
+              v-model="customEnd"
+              class="dt-input custom-time-text"
+              placeholder="结束时间 YYYY-MM-DD HH:mm:ss"
+              aria-label="结束时间"
+              autocomplete="off"
+              @blur="onCustomTimeFieldCommit"
+              @keyup.enter="onCustomTimeFieldCommit"
+              @paste="onCustomTimeFieldPaste('end', $event)"
+              title="可直接粘贴完整结束时间，如 2026-07-10 23:39:48" />
           </div>
+          <div v-if="customTimeError" class="ts-paste-err">{{ customTimeError }}</div>
         </div>
         <div class="panel-subsection">
           <span class="panel-subtitle">标签分组</span>
@@ -905,7 +929,7 @@ const router = useRouter()
 
 // ── 公共状态 ─────────────────────────────
 const selectedService = ref('')
-const hours          = ref('0.016667')
+const hours          = ref('0.083333')
 const groupBy        = ref('namespace')
 const selectedGroupLabel = ref('')
 const selectedGroupValue = ref('')
@@ -937,14 +961,18 @@ const labelValueInputRef = ref(null)
 
 const activeTab      = ref('logs')
 
-// 时间模式：relative（最近N小时） | custom（自定义时间段）
-const timeMode    = ref('relative')
-const customStart = ref('')
-const customEnd   = ref('')
+// 时间模式：默认查询当前时刻之前 5 分钟；仍可切回 relative（最近N小时）
+const initialTimeRange = recentFiveMinuteRange()
+const timeMode    = ref('custom')
+const customStart = ref(initialTimeRange.start)
+const customEnd   = ref(initialTimeRange.end)
+let appliedCustomTimeKey = `${initialTimeRange.start}|${initialTimeRange.end}`
 
 // 时间戳快速粘贴
 const tsPasteInput   = ref('')
 const tsPasteError   = ref('')
+const customTimeError = ref('')
+const customTimeRangeCopied = ref(false)
 const tsCenter       = ref(null)   // 解析出的中心时刻（Date）
 const tsRangeMinutes = ref(5)      // 当前应用的 ± 分钟数
 const TS_RANGE_PRESETS = [
@@ -1464,28 +1492,27 @@ function goToContainerLogs(labels, containerValue) {
   })
 }
 
-// 返回今天 00:00 ~ 当前时刻的本地时间字符串（datetime-local 格式）
-function todayRange() {
+// 返回当前时刻往前 5 分钟的本地时间范围。
+function recentFiveMinuteRange(formatter = fmtDateTimeSec) {
   const now = new Date()
-  const pad = n => String(n).padStart(2, '0')
-  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
   return {
-    start: `${date}T00:00`,
-    end:   `${date}T${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    start: formatter(new Date(now.getTime() - 5 * 60 * 1000)),
+    end: formatter(now),
   }
 }
 
-// datetime-local 返回本地时间字符串，转成 UTC ISO 再发给后端
+// 本地时间字符串转成 UTC ISO 再发给后端。
 function toUtcStr(localStr) {
   if (!localStr) return ''
-  return new Date(localStr).toISOString().slice(0, 16)   // "2025-03-25T02:00"
+  const parsed = parseFlexibleTime(localStr)
+  return parsed ? parsed.toISOString().slice(0, 19) : ''   // "2025-03-25T02:00:30"
 }
 
-// Date → datetime-local 输入值（本地时间，分钟精度）
+// Date → datetime-local 输入值（本地时间，秒精度）
 function toLocalInput(d) {
   const pad = n => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-         `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+         `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 function fmtDateTimeSec(d) {
@@ -1518,7 +1545,22 @@ function parseFlexibleTime(raw) {
   )
   if (m) {
     const [, Y, Mo, D, h, mi, se, frac, tz] = m
-    if (h == null) return new Date(Number(Y), Number(Mo) - 1, Number(D))
+    const year = Number(Y)
+    const month = Number(Mo)
+    const day = Number(D)
+    const hour = Number(h || 0)
+    const minute = Number(mi || 0)
+    const second = Number(se || 0)
+    const validParts = month >= 1 && month <= 12 && day >= 1 && day <= 31 &&
+      hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59
+    if (!validParts) return null
+    const calendarDate = new Date(year, month - 1, day)
+    if (calendarDate.getFullYear() !== year || calendarDate.getMonth() !== month - 1 || calendarDate.getDate() !== day) {
+      return null
+    }
+    if (h == null) {
+      return calendarDate
+    }
     if (tz) {
       // 带时区 → 拼成标准 ISO 交给 Date（毫秒截断到 3 位，时区补冒号）
       const iso = `${Y}-${pad2(Mo)}-${pad2(D)}T${pad2(h)}:${pad2(mi)}:${pad2(se || 0)}` +
@@ -1527,8 +1569,11 @@ function parseFlexibleTime(raw) {
       return isNaN(d.getTime()) ? null : d
     }
     // 无时区 → 按本地时间构造（不依赖浏览器对字符串的解析差异）
-    return new Date(Number(Y), Number(Mo) - 1, Number(D),
-                    Number(h), Number(mi), Number(se || 0))
+    const local = new Date(year, month - 1, day, hour, minute, second)
+    return local.getFullYear() === year && local.getMonth() === month - 1 && local.getDate() === day &&
+      local.getHours() === hour && local.getMinutes() === minute && local.getSeconds() === second
+      ? local
+      : null
   }
 
   // 文本里夹带的纯 epoch（10~19 位数字）
@@ -1555,8 +1600,8 @@ function applyTsPaste() {
     if (a && b) {
       const [start, end] = a <= b ? [a, b] : [b, a]
       tsCenter.value = null
-      customStart.value = toLocalInput(start)
-      customEnd.value = toLocalInput(end)
+      customStart.value = fmtDateTimeSec(start)
+      customEnd.value = fmtDateTimeSec(end)
       onCustomTimeChange()
       return
     }
@@ -1581,13 +1626,28 @@ function onTsPaste(e) {
   nextTick(applyTsPaste)
 }
 
+async function copyCustomTimeRange() {
+  if (!customStart.value || !customEnd.value) {
+    tsPasteError.value = '请先填写完整的开始时间和结束时间'
+    return
+  }
+  const text = `${customStart.value.replace('T', ' ')} ~ ${customEnd.value.replace('T', ' ')}`
+  try {
+    await navigator.clipboard.writeText(text)
+    customTimeRangeCopied.value = true
+    setTimeout(() => { customTimeRangeCopied.value = false }, 1500)
+  } catch {
+    tsPasteError.value = '浏览器不允许访问剪贴板，请手动复制时间段'
+  }
+}
+
 // 围绕中心时刻 ± N 分钟生成时间范围并查询
 function applyCenterRange(minutes) {
   if (!tsCenter.value) return
   tsRangeMinutes.value = minutes
   const c = tsCenter.value.getTime()
-  customStart.value = toLocalInput(new Date(c - minutes * 60000))
-  customEnd.value   = toLocalInput(new Date(c + minutes * 60000))
+  customStart.value = fmtDateTimeSec(new Date(c - minutes * 60000))
+  customEnd.value   = fmtDateTimeSec(new Date(c + minutes * 60000))
   onCustomTimeChange()
 }
 
@@ -2349,13 +2409,22 @@ const loadingTraceLogs = ref(false)   // 日志列表加载中（独立状态）
 const traceResultTab   = ref('overview')  // 结果子页签：overview | logs
 const expandedSpans    = ref(new Set())   // 已展开的行索引
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 const renderedAI = computed(() =>
-  aiContent.value
+  escapeHtml(aiContent.value)
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
 )
 const renderedTplAI = computed(() =>
-  tplAiContent.value
+  escapeHtml(tplAiContent.value)
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
 )
@@ -2387,7 +2456,7 @@ function tplPct(cnt) {
   return (cnt / totalTplLogs.value * 100).toFixed(1)
 }
 function highlightWildcard(tpl) {
-  return tpl.replace(/<\*>/g, '<span class="wildcard">&lt;*&gt;</span>')
+  return escapeHtml(tpl).replace(/&lt;\*&gt;/g, '<span class="wildcard">&lt;*&gt;</span>')
 }
 
 async function loadLabelCatalog() {
@@ -2703,17 +2772,76 @@ function onTimeModeChange() {
     customEnd.value   = ''
     tsPasteInput.value = ''
     tsPasteError.value = ''
+    customTimeError.value = ''
     tsCenter.value = null
+    appliedCustomTimeKey = ''
     onParamChange()
   } else {
-    const r = todayRange()
+    const r = recentFiveMinuteRange()
     if (!customStart.value) customStart.value = r.start
     if (!customEnd.value)   customEnd.value   = r.end
+    onCustomTimeChange()
   }
 }
 
+function parseCustomTimeInput(raw) {
+  const value = String(raw || '').trim()
+  if (!value) return null
+  const hasDateAndTime = /\d{4}[-/]\d{1,2}[-/]\d{1,2}[\sT]+\d{1,2}:\d{2}/.test(value)
+  const isEpoch = /^\d{10,19}$/.test(value)
+  return hasDateAndTime || isEpoch ? parseFlexibleTime(value) : null
+}
+
+function validateCustomTimeRange() {
+  if (!customStart.value || !customEnd.value) {
+    customTimeError.value = '请填写完整的开始时间和结束时间'
+    return null
+  }
+
+  const start = parseCustomTimeInput(customStart.value)
+  if (!start) {
+    customTimeError.value = '开始时间格式无效，请输入 YYYY-MM-DD HH:mm:ss'
+    return null
+  }
+  const end = parseCustomTimeInput(customEnd.value)
+  if (!end) {
+    customTimeError.value = '结束时间格式无效，请输入 YYYY-MM-DD HH:mm:ss'
+    return null
+  }
+  if (end < start) {
+    customTimeError.value = '结束时间不能早于开始时间'
+    return null
+  }
+
+  customStart.value = fmtDateTimeSec(start)
+  customEnd.value = fmtDateTimeSec(end)
+  customTimeError.value = ''
+  return { start, end }
+}
+
+function onCustomTimeFieldPaste(field, event) {
+  const text = event?.clipboardData?.getData('text')
+  if (text == null) return
+  event.preventDefault()
+  if (field === 'start') customStart.value = text.trim()
+  else customEnd.value = text.trim()
+  nextTick(onCustomTimeFieldCommit)
+}
+
+function onCustomTimeFieldCommit() {
+  applyCustomTimeRangeIfChanged()
+}
+
 function onCustomTimeChange() {
-  if (customStart.value && customEnd.value) onParamChange()
+  applyCustomTimeRangeIfChanged()
+}
+
+function applyCustomTimeRangeIfChanged() {
+  if (!validateCustomTimeRange()) return
+  const key = `${customStart.value}|${customEnd.value}`
+  if (key === appliedCustomTimeKey) return
+  appliedCustomTimeKey = key
+  onParamChange()
 }
 
 function onKeywordInput() {
@@ -2803,7 +2931,7 @@ async function runTrace() {
 
 function switchTraceToCustom() {
   traceTimeMode.value = 'custom'
-  const r = todayRange()
+  const r = recentFiveMinuteRange(toLocalInput)
   if (!traceStart.value) traceStart.value = r.start
   if (!traceEnd.value)   traceEnd.value   = r.end
 }
@@ -2887,7 +3015,12 @@ function _applyRouteQuery() {
   const q = Object.fromEntries(params)
   if (q.service) selectedService.value = q.service
   if (q.level)   levelFilter.value = q.level
-  if (q.hours)   hours.value = String(q.hours)
+  if (q.hours) {
+    hours.value = String(q.hours)
+    timeMode.value = 'relative'
+    customStart.value = ''
+    customEnd.value = ''
+  }
   if (q.q)       keyword.value = q.q
   applyRouteLabelFilters(params)
 }
@@ -2987,6 +3120,17 @@ onBeforeUnmount(() => {
   width: 100%; background: var(--bg-hover);
   border: 1px solid var(--border); color: var(--text-primary);
   padding: 4px 6px; border-radius: 5px; font-size: 11px;
+}
+.custom-time-text {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.custom-time-text:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-dim, rgba(217,119,87,.12));
+  outline-offset: 0;
 }
 .dt-sep {
   text-align: center; font-size: 10px; color: var(--text-muted); line-height: 1;

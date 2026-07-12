@@ -13,16 +13,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from redis.asyncio.cluster import RedisCluster
 from redis.cluster import ClusterNode
 from redis.exceptions import RedisError, ResponseError
 
 from json_snapshot_store import read_json_file, write_json_file
+from auth.deps import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/redis", tags=["redis"])
+router = APIRouter(prefix="/api/redis", tags=["redis"], dependencies=[Depends(require_admin)])
 
 _DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "redis_clusters.json"
 _TOTAL_HASH_SLOTS = 16384

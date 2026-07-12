@@ -13,6 +13,8 @@ from state import (
     encrypt_password, decrypt_password,
 )
 from ssh_bridge import ssh_websocket_handler
+from auth.deps import require_permission, websocket_has_permission
+from auth.models import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,7 +30,7 @@ class CredentialRequest(BaseModel):
 
 
 @router.get("/api/ssh/credentials")
-async def list_credentials():
+async def list_credentials(_: User = require_permission("ssh", "operate")):
     """列出所有凭证（不返回密码）"""
     creds = load_credentials()
     return {"data": [
@@ -38,7 +40,7 @@ async def list_credentials():
 
 
 @router.post("/api/ssh/credentials")
-async def create_credential(body: CredentialRequest):
+async def create_credential(body: CredentialRequest, _: User = require_permission("ssh", "operate")):
     """创建凭证"""
     creds   = load_credentials()
     cred_id = f"cred_{int(time.time() * 1000)}"
@@ -54,7 +56,7 @@ async def create_credential(body: CredentialRequest):
 
 
 @router.put("/api/ssh/credentials/{cred_id}")
-async def update_credential(cred_id: str, body: CredentialRequest):
+async def update_credential(cred_id: str, body: CredentialRequest, _: User = require_permission("ssh", "operate")):
     """更新凭证"""
     creds = load_credentials()
     for c in creds:
@@ -70,7 +72,7 @@ async def update_credential(cred_id: str, body: CredentialRequest):
 
 
 @router.delete("/api/ssh/credentials/{cred_id}")
-async def delete_credential(cred_id: str):
+async def delete_credential(cred_id: str, _: User = require_permission("ssh", "operate")):
     """删除凭证"""
     creds = load_credentials()
     creds = [c for c in creds if c["id"] != cred_id]
@@ -91,6 +93,9 @@ async def delete_credential(cred_id: str):
 
 @router.websocket("/api/ws/ssh")
 async def ws_ssh(ws: WebSocket):
+    if not await websocket_has_permission(ws, "ssh", "operate"):
+        await ws.close(code=4403, reason="SSH permission required")
+        return
     """WebSocket SSH 终端代理（凭据通过首条消息传递，不暴露在 URL 中）"""
 
     def _resolve_credential(instance: str, credential_id: str = ""):

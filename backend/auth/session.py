@@ -9,6 +9,7 @@ from typing import Optional
 SESSION_TTL       = int(os.getenv("SESSION_TTL_SECONDS", "28800"))   # 8 h
 LOGIN_FAIL_MAX    = int(os.getenv("LOGIN_FAIL_MAX", "5"))
 LOGIN_FAIL_WINDOW = int(os.getenv("LOGIN_FAIL_WINDOW", "600"))
+LOGIN_IP_FAIL_MAX = int(os.getenv("LOGIN_IP_FAIL_MAX", "20"))
 
 # ─────────────────────────────────────────────────────────
 # 内存后端（fallback）
@@ -59,6 +60,13 @@ class _MemStore:
         self._data[key] = ({"v": str(val)}, item[1])
         return val
 
+    async def get(self, key: str):
+        self._gc()
+        item = self._data.get(key)
+        if item is None:
+            return None
+        return item[0].get("v")
+
     async def set(self, key: str, value: str):
         self._data[key] = ({"v": value}, self._now() + SESSION_TTL * 10)
 
@@ -76,6 +84,9 @@ class _MemStore:
 # Redis 后端（可选）
 # ─────────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "")
+ALLOW_MEMORY_FALLBACK = os.getenv("SESSION_ALLOW_MEMORY_FALLBACK", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 _backend: Optional[object] = None
 logger = logging.getLogger(__name__)
@@ -90,6 +101,8 @@ def _get_backend():
             import redis.asyncio as aioredis
             _backend = aioredis.from_url(REDIS_URL, decode_responses=True)
         except Exception:
+            if not ALLOW_MEMORY_FALLBACK:
+                raise
             _backend = _MemStore()
     else:
         _backend = _MemStore()
@@ -116,6 +129,8 @@ async def _call_backend(method: str, *args, **kwargs):
         return await getattr(backend, method)(*args, **kwargs)
     except Exception as exc:
         if isinstance(backend, _MemStore):
+            raise
+        if not ALLOW_MEMORY_FALLBACK:
             raise
         backend = _fallback_to_mem_store(method, exc)
         return await getattr(backend, method)(*args, **kwargs)
@@ -157,6 +172,18 @@ async def incr_fail(username: str) -> int:
 
 async def clear_fail(username: str):
     await _call_backend("delete", f"login_fail:{username}")
+
+
+async def incr_ip_fail(ip: str) -> int:
+    key = f"login_ip_fail:{ip or 'unknown'}"
+    count = await _call_backend("incr", key)
+    await _call_backend("expire", key, LOGIN_FAIL_WINDOW)
+    return count
+
+
+async def is_ip_limited(ip: str) -> bool:
+    value = await _call_backend("get", f"login_ip_fail:{ip or 'unknown'}")
+    return int(value or 0) >= LOGIN_IP_FAIL_MAX
 
 
 async def set_locked(user_id: str):

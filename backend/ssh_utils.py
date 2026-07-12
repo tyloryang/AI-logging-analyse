@@ -1,6 +1,7 @@
 """Shared SSH connection defaults for backend features."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
@@ -12,10 +13,17 @@ def ssh_connect_options(**kwargs: Any) -> dict[str, Any]:
     locked-down home directories before it ever tries the target host.
     """
     options: dict[str, Any] = {
-        "known_hosts": None,
         "config": None,
         "client_keys": None,
         "agent_path": None,
     }
+    strict = os.getenv("SSH_STRICT_HOST_KEY_CHECKING", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+    known_hosts = os.getenv("SSH_KNOWN_HOSTS", "").strip()
+    if not strict:
+        options["known_hosts"] = None
+    elif known_hosts:
+        options["known_hosts"] = known_hosts
     options.update(kwargs)
     return options

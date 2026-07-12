@@ -37,6 +37,16 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
           刷新
         </button>
+        <button
+          v-if="canClearHistory"
+          class="btn-ghost btn-clear"
+          @click="clearEventHistory"
+          :disabled="clearing || loading"
+          title="清理事件墙全部历史事件，当前 firing 告警会保留"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6m3 0V4h8v2M10 11v5M14 11v5"/></svg>
+          {{ clearing ? '清理中…' : '清理历史' }}
+        </button>
       </div>
     </div>
 
@@ -117,6 +127,9 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { api } from '../api/index.js'
+import { useAuthStore } from '../stores/auth.js'
+
+const authStore = useAuthStore()
 
 const SEVERITIES = [
   { key: 'critical', label: 'Critical' },
@@ -137,11 +150,13 @@ const SOURCE_LABEL = {
 
 const events      = ref([])
 const loading     = ref(false)
+const clearing    = ref(false)
 const filterSev   = ref('')
 const filterSource = ref('')
 const filterErrorKeyword = ref('')
 const hours       = ref(24)
 const activeEvent = ref(null)
+const canClearHistory = computed(() => authStore.can('events', 'operate'))
 const ERROR_KEYWORDS = [
   'NullPointerException',
   'ArrayIndexOutOfBoundException',
@@ -176,6 +191,26 @@ async function fetchEvents() {
     })
   } catch { events.value = [] }
   finally { loading.value = false }
+}
+
+async function clearEventHistory() {
+  const confirmed = window.confirm(
+    '确认清理事件墙全部历史事件？\n\n此操作不受当前时间筛选限制，清理后无法恢复；仍在 firing 的当前告警会保留。',
+  )
+  if (!confirmed) return
+
+  clearing.value = true
+  try {
+    const result = await api.clearEventHistory()
+    activeEvent.value = null
+    await fetchEvents()
+    window.alert(result.message || '历史事件已清理')
+  } catch (error) {
+    const message = typeof error === 'string' ? error : error?.message || '未知错误'
+    window.alert(`清理失败：${message}`)
+  } finally {
+    clearing.value = false
+  }
 }
 
 function fmtTime(ts) {
@@ -236,6 +271,8 @@ onUnmounted(() => clearInterval(_timer))
 }
 .btn-ghost:hover:not(:disabled) { border-color: var(--accent, #0969da); background: #eef5ff; color: var(--accent, #0969da); }
 .btn-ghost:disabled { opacity: .6; cursor: not-allowed; }
+.btn-clear { color: #cf222e; border-color: rgba(207,34,46,.28); }
+.btn-clear:hover:not(:disabled) { color: #a40e26; border-color: rgba(207,34,46,.48); background: #fff1f3; }
 
 .stats-bar { display: flex; align-items: center; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--eventwall-border); flex-shrink: 0; background: rgba(255,255,255,0.72); }
 .stat-pill { display: flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 10px; border-radius: 20px; }

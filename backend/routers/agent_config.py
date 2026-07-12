@@ -26,18 +26,26 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from json_snapshot_store import read_json_file, write_json_file
+from auth.deps import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/agent-config", tags=["agent-config"])
+router = APIRouter(prefix="/api/agent-config", tags=["agent-config"], dependencies=[Depends(require_admin)])
 
 # 配置文件路径
 _CONFIG_FILE = Path("./data/agent_config.json")
 _ALLOWED_MCP_TYPES = {"http", "sse", "stdio", "streamable_http"}
 _ALLOWED_RISK_LEVELS = {"read", "write_low", "write_high", "destructive"}
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_INSTALLED_SKILL_ROOTS = (
+    _PROJECT_ROOT / ".agents" / "skills",
+    _PROJECT_ROOT / ".claude" / "skills",
+)
+_SUPERPOWERS_MANIFEST = _PROJECT_ROOT / ".agents" / "skills" / ".superpowers-manifest.json"
+_GITHUB_HIGH_STAR_MANIFEST = _PROJECT_ROOT / ".agents" / "skills" / ".github-high-star-manifest.json"
 
 # ── 默认配置 ────────────────────────────────────────────────────────────────
 
@@ -209,6 +217,18 @@ def _serialize_model_public(model: dict) -> dict:
 
 def _serialize_models_public(models: list[dict]) -> list[dict]:
     return [_serialize_model_public(model) for model in models]
+
+
+def _serialize_sa_public(items: list[dict]) -> list[dict]:
+    result = _deepcopy_json(items)
+    for item in result:
+        token = str(item.get("token", "")).strip()
+        item["token_set"] = bool(token)
+        if token:
+            item["token"] = _mask_secret(token)
+        else:
+            item.pop("token", None)
+    return result
 
 
 def _maybe_clear_legacy_seed_models(cfg: dict) -> bool:
@@ -432,6 +452,193 @@ def _migrate_skill_fields(skills: list[dict]) -> bool:
     return mutated
 
 
+def _skill_frontmatter(skill_file: Path) -> dict[str, str]:
+    """Read the small YAML frontmatter subset used by SKILL.md files."""
+    try:
+        text = skill_file.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return {}
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+
+    result: dict[str, str] = {}
+    current_key = ""
+    folded: list[str] = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            if current_key and folded:
+                result[current_key] = " ".join(folded).strip()
+            break
+        if current_key and (line.startswith(" ") or line.startswith("\t")):
+            folded.append(line.strip())
+            continue
+        if current_key and folded:
+            result[current_key] = " ".join(folded).strip()
+        current_key = ""
+        folded = []
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key not in {"name", "description"}:
+            continue
+        if value in {">", "|", ">-", "|-"}:
+            current_key = key
+            continue
+        result[key] = value.strip('"\'')
+    return result
+
+
+def _load_json_manifest(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _load_superpowers_manifest() -> dict:
+    return _load_json_manifest(_SUPERPOWERS_MANIFEST)
+
+
+def _load_installed_skill_sources() -> dict[str, dict]:
+    """Build a skill-name lookup from the source manifests beside installed skills."""
+    sources: dict[str, dict] = {}
+    superpowers = _load_superpowers_manifest()
+    for skill in superpowers.get("skills", []):
+        name = str(skill).strip()
+        if not name:
+            continue
+        sources[name.lower()] = {
+            "source": "Superpowers",
+            "source_kind": "superpowers",
+            "source_repo": str(superpowers.get("repository", "")),
+            "source_ref": str(superpowers.get("ref", "")),
+            "source_commit": str(superpowers.get("commit", "")),
+            "source_stars": 0,
+            "source_license": "",
+            "source_checked_at": str(superpowers.get("installed_at", "")),
+            "icon": "⚡",
+        }
+
+    github_manifest = _load_json_manifest(_GITHUB_HIGH_STAR_MANIFEST)
+    checked_at = str(github_manifest.get("stars_checked_at", ""))
+    for source in github_manifest.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        source_meta = {
+            "source": str(source.get("name", "GitHub")),
+            "source_kind": "github-high-star",
+            "source_repo": str(source.get("repository", "")),
+            "source_ref": str(source.get("ref", "")),
+            "source_commit": str(source.get("commit", "")),
+            "source_stars": int(source.get("stars") or 0),
+            "source_license": str(source.get("license", "")),
+            "source_checked_at": checked_at,
+            "icon": str(source.get("icon", "★")),
+        }
+        for skill in source.get("skills", []):
+            name = str(skill.get("name", "") if isinstance(skill, dict) else skill).strip()
+            if name:
+                sources[name.lower()] = source_meta
+    return sources
+
+
+def _discover_installed_skills() -> list[dict]:
+    """Discover project-local SKILL.md packages for the Agent Config UI."""
+    source_by_name = _load_installed_skill_sources()
+    discovered: dict[str, dict] = {}
+
+    for root in _INSTALLED_SKILL_ROOTS:
+        if not root.is_dir():
+            continue
+        for skill_dir in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda p: p.name.lower()):
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.is_file():
+                continue
+            meta = _skill_frontmatter(skill_file)
+            skill_name = str(meta.get("name") or skill_dir.name).strip()
+            if not skill_name:
+                continue
+            key = skill_name.lower()
+            # Prefer the Codex project directory when the Claude mirror has the same skill.
+            if key in discovered:
+                continue
+            source_meta = source_by_name.get(skill_dir.name.lower()) or source_by_name.get(key) or {}
+            source_name = str(source_meta.get("source", "Project"))
+            source_kind = str(source_meta.get("source_kind", "project"))
+            relative_path = skill_dir.relative_to(_PROJECT_ROOT).as_posix()
+            tags = ["Installed", "SKILL.md"]
+            if source_kind == "github-high-star":
+                tags[:0] = [source_name, "GitHub High-Star"]
+            elif source_kind == "superpowers":
+                tags.insert(0, "Superpowers")
+            discovered[key] = {
+                "id": f"installed:{skill_name}",
+                "icon": str(source_meta.get("icon", "🧩")),
+                "name": skill_name,
+                "desc": str(meta.get("description") or "Project-local installed skill").strip(),
+                "tags": tags,
+                "enabled": True,
+                "tool_name": "",
+                "installed": True,
+                "installed_path": relative_path,
+                "source": source_name,
+                "source_kind": source_kind,
+                "source_repo": str(source_meta.get("source_repo", "")),
+                "source_ref": str(source_meta.get("source_ref", "")),
+                "source_commit": str(source_meta.get("source_commit", "")),
+                "source_stars": int(source_meta.get("source_stars") or 0),
+                "source_license": str(source_meta.get("source_license", "")),
+                "source_checked_at": str(source_meta.get("source_checked_at", "")),
+            }
+    return list(discovered.values())
+
+
+def _sync_installed_skills(skills: list[dict]) -> bool:
+    """Merge discovered file skills into persisted UI records without resetting toggles."""
+    mutated = False
+    discovered = _discover_installed_skills()
+    discovered_paths = {item["installed_path"] for item in discovered}
+    existing_by_path = {
+        str(item.get("installed_path", "")): item
+        for item in skills
+        if isinstance(item, dict) and item.get("installed_path")
+    }
+
+    for item in discovered:
+        existing = existing_by_path.get(item["installed_path"])
+        if existing is None:
+            skills.append(item)
+            mutated = True
+            continue
+        preserved = {
+            "enabled": bool(existing.get("enabled", True)),
+            "tool_name": str(existing.get("tool_name", "")),
+        }
+        for key, value in item.items():
+            if key in preserved:
+                continue
+            if existing.get(key) != value:
+                existing[key] = value
+                mutated = True
+        for key, value in preserved.items():
+            if existing.get(key) != value:
+                existing[key] = value
+                mutated = True
+
+    for item in skills:
+        if not isinstance(item, dict) or not item.get("installed_path"):
+            continue
+        present = str(item.get("installed_path")) in discovered_paths
+        if item.get("installed") is not present:
+            item["installed"] = present
+            mutated = True
+    return mutated
+
+
 def _load() -> dict:
     data = read_json_file(_CONFIG_FILE, default=None, ensure_parent=True)
     if isinstance(data, dict):
@@ -471,7 +678,9 @@ def _load() -> dict:
 
             # 迁移：MCP 加 auto_callable + risk，Skill 加 tool_name
             mutated = _migrate_mcp_fields(data.setdefault("mcps", [])) or mutated
-            mutated = _migrate_skill_fields(data.setdefault("skills", [])) or mutated
+            skills = data.setdefault("skills", [])
+            mutated = _migrate_skill_fields(skills) or mutated
+            mutated = _sync_installed_skills(skills) or mutated
 
             mutated = _maybe_clear_legacy_seed_models(data) or mutated
             mutated = _ensure_models(data) or mutated
@@ -482,7 +691,9 @@ def _load() -> dict:
         except Exception as e:
             logger.warning("[agent_config] 配置文件读取失败，使用默认值: %s", e)
     default_cfg = _deepcopy_json(_DEFAULT_CONFIG)
+    _sync_installed_skills(default_cfg.setdefault("skills", []))
     _ensure_models(default_cfg)
+    _save(default_cfg)
     return default_cfg
 
 
@@ -530,6 +741,7 @@ def _save(data: dict) -> None:
 async def get_config():
     cfg = _deepcopy_json(_load())
     cfg["models"] = _serialize_models_public(cfg.get("models", []))
+    cfg["sa"] = _serialize_sa_public(cfg.get("sa", []))
     return cfg
 
 
@@ -1168,7 +1380,7 @@ class SaToggle(BaseModel):
 @router.get("/sa")
 async def list_sa():
     cfg = _load()
-    return {"data": cfg.get("sa", [])}
+    return {"data": _serialize_sa_public(cfg.get("sa", []))}
 
 
 @router.post("/sa")
@@ -1185,7 +1397,7 @@ async def add_sa(body: SaCreate):
     }
     sas.append(new_sa)
     _save(cfg)
-    return new_sa
+    return _serialize_sa_public([new_sa])[0]
 
 
 @router.put("/sa/{sa_id}")
