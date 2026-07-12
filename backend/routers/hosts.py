@@ -1641,11 +1641,34 @@ _JAVA_TOOLS_REMOTE_DIR = "/tmp/aiops-java-tools"
 _JAVA_TOOL_PKG_DIR = REPORTS_DIR / "java_tool_packages"
 _JAVA_TOOL_PKG_DIR.mkdir(exist_ok=True)
 _JAVA_TOOL_MANIFEST = _JAVA_TOOL_PKG_DIR / "manifest.json"
+# 内置工具包目录：随代码发布，无需上传/外网即可推送到目标机使用。
+# arthas-boot.jar 与 async-profiler 体积小已随仓库分发；JDK 过大，把 jdk.tar.gz
+# 放到此目录即成为内置默认（见该目录 README）。
+_BUILTIN_TOOL_DIR = Path(__file__).parent.parent / "java_tools_builtin"
+_BUILTIN_TOOL_DIR.mkdir(exist_ok=True)
 _JAVA_TOOL_TYPES = {
-    "java":       {"label": "JDK (java)",                "remote_name": "jdk.tar.gz",            "default_url": "目标机 PATH/JAVA_HOME 自动探测", "accept": ".tar.gz"},
-    "arthas":     {"label": "Arthas",                    "remote_name": "arthas-boot.jar",       "default_url": "https://arthas.aliyun.com/arthas-boot.jar", "accept": ".jar"},
-    "flamegraph": {"label": "火焰图 (async-profiler)",   "remote_name": "async-profiler.tar.gz", "default_url": "github async-profiler v3.0", "accept": ".tar.gz"},
+    "java":       {"label": "JDK (java)",                "remote_name": "jdk.tar.gz",            "builtin_name": "jdk.tar.gz",                        "default_url": "目标机 PATH/JAVA_HOME 自动探测", "accept": ".tar.gz"},
+    "arthas":     {"label": "Arthas",                    "remote_name": "arthas-boot.jar",       "builtin_name": "arthas-boot.jar",                   "default_url": "https://arthas.aliyun.com/arthas-boot.jar", "accept": ".jar"},
+    "flamegraph": {"label": "火焰图 (async-profiler)",   "remote_name": "async-profiler.tar.gz", "builtin_name": "async-profiler-linux-x64.tar.gz",   "default_url": "github async-profiler v3.0 (linux-x64)", "accept": ".tar.gz"},
 }
+
+
+def _resolve_tool_local(tool_type: str, manifest: dict) -> tuple[Path | None, str]:
+    """解析某工具实际要推送的本地包：优先用户上传，其次内置，都没有则 None。
+
+    返回 (本地路径, 来源)，来源为 'uploaded' | 'builtin' | 'none'。
+    """
+    entry = (manifest or {}).get(tool_type) or {}
+    if entry.get("filename"):
+        p = _JAVA_TOOL_PKG_DIR / entry["filename"]
+        if p.exists():
+            return p, "uploaded"
+    builtin_name = _JAVA_TOOL_TYPES[tool_type].get("builtin_name")
+    if builtin_name:
+        bp = _BUILTIN_TOOL_DIR / builtin_name
+        if bp.exists():
+            return bp, "builtin"
+    return None, "none"
 
 
 def _load_java_tool_manifest() -> dict:
@@ -1668,17 +1691,16 @@ async def _push_java_tool_packages(conn) -> list[str]:
     未上传对应包时静默跳过，回退到原有联网下载逻辑。
     """
     manifest = _load_java_tool_manifest()
-    if not manifest:
+    # 解析每类工具实际要推送的包（上传优先，其次内置）
+    resolved = {tt: _resolve_tool_local(tt, manifest) for tt in _JAVA_TOOL_TYPES}
+    if not any(local for local, _ in resolved.values()):
         return []
     await conn.run(f"mkdir -p {_JAVA_TOOLS_REMOTE_DIR}", check=False)
     pushed: list[str] = []
     async with conn.start_sftp_client() as sftp:
         for tool_type, meta in _JAVA_TOOL_TYPES.items():
-            entry = manifest.get(tool_type)
-            if not entry or not entry.get("filename"):
-                continue
-            local = _JAVA_TOOL_PKG_DIR / entry["filename"]
-            if not local.exists():
+            local, _source = resolved[tool_type]
+            if not local:
                 continue
             remote = f"{_JAVA_TOOLS_REMOTE_DIR}/{meta['remote_name']}"
             try:
@@ -2184,6 +2206,12 @@ async def list_java_tool_packages():
     tools = []
     for tool_type, meta in _JAVA_TOOL_TYPES.items():
         entry = manifest.get(tool_type) or {}
+        builtin_name = meta.get("builtin_name")
+        builtin_path = _BUILTIN_TOOL_DIR / builtin_name if builtin_name else None
+        builtin_ok = bool(builtin_path and builtin_path.exists())
+        builtin_size = builtin_path.stat().st_size if builtin_ok else 0
+        # 生效来源：上传优先，其次内置，都无则联网下载
+        source = "uploaded" if entry.get("filename") else ("builtin" if builtin_ok else "download")
         tools.append({
             "type": tool_type,
             "label": meta["label"],
@@ -2193,6 +2221,9 @@ async def list_java_tool_packages():
             "filename": entry.get("filename", ""),
             "size": entry.get("size", 0),
             "uploaded_at": entry.get("uploaded_at", ""),
+            "builtin": builtin_ok,
+            "builtin_size": builtin_size,
+            "source": source,
         })
     return {"data": tools}
 

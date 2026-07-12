@@ -37,9 +37,14 @@
         <div v-for="t in javaTools" :key="t.type" class="tool-card">
           <div class="tool-card-head">
             <strong>{{ t.label }}</strong>
-            <span class="tool-badge" :class="t.uploaded ? 'up' : 'def'">{{ t.uploaded ? '已上传' : '内置默认' }}</span>
+            <span class="tool-badge" :class="{ up: t.source==='uploaded', bi: t.source==='builtin', def: t.source==='download' }">
+              {{ t.source==='uploaded' ? '已上传' : (t.source==='builtin' ? '已内置' : '联网下载') }}
+            </span>
           </div>
-          <div class="tool-default mono" :title="t.default_url">默认：{{ t.default_url }}</div>
+          <div class="tool-default mono" :title="t.default_url">
+            <template v-if="t.builtin && t.source!=='uploaded'">内置包已随平台分发（{{ (t.builtin_size/1048576).toFixed(1) }} MB），无需外网</template>
+            <template v-else>默认：{{ t.default_url }}</template>
+          </div>
           <div v-if="t.uploaded" class="tool-file">
             <span class="mono" :title="t.filename">{{ t.filename.replace(t.type + '__', '') }}</span>
             <span class="tool-size">{{ (t.size / 1048576).toFixed(1) }} MB</span>
@@ -431,6 +436,7 @@ onMounted(() => { loadHosts(); loadJavaTools() })
 .tool-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .tool-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 10px; font-weight: 600; }
 .tool-badge.up  { background: rgba(26,127,55,.12); color: var(--success); }
+.tool-badge.bi  { background: rgba(79,140,255,.14); color: var(--accent, #4f8cff); }
 .tool-badge.def { background: var(--bg-input); color: var(--text-muted); }
 .tool-default { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-file { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-secondary); }
