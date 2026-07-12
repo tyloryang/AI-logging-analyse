@@ -924,6 +924,11 @@
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, streamSSE } from '../api/index.js'
+import {
+  CONTEXT_INITIAL_SIDE,
+  CONTEXT_MAX_SIDE,
+  nextContextCount,
+} from '../utils/logLoading.mjs'
 
 const router = useRouter()
 
@@ -1706,10 +1711,8 @@ const copiedContextLineKey = ref('')
 let contextSearchConditionId = 0
 
 // 上下文窗口大小：初始 250 前 + 250 后；每次滚动到边界扩 +200，最大 500（后端 API 限制）
-const CONTEXT_INITIAL_BEFORE = 250
-const CONTEXT_INITIAL_AFTER  = 250
-const CONTEXT_PAGE_STEP      = 200
-const CONTEXT_MAX_SIDE       = 500   // 后端 /api/logs/context 的 le=500
+const CONTEXT_INITIAL_BEFORE = CONTEXT_INITIAL_SIDE
+const CONTEXT_INITIAL_AFTER  = CONTEXT_INITIAL_SIDE
 const contextWantedBefore = ref(CONTEXT_INITIAL_BEFORE)
 const contextWantedAfter  = ref(CONTEXT_INITIAL_AFTER)
 const loadingContextBefore = ref(false)
@@ -2319,7 +2322,7 @@ function loadMoreContextBefore() {
     contextBeforeAtLimit.value = true
     return
   }
-  contextWantedBefore.value = Math.min(contextWantedBefore.value + CONTEXT_PAGE_STEP, CONTEXT_MAX_SIDE)
+  contextWantedBefore.value = nextContextCount(contextWantedBefore.value)
   loadLogContext(detailLog.value, { direction: 'before' })
 }
 
@@ -2330,7 +2333,7 @@ function loadMoreContextAfter() {
     contextAfterAtLimit.value = true
     return
   }
-  contextWantedAfter.value = Math.min(contextWantedAfter.value + CONTEXT_PAGE_STEP, CONTEXT_MAX_SIDE)
+  contextWantedAfter.value = nextContextCount(contextWantedAfter.value)
   loadLogContext(detailLog.value, { direction: 'after' })
 }
 
@@ -3054,17 +3057,21 @@ onMounted(async () => {
   if (selectedService.value && !selectedServices.value.length) {
     selectedServices.value.push(selectedService.value)
   }
-  await loadLabelCatalog()
+  // 日志是首屏主内容：立即发起，不再串行等待标签目录和错误统计。
+  loadLogs()
+  const catalogPromise = loadLabelCatalog()
+  const servicesPromise = api.getServices({ with_errors: false }).catch(() => null)
+
+  await catalogPromise
   await _applyServiceDrilldown()
-  // 预取服务名（供 chip datalist 提示）
+  // 服务名只走快速路径，不在首屏计算全量错误数。
   try {
-    const r = await api.getServices({})
+    const r = await servicesPromise
     const data = r?.data ?? r
     if (Array.isArray(data)) {
       allServicesList.value = data.map(s => typeof s === 'string' ? s : (s.name || s.service || '')).filter(Boolean)
     }
   } catch {}
-  loadLogs()
 })
 
 onBeforeUnmount(() => {

@@ -368,6 +368,9 @@ export const api = {
   rcaConfirm:      (id, data) => http.post(`/rca/results/${id}/confirm`, data),
   rcaExpertCases:  (limit = 50) => http.get('/rca/expert-cases', { params: { limit } }),
   rcaFeedback:     ()      => http.get('/rca/feedback'),
+  rcaDependencies: ()      => http.get('/rca/dependencies'),
+  rcaSaveDependency: (data) => http.post('/rca/dependencies', data),
+  rcaDeleteDependency: (id) => http.delete(`/rca/dependencies/${id}`),
   rcaAnomalies:    (limit) => http.get('/rca/anomalies', { params: { limit } }),
   rcaDetect:       ()      => http.post('/rca/anomalies/detect'),
   // 告警中心

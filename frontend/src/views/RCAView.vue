@@ -106,6 +106,27 @@
                 <span>人工确认</span>
                 <b>{{ confirmationLabel(selected.human_confirmation?.status) }}</b>
               </div>
+              <div class="mini-stat" :class="{ 'deadline-missed': selected.sla?.facts_deadline_met === false }">
+                <span>结构化事实</span>
+                <b>{{ selected.sla?.facts_ready_ms != null ? `${selected.sla.facts_ready_ms}ms` : '采集中' }}</b>
+              </div>
+              <div class="mini-stat" :class="{ 'deadline-missed': selected.sla?.analysis_deadline_met === false }">
+                <span>RCA 结论</span>
+                <b>{{ selected.sla?.analysis_ready_ms != null ? `${selected.sla.analysis_ready_ms}ms` : '分析中' }}</b>
+              </div>
+            </div>
+
+            <div v-if="collectorEntries.length" class="collector-strip">
+              <div
+                v-for="collector in collectorEntries"
+                :key="collector.name"
+                class="collector-item"
+                :class="collector.state.status"
+              >
+                <span>{{ collector.name }}</span>
+                <b>{{ collectorStatusLabel(collector.state.status) }}</b>
+                <small v-if="collector.state.latency_ms != null">{{ collector.state.latency_ms }}ms</small>
+              </div>
             </div>
 
             <div class="timeline">
@@ -144,6 +165,9 @@
               >
                 <div class="hypothesis-top">
                   <span class="validator-chip">{{ hypothesis.agent_name }}</span>
+                  <span class="confidence-chip" :class="hypothesis.confidence || 'low'">
+                    {{ confidenceLabel(hypothesis.confidence) }}
+                  </span>
                   <span class="score-chip" :class="scoreClass(hypothesis.score)">{{ hypothesis.score }} 分</span>
                 </div>
 
@@ -198,7 +222,32 @@
                 <div class="context-title">{{ section.title || section.key }}</div>
                 <div class="context-summary">{{ section.summary || '无摘要' }}</div>
 
-                <div v-if="section.key === 'similar_cases'" class="case-hit-list">
+                <div v-if="section.key === 'slowlog'" class="candidate-list">
+                  <article v-for="candidate in section.candidates || []" :key="candidate.entry_id" class="candidate-item">
+                    <div class="candidate-head">
+                      <strong>#{{ candidate.rank }} · {{ confidenceLabel(candidate.confidence) }}</strong>
+                      <span class="score-chip" :class="scoreClass(candidate.score)">{{ candidate.score }} 分</span>
+                    </div>
+                    <div class="candidate-meta mono">{{ candidate.time }} · {{ candidate.query_time }}s · {{ candidate.user || '--' }}@{{ candidate.host || '--' }}</div>
+                    <code>{{ candidate.sql_fingerprint }}</code>
+                    <div v-for="item in candidate.evidence || []" :key="item.rule" class="context-line">
+                      {{ item.detail }}（{{ item.score > 0 ? '+' : '' }}{{ item.score }}分）
+                    </div>
+                  </article>
+                  <div v-if="!(section.candidates || []).length" class="empty-inline">没有可归因的慢 SQL 候选。</div>
+                </div>
+
+                <div v-else-if="section.key === 'kubernetes'" class="k8s-evidence">
+                  <div v-for="pod in section.pods || []" :key="pod.name" class="context-line">
+                    <b>{{ pod.name }}</b> · {{ pod.phase }} · 重启 {{ pod.restarts }} 次 · CPU {{ pod.cpu_usage_cores ?? '--' }} · 内存 {{ pod.memory_usage_bytes ?? '--' }}
+                    <span v-if="pod.last_restart_reason"> · 最近 {{ pod.last_restart_reason }} / {{ pod.last_restart_time }}</span>
+                  </div>
+                  <div v-for="(event, idx) in section.events || []" :key="`${event.object_name}-${event.reason}-${idx}`" class="context-line event-line" :class="event.type?.toLowerCase()">
+                    {{ event.type }} · {{ event.reason }} · {{ event.object_name }} · {{ event.message }}
+                  </div>
+                </div>
+
+                <div v-else-if="section.key === 'similar_cases'" class="case-hit-list">
                   <div v-for="caseItem in section.items || []" :key="caseItem.id" class="case-hit">
                     <div class="case-hit-head">
                       <strong>{{ caseItem.title }}</strong>
@@ -232,6 +281,86 @@
       </div>
 
       <aside class="rca-side">
+        <section class="rca-panel side-panel dependency-panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Service Dependency</div>
+              <h3>服务 → MySQL 依赖</h3>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click="resetDependencyForm">新建</button>
+          </div>
+
+          <div class="dependency-form">
+            <label class="field">
+              <span>集群</span>
+              <input v-model="dependencyForm.cluster" list="rca-cluster-options" placeholder="例如 k8s-direct" />
+              <datalist id="rca-cluster-options">
+                <option v-for="cluster in k8sClusters" :key="cluster.id" :value="cluster.name || cluster.id" />
+              </datalist>
+            </label>
+            <label class="field">
+              <span>Namespace</span>
+              <input v-model="dependencyForm.namespace" placeholder="analyse" />
+            </label>
+            <label class="field">
+              <span>服务</span>
+              <input v-model="dependencyForm.service" placeholder="analyse" />
+            </label>
+            <label class="field">
+              <span>MySQL 目标</span>
+              <input v-model="dependencyForm.target" placeholder="mysql-analyse" />
+            </label>
+            <label class="field field-full">
+              <span>慢日志配置</span>
+              <select v-model="dependencyForm.slowlog_config_id">
+                <option value="">请选择</option>
+                <option v-for="config in slowlogConfigs" :key="config.id" :value="config.id">
+                  {{ config.name }} · {{ config.host_ip }}
+                </option>
+              </select>
+            </label>
+            <label class="field">
+              <span>来源</span>
+              <select v-model="dependencyForm.source">
+                <option value="pod_runtime">Pod 运行时</option>
+                <option value="config_center">配置中心</option>
+                <option value="cmdb">CMDB</option>
+                <option value="code">代码配置</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>来源主机</span>
+              <input v-model="dependencyForm.source_host" placeholder="慢日志 User@Host 中的主机" />
+            </label>
+            <label class="field">
+              <span>数据库用户</span>
+              <input v-model="dependencyForm.db_user" placeholder="analyse_user" />
+            </label>
+            <label class="field field-full">
+              <span>SQL 特征</span>
+              <textarea v-model="dependencyForm.sql_keywords_text" rows="2" placeholder="表名、关键字段或 SQL 特征，逗号/换行分隔" />
+            </label>
+          </div>
+
+          <div v-if="dependencyClusterWarning" class="dependency-warning">{{ dependencyClusterWarning }}</div>
+          <div v-if="dependencyError" class="dependency-error">{{ dependencyError }}</div>
+          <div v-if="dependencyNotice" class="dependency-notice">{{ dependencyNotice }}</div>
+          <button class="btn btn-primary btn-sm dependency-save" :disabled="dependencySaving" @click="saveDependency">
+            {{ dependencySaving ? '保存中...' : (dependencyForm.id ? '更新依赖' : '保存依赖') }}
+          </button>
+
+          <div class="dependency-list">
+            <article v-for="item in dependencies" :key="item.id" class="dependency-item">
+              <button class="dependency-edit" @click="editDependency(item)">
+                <strong>{{ item.service }} → {{ item.target }}</strong>
+                <span>{{ item.cluster || '*' }}/{{ item.namespace || '*' }} · {{ item.source }}</span>
+              </button>
+              <button class="btn btn-ghost btn-sm" @click="deleteDependency(item)">删除</button>
+            </article>
+            <div v-if="!dependencies.length" class="empty-inline">尚未配置服务依赖。</div>
+          </div>
+        </section>
+
         <section class="rca-panel side-panel">
           <div class="panel-head">
             <div>
@@ -312,6 +441,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api/index.js'
+import {
+  buildDependencyPayload,
+  clusterNameWarning,
+  collectorStatusLabel,
+  confidenceLabel,
+  dependencyValidationError,
+  isRcaRunning,
+  rcaStatusLabel,
+} from '../utils/rcaPresentation.mjs'
 
 const route = useRoute()
 const router = useRouter()
@@ -325,31 +463,39 @@ const loadingHistory = ref(false)
 const launching = ref(false)
 const confirming = ref(false)
 const confirmNote = ref('')
+const dependencies = ref([])
+const slowlogConfigs = ref([])
+const k8sClusters = ref([])
+const dependencySaving = ref(false)
+const dependencyError = ref('')
+const dependencyNotice = ref('')
+
+const emptyDependencyForm = () => ({
+  id: '', cluster: '', namespace: '', service: '', target: '', source: 'cmdb',
+  slowlog_config_id: '', source_host: '', db_user: '', sql_keywords_text: '',
+})
+const dependencyForm = ref(emptyDependencyForm())
 
 let pollTimer = null
 
 const topHypothesis = computed(() => selected.value?.hypotheses?.[0] || null)
+const collectorEntries = computed(() => Object.entries(selected.value?.collector_states || {}).map(([name, state]) => ({ name, state })))
+const dependencyClusterWarning = computed(() => clusterNameWarning(dependencyForm.value.cluster, k8sClusters.value))
 
 const contextSections = computed(() => {
   const context = selected.value?.context || {}
   return Object.entries(context)
+    .filter(([key]) => !key.startsWith('_'))
     .filter(([, value]) => value && (value.summary || (Array.isArray(value.items) && value.items.length)))
     .map(([key, value]) => ({ key, ...value }))
 })
 
 function isRunning(status) {
-  return ['pending', 'running'].includes(status)
+  return isRcaRunning(status)
 }
 
 function statusLabel(status) {
-  return {
-    pending: '等待中',
-    running: '分析中',
-    awaiting_confirmation: '待确认',
-    confirmed: '已确认',
-    needs_review: '待复核',
-    error: '失败',
-  }[status] || status || '--'
+  return rcaStatusLabel(status)
 }
 
 function confirmationLabel(status) {
@@ -370,8 +516,8 @@ function sourceLabel(sourceType) {
 }
 
 function scoreClass(score) {
-  if (score >= 75) return 'high'
-  if (score >= 50) return 'mid'
+  if (score >= 80) return 'high'
+  if (score >= 55) return 'mid'
   return 'low'
 }
 
@@ -461,8 +607,63 @@ async function loadFeedback() {
   feedback.value = await api.rcaFeedback()
 }
 
+async function loadDependencyConfig() {
+  const [dependencyResult, slowlogResult, clusterResult] = await Promise.all([
+    api.rcaDependencies().catch(() => ({ data: [] })),
+    api.slowlogConfigs().catch(() => ({ data: [] })),
+    api.k8sClusters().catch(() => []),
+  ])
+  dependencies.value = dependencyResult.data || []
+  slowlogConfigs.value = slowlogResult.data || []
+  k8sClusters.value = Array.isArray(clusterResult) ? clusterResult : []
+}
+
+function resetDependencyForm() {
+  dependencyForm.value = emptyDependencyForm()
+  dependencyError.value = ''
+  dependencyNotice.value = ''
+}
+
+function editDependency(item) {
+  dependencyForm.value = {
+    ...emptyDependencyForm(),
+    ...item,
+    sql_keywords_text: (item.sql_keywords || []).join(', '),
+  }
+  dependencyError.value = ''
+  dependencyNotice.value = ''
+}
+
+async function saveDependency() {
+  dependencyError.value = dependencyValidationError(dependencyForm.value)
+  dependencyNotice.value = ''
+  if (dependencyError.value) return
+  dependencySaving.value = true
+  try {
+    const result = await api.rcaSaveDependency(buildDependencyPayload(dependencyForm.value))
+    dependencyNotice.value = `已保存 ${result.data?.service || dependencyForm.value.service} → ${result.data?.target || dependencyForm.value.target}`
+    await loadDependencyConfig()
+    dependencyForm.value = emptyDependencyForm()
+  } catch (error) {
+    dependencyError.value = typeof error === 'string' ? error : '依赖保存失败'
+  } finally {
+    dependencySaving.value = false
+  }
+}
+
+async function deleteDependency(item) {
+  if (!window.confirm(`确认删除 ${item.service} → ${item.target} 吗？`)) return
+  try {
+    await api.rcaDeleteDependency(item.id)
+    await loadDependencyConfig()
+    if (dependencyForm.value.id === item.id) resetDependencyForm()
+  } catch (error) {
+    dependencyError.value = typeof error === 'string' ? error : '依赖删除失败'
+  }
+}
+
 async function refreshAll() {
-  await Promise.all([loadHistory(true), loadExpertCases(), loadFeedback()])
+  await Promise.all([loadHistory(true), loadExpertCases(), loadFeedback(), loadDependencyConfig()])
 }
 
 async function openRecord(id) {
@@ -828,6 +1029,36 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
 }
 
+.mini-stat.deadline-missed {
+  border-color: rgba(248,81,73,.45);
+}
+
+.collector-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.collector-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  font-size: 11px;
+}
+
+.collector-item span { overflow: hidden; text-overflow: ellipsis; }
+.collector-item small { grid-column: 1 / -1; color: var(--text-muted); }
+.collector-item.completed b { color: var(--success); }
+.collector-item.collecting b { color: var(--accent); }
+.collector-item.timeout b,
+.collector-item.unavailable b { color: var(--error); }
+.collector-item.unconfigured b { color: var(--warning); }
+
 .timeline {
   margin-top: 16px;
   display: flex;
@@ -1095,6 +1326,86 @@ onBeforeUnmount(() => {
 .empty-panel {
   min-height: 240px;
 }
+
+.confidence-chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.confidence-chip.high { background: rgba(26,127,55,.12); color: var(--success); }
+.confidence-chip.medium { background: rgba(210,153,34,.12); color: var(--warning); }
+.confidence-chip.low { background: rgba(248,81,73,.12); color: var(--error); }
+
+.candidate-list,
+.k8s-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.candidate-item {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
+}
+
+.candidate-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.candidate-meta { margin: 6px 0; color: var(--text-muted); font-size: 11px; }
+.candidate-item code { display: block; margin-bottom: 8px; white-space: normal; word-break: break-word; }
+.event-line.warning { border-left: 3px solid var(--warning); padding-left: 8px; }
+
+.dependency-panel { overflow: visible; }
+.dependency-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.dependency-form .field-full { grid-column: 1 / -1; margin-top: 0; }
+.dependency-form input,
+.dependency-form select,
+.dependency-form textarea { min-width: 0; font-size: 12px; }
+.dependency-warning,
+.dependency-error,
+.dependency-notice {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.dependency-warning { color: var(--warning); background: rgba(210,153,34,.1); }
+.dependency-error { color: var(--error); background: rgba(248,81,73,.1); }
+.dependency-notice { color: var(--success); background: rgba(26,127,55,.1); }
+.dependency-save { width: 100%; margin-top: 10px; }
+.dependency-list { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.dependency-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  padding: 7px;
+  background: var(--bg-surface);
+}
+.dependency-edit {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.dependency-edit strong,
+.dependency-edit span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dependency-edit span { color: var(--text-muted); font-size: 10px; }
 
 @media (max-width: 1280px) {
   .rca-layout {

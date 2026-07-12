@@ -139,6 +139,44 @@ class RCAConfirmRequest(BaseModel):
     resolve_alert: bool = False
 
 
+class ServiceDependencyRequest(BaseModel):
+    id: str = ""
+    cluster: str = ""
+    namespace: str = ""
+    service: str
+    dependency_type: str = "mysql"
+    target: str
+    source: str = "cmdb"
+    slowlog_config_id: str = ""
+    source_host: str = ""
+    db_user: str = ""
+    sql_keywords: list[str] = Field(default_factory=list)
+
+
+@router.get("/api/rca/dependencies")
+async def list_service_dependencies():
+    from services.service_dependencies import load_dependencies
+
+    return {"data": load_dependencies()}
+
+
+@router.post("/api/rca/dependencies")
+async def upsert_service_dependency(body: ServiceDependencyRequest):
+    from services.service_dependencies import upsert_dependency
+
+    payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
+    return {"ok": True, "data": upsert_dependency(payload)}
+
+
+@router.delete("/api/rca/dependencies/{dependency_id}")
+async def remove_service_dependency(dependency_id: str):
+    from services.service_dependencies import delete_dependency
+
+    if not delete_dependency(dependency_id):
+        raise HTTPException(status_code=404, detail="service dependency not found")
+    return {"ok": True}
+
+
 @router.post("/api/rca/analyze/stream")
 async def rca_stream(body: RCARequest):
     """Compatibility stream endpoint. The new UI uses async trigger + polling."""

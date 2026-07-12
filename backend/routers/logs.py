@@ -430,11 +430,12 @@ async def get_log_context(
         return await loki.query_log_context(**params)
 
     last_error: Exception | None = None
-    # 1) 正常查询 → 2) 降级：去 line_prefix、忽略自定义窗口放宽到 24h
-    for attempt, overrides in enumerate((
-        {},
-        {"line_prefix": None, "start_ns": None, "end_ns": None, "hours": max(hours, 24.0)},
-    )):
+    # 明确指定时间窗口时，失败后直接返回锚点，禁止扩大到 24h 扫描。
+    # 只有相对时间查询才保留一次宽窗口降级，避免交互请求出现 15s + 重试的叠加等待。
+    attempts = [{}]
+    if start_ns is None or end_ns is None:
+        attempts.append({"line_prefix": None, "start_ns": None, "end_ns": None, "hours": max(hours, 24.0)})
+    for attempt, overrides in enumerate(attempts):
         try:
             result = await _attempt(**overrides)
             if attempt > 0:

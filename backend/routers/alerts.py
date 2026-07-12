@@ -59,6 +59,11 @@ def _collect_alert_labels(alert_group: dict) -> dict[str, str]:
         raw_labels = raw.get("labels", {}) if isinstance(raw, dict) else {}
         if isinstance(raw_labels, dict):
             labels.update({str(k): str(v) for k, v in raw_labels.items() if v is not None})
+        if isinstance(raw, dict) and raw.get("startsAt"):
+            current_start = labels.get("startsAt", "")
+            raw_start = str(raw.get("startsAt"))
+            if not current_start or raw_start < current_start:
+                labels["startsAt"] = raw_start
     for key in ("alertname", "service", "severity", "namespace", "env"):
         value = alert_group.get(key)
         if value:

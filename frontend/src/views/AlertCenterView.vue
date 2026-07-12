@@ -135,6 +135,15 @@
 
         <div v-if="group.summary" class="group-summary">{{ group.summary }}</div>
 
+        <div v-if="group.analysis_hook" class="rca-progress">
+          <span class="rca-progress-label">RCA：{{ rcaStatusLabel(group.analysis_hook.status) }}</span>
+          <span v-if="group.analysis_hook.facts_ready_ms != null">事实 {{ group.analysis_hook.facts_ready_ms }}ms</span>
+          <span v-if="group.analysis_hook.analysis_ready_ms != null">结论 {{ group.analysis_hook.analysis_ready_ms }}ms</span>
+          <span v-if="group.analysis_hook.top_confidence" class="confidence-inline" :class="group.analysis_hook.top_confidence">
+            {{ confidenceLabel(group.analysis_hook.top_confidence) }}
+          </span>
+        </div>
+
         <div class="group-meta">
           <span>首次：<span class="mono">{{ fmt(group.first_at) }}</span></span>
           <span>最近：<span class="mono">{{ fmt(group.last_at) }}</span></span>
@@ -186,9 +195,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api/index.js'
+import { confidenceLabel, rcaStatusLabel, shouldPollAlertGroups } from '../utils/rcaPresentation.mjs'
 
 const router = useRouter()
 
@@ -244,6 +254,7 @@ const typeStats = ref({})
 const selectedIds = ref(new Set())
 const batchUpdating = ref(false)
 const batchNotice = ref({ type: '', text: '' })
+let pollTimer = null
 
 const webhookUrl = computed(() => `${window.location.protocol}//${window.location.host}/api/alerts/webhook`)
 const alertTypeOptions = computed(() => {
@@ -332,6 +343,7 @@ function toggleExpand(id) {
 }
 
 async function load() {
+  if (pollTimer) clearTimeout(pollTimer)
   loading.value = true
   try {
     const params = {}
@@ -353,6 +365,9 @@ async function load() {
     console.error(error)
   } finally {
     loading.value = false
+    if (shouldPollAlertGroups(groups.value)) {
+      pollTimer = setTimeout(load, 2500)
+    }
   }
 }
 
@@ -420,6 +435,9 @@ async function copyWebhook() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => {
+  if (pollTimer) clearTimeout(pollTimer)
+})
 </script>
 
 <style scoped>
@@ -558,6 +576,17 @@ onMounted(load)
 .status-chip.resolved { background: rgba(26,127,55,.1); color: var(--success); }
 
 .group-summary { font-size: 13px; color: var(--text-secondary); }
+.rca-progress {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 7px 10px; border: 1px solid var(--border-accent);
+  border-radius: 7px; background: var(--accent-dim);
+  font-size: 11px; color: var(--text-secondary);
+}
+.rca-progress-label { color: var(--accent); font-weight: 700; }
+.confidence-inline { padding: 2px 7px; border-radius: 999px; font-weight: 700; }
+.confidence-inline.high { color: var(--success); background: rgba(26,127,55,.12); }
+.confidence-inline.medium { color: var(--warning); background: rgba(210,153,34,.12); }
+.confidence-inline.low { color: var(--error); background: rgba(248,81,73,.12); }
 .group-meta { display: flex; gap: 16px; font-size: 11px; color: var(--text-muted); }
 .group-routes { display: flex; flex-wrap: wrap; gap: 6px; }
 

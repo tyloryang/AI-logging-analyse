@@ -493,6 +493,78 @@ def _build_feishu_alert_card(
     }
 
 
+def _build_feishu_rca_card(
+    record: dict,
+    *,
+    report_url: str = "",
+    keyword: str = "",
+    target_name: str = "",
+) -> dict:
+    """Build the concise RCA completion card: top candidate, confidence, and detail link."""
+    top = (record.get("hypotheses") or [{}])[0]
+    confidence = str(top.get("confidence") or "low")
+    confidence_label = {"high": "高置信度", "medium": "中置信度", "low": "低置信度"}.get(confidence, "低置信度")
+    lines = []
+    if keyword:
+        lines.append(keyword)
+    lines.extend([
+        f"**告警**: {record.get('alert_name') or '-'}",
+        f"**服务**: {record.get('service') or 'global'}",
+        f"**首选候选**: {top.get('title') or '证据不足，无法确认'}",
+        f"**置信度**: {confidence_label}（{int(top.get('score') or 0)}分）",
+    ])
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
+    if report_url:
+        elements.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "查看完整 RCA 证据"},
+                "type": "primary",
+                "url": report_url,
+            }],
+        })
+    title = "RCA 分析完成"
+    if target_name:
+        title += f" · {target_name}"
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "blue",
+            },
+            "elements": elements,
+        },
+    }
+
+
+async def send_feishu_rca_result(
+    record: dict,
+    webhook_url: str,
+    *,
+    report_url: str = "",
+    keyword: str = "",
+    target_name: str = "",
+) -> dict:
+    payload = _build_feishu_rca_card(
+        record,
+        report_url=report_url,
+        keyword=keyword,
+        target_name=target_name,
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(webhook_url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("code", -1) == 0:
+                return {"ok": True, "msg": "发送成功"}
+            return {"ok": False, "msg": data.get("msg", str(data))}
+    except Exception as exc:
+        return {"ok": False, "msg": str(exc)}
+
+
 async def send_feishu_group_inspect(
     group_name: str,
     results: list[dict],

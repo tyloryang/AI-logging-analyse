@@ -180,6 +180,7 @@ def _normalize_hypothesis(item: dict, index: int) -> dict:
     category = str(item.get("category") or "application_bug")
     meta = _CATEGORY_META.get(category, _CATEGORY_META["application_bug"])
     score = int(round(_safe_float(item.get("score"), 0)))
+    confidence = str(item.get("confidence") or ("high" if score >= 80 else "medium" if score >= 55 else "low"))
     return {
         "id": str(item.get("id") or f"hyp_{index + 1}"),
         "rank": int(item.get("rank") or index + 1),
@@ -188,6 +189,7 @@ def _normalize_hypothesis(item: dict, index: int) -> dict:
         "title": str(item.get("title") or meta["title"]),
         "description": str(item.get("description") or meta["summary"]),
         "score": score,
+        "confidence": confidence,
         "validation_status": str(
             item.get("validation_status")
             or ("supported" if score >= 70 else "possible" if score >= 45 else "weak")
@@ -255,7 +257,7 @@ def _build_result_markdown(record: dict) -> str:
 
     lines.append("")
     lines.append("## 关键上下文")
-    for key in ("loki", "prometheus", "skywalking", "cmdb", "changes", "codebase", "inspection", "similar_cases", "metric_evidence"):
+    for key in ("kubernetes", "slowlog", "loki", "prometheus", "skywalking", "cmdb", "changes", "codebase", "inspection", "similar_cases", "metric_evidence"):
         section = context.get(key) if isinstance(context, dict) else None
         if not isinstance(section, dict):
             continue
@@ -294,6 +296,9 @@ def _normalize_record(record: dict) -> dict:
     item["context_hours"] = _safe_float(item.get("context_hours"), 1.0)
     item["extra_context"] = str(item.get("extra_context") or "")
     item["context"] = item.get("context") if isinstance(item.get("context"), dict) else {}
+    item["phase"] = str(item.get("phase") or ("analysis_ready" if item.get("hypotheses") else "pending"))
+    item["collector_states"] = item.get("collector_states") if isinstance(item.get("collector_states"), dict) else {}
+    item["sla"] = item.get("sla") if isinstance(item.get("sla"), dict) else {}
     item["source_labels"] = item.get("source_labels") if isinstance(item.get("source_labels"), dict) else {}
     item["timeline"] = [entry for entry in _normalize_list(item.get("timeline")) if isinstance(entry, dict)]
     item["hypotheses"] = [_normalize_hypothesis(hyp, idx) for idx, hyp in enumerate(_normalize_list(item.get("hypotheses")))]
@@ -388,9 +393,16 @@ def create_pending_rca(
         "source_name": source_name,
         "source_labels": source_labels or {},
         "status": "pending",
+        "phase": "pending",
         "context_hours": hours,
         "extra_context": extra_context,
         "context": {},
+        "collector_states": {},
+        "sla": {
+            "alert_started_at": (source_labels or {}).get("startsAt") or (source_labels or {}).get("alert_started_at") or "",
+            "facts_deadline_ms": 5000,
+            "analysis_deadline_ms": 15000,
+        },
         "hypotheses": [],
         "expert_matches": [],
         "feedback_snapshot": _load_feedback(),
@@ -1067,46 +1079,36 @@ async def collect_context(
     source_labels: dict[str, str] | None = None,
     inspection_summary: dict | None = None,
     inspection_results: list[dict] | None = None,
+    on_facts=None,
 ) -> dict[str, dict]:
     alert_name = _text_or_empty(alert_name)
     extra_context = _text_or_empty(extra_context)
     labels = source_labels or {}
 
-    loki_task = _collect_loki(service, hours, labels)
-    prom_task = _collect_prometheus(service, labels)
-    sw_task = _collect_skywalking(service)
-    cmdb_task = _collect_cmdb(service)
-    changes_task = asyncio.to_thread(_collect_change_context, service)
-    evidence_task = _collect_metric_evidence(service, labels, hours)
-
-    loki, prometheus, skywalking, cmdb, changes, metric_evidence = await asyncio.gather(
-        loki_task,
-        prom_task,
-        sw_task,
-        cmdb_task,
-        changes_task,
-        evidence_task,
+    from services.rca_evidence import (
+        collect_kubernetes_evidence,
+        collect_slowlog_evidence,
+        collect_two_stage,
     )
-    code_signal = " ".join(
-        [
-            extra_context or "",
-            str(loki.get("summary", "")),
-            " ".join(str(item) for item in loki.get("items", [])[:8]),
-            " ".join(str(item) for item in loki.get("context_items", [])[:4]),
-        ]
-    )
-    codebase = await asyncio.to_thread(_collect_code_context, service, code_signal)
 
-    context: dict[str, dict] = {
-        "loki": loki,
-        "prometheus": prometheus,
-        "skywalking": skywalking,
-        "cmdb": cmdb,
-        "changes": changes,
-        "codebase": codebase,
+    collectors = {
+        "kubernetes": lambda: collect_kubernetes_evidence(service=service, labels=labels),
+        "slowlog": lambda: collect_slowlog_evidence(service=service, labels=labels),
+        "loki": lambda: _collect_loki(service, hours, labels),
+        "prometheus": lambda: _collect_prometheus(service, labels),
+        "skywalking": lambda: _collect_skywalking(service),
+        "cmdb": lambda: _collect_cmdb(service),
+        "changes": lambda: asyncio.to_thread(_collect_change_context, service),
+        "metric_evidence": lambda: _collect_metric_evidence(service, labels, hours),
+        "codebase": lambda: asyncio.to_thread(_collect_code_context, service, extra_context),
     }
-    if metric_evidence:
-        context["metric_evidence"] = metric_evidence
+    staged = await collect_two_stage(
+        collectors,
+        facts_deadline_sec=5.0,
+        final_deadline_sec=12.0,
+        on_facts=on_facts,
+    )
+    context: dict[str, dict] = dict(staged.get("sections") or {})
 
     if extra_context.strip():
         context["extra"] = {
@@ -1128,6 +1130,11 @@ async def collect_context(
         "title": "专家案例",
         "summary": f"命中 {len(similar_cases)} 条历史专家案例。",
         "items": similar_cases,
+    }
+    context["_collection"] = {
+        "collector_states": staged.get("collector_states", {}),
+        "facts_ready_ms": staged.get("facts_ready_ms"),
+        "evidence_ready_ms": staged.get("evidence_ready_ms"),
     }
     return context
 
@@ -1348,7 +1355,49 @@ async def _validate_candidate(
     }
 
 
+def _slowlog_hypotheses(context: dict) -> list[dict]:
+    section = context.get("slowlog") if isinstance(context, dict) else None
+    candidates = section.get("candidates", []) if isinstance(section, dict) else []
+    hypotheses: list[dict] = []
+    for index, candidate in enumerate(candidates[:3], start=1):
+        score = int(candidate.get("score") or 0)
+        confidence = str(candidate.get("confidence") or "low")
+        query_time = _safe_float(candidate.get("query_time"), 0.0)
+        fingerprint = str(candidate.get("sql_fingerprint") or "未知 SQL 特征")
+        evidence = []
+        for item in candidate.get("evidence", []) or []:
+            if isinstance(item, dict):
+                points = int(item.get("score") or 0)
+                evidence.append(f"{item.get('detail') or item.get('rule')}（{points:+d}分）")
+            else:
+                evidence.append(str(item))
+        status = "supported" if confidence == "high" else "possible" if confidence == "medium" else "weak"
+        hypotheses.append({
+            "id": f"hyp_{index}",
+            "rank": index,
+            "agent_name": f"SlowSQL-Validator-{index}",
+            "category": "dependency_failure",
+            "title": f"慢 SQL 候选 #{index}（{query_time:g}s）",
+            "description": fingerprint,
+            "score": score,
+            "confidence": confidence,
+            "validation_status": status,
+            "validation_summary": f"该候选为{confidence}置信度概率匹配，不代表已建立 Trace 与 SQL 的确定关联。",
+            "evidence": evidence[:8],
+            "commands": [
+                "对候选 SQL 执行 EXPLAIN / EXPLAIN ANALYZE",
+                "核对索引、扫描行数和大对象字段读取范围",
+                "优化后复测接口 P95/P99 与 SQL 执行时间",
+            ],
+        })
+    return hypotheses
+
+
 async def _generate_hypotheses(record: dict) -> list[dict]:
+    slowlog_hypotheses = _slowlog_hypotheses(record.get("context", {}) or {})
+    if len(slowlog_hypotheses) >= 3:
+        return slowlog_hypotheses[:3]
+
     feedback = _load_feedback()
     weights = feedback.get("weights", {})
     scored = _candidate_base_scores(record)
@@ -1368,7 +1417,11 @@ async def _generate_hypotheses(record: dict) -> list[dict]:
         )
 
     hypotheses = await asyncio.gather(*tasks)
+    if slowlog_hypotheses:
+        occupied = {item.get("category") for item in slowlog_hypotheses}
+        hypotheses = slowlog_hypotheses + [item for item in hypotheses if item.get("category") not in occupied]
     hypotheses.sort(key=lambda item: (-item["score"], item["rank"]))
+    hypotheses = hypotheses[:3]
     for index, item in enumerate(hypotheses, start=1):
         item["rank"] = index
         item["id"] = f"hyp_{index}"
@@ -1414,6 +1467,88 @@ async def analyze_stream(
         yield line
 
 
+def _record_rca_event(record: dict, phase: str, *, severity: str = "info") -> None:
+    """Write only RCA state transitions to the event wall."""
+    try:
+        from routers import events as event_router
+
+        payload = {
+            "event_id": f"{record.get('id')}-{phase}",
+            "title": f"RCA {phase}",
+            "message": record.get("final_summary") or phase,
+            "service": record.get("service") or "",
+            "severity": severity,
+            "status": phase,
+            "resource_type": "rca_run",
+            "resource_id": record.get("id") or "",
+            "labels": {"rca_id": record.get("id") or "", "phase": phase},
+        }
+        event = event_router._normalize_external_event("rca", payload)
+        events = event_router._load_external_events()
+        old_index = next((index for index, item in enumerate(events) if item.get("id") == event["id"]), None)
+        if old_index is None:
+            events.insert(0, event)
+        else:
+            events[old_index] = {**events[old_index], **event}
+        event_router._save_external_events(events)
+        event_router._stats_cache.clear()
+    except Exception as exc:
+        logger.warning("[rca] failed to record event wall transition: %s", exc)
+
+
+async def _notify_rca_completion(
+    record: dict,
+    *,
+    group_loader=None,
+    target_resolver=None,
+    sender=None,
+) -> None:
+    alert_group_id = str(record.get("alert_group_id") or "")
+    if not alert_group_id:
+        return
+    try:
+        if group_loader is None or target_resolver is None:
+            from routers.alerts import _resolve_alert_targets, get_group
+
+            group_loader = group_loader or get_group
+            target_resolver = target_resolver or _resolve_alert_targets
+        if sender is None:
+            from notifier import send_feishu_rca_result
+
+            sender = send_feishu_rca_result
+
+        group = group_loader(alert_group_id)
+        if not group:
+            return
+        base_url = os.getenv("AIOPS_PUBLIC_URL", "").strip().rstrip("/")
+        report_url = f"{base_url}/#/aiops/rca?rca_id={record.get('id')}" if base_url else ""
+        targets = target_resolver(group) or []
+        if targets:
+            for target in targets:
+                result = await sender(
+                    record,
+                    target["webhook_url"],
+                    report_url=report_url,
+                    keyword=target.get("keyword", ""),
+                    target_name=target.get("group_name", ""),
+                )
+                if not result.get("ok"):
+                    logger.warning("[rca] Feishu completion push failed: %s", result.get("msg"))
+            return
+
+        fallback_webhook = os.getenv("FEISHU_WEBHOOK", "").strip()
+        if fallback_webhook:
+            await sender(
+                record,
+                fallback_webhook,
+                report_url=report_url,
+                keyword=os.getenv("FEISHU_KEYWORD", "").strip(),
+                target_name="default-feishu-group",
+            )
+    except Exception as exc:
+        logger.warning("[rca] failed to push completion to Feishu: %s", exc)
+
+
 async def run_rca(
     *,
     service: str | None,
@@ -1451,16 +1586,60 @@ async def run_rca(
 
     rca_id = record["id"]
 
+    started_monotonic = time.monotonic()
     try:
         update_rca(
             rca_id,
             {
                 "status": "running",
+                "phase": "collecting",
                 "timeline": record.get("timeline", []) + [
                     _timeline("context", "开始采集上下文", "logs / metrics / trace / CMDB / changes / codebase")
                 ],
             },
         )
+        _record_rca_event(get_rca(rca_id) or record, "collecting")
+
+        async def publish_facts(snapshot: dict) -> None:
+            facts_ready_ms = int(snapshot.get("facts_ready_ms") or round((time.monotonic() - started_monotonic) * 1000))
+            current_record = get_rca(rca_id) or record
+            updated = update_rca(
+                rca_id,
+                {
+                    "status": "facts_ready",
+                    "phase": "facts_ready",
+                    "context": snapshot.get("sections", {}),
+                    "collector_states": snapshot.get("collector_states", {}),
+                    "sla": {
+                        "facts_ready_at": _now_iso(),
+                        "facts_ready_ms": facts_ready_ms,
+                        "facts_deadline_met": facts_ready_ms <= 5000,
+                    },
+                    "timeline": current_record.get("timeline", []) + [
+                        _timeline("facts_ready", "第一阶段事实已就绪", f"耗时 {facts_ready_ms}ms；慢采集器继续执行")
+                    ],
+                    "final_summary": "第一阶段事实已就绪，正在生成根因候选。",
+                },
+            ) or current_record
+            if alert_group_id:
+                try:
+                    from services.alert_dedup import update_group_status
+
+                    update_group_status(
+                        alert_group_id,
+                        "analyzing",
+                        rca_id=rca_id,
+                        extra_updates={
+                            "analysis_hook": {
+                                "status": "facts_ready",
+                                "facts_ready_at": updated.get("sla", {}).get("facts_ready_at", ""),
+                                "facts_ready_ms": facts_ready_ms,
+                            }
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("[rca] failed to update facts-ready alert state: %s", exc)
+            _record_rca_event(updated, "facts_ready")
 
         context = await collect_context(
             service=service,
@@ -1470,33 +1649,68 @@ async def run_rca(
             source_labels=source_labels,
             inspection_summary=inspection_summary,
             inspection_results=inspection_results,
+            on_facts=publish_facts,
         )
 
+        collection = context.get("_collection", {}) if isinstance(context, dict) else {}
         current = update_rca(
             rca_id,
             {
+                "status": "evidence_ready",
+                "phase": "evidence_ready",
                 "context": context,
+                "collector_states": collection.get("collector_states", {}),
+                "sla": {
+                    "facts_ready_ms": collection.get("facts_ready_ms"),
+                    "evidence_ready_ms": collection.get("evidence_ready_ms"),
+                    "evidence_ready_at": _now_iso(),
+                },
                 "timeline": (get_rca(rca_id) or {}).get("timeline", [])
                 + [_timeline("context_done", "上下文采集完成", "证据已写入 RCA run")],
             },
         ) or (get_rca(rca_id) or record)
+        _record_rca_event(current, "evidence_ready")
 
-        hypotheses = await _generate_hypotheses(current)
+        remaining = max(0.05, 15.0 - (time.monotonic() - started_monotonic))
+        try:
+            hypotheses = await asyncio.wait_for(_generate_hypotheses(current), timeout=remaining)
+        except asyncio.TimeoutError:
+            hypotheses = _slowlog_hypotheses(context)
+            current["analysis_timeout"] = True
         current["hypotheses"] = hypotheses
         current["expert_matches"] = context.get("similar_cases", {}).get("items", []) if isinstance(context.get("similar_cases"), dict) else []
         current["status"] = "awaiting_confirmation"
+        current["phase"] = "analysis_ready"
+        analysis_ready_ms = round((time.monotonic() - started_monotonic) * 1000)
+        current.setdefault("sla", {})["analysis_ready_at"] = _now_iso()
+        current["sla"]["analysis_ready_ms"] = analysis_ready_ms
+        current["sla"]["analysis_deadline_met"] = analysis_ready_ms <= 15000
         current["final_summary"] = _build_final_summary(current)
         current["result"] = _build_result_markdown(current)
         current["timeline"] = current.get("timeline", []) + [
             _timeline("hypothesis_done", "多假设并行验证完成", "3 个假设已完成评分并等待人工确认")
         ]
         save_rca(current)
+        _record_rca_event(current, "analysis_ready")
+        asyncio.create_task(_notify_rca_completion(current))
 
         if alert_group_id:
             try:
                 from services.alert_dedup import update_group_status
 
-                update_group_status(alert_group_id, "analyzing", rca_id=rca_id)
+                update_group_status(
+                    alert_group_id,
+                    "analyzing",
+                    rca_id=rca_id,
+                    extra_updates={
+                        "analysis_hook": {
+                            "status": "analysis_ready",
+                            "analysis_ready_at": current.get("sla", {}).get("analysis_ready_at", ""),
+                            "analysis_ready_ms": analysis_ready_ms,
+                            "top_confidence": (hypotheses[0].get("confidence") if hypotheses else ""),
+                        }
+                    },
+                )
             except Exception as exc:
                 logger.warning("[rca] failed to update alert group status: %s", exc)
 
@@ -1507,6 +1721,7 @@ async def run_rca(
             rca_id,
             {
                 "status": "error",
+                "phase": "error",
                 "final_summary": f"RCA 执行失败: {exc}",
                 "result": f"## 根因摘要\nRCA 执行失败：{exc}",
                 "timeline": (get_rca(rca_id) or {}).get("timeline", []) + [
