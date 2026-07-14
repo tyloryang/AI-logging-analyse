@@ -369,6 +369,11 @@ async def get_logs(
             "has_more": result["has_more"],
             "next_cursor_ns": result["next_cursor_ns"],
             "total": len(result["data"]),
+            "returned_count": len(result["data"]),
+            "page_size": limit,
+            "truncated": result["has_more"],
+            "query_start_ns": result.get("query_start_ns"),
+            "query_end_ns": result.get("query_end_ns"),
             "service": service,
             "services": svc_list,
             "keywords": kw_list,
@@ -377,6 +382,54 @@ async def get_logs(
             "labels": label_pairs,
             "hours": hours,
         }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/api/logs/pod-distribution")
+async def get_log_pod_distribution(
+    service: Optional[str] = Query(None),
+    services: Optional[str] = Query(None),
+    hours: float = Query(24, gt=0),
+    level: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
+    keywords: Optional[str] = Query(None),
+    keyword_mode: str = Query("and"),
+    exclude_keywords: Optional[str] = Query(None),
+    labels: list[str] = Query(default_factory=list),
+    group_label: Optional[str] = Query(None),
+    group_value: Optional[str] = Query(None),
+    start_time: Optional[str] = Query(None),
+    end_time: Optional[str] = Query(None),
+    start_ns: Optional[int] = Query(None),
+    end_ns: Optional[int] = Query(None),
+    top_n: int = Query(20, ge=1, le=100),
+):
+    """Count the full matching range in Loki and show which Pods produced it."""
+    svc_list = _split_csv(services)
+    kw_list = _split_csv(keywords)
+    ex_list = _split_csv(exclude_keywords)
+    label_pairs = _parse_label_pairs(labels)
+    mode = (keyword_mode or "and").lower()
+    if mode not in ("and", "or"):
+        mode = "and"
+    try:
+        return await loki.query_log_distribution(
+            service=service,
+            services=svc_list or None,
+            hours=hours,
+            level=level or None,
+            keyword=keyword or None,
+            keywords=kw_list or None,
+            keyword_mode=mode,
+            exclude_keywords=ex_list or None,
+            start_ns=start_ns if start_ns is not None else _parse_time_ns(start_time),
+            end_ns=end_ns if end_ns is not None else _parse_time_ns(end_time),
+            group_label=group_label,
+            group_value=group_value,
+            extra_label_filters=label_pairs or None,
+            top_n=top_n,
+        )
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 

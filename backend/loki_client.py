@@ -20,6 +20,8 @@ _all_labels_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
 _label_values_cache: TTLCache = TTLCache(maxsize=32, ttl=300)
 _service_label_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
 _namespace_label_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
+_pod_label_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
+_log_distribution_cache: TTLCache = TTLCache(maxsize=64, ttl=15)
 _namespace_services_cache: TTLCache = TTLCache(maxsize=128, ttl=120)
 _namespace_service_map_cache: TTLCache = TTLCache(maxsize=2, ttl=120)
 _grouped_svc_cache: TTLCache = TTLCache(maxsize=1, ttl=60)
@@ -363,6 +365,17 @@ class LokiClient:
                 return label, namespaces
         return None, []
 
+    async def _detect_pod_label(self) -> Optional[str]:
+        if "pod_label" in _pod_label_cache:
+            return _pod_label_cache["pod_label"]
+
+        labels = await self.get_all_labels()
+        for label in ("pod", "pod_name", "k8s_pod_name", "kubernetes_pod_name"):
+            if label in labels:
+                _pod_label_cache["pod_label"] = label
+                return label
+        return None
+
     async def _resolve_group_label(self, group_label: Optional[str]) -> Optional[str]:
         if not group_label:
             return None
@@ -458,7 +471,174 @@ class LokiClient:
         rows.sort(key=lambda item: item["timestamp_ns"], reverse=True)
         has_more = len(rows) >= safe_size
         next_cursor = int(rows[-1]["timestamp_ns"]) if rows and has_more else None
-        return {"data": rows, "has_more": has_more, "next_cursor_ns": next_cursor}
+        return {
+            "data": rows,
+            "has_more": has_more,
+            "next_cursor_ns": next_cursor,
+            "query_start_ns": s_ns,
+            "query_end_ns": e_ns,
+        }
+
+    async def query_log_distribution(
+        self,
+        service: Optional[str] = None,
+        services: Optional[list[str]] = None,
+        hours: float = 24,
+        level: Optional[str] = None,
+        keyword: Optional[str] = None,
+        keywords: Optional[list[str]] = None,
+        keyword_mode: str = "and",
+        exclude_keywords: Optional[list[str]] = None,
+        start_ns: Optional[int] = None,
+        end_ns: Optional[int] = None,
+        group_label: Optional[str] = None,
+        group_value: Optional[str] = None,
+        extra_label_filters: Optional[dict[str, str]] = None,
+        top_n: int = 20,
+    ) -> dict:
+        """Return an exact Loki-side count plus its per-Pod distribution.
+
+        This intentionally uses an instant metric query instead of downloading
+        every matching log line. It is called separately from the first page so
+        a large count query never delays the initial log table response.
+        """
+        now_ns = int(time.time() * 1e9)
+        s_ns = start_ns if start_ns is not None else int(now_ns - hours * 3600 * 1e9)
+        e_ns = end_ns if end_ns is not None else now_ns
+        safe_top_n = max(1, min(int(top_n), 100))
+
+        if _demo_mode():
+            import loki_mock
+
+            rows = loki_mock.query_logs(
+                service=service,
+                hours=hours,
+                limit=100000,
+                level=level,
+                keyword=keyword,
+                start_ns=s_ns,
+                end_ns=e_ns,
+                group_label=group_label,
+                group_value=group_value,
+            )
+            requested_services = set(services or [])
+            included = [item.lower() for item in (keywords or []) if item]
+            excluded = [item.lower() for item in (exclude_keywords or []) if item]
+            label_filters = extra_label_filters or {}
+            filtered_rows = []
+            for row in rows:
+                labels = row.get("labels", {})
+                line = str(row.get("line", "")).lower()
+                row_service = labels.get("app") or labels.get("job") or ""
+                if requested_services and row_service not in requested_services:
+                    continue
+                if included:
+                    hits = [item in line for item in included]
+                    if (keyword_mode == "or" and not any(hits)) or (keyword_mode != "or" and not all(hits)):
+                        continue
+                if any(item in line for item in excluded):
+                    continue
+                if any(str(labels.get(k, "")) not in ([str(v)] if not isinstance(v, list) else [str(x) for x in v]) for k, v in label_filters.items()):
+                    continue
+                filtered_rows.append(row)
+
+            all_labels = loki_mock.get_all_labels()
+            namespace_label = next((label for label in ("namespace", "k8s_namespace_name", "kubernetes_namespace") if label in all_labels), None)
+            pod_label = next((label for label in ("pod", "pod_name", "k8s_pod_name", "kubernetes_pod_name") if label in all_labels), None)
+            counts: dict[tuple[str, str], int] = {}
+            for row in filtered_rows:
+                labels = row.get("labels", {})
+                key = (
+                    str(labels.get(namespace_label, "")) if namespace_label else "",
+                    str(labels.get(pod_label, "")) if pod_label else "",
+                )
+                counts[key] = counts.get(key, 0) + 1
+            pods = [
+                {"namespace": namespace, "pod": pod, "count": count}
+                for (namespace, pod), count in counts.items()
+                if pod
+            ]
+            pods.sort(key=lambda item: (-item["count"], item["namespace"], item["pod"]))
+            return {
+                "total_logs": len(filtered_rows),
+                "total_pods": len(pods),
+                "pods": pods[:safe_top_n],
+                "group_labels": {"namespace": namespace_label or "", "pod": pod_label or ""},
+                "query_start_ns": s_ns,
+                "query_end_ns": e_ns,
+            }
+
+        service_label = await self._detect_service_label()
+        label_filters: dict[str, object] = {}
+        if extra_label_filters:
+            for label, value in extra_label_filters.items():
+                if not label or value in (None, "", []):
+                    continue
+                resolved = await self._resolve_group_label(label) or label
+                label_filters[resolved] = value
+        resolved_group_label = await self._resolve_group_label(group_label)
+        if resolved_group_label and group_value and resolved_group_label not in label_filters:
+            label_filters[resolved_group_label] = group_value
+
+        log_query = self._build_log_query(
+            service_label=service_label,
+            service=service,
+            services=services,
+            level=level,
+            keyword=keyword,
+            keywords=keywords,
+            keyword_mode=keyword_mode,
+            exclude_keywords=exclude_keywords,
+            label_filters=label_filters or None,
+        )
+        namespace_label, _ = await self._detect_namespace_label()
+        pod_label = await self._detect_pod_label()
+        group_labels = [label for label in (namespace_label, pod_label) if label]
+        duration = self._format_logql_duration((e_ns - s_ns) / 1e9 / 3600)
+        count_expression = f"count_over_time({log_query}[{duration}])"
+        if group_labels:
+            aggregation = f"sum by ({', '.join(group_labels)}) ({count_expression})"
+        else:
+            aggregation = f"sum({count_expression})"
+
+        cache_key = (aggregation, s_ns, e_ns, safe_top_n)
+        cached = _log_distribution_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        response = await self._instant_query(aggregation, ts_ns=e_ns, timeout=self.scan_timeout)
+        vector = response.get("data", {}).get("result", [])
+        total_logs = 0
+        pods = []
+        for item in vector:
+            metric = item.get("metric", {})
+            value = item.get("value", [None, "0"])
+            try:
+                count = int(float(value[1]))
+            except (IndexError, TypeError, ValueError):
+                count = 0
+            total_logs += count
+            pod = str(metric.get(pod_label, "")) if pod_label else ""
+            if pod:
+                pods.append(
+                    {
+                        "namespace": str(metric.get(namespace_label, "")) if namespace_label else "",
+                        "pod": pod,
+                        "count": count,
+                    }
+                )
+
+        pods.sort(key=lambda item: (-item["count"], item["namespace"], item["pod"]))
+        result = {
+            "total_logs": total_logs,
+            "total_pods": len(pods),
+            "pods": pods[:safe_top_n],
+            "group_labels": {"namespace": namespace_label or "", "pod": pod_label or ""},
+            "query_start_ns": s_ns,
+            "query_end_ns": e_ns,
+        }
+        _log_distribution_cache[cache_key] = result
+        return result
 
     async def query_logs(
         self,

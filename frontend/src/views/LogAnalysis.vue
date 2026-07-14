@@ -71,26 +71,55 @@
           </div>
           <div v-if="customTimeError" class="ts-paste-err">{{ customTimeError }}</div>
         </div>
-        <div class="panel-subsection">
-          <span class="panel-subtitle">标签分组</span>
-          <select v-model="groupBy" class="time-select" @change="onGroupByChange">
-            <option v-for="option in groupByOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
-        </div>
       </div>
 
       <div class="label-explorer">
         <div class="label-explorer-header" @click="labelExplorerOpen = !labelExplorerOpen">
           <span class="label-explorer-title">Loki 标签</span>
-          <span class="label-explorer-toggle">{{ labelExplorerOpen ? '收起' : '展开' }}</span>
+          <span class="label-explorer-actions">
+            <button
+              type="button"
+              class="label-default-settings-btn"
+              :class="{ active: defaultLabelSettingsOpen }"
+              @click.stop="defaultLabelSettingsOpen = !defaultLabelSettingsOpen; labelExplorerOpen = true"
+            >默认展示</button>
+            <span class="label-explorer-toggle">{{ labelExplorerOpen ? '收起' : '展开' }}</span>
+          </span>
         </div>
         <div v-show="labelExplorerOpen" class="label-explorer-body">
           <div v-if="loadingLabelCatalog" class="loading-row label-loading">
             <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
           </div>
           <template v-else>
+            <div v-if="defaultLabelSettingsOpen" class="label-default-settings">
+              <div class="label-default-settings-head">
+                <span>勾选默认展示标签，第一项将在进入页面时自动选中</span>
+                <button type="button" @click="restoreRecommendedDefaultLabels">恢复推荐</button>
+              </div>
+              <div class="label-default-options">
+                <label v-for="item in labelCatalog" :key="item.name" class="label-default-option">
+                  <input
+                    type="checkbox"
+                    :checked="defaultLabelNames.includes(item.name)"
+                    @change="toggleDefaultLabelPreference(item.name)"
+                  />
+                  <span>{{ item.name }}</span>
+                  <em>{{ labelRoleText(item) }}</em>
+                </label>
+              </div>
+              <button type="button" class="label-default-done" @click="defaultLabelSettingsOpen = false">完成</button>
+            </div>
+            <div v-if="defaultLabelItems.length" class="label-default-strip">
+              <span class="label-default-strip-title">默认标签</span>
+              <button
+                v-for="item in defaultLabelItems"
+                :key="item.name"
+                type="button"
+                class="label-default-chip"
+                :class="{ active: selectedLabelName === item.name }"
+                @click="pickLabelName(item.name)"
+              >{{ item.name }}</button>
+            </div>
             <!-- 已加标签条件（chip 列表，AND 组合） -->
             <div v-if="activeLabelFilters.length" class="active-label-chips" title="所有条件 AND 组合，点 ✕ 单条移除">
               <span
@@ -384,10 +413,43 @@
           <span class="icon">📭</span><p>暂无日志数据</p>
         </div>
         <template v-else>
+          <div class="log-coverage-panel">
+            <span v-if="loadingLogDistribution" class="coverage-loading">
+              <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+              正在统计完整匹配量与 Pod 覆盖...
+            </span>
+            <template v-else-if="logCoverageSummary">
+              <div class="coverage-summary">
+                <strong>{{ logCoverageSummary.text }}</strong>
+                <span v-if="logCoverageSummary.truncated" class="coverage-warning">
+                  当前表格只是部分结果，请继续加载或点击 Pod 精确查询
+                </span>
+              </div>
+              <div v-if="logDistribution.pods?.length" class="coverage-pods">
+                <button
+                  v-for="item in logDistribution.pods"
+                  :key="`${item.namespace}/${item.pod}`"
+                  type="button"
+                  class="coverage-pod-chip"
+                  :title="`只查询 ${item.namespace ? item.namespace + '/' : ''}${item.pod}`"
+                  @click="drillIntoPod(item)"
+                >
+                  {{ item.namespace ? item.namespace + '/' : '' }}{{ item.pod }}
+                  <strong>{{ item.count.toLocaleString() }}</strong>
+                </button>
+                <span v-if="logDistribution.total_pods > logDistribution.pods.length" class="coverage-more-pods">
+                  仅展示日志量前 {{ logDistribution.pods.length }} 个 Pod
+                </span>
+              </div>
+            </template>
+            <span v-else-if="logDistributionError" class="coverage-error">
+              完整数量统计失败：{{ logDistributionError }}；日志分页仍可正常使用
+            </span>
+          </div>
           <!-- 统计栏 -->
           <div class="log-stats-bar">
             <span class="log-stat-item">
-              共 <strong>{{ filteredLogs.length }}</strong> 条
+              当前显示 <strong>{{ filteredLogs.length }}</strong> 条
               <span v-if="filteredLogs.length !== logs.length" class="log-stat-filtered">（过滤后）</span>
             </span>
             <span class="log-stat-sep">·</span>
@@ -428,7 +490,7 @@
                   </td>
                   <td class="col-svc">{{ logServiceName(log) }}</td>
                   <td class="col-group">{{ logGroup(log) }}</td>
-                  <td class="col-msg"><template v-for="(seg, si) in highlightLogSegments(log.line)" :key="si"><mark v-if="seg.hit" class="log-kw-hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></td>
+                  <td class="col-msg"><span class="log-msg-text"><template v-for="(seg, si) in highlightLogSegments(log.line)" :key="si"><mark v-if="seg.hit" class="log-kw-hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></span></td>
                 </tr>
               </tbody>
             </table>
@@ -440,10 +502,11 @@
               正在继续加载日志...
             </span>
             <span v-else-if="hasMore" class="load-more-status">
-              向下滚动到底部自动加载更多，已加载 {{ totalLoaded }} 条
+              已加载 {{ totalLoaded }} 条，向下滚动或
+              <button type="button" class="load-more-btn" @click="loadMore">继续加载</button>
             </span>
             <span v-else class="load-more-status">
-              已加载全部日志，共 {{ totalLoaded }} 条
+              当前查询已加载 {{ totalLoaded }} 条
             </span>
           </div>
         </template>
@@ -517,7 +580,7 @@
                   </div>
                   <div class="drawer-row drawer-row-full">
                     <span class="drawer-label">内容</span>
-                    <pre class="drawer-content">{{ detailLog.line }}</pre>
+                    <pre class="drawer-content">{{ displayLogLine(detailLog.line) }}</pre>
                   </div>
                 </div>
               </div>
@@ -929,6 +992,16 @@ import {
   CONTEXT_MAX_SIDE,
   nextContextCount,
 } from '../utils/logLoading.mjs'
+import {
+  buildCoverageSummary,
+  countLoadedPods,
+  replacePodFilters,
+} from '../utils/logCoverage.mjs'
+import { displayLogLine } from '../utils/logDisplay.mjs'
+import {
+  resolveDefaultLabelNames,
+  toggleDefaultLabelName,
+} from '../utils/logLabelPreferences.mjs'
 
 const router = useRouter()
 
@@ -939,9 +1012,11 @@ const groupBy        = ref('namespace')
 const selectedGroupLabel = ref('')
 const selectedGroupValue = ref('')
 const labelCatalog   = ref([])
-const groupOptions   = ref([{ value: 'namespace', label: 'namespace' }])
 const loadingLabelCatalog = ref(false)
 const labelExplorerOpen = ref(true)
+const defaultLabelSettingsOpen = ref(false)
+const defaultLabelNames = ref([])
+const recommendedDefaultLabelNames = ref([])
 const serviceLabelName = ref('')     // Loki 服务标签名（如 app），钻取联动用
 const openLabelGroups = ref(new Set())
 const labelValueMap = ref({})
@@ -1085,24 +1160,17 @@ function onMultiInputBackspace() {
 }
 let   logsAbort = null
 let   loadMoreAbort = null
+let   logDistributionAbort = null
 let   templatesAbort = null
 let   traceLogsAbort = null
 let   detailContextAbort = null
 let   copiedContextLineTimer = null
 let   logsRequestId = 0
 let   loadMoreRequestId = 0
+let   logDistributionRequestId = 0
 let   templatesRequestId = 0
 let   detailContextRequestId = 0
 
-const groupByOptions = computed(() => {
-  const options = groupOptions.value.length
-    ? [...groupOptions.value]
-    : [{ value: 'namespace', label: 'namespace' }]
-  if (groupBy.value && !options.some(option => option.value === groupBy.value)) {
-    options.unshift({ value: groupBy.value, label: groupBy.value })
-  }
-  return options
-})
 const selectedLabelValues = computed(() => (
   selectedLabelName.value ? (labelValueMap.value[selectedLabelName.value] || []) : []
 ))
@@ -1117,6 +1185,9 @@ function _fuzzyFilter(items, query, textFn) {
 const filteredLabels = computed(() => (
   _fuzzyFilter(labelCatalog.value || [], labelNameQuery.value, it => it.name)
 ))
+const defaultLabelItems = computed(() => defaultLabelNames.value
+  .map(name => labelCatalog.value.find(item => item.name === name))
+  .filter(Boolean))
 const filteredLabelValues = computed(() => (
   _fuzzyFilter(selectedLabelValues.value, labelValueQuery.value, v => String(v))
 ))
@@ -1148,6 +1219,35 @@ function pickLabelName(name) {
     labelValueInputRef.value?.focus?.()
     showLabelValueDropdown.value = true
   })
+}
+
+const LOKI_DEFAULT_LABELS_STORAGE_KEY = 'aiops.logs.default-labels.v1'
+
+function readSavedDefaultLabelNames() {
+  try {
+    const raw = localStorage.getItem(LOKI_DEFAULT_LABELS_STORAGE_KEY)
+    if (raw == null) return null
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function saveDefaultLabelNames() {
+  try {
+    localStorage.setItem(LOKI_DEFAULT_LABELS_STORAGE_KEY, JSON.stringify(defaultLabelNames.value))
+  } catch {}
+}
+
+function toggleDefaultLabelPreference(labelName) {
+  defaultLabelNames.value = toggleDefaultLabelName(defaultLabelNames.value, labelName)
+  saveDefaultLabelNames()
+}
+
+function restoreRecommendedDefaultLabels() {
+  defaultLabelNames.value = [...recommendedDefaultLabelNames.value]
+  saveDefaultLabelNames()
 }
 
 // 标签名输入框回车：支持 `label=val1,val2` 一次性生成多条 chip
@@ -1265,7 +1365,7 @@ function hideLabelValueLater() {
   hideLabelValueTimer = setTimeout(() => { showLabelValueDropdown.value = false }, 120)
 }
 
-// selectedLabelName/Value 被其它路径（onGroupByChange / _applyRouteQuery / loadLabelCatalog）
+// selectedLabelName/Value 被其它路径（_applyRouteQuery / loadLabelCatalog）
 // 修改时，同步输入框显示，避免"值已选但输入框为空"的错觉
 watch(selectedLabelName, (v) => {
   if (v && !labelNameQuery.value) labelNameQuery.value = v
@@ -1683,6 +1783,9 @@ const hasMore      = ref(false)
 const nextCursorNs = ref(null)
 const totalLoaded  = ref(0)
 const logScrollWrap = ref(null)
+const logDistribution = ref(null)
+const loadingLogDistribution = ref(false)
+const logDistributionError = ref('')
 const analyzingAI  = ref(false)
 const aiContent    = ref('')
 
@@ -1878,7 +1981,7 @@ function segmentByRegex(line, regex) {
 }
 
 function contextHighlightedSegments(line) {
-  return segmentByRegex(line, contextSearchRegex.value)
+  return segmentByRegex(displayLogLine(line), contextSearchRegex.value)
 }
 
 function contextLineCopyKey(item, idx) {
@@ -1891,7 +1994,7 @@ function contextLineCopyText(item) {
   const service = logServiceName(item)
   if (service) parts.push(String(service))
   const prefix = parts.join(' ')
-  const line = String(item?.line ?? '')
+  const line = displayLogLine(item?.line)
   return prefix ? `${prefix} ${line}`.trim() : line
 }
 
@@ -1967,7 +2070,7 @@ const logSearchRegex = computed(() => {
 })
 
 function highlightLogSegments(line) {
-  return segmentByRegex(line, logSearchRegex.value)
+  return segmentByRegex(displayLogLine(line), logSearchRegex.value)
 }
 
 function isContextSearchMatch(idx) {
@@ -2107,6 +2210,40 @@ const levelStats = computed(() => {
   }
   return stats
 })
+
+const loadedPodCount = computed(() => countLoadedPods(
+  logs.value,
+  logDistribution.value?.group_labels?.pod,
+))
+
+const logCoverageSummary = computed(() => {
+  if (!logDistribution.value) return null
+  return buildCoverageSummary({
+    totalLogs: logDistribution.value.total_logs,
+    loadedCount: totalLoaded.value,
+    loadedPods: loadedPodCount.value,
+    totalPods: logDistribution.value.total_pods,
+    hasMore: hasMore.value,
+  })
+})
+
+function drillIntoPod(item) {
+  const namespaceLabel = logDistribution.value?.group_labels?.namespace || ''
+  const podLabel = logDistribution.value?.group_labels?.pod || ''
+  if (!podLabel || !item?.pod) return
+  activeLabelFilters.value = replacePodFilters(activeLabelFilters.value, {
+    namespaceLabel,
+    namespace: item.namespace,
+    podLabel,
+    pod: item.pod,
+  })
+  selectedGroupLabel.value = podLabel
+  selectedGroupValue.value = item.pod
+  selectedLabelName.value = podLabel
+  selectedLabelValue.value = item.pod
+  groupBy.value = podLabel
+  loadLogs()
+}
 
 function toggleIncident() {
   incidentOnly.value = !incidentOnly.value
@@ -2470,13 +2607,25 @@ async function loadLabelCatalog() {
     serviceLabelName.value = result.service_label
       || labelCatalog.value.find(item => item.role === 'service')?.name
       || ''
-    groupOptions.value = result.group_options?.length
-      ? result.group_options
-      : [{ value: 'namespace', label: 'namespace' }]
+    const availableLabelNames = labelCatalog.value.map(item => item.name)
+    recommendedDefaultLabelNames.value = resolveDefaultLabelNames(
+      null,
+      availableLabelNames,
+      [result.default_group_by, result.service_label].filter(Boolean),
+    )
+    defaultLabelNames.value = resolveDefaultLabelNames(
+      readSavedDefaultLabelNames(),
+      availableLabelNames,
+      recommendedDefaultLabelNames.value,
+    )
     if (result.default_group_by) {
       groupBy.value = result.default_group_by
     }
-    const preferredLabel = result.default_group_by || result.service_label || labelCatalog.value[0]?.name || ''
+    const preferredLabel = defaultLabelNames.value[0]
+      || result.default_group_by
+      || result.service_label
+      || labelCatalog.value[0]?.name
+      || ''
     if (preferredLabel) {
       selectedLabelName.value = preferredLabel
       selectedLabelValue.value = ''
@@ -2485,7 +2634,8 @@ async function loadLabelCatalog() {
     }
   } catch (error) {
     labelCatalog.value = []
-    groupOptions.value = [{ value: 'namespace', label: 'namespace' }]
+    defaultLabelNames.value = []
+    recommendedDefaultLabelNames.value = []
     openLabelGroups.value = new Set()
     selectedLabelName.value = ''
     selectedLabelValue.value = ''
@@ -2639,23 +2789,11 @@ function clearLabelFilter() {
   clearAllActiveLabels()
 }
 
-function onGroupByChange() {
-  selectedGroupLabel.value = ''
-  selectedGroupValue.value = ''
-  selectedLabelName.value = groupBy.value || selectedLabelName.value
-  selectedLabelValue.value = ''
-  if (selectedLabelName.value) ensureLabelValues(selectedLabelName.value)
-  if (activeTab.value === 'logs') {
-    loadLogs()
-  } else if (activeTab.value === 'templates') {
-    loadTemplates()
-  }
-}
-
 async function loadLogs() {
   const requestId = ++logsRequestId
   logsAbort?.abort()
   loadMoreAbort?.abort()
+  logDistributionAbort?.abort()
   const controller = new AbortController()
   logsAbort = controller
   loadingLogs.value = true
@@ -2663,6 +2801,8 @@ async function loadLogs() {
   hasMore.value = false
   nextCursorNs.value = null
   totalLoaded.value = 0
+  logDistribution.value = null
+  logDistributionError.value = ''
   try {
     const r = await api.getLogs({
       level:    levelFilter.value || undefined,
@@ -2676,6 +2816,10 @@ async function loadLogs() {
     hasMore.value      = r.has_more ?? false
     nextCursorNs.value = r.next_cursor_ns ?? null
     totalLoaded.value  = r.data?.length ?? 0
+    void loadLogDistribution(requestId, {
+      start_ns: r.query_start_ns,
+      end_ns: r.query_end_ns,
+    })
     await ensureLogViewportFilled()
   } catch (error) {
     if (!isCanceled(error)) {
@@ -2784,6 +2928,34 @@ function onTimeModeChange() {
     if (!customStart.value) customStart.value = r.start
     if (!customEnd.value)   customEnd.value   = r.end
     onCustomTimeChange()
+  }
+}
+
+async function loadLogDistribution(baseLogsRequestId = logsRequestId, windowBounds = {}) {
+  const requestId = ++logDistributionRequestId
+  logDistributionAbort?.abort()
+  const controller = new AbortController()
+  logDistributionAbort = controller
+  loadingLogDistribution.value = true
+  logDistributionError.value = ''
+  try {
+    const r = await api.getLogPodDistribution({
+      level: levelFilter.value || undefined,
+      top_n: 20,
+      ...multiFilterParams(),
+      ...currentGroupParams(),
+      ...timeParams(),
+      ...windowBounds,
+    }, { signal: controller.signal })
+    if (requestId !== logDistributionRequestId || baseLogsRequestId !== logsRequestId) return
+    logDistribution.value = r
+  } catch (error) {
+    if (!isCanceled(error) && requestId === logDistributionRequestId) {
+      logDistributionError.value = typeof error === 'string' ? error : (error?.message || 'Pod 分布统计失败')
+    }
+  } finally {
+    if (requestId === logDistributionRequestId) loadingLogDistribution.value = false
+    if (logDistributionAbort === controller) logDistributionAbort = null
   }
 }
 
@@ -3030,7 +3202,7 @@ function _applyRouteQuery() {
 
 // 钻取联动：URL 带 service 进入时，标签面板默认展示该服务的标签上下文——
 // 展开 Loki 标签面板、标签名选中服务标签并加载值列表；若服务名确认是该
-// 标签的值，则直接转成可见的筛选 chip（app=服务），标签分组随之联动，
+// 标签的值，则直接转成可见的筛选 chip（app=服务），日志分组显示随之联动，
 // 并移除重复的服务 chip 避免同条件二次 AND。
 async function _applyServiceDrilldown() {
   const svc = selectedService.value || selectedServices.value[0] || ''
@@ -3079,6 +3251,7 @@ onBeforeUnmount(() => {
   clearTimeout(searchTimer)
   logsAbort?.abort()
   loadMoreAbort?.abort()
+  logDistributionAbort?.abort()
   templatesAbort?.abort()
   traceLogsAbort?.abort()
   detailContextAbort?.abort()
@@ -3166,14 +3339,6 @@ onBeforeUnmount(() => {
 .ts-range-chip:hover { border-color: var(--accent); color: var(--accent); }
 .ts-range-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .custom-time-inputs { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
-.panel-subsection { margin-top: 10px; }
-.panel-subtitle {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
 .label-explorer {
   background: var(--bg-card);
   flex: 1;
@@ -3193,6 +3358,26 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--text-secondary);
 }
+.label-explorer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.label-default-settings-btn {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 2px 7px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.label-default-settings-btn:hover,
+.label-default-settings-btn.active {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  background: rgba(99,102,241,.08);
+}
 .label-explorer-toggle {
   font-size: 11px;
   color: var(--text-muted);
@@ -3204,6 +3389,90 @@ onBeforeUnmount(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+.label-default-settings {
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-base);
+}
+.label-default-settings-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 7px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.label-default-settings-head button,
+.label-default-done {
+  border: none;
+  background: transparent;
+  color: var(--accent-hover);
+  font-size: 10px;
+  cursor: pointer;
+}
+.label-default-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  max-height: 170px;
+  overflow-y: auto;
+}
+.label-default-option {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.label-default-option input { accent-color: var(--accent); }
+.label-default-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.label-default-option em {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-style: normal;
+}
+.label-default-done {
+  display: block;
+  margin: 7px 0 0 auto;
+  padding: 2px 6px;
+}
+.label-default-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+.label-default-strip-title {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.label-default-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.label-default-chip:hover,
+.label-default-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
 }
 .label-chip-list {
   display: flex;
@@ -3830,6 +4099,35 @@ onBeforeUnmount(() => {
 .log-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
 /* 统计栏 */
+.log-coverage-panel {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(99,102,241,.045);
+  flex-shrink: 0;
+}
+.coverage-loading,
+.coverage-error {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--text-muted);
+}
+.coverage-error { color: #f59e0b; }
+.coverage-summary {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  color: var(--text-secondary); font-size: 12px;
+}
+.coverage-warning { color: #f59e0b; font-weight: 500; }
+.coverage-pods {
+  display: flex; gap: 6px; align-items: center;
+  overflow-x: auto; padding-top: 7px;
+}
+.coverage-pod-chip {
+  flex: 0 0 auto; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--bg-card); color: var(--text-secondary);
+  padding: 3px 8px; font-size: 11px; cursor: pointer;
+}
+.coverage-pod-chip:hover { border-color: var(--accent); color: var(--accent-hover); }
+.coverage-pod-chip strong { margin-left: 4px; color: var(--accent-hover); }
+.coverage-more-pods { flex: 0 0 auto; font-size: 11px; color: var(--text-muted); }
 .log-stats-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 6px 16px; font-size: 12px; color: var(--text-muted);
@@ -3876,7 +4174,18 @@ onBeforeUnmount(() => {
 .col-ts  { color: var(--text-muted); white-space: nowrap; font-size: 11px; }
 .col-svc { color: var(--accent-hover); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .col-group { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.col-msg { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-msg { color: var(--text-secondary); overflow: hidden; }
+.log-msg-text {
+  display: -webkit-box;
+  min-height: 3.1em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
 .row-error .col-msg { color: #fca5a5; }
 .row-warn  .col-msg { color: #fcd34d; }
 /* 关键字命中高亮（忽略大小写） */
@@ -3943,6 +4252,12 @@ onBeforeUnmount(() => {
   display: inline-flex; align-items: center; gap: 8px;
   font-size: 12px; color: var(--text-muted);
 }
+.load-more-btn {
+  border: 1px solid var(--accent); border-radius: 5px;
+  background: transparent; color: var(--accent-hover);
+  padding: 3px 9px; font-size: 12px; cursor: pointer;
+}
+.load-more-btn:hover { background: rgba(99,102,241,.1); }
 
 /* 日志详情居中模态框 */
 .log-detail-modal-mask {

@@ -38,6 +38,7 @@ export const api = {
   getLogLabelValues:  (label, params = {}, config = {}) => http.get(`/logs/labels/${encodeURIComponent(label)}/values`, { ...config, params }),
   // 日志
   getLogs:        (params, config = {}) => http.get('/logs', { ...config, params }),
+  getLogPodDistribution: (params, config = {}) => http.get('/logs/pod-distribution', { ...config, params }),
   getLogContext:  (params, config = {}) => http.get('/logs/context', { ...config, params }),
   getErrorLogs:   (params) => http.get('/logs/errors', { params }),
   // 指标
