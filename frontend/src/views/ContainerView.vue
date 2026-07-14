@@ -35,9 +35,6 @@
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="openEditCluster">编辑</button>
         <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeCluster" @click="testActiveCluster">测试</button>
         <button v-if="canManageClusters" class="btn-ghost danger" :disabled="!activeCluster" @click="removeCluster">删除</button>
-        <button v-if="canManageClusters" class="btn-ghost" :disabled="!activeClusterId" @click="openCreateResource" title="从 YAML 创建资源">
-          + 新建
-        </button>
         <button class="btn-refresh" @click="refreshAll({ clusters: true })" :disabled="loading || !activeClusterId" title="跳过缓存强制重拉">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <polyline points="23 4 23 10 17 10" />
@@ -508,6 +505,16 @@
           >
             {{ tab.label }}
             <span class="tab-count">{{ tabCount(tab.id) }}</span>
+          </button>
+          <button
+            v-if="canManageClusters"
+            class="btn-ghost compact tab-create-resource"
+            type="button"
+            :disabled="!activeClusterId"
+            title="从 YAML 创建资源"
+            @click="openCreateResource"
+          >
+            + 新建
           </button>
           <button
             v-if="activeTab !== 'events'"
@@ -4611,6 +4618,7 @@ onBeforeUnmount(() => { _destroyExec() })
 .tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 .tab-btn.active { background: var(--accent-dim); border-color: var(--border-accent); color: var(--accent); font-weight: 500; }
 .tab-count { font-size: 10px; background: var(--bg-surface); border: 1px solid var(--border); padding: 1px 5px; border-radius: 8px; color: var(--text-secondary); }
+.tab-create-resource { flex: 0 0 auto; white-space: nowrap; }
 .abnormal-toggle { margin-left: auto; }
 .abnormal-toggle.has-abnormal { color: var(--warning); }
 .abnormal-toggle.active { background: rgba(210, 153, 34, .12); border-color: var(--warning); color: var(--warning); font-weight: 600; }
