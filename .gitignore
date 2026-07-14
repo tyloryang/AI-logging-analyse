@@ -65,6 +65,7 @@ logs/
 /.claude/
 /.codegraph/
 /.codex/
+/.worktrees/
 .codegraph.bak-*/
 .codegraph/daemon.log
 .codegraph/daemon.pid
