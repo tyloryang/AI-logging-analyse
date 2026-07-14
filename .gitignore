@@ -59,6 +59,12 @@ logs/
 .tmp/
 
 # Local AI / tool state
+/.agent/
+/.agents/
+/.cluade/
+/.claude/
+/.codegraph/
+/.codex/
 .codegraph.bak-*/
 .codegraph/daemon.log
 .codegraph/daemon.pid
