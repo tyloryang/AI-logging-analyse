@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -183,6 +184,300 @@ class SchedulerInspectNotificationLinkTests(unittest.IsolatedAsyncioTestCase):
             await scheduler.run_group_schedule_job()
 
         self.assertEqual(events, ["saved", "sent"])
+
+    async def test_group_notification_persistence_failure_isolated_per_group(self):
+        groups = [
+            {
+                "id": "grp-1",
+                "name": "故障组",
+                "schedule_enabled": True,
+                "feishu_webhook": "https://feishu.example/one",
+            },
+            {
+                "id": "grp-2",
+                "name": "正常组",
+                "schedule_enabled": True,
+                "feishu_webhook": "https://feishu.example/two",
+            },
+        ]
+        inspect_results = [
+            {"group": "grp-1", "overall": "normal", "checks": []},
+            {"group": "grp-2", "overall": "normal", "checks": []},
+        ]
+        save_report = AsyncMock(
+            side_effect=[OSError("disk full"), {"id": "inspect_grp_2"}]
+        )
+        sender = AsyncMock(return_value={"ok": True})
+        with (
+            patch.object(scheduler, "APP_URL", "https://aiops.example"),
+            patch.object(scheduler, "load_groups", return_value=groups),
+            patch.object(scheduler, "load_hosts_list", return_value=[]),
+            patch.object(
+                scheduler.analyzer,
+                "generate_inspection_summary",
+                _empty_summary_stream,
+            ),
+            patch.object(scheduler, "save_group_inspect_report", save_report),
+            patch.object(scheduler, "send_feishu_group_inspect", sender),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR"):
+                result = await scheduler._send_group_inspect_notifications(
+                    inspect_results
+                )
+
+        self.assertEqual(save_report.await_count, 2)
+        sender.assert_awaited_once()
+        self.assertEqual(sender.await_args.kwargs["group_name"], "正常组")
+        self.assertEqual(result[0]["group_id"], "grp-1")
+        self.assertEqual(result[0]["stage"], "persist")
+        self.assertIn("disk full", result[0]["error"])
+        self.assertEqual(result[1]["group_id"], "grp-2")
+        self.assertEqual(result[1]["push"], {"ok": True})
+
+    async def test_per_group_schedule_persistence_failure_continues_later_groups(self):
+        now = datetime.now().strftime("%H:%M")
+        groups = [
+            {
+                "id": "grp-1",
+                "name": "故障组",
+                "schedule_enabled": True,
+                "schedule_time": now,
+                "feishu_webhook": "https://feishu.example/one",
+            },
+            {
+                "id": "grp-2",
+                "name": "正常组",
+                "schedule_enabled": True,
+                "schedule_time": now,
+                "feishu_webhook": "https://feishu.example/two",
+            },
+        ]
+        hosts = [
+            {"ip": "10.0.0.1", "group": "grp-1"},
+            {"ip": "10.0.0.2", "group": "grp-2"},
+        ]
+        inspect_data = {
+            "results": [{"overall": "normal", "checks": []}],
+            "summary": {"total": 1, "normal": 1, "warning": 0, "critical": 0},
+        }
+        save_report = AsyncMock(
+            side_effect=[OSError("read-only volume"), {"id": "inspect_grp_2"}]
+        )
+        sender = AsyncMock(return_value={"ok": True})
+        with (
+            patch.object(scheduler, "APP_URL", "https://aiops.example"),
+            patch.object(scheduler, "load_groups", return_value=groups),
+            patch.object(scheduler, "load_hosts_list", return_value=hosts),
+            patch.object(
+                scheduler, "collect_inspect_data", AsyncMock(return_value=inspect_data)
+            ),
+            patch.object(
+                scheduler.analyzer,
+                "generate_inspection_summary",
+                _empty_summary_stream,
+            ),
+            patch.object(scheduler, "save_group_inspect_report", save_report),
+            patch.object(scheduler, "send_feishu_group_inspect", sender),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR"):
+                result = await scheduler.run_group_schedule_job()
+
+        self.assertEqual(save_report.await_count, 2)
+        sender.assert_awaited_once()
+        self.assertEqual(sender.await_args.kwargs["group_name"], "正常组")
+        self.assertEqual(result[0]["group_id"], "grp-1")
+        self.assertEqual(result[0]["stage"], "persist")
+        self.assertIn("read-only volume", result[0]["error"])
+        self.assertEqual(result[1]["group_id"], "grp-2")
+        self.assertEqual(result[1]["push"], {"ok": True})
+
+    async def test_group_notification_delivery_failure_isolated_per_group(self):
+        groups = [
+            {
+                "id": "grp-1",
+                "name": "断网组",
+                "schedule_enabled": True,
+                "feishu_webhook": "https://feishu.example/one",
+            },
+            {
+                "id": "grp-2",
+                "name": "正常组",
+                "schedule_enabled": True,
+                "feishu_webhook": "https://feishu.example/two",
+            },
+        ]
+        inspect_results = [
+            {"group": "grp-1", "overall": "normal", "checks": []},
+            {"group": "grp-2", "overall": "normal", "checks": []},
+        ]
+        save_report = AsyncMock(
+            side_effect=[{"id": "inspect_grp_1"}, {"id": "inspect_grp_2"}]
+        )
+        sender = AsyncMock(
+            side_effect=[{"ok": False, "msg": "timeout"}, {"ok": True}]
+        )
+        with (
+            patch.object(scheduler, "APP_URL", "https://aiops.example"),
+            patch.object(scheduler, "load_groups", return_value=groups),
+            patch.object(scheduler, "load_hosts_list", return_value=[]),
+            patch.object(
+                scheduler.analyzer,
+                "generate_inspection_summary",
+                _empty_summary_stream,
+            ),
+            patch.object(scheduler, "save_group_inspect_report", save_report),
+            patch.object(scheduler, "send_feishu_group_inspect", sender),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR"):
+                result = await scheduler._send_group_inspect_notifications(
+                    inspect_results
+                )
+
+        self.assertEqual(save_report.await_count, 2)
+        self.assertEqual(sender.await_count, 2)
+        self.assertEqual(result[0]["stage"], "delivery")
+        self.assertIn("timeout", result[0]["error"])
+        self.assertEqual(result[1]["push"], {"ok": True})
+
+    async def test_per_group_schedule_delivery_failure_continues_later_groups(self):
+        now = datetime.now().strftime("%H:%M")
+        groups = [
+            {
+                "id": "grp-1",
+                "name": "断网组",
+                "schedule_enabled": True,
+                "schedule_time": now,
+                "feishu_webhook": "https://feishu.example/one",
+            },
+            {
+                "id": "grp-2",
+                "name": "正常组",
+                "schedule_enabled": True,
+                "schedule_time": now,
+                "feishu_webhook": "https://feishu.example/two",
+            },
+        ]
+        inspect_data = {
+            "results": [{"overall": "normal", "checks": []}],
+            "summary": {"total": 1, "normal": 1, "warning": 0, "critical": 0},
+        }
+        save_report = AsyncMock(
+            side_effect=[{"id": "inspect_grp_1"}, {"id": "inspect_grp_2"}]
+        )
+        sender = AsyncMock(
+            side_effect=[{"ok": False, "msg": "timeout"}, {"ok": True}]
+        )
+        with (
+            patch.object(scheduler, "APP_URL", "https://aiops.example"),
+            patch.object(scheduler, "load_groups", return_value=groups),
+            patch.object(
+                scheduler,
+                "load_hosts_list",
+                return_value=[
+                    {"ip": "10.0.0.1", "group": "grp-1"},
+                    {"ip": "10.0.0.2", "group": "grp-2"},
+                ],
+            ),
+            patch.object(
+                scheduler, "collect_inspect_data", AsyncMock(return_value=inspect_data)
+            ),
+            patch.object(
+                scheduler.analyzer,
+                "generate_inspection_summary",
+                _empty_summary_stream,
+            ),
+            patch.object(scheduler, "save_group_inspect_report", save_report),
+            patch.object(scheduler, "send_feishu_group_inspect", sender),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR"):
+                result = await scheduler.run_group_schedule_job()
+
+        self.assertEqual(save_report.await_count, 2)
+        self.assertEqual(sender.await_count, 2)
+        self.assertEqual(result[0]["stage"], "delivery")
+        self.assertIn("timeout", result[0]["error"])
+        self.assertEqual(result[1]["push"], {"ok": True})
+
+
+class LatestGroupInspectReportTests(unittest.TestCase):
+    def test_latest_report_is_selected_by_created_at_across_id_generations(self):
+        legacy = {
+            "id": "inspect_20991231235959_grp-1",
+            "type": "inspect",
+            "group_id": "grp-1",
+            "created_at": "2026-07-17T00:00:00Z",
+            "ai_analysis": "older legacy",
+        }
+        current = {
+            "id": "inspect_t20200101000000000000_hash_uuid",
+            "type": "inspect",
+            "group_id": "grp-1",
+            "created_at": "2026-07-17T01:00:00+00:00",
+            "ai_analysis": "newer current",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp)
+            for report in (legacy, current):
+                Path(reports_dir, f"{report['id']}.json").write_text(
+                    json.dumps(report), encoding="utf-8"
+                )
+            with patch.object(reports, "REPORTS_DIR", reports_dir):
+                latest = reports._find_latest_group_inspect_report("grp-1")
+
+        self.assertEqual(latest["id"], current["id"])
+
+    def test_created_at_wins_even_when_legacy_filename_sorts_later(self):
+        current = {
+            "id": "inspect_t99991231235959999999_hash_uuid",
+            "type": "inspect",
+            "group_id": "grp-1",
+            "created_at": "2026-07-17T00:00:00+00:00",
+            "ai_analysis": "older current",
+        }
+        legacy = {
+            "id": "inspect_20000101000000_grp-1",
+            "type": "inspect",
+            "group_id": "grp-1",
+            "created_at": "2026-07-17T02:00:00Z",
+            "ai_analysis": "newer legacy",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp)
+            for report in (current, legacy):
+                Path(reports_dir, f"{report['id']}.json").write_text(
+                    json.dumps(report), encoding="utf-8"
+                )
+            with patch.object(reports, "REPORTS_DIR", reports_dir):
+                latest = reports._find_latest_group_inspect_report("grp-1")
+
+        self.assertEqual(latest["id"], legacy["id"])
+
+    def test_invalid_created_at_falls_back_to_mtime_then_filename(self):
+        older = {
+            "id": "inspect_z_invalid",
+            "type": "inspect",
+            "group_id": "grp-1",
+            "created_at": "not-a-date",
+            "ai_analysis": "older",
+        }
+        newer = {
+            "id": "inspect_a_invalid",
+            "type": "inspect",
+            "group_id": "grp-1",
+            "ai_analysis": "newer",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp)
+            older_path = reports_dir / f"{older['id']}.json"
+            newer_path = reports_dir / f"{newer['id']}.json"
+            older_path.write_text(json.dumps(older), encoding="utf-8")
+            newer_path.write_text(json.dumps(newer), encoding="utf-8")
+            os.utime(older_path, (1000, 1000))
+            os.utime(newer_path, (2000, 2000))
+            with patch.object(reports, "REPORTS_DIR", reports_dir):
+                latest = reports._find_latest_group_inspect_report("grp-1")
+
+        self.assertEqual(latest["id"], newer["id"])
 
 
 class ReportRouterInspectNotificationLinkTests(unittest.IsolatedAsyncioTestCase):

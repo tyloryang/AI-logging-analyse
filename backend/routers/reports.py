@@ -456,18 +456,37 @@ async def generate_inspect_report(group_id: Optional[str] = Query(None)):
 
 def _find_latest_group_inspect_report(group_id: str) -> Optional[dict]:
     """在 REPORTS_DIR 中找到指定分组最新的、已含 AI 分析的巡检报告，没有则返回 None"""
-    best = None
-    for p in sorted(REPORTS_DIR.glob("inspect_*.json"), reverse=True):
+    candidates: list[tuple[tuple, dict]] = []
+    for p in REPORTS_DIR.glob("inspect_*.json"):
         try:
             data = _read_report_json(p)
             if not data:
                 continue
             if data.get("type") == "inspect" and data.get("group_id") == group_id and data.get("ai_analysis"):
-                best = data
-                break   # 按文件名倒序，第一个即最新
+                created_at = None
+                raw_created_at = data.get("created_at")
+                if isinstance(raw_created_at, str) and raw_created_at.strip():
+                    try:
+                        created_at = datetime.fromisoformat(
+                            raw_created_at.strip().replace("Z", "+00:00")
+                        )
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=timezone.utc)
+                        created_at = created_at.astimezone(timezone.utc)
+                    except ValueError:
+                        created_at = None
+                if created_at is not None:
+                    sort_key = (1, created_at.timestamp(), p.name)
+                else:
+                    try:
+                        modified_at = p.stat().st_mtime
+                    except OSError:
+                        modified_at = 0.0
+                    sort_key = (0, modified_at, p.name)
+                candidates.append((sort_key, data))
         except Exception:
             continue
-    return best
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 @router.post("/api/report/inspect/generate-groups")
@@ -896,7 +915,7 @@ async def public_inspect_report_pdf(report_id: str):
         pdf_bytes = await asyncio.to_thread(build_report_pdf, data)
     except Exception as exc:
         logger.exception("[report] 公开巡检 PDF 导出失败 %s", report_id)
-        raise HTTPException(status_code=500, detail=f"PDF 生成失败: {exc}") from exc
+        raise HTTPException(status_code=500, detail="PDF 生成失败") from exc
 
     encoded = quote(f"{data.get('title', report_id)}.pdf")
     return Response(

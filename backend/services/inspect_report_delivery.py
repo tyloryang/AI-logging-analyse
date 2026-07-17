@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from json_snapshot_store import write_json_file
@@ -34,6 +34,21 @@ def build_public_inspect_pdf_url(report_id: str, app_url: str) -> str:
     base_url = str(app_url or "").strip().rstrip("/")
     clean_report_id = str(report_id or "").strip()
     if not base_url or not clean_report_id:
+        return ""
+    try:
+        parsed = urlsplit(base_url)
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.hostname is None
+            or any(char.isspace() for char in parsed.netloc)
+            or parsed.query
+            or parsed.fragment
+        ):
+            return ""
+        # Accessing port validates malformed values such as :not-a-port.
+        parsed.port
+    except ValueError:
         return ""
     encoded_report_id = quote(clean_report_id, safe="")
     return f"{base_url}/api/public/report/inspect/{encoded_report_id}.pdf"

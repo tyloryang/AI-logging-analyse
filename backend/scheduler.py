@@ -29,6 +29,12 @@ from services.inspect_report_delivery import (
 logger = logging.getLogger(__name__)
 
 
+def _delivery_error(result: object) -> str:
+    if isinstance(result, dict) and result.get("ok") is False:
+        return str(result.get("msg") or "飞书推送失败")
+    return ""
+
+
 async def _build_and_save_report() -> dict:
     """生成并保存运维日报（非流式），返回完整 report dict。"""
     data = await collect_daily_data()
@@ -198,12 +204,26 @@ async def _send_group_inspect_notifications(
                 f"正常 {normal_cnt} 台、警告 {warning_cnt} 台、严重 {critical_cnt} 台。"
             )
 
-        group_report = await save_group_inspect_report(
-            results=results,
-            group_id=gid,
-            group_name=group_name,
-            ai_text=ai_text,
-        )
+        try:
+            group_report = await save_group_inspect_report(
+                results=results,
+                group_id=gid,
+                group_name=group_name,
+                ai_text=ai_text,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[scheduler] 分组 '%s' 巡检报告保存失败，跳过推送",
+                group_name,
+            )
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "stage": "persist",
+                "error": str(exc),
+            })
+            continue
         report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
         if not report_url:
             logger.warning(
@@ -211,14 +231,41 @@ async def _send_group_inspect_notifications(
                 group_name,
             )
 
-        res = await send_feishu_group_inspect(
-            group_name=group_name,
-            results=results,
-            webhook_url=group["feishu_webhook"],
-            keyword=group.get("feishu_keyword", ""),
-            ai_text=ai_text,
-            report_url=report_url,
-        )
+        try:
+            res = await send_feishu_group_inspect(
+                group_name=group_name,
+                results=results,
+                webhook_url=group["feishu_webhook"],
+                keyword=group.get("feishu_keyword", ""),
+                ai_text=ai_text,
+                report_url=report_url,
+            )
+        except Exception as exc:
+            logger.exception("[scheduler] 分组 '%s' 飞书巡检推送失败", group_name)
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "stage": "delivery",
+                "error": str(exc),
+            })
+            continue
+        delivery_error = _delivery_error(res)
+        if delivery_error:
+            logger.error(
+                "[scheduler] 分组 '%s' 飞书巡检推送失败: %s",
+                group_name,
+                delivery_error,
+            )
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "stage": "delivery",
+                "error": delivery_error,
+                "push": res,
+            })
+            continue
         logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group_name, res)
         notify_results.append({
             "group_id": gid,
@@ -230,7 +277,7 @@ async def _send_group_inspect_notifications(
     return notify_results
 
 
-async def run_group_schedule_job() -> None:
+async def run_group_schedule_job() -> list[dict]:
     """每分钟检查各分组的定时推送计划，到点则巡检对应主机并推送。"""
     from datetime import datetime
     now_hhmm = datetime.now().strftime("%H:%M")
@@ -240,26 +287,40 @@ async def run_group_schedule_job() -> None:
         if g.get("schedule_enabled") and g.get("schedule_time", "") == now_hhmm
     ]
     if not due_groups:
-        return
+        return []
 
     hosts_all = load_hosts_list()
+    job_results: list[dict] = []
     for group in due_groups:
         gid = group["id"]
+        group_name = group.get("name", gid)
         instances = [f"{h['ip']}:9100" for h in hosts_all if h.get("group") == gid and h.get("ip")]
         if not instances:
-            logger.info("[group_schedule] 分组 '%s' 无关联主机，跳过", group["name"])
+            logger.info("[group_schedule] 分组 '%s' 无关联主机，跳过", group_name)
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "skipped": True,
+                "reason": "该分组无关联主机",
+            })
             continue
 
-        logger.info("[group_schedule] 分组 '%s' 开始巡检 %d 台主机", group["name"], len(instances))
+        logger.info("[group_schedule] 分组 '%s' 开始巡检 %d 台主机", group_name, len(instances))
         try:
             inspect_data = await collect_inspect_data(
                 instances=instances,
                 group_id=gid,
-                group_name=group["name"],
+                group_name=group_name,
             )
             results = inspect_data["results"]
-        except Exception as e:
-            logger.warning("[group_schedule] 分组 '%s' 巡检失败: %s", group["name"], e)
+        except Exception as exc:
+            logger.exception("[group_schedule] 分组 '%s' 巡检失败", group_name)
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "stage": "inspect",
+                "error": str(exc),
+            })
             continue
 
         group_summary = inspect_data["summary"]
@@ -275,35 +336,91 @@ async def run_group_schedule_job() -> None:
                 ai_parts.append(chunk)
             ai_text = "".join(ai_parts).strip()
         except Exception as e:
-            logger.warning("[group_schedule] 分组 '%s' AI 分析失败: %s", group["name"], e)
+            logger.warning("[group_schedule] 分组 '%s' AI 分析失败: %s", group_name, e)
             ai_text = (
-                f"分组「{group['name']}」共 {total} 台主机，"
+                f"分组「{group_name}」共 {total} 台主机，"
                 f"正常 {normal} 台、警告 {warning} 台、严重 {critical} 台。"
             )
 
         if group.get("feishu_webhook"):
-            group_name = group.get("name", gid)
-            group_report = await save_group_inspect_report(
-                results=results,
-                group_id=gid,
-                group_name=group_name,
-                ai_text=ai_text,
-            )
+            try:
+                group_report = await save_group_inspect_report(
+                    results=results,
+                    group_id=gid,
+                    group_name=group_name,
+                    ai_text=ai_text,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[group_schedule] 分组 '%s' 巡检报告保存失败，跳过推送",
+                    group_name,
+                )
+                job_results.append({
+                    "group_id": gid,
+                    "group_name": group_name,
+                    "hosts": len(results),
+                    "stage": "persist",
+                    "error": str(exc),
+                })
+                continue
             report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
             if not report_url:
                 logger.warning(
                     "[group_schedule] APP_URL 未配置，分组 '%s' 巡检卡片不附带 PDF 链接",
                     group_name,
                 )
-            res = await send_feishu_group_inspect(
-                group_name=group_name,
-                results=results,
-                webhook_url=group["feishu_webhook"],
-                keyword=group.get("feishu_keyword", ""),
-                ai_text=ai_text,
-                report_url=report_url,
-            )
-            logger.info("[group_schedule] 分组 '%s' 飞书推送: %s", group["name"], res)
+            try:
+                res = await send_feishu_group_inspect(
+                    group_name=group_name,
+                    results=results,
+                    webhook_url=group["feishu_webhook"],
+                    keyword=group.get("feishu_keyword", ""),
+                    ai_text=ai_text,
+                    report_url=report_url,
+                )
+            except Exception as exc:
+                logger.exception("[group_schedule] 分组 '%s' 飞书推送失败", group_name)
+                job_results.append({
+                    "group_id": gid,
+                    "group_name": group_name,
+                    "hosts": len(results),
+                    "stage": "delivery",
+                    "error": str(exc),
+                })
+                continue
+            delivery_error = _delivery_error(res)
+            if delivery_error:
+                logger.error(
+                    "[group_schedule] 分组 '%s' 飞书推送失败: %s",
+                    group_name,
+                    delivery_error,
+                )
+                job_results.append({
+                    "group_id": gid,
+                    "group_name": group_name,
+                    "hosts": len(results),
+                    "stage": "delivery",
+                    "error": delivery_error,
+                    "push": res,
+                })
+                continue
+            logger.info("[group_schedule] 分组 '%s' 飞书推送: %s", group_name, res)
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "push": res,
+            })
+        else:
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "skipped": True,
+                "reason": "未配置飞书 Webhook",
+            })
+
+    return job_results
 
 
 async def scheduled_report_job() -> None:

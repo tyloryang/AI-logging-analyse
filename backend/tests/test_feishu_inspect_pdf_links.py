@@ -25,6 +25,29 @@ class FeishuInspectPdfLinkTests(unittest.TestCase):
         )
         self.assertEqual(build_public_inspect_pdf_url("inspect_1", ""), "")
 
+    def test_public_url_requires_absolute_http_or_https_app_url(self):
+        from services.inspect_report_delivery import build_public_inspect_pdf_url
+
+        for app_url in (
+            "/aiops",
+            "aiops.example",
+            "ftp://aiops.example",
+            "https:///missing-host",
+            "https://",
+        ):
+            with self.subTest(app_url=app_url):
+                self.assertEqual(build_public_inspect_pdf_url("inspect_1", app_url), "")
+
+    def test_public_url_trims_whitespace_and_preserves_base_path(self):
+        from services.inspect_report_delivery import build_public_inspect_pdf_url
+
+        self.assertEqual(
+            build_public_inspect_pdf_url(
+                " inspect_1 ", "  https://aiops.example/console/  "
+            ),
+            "https://aiops.example/console/api/public/report/inspect/inspect_1.pdf",
+        )
+
     def test_full_and_group_cards_include_public_pdf_button(self):
         url = "https://aiops.example/api/public/report/inspect/inspect_1.pdf"
         report = {
