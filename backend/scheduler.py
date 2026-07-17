@@ -21,8 +21,18 @@ from report_builder import (
     build_slowlog_ai_prompt_short,
 )
 from report_store import save_report_meta, cleanup_old_reports
+from services.inspect_report_delivery import (
+    build_public_inspect_pdf_url,
+    save_group_inspect_report,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _delivery_error(result: object) -> str:
+    if isinstance(result, dict) and result.get("ok") is False:
+        return str(result.get("msg") or "飞书推送失败")
+    return ""
 
 
 async def _build_and_save_report() -> dict:
@@ -194,13 +204,72 @@ async def _send_group_inspect_notifications(
                 f"正常 {normal_cnt} 台、警告 {warning_cnt} 台、严重 {critical_cnt} 台。"
             )
 
-        res = await send_feishu_group_inspect(
-            group_name=group_name,
-            results=results,
-            webhook_url=group["feishu_webhook"],
-            keyword=group.get("feishu_keyword", ""),
-            ai_text=ai_text,
-        )
+        try:
+            group_report = await save_group_inspect_report(
+                results=results,
+                group_id=gid,
+                group_name=group_name,
+                ai_text=ai_text,
+            )
+        except Exception as exc:
+            error_message = str(exc) or repr(exc)
+            logger.exception(
+                "[scheduler] 分组 '%s' 巡检报告保存失败，跳过推送",
+                group_name,
+            )
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "stage": "persist",
+                "error": error_message,
+                "push": {"ok": False, "msg": error_message},
+            })
+            continue
+        report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
+        if not report_url:
+            logger.warning(
+                "[scheduler] APP_URL 未配置，分组 '%s' 巡检卡片不附带 PDF 链接",
+                group_name,
+            )
+
+        try:
+            res = await send_feishu_group_inspect(
+                group_name=group_name,
+                results=results,
+                webhook_url=group["feishu_webhook"],
+                keyword=group.get("feishu_keyword", ""),
+                ai_text=ai_text,
+                report_url=report_url,
+            )
+        except Exception as exc:
+            error_message = str(exc) or repr(exc)
+            logger.exception("[scheduler] 分组 '%s' 飞书巡检推送失败", group_name)
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "stage": "delivery",
+                "error": error_message,
+                "push": {"ok": False, "msg": error_message},
+            })
+            continue
+        delivery_error = _delivery_error(res)
+        if delivery_error:
+            logger.error(
+                "[scheduler] 分组 '%s' 飞书巡检推送失败: %s",
+                group_name,
+                delivery_error,
+            )
+            notify_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "stage": "delivery",
+                "error": delivery_error,
+                "push": res,
+            })
+            continue
         logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group_name, res)
         notify_results.append({
             "group_id": gid,
@@ -212,7 +281,7 @@ async def _send_group_inspect_notifications(
     return notify_results
 
 
-async def run_group_schedule_job() -> None:
+async def run_group_schedule_job() -> list[dict]:
     """每分钟检查各分组的定时推送计划，到点则巡检对应主机并推送。"""
     from datetime import datetime
     now_hhmm = datetime.now().strftime("%H:%M")
@@ -222,26 +291,42 @@ async def run_group_schedule_job() -> None:
         if g.get("schedule_enabled") and g.get("schedule_time", "") == now_hhmm
     ]
     if not due_groups:
-        return
+        return []
 
     hosts_all = load_hosts_list()
+    job_results: list[dict] = []
     for group in due_groups:
         gid = group["id"]
+        group_name = group.get("name", gid)
         instances = [f"{h['ip']}:9100" for h in hosts_all if h.get("group") == gid and h.get("ip")]
         if not instances:
-            logger.info("[group_schedule] 分组 '%s' 无关联主机，跳过", group["name"])
+            logger.info("[group_schedule] 分组 '%s' 无关联主机，跳过", group_name)
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "skipped": True,
+                "reason": "该分组无关联主机",
+            })
             continue
 
-        logger.info("[group_schedule] 分组 '%s' 开始巡检 %d 台主机", group["name"], len(instances))
+        logger.info("[group_schedule] 分组 '%s' 开始巡检 %d 台主机", group_name, len(instances))
         try:
             inspect_data = await collect_inspect_data(
                 instances=instances,
                 group_id=gid,
-                group_name=group["name"],
+                group_name=group_name,
             )
             results = inspect_data["results"]
-        except Exception as e:
-            logger.warning("[group_schedule] 分组 '%s' 巡检失败: %s", group["name"], e)
+        except Exception as exc:
+            error_message = str(exc) or repr(exc)
+            logger.exception("[group_schedule] 分组 '%s' 巡检失败", group_name)
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "stage": "inspect",
+                "error": error_message,
+                "push": {"ok": False, "msg": error_message},
+            })
             continue
 
         group_summary = inspect_data["summary"]
@@ -257,25 +342,113 @@ async def run_group_schedule_job() -> None:
                 ai_parts.append(chunk)
             ai_text = "".join(ai_parts).strip()
         except Exception as e:
-            logger.warning("[group_schedule] 分组 '%s' AI 分析失败: %s", group["name"], e)
+            logger.warning("[group_schedule] 分组 '%s' AI 分析失败: %s", group_name, e)
             ai_text = (
-                f"分组「{group['name']}」共 {total} 台主机，"
+                f"分组「{group_name}」共 {total} 台主机，"
                 f"正常 {normal} 台、警告 {warning} 台、严重 {critical} 台。"
             )
 
         if group.get("feishu_webhook"):
-            res = await send_feishu_group_inspect(
-                group_name=group["name"],
-                results=results,
-                webhook_url=group["feishu_webhook"],
-                keyword=group.get("feishu_keyword", ""),
-                ai_text=ai_text,
-            )
-            logger.info("[group_schedule] 分组 '%s' 飞书推送: %s", group["name"], res)
+            try:
+                group_report = await save_group_inspect_report(
+                    results=results,
+                    group_id=gid,
+                    group_name=group_name,
+                    ai_text=ai_text,
+                )
+            except Exception as exc:
+                error_message = str(exc) or repr(exc)
+                logger.exception(
+                    "[group_schedule] 分组 '%s' 巡检报告保存失败，跳过推送",
+                    group_name,
+                )
+                job_results.append({
+                    "group_id": gid,
+                    "group_name": group_name,
+                    "hosts": len(results),
+                    "stage": "persist",
+                    "error": error_message,
+                    "push": {"ok": False, "msg": error_message},
+                })
+                continue
+            report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
+            if not report_url:
+                logger.warning(
+                    "[group_schedule] APP_URL 未配置，分组 '%s' 巡检卡片不附带 PDF 链接",
+                    group_name,
+                )
+            try:
+                res = await send_feishu_group_inspect(
+                    group_name=group_name,
+                    results=results,
+                    webhook_url=group["feishu_webhook"],
+                    keyword=group.get("feishu_keyword", ""),
+                    ai_text=ai_text,
+                    report_url=report_url,
+                )
+            except Exception as exc:
+                error_message = str(exc) or repr(exc)
+                logger.exception("[group_schedule] 分组 '%s' 飞书推送失败", group_name)
+                job_results.append({
+                    "group_id": gid,
+                    "group_name": group_name,
+                    "hosts": len(results),
+                    "stage": "delivery",
+                    "error": error_message,
+                    "push": {"ok": False, "msg": error_message},
+                })
+                continue
+            delivery_error = _delivery_error(res)
+            if delivery_error:
+                logger.error(
+                    "[group_schedule] 分组 '%s' 飞书推送失败: %s",
+                    group_name,
+                    delivery_error,
+                )
+                job_results.append({
+                    "group_id": gid,
+                    "group_name": group_name,
+                    "hosts": len(results),
+                    "stage": "delivery",
+                    "error": delivery_error,
+                    "push": res,
+                })
+                continue
+            logger.info("[group_schedule] 分组 '%s' 飞书推送: %s", group_name, res)
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "push": res,
+            })
+        else:
+            job_results.append({
+                "group_id": gid,
+                "group_name": group_name,
+                "hosts": len(results),
+                "skipped": True,
+                "reason": "未配置飞书 Webhook",
+            })
+
+    return job_results
 
 
 async def scheduled_report_job() -> None:
     """定时任务入口：生成运维日报 + 主机巡检日报，推送到已配置的渠道。"""
+    # 报告清理独立于通知配置和本轮报告生成结果；任务一触发就先尝试清理。
+    from state import REPORT_RETENTION_DAYS
+    if REPORT_RETENTION_DAYS > 0:
+        try:
+            deleted = await cleanup_old_reports(REPORTS_DIR, REPORT_RETENTION_DAYS)
+            if deleted:
+                logger.info(
+                    "[scheduler] 已清理 %d 条超期报告（>%d天）",
+                    deleted,
+                    REPORT_RETENTION_DAYS,
+                )
+        except Exception:
+            logger.exception("[scheduler] 超期报告清理失败，不影响本轮报告任务")
+
     if not SCHEDULE_CHANNELS:
         logger.info("[scheduler] SCHEDULE_CHANNELS 未配置，跳过推送")
         return
@@ -288,6 +461,7 @@ async def scheduled_report_job() -> None:
         logger.info("[scheduler] 开始生成主机巡检日报 ...")
         inspect_data = await collect_inspect_data()
         inspect_report = await _build_inspect_report(inspect_data)
+        inspect_report_url = build_public_inspect_pdf_url(inspect_report["id"], APP_URL)
         raw_inspect_results = inspect_data["results"]
 
         logger.info("[scheduler] 开始生成慢日志报告 ...")
@@ -302,9 +476,18 @@ async def scheduled_report_job() -> None:
                 if not FEISHU_WEBHOOK:
                     logger.warning("[scheduler] FEISHU_WEBHOOK 未配置，跳过飞书推送")
                     continue
+                if not inspect_report_url:
+                    logger.warning(
+                        "[scheduler] APP_URL 未配置，飞书巡检卡片不附带 PDF 链接"
+                    )
                 result = await send_feishu(report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD, report_url=report_url)
                 logger.info("[scheduler] 飞书日报推送: %s", result)
-                result2 = await send_feishu(inspect_report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
+                result2 = await send_feishu(
+                    inspect_report,
+                    FEISHU_WEBHOOK,
+                    keyword=FEISHU_KEYWORD,
+                    report_url=inspect_report_url,
+                )
                 logger.info("[scheduler] 飞书巡检推送: %s", result2)
                 if slowlog_report:
                     result3 = await send_feishu(slowlog_report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
@@ -324,13 +507,6 @@ async def scheduled_report_job() -> None:
                 logger.warning("[scheduler] 不支持的推送渠道: %s", ch)
 
         await _send_group_inspect_notifications(raw_inspect_results)
-
-        # 清理超期报告文件
-        from state import REPORT_RETENTION_DAYS
-        if REPORT_RETENTION_DAYS > 0:
-            deleted = await cleanup_old_reports(REPORTS_DIR, REPORT_RETENTION_DAYS)
-            if deleted:
-                logger.info("[scheduler] 已清理 %d 条超期报告（>%d天）", deleted, REPORT_RETENTION_DAYS)
 
         logger.info("[scheduler] 定时任务完成，report_id=%s", report["id"])
 

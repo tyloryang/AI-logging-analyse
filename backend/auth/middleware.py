@@ -24,7 +24,12 @@ _PUBLIC_PATHS = {
     "/openapi.json",
     "/redoc",
 }
-_PUBLIC_PREFIXES = ("/api/events/ingest/",)
+_PUBLIC_PREFIXES = (
+    "/api/events/ingest/",
+    "/api/public/report/inspect/",
+)
+
+
 def _is_public(path: str) -> bool:
     return path in _PUBLIC_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES)
 

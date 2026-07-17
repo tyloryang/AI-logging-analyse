@@ -5,6 +5,7 @@
 """
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +15,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import Base, AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+_SAFE_REPORT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _parse_created_at(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _safe_report_path(reports_dir: Path, report_id: str) -> Path | None:
+    if not _SAFE_REPORT_ID.fullmatch(str(report_id or "")):
+        return None
+    reports_root = reports_dir.resolve()
+    candidate = (reports_root / f"{report_id}.json").resolve()
+    if candidate.parent != reports_root:
+        return None
+    return candidate
 
 
 # ── ORM 模型 ──────────────────────────────────────────────────────────────────
@@ -165,36 +190,87 @@ async def cleanup_old_reports(reports_dir: Path, retention_days: int) -> int:
         return 0
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    cutoff_str = cutoff.isoformat()[:19]   # 与 created_at 格式一致
     deleted = 0
+    expired_file_ids: set[str] = set()
+    expired_metadata_ids: set[str] = set()
+
+    # JSON 是报告正文的事实来源；即使元数据注册失败，也必须能按保留期清理。
+    reports_root = reports_dir.resolve()
+    for path in reports_dir.glob("*.json"):
+        try:
+            resolved = path.resolve()
+            if resolved.parent != reports_root or not resolved.is_file():
+                continue
+            if _safe_report_path(reports_root, path.stem) != resolved:
+                continue
+            data = json.loads(resolved.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("id") != path.stem:
+                continue
+            created_at = _parse_created_at(data.get("created_at"))
+            if created_at is not None and created_at < cutoff:
+                expired_file_ids.add(path.stem)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            # 保守处理格式异常或无法安全读取的文件，避免误删无关 JSON。
+            continue
 
     try:
         async with AsyncSessionLocal() as db:
-            # 先查出要删除的 id
             result = await db.execute(
-                select(ReportRecord.id)
-                .where(ReportRecord.created_at < cutoff_str)
+                select(ReportRecord.id, ReportRecord.created_at)
             )
-            old_ids = [r[0] for r in result.all()]
+            for report_id, created_at_raw in result.all():
+                created_at = _parse_created_at(created_at_raw)
+                if (
+                    created_at is not None
+                    and created_at < cutoff
+                    and _safe_report_path(reports_root, report_id) is not None
+                ):
+                    expired_metadata_ids.add(report_id)
+    except Exception as exc:
+        logger.warning("[report_store] 查询过期报告元数据失败: %s", exc)
 
-            if old_ids:
+    removed_file_ids: set[str] = set()
+    for report_id in sorted(expired_file_ids):
+        report_path = _safe_report_path(reports_root, report_id)
+        if report_path is None:
+            continue
+        if report_path.exists():
+            try:
+                report_path.unlink()
+                deleted += 1
+            except OSError as exc:
+                logger.warning(
+                    "[report_store] 删除过期报告文件失败，保留元数据以便重试 %s: %s",
+                    report_id,
+                    exc,
+                )
+                continue
+        removed_file_ids.add(report_id)
+
+    # DB 年龄只能清理已经不存在的正文元数据；存在的 JSON 必须由自身内容
+    # 独立证明已过期并先成功删除，防止陈旧元数据误删新鲜或异常文件。
+    metadata_ids_to_remove = set(removed_file_ids)
+    for report_id in expired_metadata_ids:
+        report_path = _safe_report_path(reports_root, report_id)
+        if report_path is not None and not report_path.exists():
+            metadata_ids_to_remove.add(report_id)
+
+    if metadata_ids_to_remove:
+        try:
+            async with AsyncSessionLocal() as db:
                 await db.execute(
-                    delete(ReportRecord).where(ReportRecord.id.in_(old_ids))
+                    delete(ReportRecord).where(
+                        ReportRecord.id.in_(sorted(metadata_ids_to_remove))
+                    )
                 )
                 await db.commit()
+        except Exception as exc:
+            logger.warning("[report_store] 删除过期报告元数据失败: %s", exc)
 
-                # 删除对应的 JSON 文件
-                for rid in old_ids:
-                    p = reports_dir / f"{rid}.json"
-                    if p.exists():
-                        try:
-                            p.unlink()
-                            deleted += 1
-                        except Exception:
-                            pass
-
-        logger.info("[report_store] 清理超期报告: 删除 %d 条（保留 %d 天）", deleted, retention_days)
-    except Exception as exc:
-        logger.warning("[report_store] cleanup_old_reports 失败: %s", exc)
+    logger.info(
+        "[report_store] 清理过期报告: 删除 %d 个文件（保留 %d 天）",
+        deleted,
+        retention_days,
+    )
 
     return deleted

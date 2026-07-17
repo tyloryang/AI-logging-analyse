@@ -138,7 +138,7 @@ def _data_table(headers: list[str], rows: list[list], st,
     data = [[Paragraph(f"<b>{_esc(h)}</b>", st["cellhead"]) for h in headers]]
     for row in rows:
         data.append([Paragraph(_esc(cell), st["cell"]) for cell in row])
-    table = Table(data, colWidths=col_widths, repeatRows=1)
+    table = Table(data, colWidths=col_widths, repeatRows=1, splitInRow=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), _HEAD_BG),
         ("GRID", (0, 0), (-1, -1), 0.5, _BORDER),
