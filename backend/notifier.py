@@ -309,7 +309,7 @@ def _build_feishu_inspect_card(report: dict, keyword: str = "", report_url: str 
         elements.append({"tag": "hr"})
         elements.append({"tag": "action", "actions": [{
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "查看完整报告"},
+            "text": {"tag": "plain_text", "content": "查看完整巡检 PDF"},
             "type": "primary",
             "url": report_url,
         }]})
@@ -331,6 +331,7 @@ def _build_feishu_group_inspect_card(
     results: list[dict],
     keyword: str = "",
     ai_text: str = "",
+    report_url: str = "",
 ) -> dict:
     """构造按分组的主机巡检飞书告警卡片"""
     total    = len(results)
@@ -380,6 +381,18 @@ def _build_feishu_group_inspect_card(
             "tag": "lark_md",
             "content": f"**🤖 AI 分析**\n{ai_excerpt}",
         }})
+
+    if report_url:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "查看完整巡检 PDF"},
+                "type": "primary",
+                "url": report_url,
+            }],
+        })
 
     return {
         "msg_type": "interactive",
@@ -571,9 +584,16 @@ async def send_feishu_group_inspect(
     webhook_url: str,
     keyword: str = "",
     ai_text: str = "",
+    report_url: str = "",
 ) -> dict:
     """按分组发送主机巡检告警到飞书群"""
-    payload = _build_feishu_group_inspect_card(group_name, results, keyword=keyword, ai_text=ai_text)
+    payload = _build_feishu_group_inspect_card(
+        group_name,
+        results,
+        keyword=keyword,
+        ai_text=ai_text,
+        report_url=report_url,
+    )
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(webhook_url, json=payload)
@@ -582,8 +602,8 @@ async def send_feishu_group_inspect(
             if data.get("code", -1) == 0:
                 return {"ok": True, "msg": "发送成功"}
             return {"ok": False, "msg": data.get("msg", str(data))}
-    except Exception as e:
-        return {"ok": False, "msg": str(e)}
+    except Exception as exc:
+        return {"ok": False, "msg": str(exc)}
 
 
 async def send_feishu_alert_group(
