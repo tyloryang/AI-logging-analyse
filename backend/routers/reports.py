@@ -6,7 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
@@ -839,8 +841,6 @@ async def export_report_html(report_id: str):
 @router.get("/api/report/{report_id}/export.pdf")
 async def export_report_pdf(report_id: str):
     """报告直接导出 PDF（reportlab 生成，支持运维日报/主机巡检/慢日志三类）。"""
-    import asyncio
-
     p = REPORTS_DIR / f"{report_id}.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
@@ -861,6 +861,43 @@ async def export_report_pdf(report_id: str):
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename*=UTF-8\'\'{encoded}'},
+    )
+
+
+_SAFE_REPORT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _public_inspect_report_path(report_id: str) -> Path:
+    if not _SAFE_REPORT_ID.fullmatch(report_id or ""):
+        raise HTTPException(status_code=404, detail="巡检报告不存在")
+    reports_root = REPORTS_DIR.resolve()
+    report_path = (reports_root / f"{report_id}.json").resolve()
+    if report_path.parent != reports_root:
+        raise HTTPException(status_code=404, detail="巡检报告不存在")
+    return report_path
+
+
+@router.get("/api/public/report/inspect/{report_id}.pdf")
+async def public_inspect_report_pdf(report_id: str):
+    report_path = _public_inspect_report_path(report_id)
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="巡检报告不存在")
+    data = _read_report_json(report_path)
+    if not data or data.get("type") != "inspect":
+        raise HTTPException(status_code=404, detail="巡检报告不存在")
+
+    from services.report_pdf import build_report_pdf
+    try:
+        pdf_bytes = await asyncio.to_thread(build_report_pdf, data)
+    except Exception as exc:
+        logger.exception("[report] 公开巡检 PDF 导出失败 %s", report_id)
+        raise HTTPException(status_code=500, detail=f"PDF 生成失败: {exc}") from exc
+
+    encoded = quote(f"{data.get('title', report_id)}.pdf")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{encoded}"},
     )
 
 
