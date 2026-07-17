@@ -1,6 +1,7 @@
 """Persistence and public-link helpers for Feishu inspection delivery."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import quote
@@ -12,9 +13,13 @@ from report_store import save_report_meta
 from state import REPORTS_DIR
 
 
-def _group_delivery_report_id(group_id: str) -> str:
-    group_digest = sha256(str(group_id or "").encode("utf-8")).hexdigest()[:12]
-    return f"inspect_{group_digest}_{uuid4().hex}"
+def _group_delivery_report_id(group_id: str, created_at: str) -> str:
+    created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    timestamp = created.astimezone(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    group_digest = sha256(str(group_id or "").encode("utf-8")).hexdigest()[:8]
+    return f"inspect_t{timestamp}_{group_digest}_{uuid4().hex[:24]}"
 
 
 def _normalize_host_result(result: dict) -> dict:
@@ -95,7 +100,7 @@ async def save_group_inspect_report(
         group_id=group_id,
         group_name=group_name,
     )
-    report["id"] = _group_delivery_report_id(group_id)
+    report["id"] = _group_delivery_report_id(group_id, report["created_at"])
     report["ai_analysis"] = str(ai_text or "").strip()
     report_path: Path = REPORTS_DIR / f"{report['id']}.json"
     write_json_file(report_path, report, ensure_parent=True)

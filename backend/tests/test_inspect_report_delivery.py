@@ -5,6 +5,7 @@ import unittest
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from services import inspect_report_delivery
@@ -111,6 +112,56 @@ class InspectReportDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(first["id"], second["id"])
         self.assertTrue(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", first["id"]))
         self.assertTrue(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", second["id"]))
+
+    async def test_report_ids_sort_newest_first_by_utc_creation_time(self):
+        older_time = datetime(
+            2026, 7, 17, 1, 2, 3, 123456, tzinfo=timezone.utc
+        )
+        newer_time = datetime(
+            2026, 7, 17, 1, 2, 3, 123457, tzinfo=timezone.utc
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(inspect_report_delivery, "REPORTS_DIR", Path(tmp)),
+                patch.object(
+                    inspect_report_delivery,
+                    "save_report_meta",
+                    AsyncMock(),
+                ),
+                patch("report_builder.datetime") as report_datetime,
+                patch.object(
+                    inspect_report_delivery,
+                    "uuid4",
+                    side_effect=[
+                        SimpleNamespace(hex="f" * 32),
+                        SimpleNamespace(hex="0" * 32),
+                    ],
+                ),
+            ):
+                report_datetime.now.side_effect = [older_time, newer_time]
+                older = await inspect_report_delivery.save_group_inspect_report(
+                    [], "grp-1", "核心组", "旧报告"
+                )
+                newer = await inspect_report_delivery.save_group_inspect_report(
+                    [], "grp-1", "核心组", "新报告"
+                )
+
+        older_filename = f"{older['id']}.json"
+        newer_filename = f"{newer['id']}.json"
+        self.assertLess(older_filename, newer_filename)
+        self.assertEqual(
+            sorted([older_filename, newer_filename], reverse=True),
+            [newer_filename, older_filename],
+        )
+        self.assertGreater(
+            newer_filename,
+            "inspect_20260717010202_grp-1.json",
+        )
+        for report in (older, newer):
+            self.assertRegex(report["id"], r"^[A-Za-z0-9_-]{1,64}$")
+            self.assertLessEqual(len(report["id"]), 64)
+            self.assertEqual(report["group_id"], "grp-1")
+        self.assertNotEqual(older["id"], newer["id"])
 
     async def test_nested_metrics_are_normalized_for_pdf_without_mutating_input(self):
         results = [{
