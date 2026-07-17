@@ -1,7 +1,13 @@
 """Persistence and public-link helpers for Feishu inspection delivery."""
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import quote
+
+from json_snapshot_store import write_json_file
+from report_builder import build_inspect_meta
+from report_store import save_report_meta
+from state import REPORTS_DIR
 
 
 def build_public_inspect_pdf_url(report_id: str, app_url: str) -> str:
@@ -11,3 +17,70 @@ def build_public_inspect_pdf_url(report_id: str, app_url: str) -> str:
         return ""
     encoded_report_id = quote(clean_report_id, safe="")
     return f"{base_url}/api/public/report/inspect/{encoded_report_id}.pdf"
+
+
+def _group_inspect_data(results: list[dict], group_name: str) -> dict:
+    total = len(results)
+    normal = sum(1 for item in results if item.get("overall") == "normal")
+    warning = sum(1 for item in results if item.get("overall") == "warning")
+    critical = sum(1 for item in results if item.get("overall") == "critical")
+    summary = {
+        "total": total,
+        "normal": normal,
+        "warning": warning,
+        "critical": critical,
+        "cmdb_total": total,
+        "prometheus_extra_count": 0,
+        "scope": "cmdb",
+        "group_name": group_name,
+        "scope_note": f"统计口径：按 CMDB 分组「{group_name}」内 {total} 台主机统计。",
+    }
+    issue_counts: dict[str, int] = {}
+    for result in results:
+        for check in result.get("checks", []):
+            if check.get("status") == "normal":
+                continue
+            item = check.get("item", "未知")
+            issue_counts[item] = issue_counts.get(item, 0) + 1
+    top_issues = [
+        {"item": item, "count": count}
+        for item, count in sorted(
+            issue_counts.items(), key=lambda pair: pair[1], reverse=True
+        )[:10]
+    ]
+    abnormal_hosts = sorted(
+        [item for item in results if item.get("overall") != "normal"],
+        key=lambda item: {"critical": 2, "warning": 1}.get(
+            item.get("overall", "normal"), 0
+        ),
+        reverse=True,
+    )
+    health_score = int(100 * normal / total) if total else 100
+    return {
+        "summary": summary,
+        "top_issues": top_issues,
+        "abnormal_hosts": abnormal_hosts[:20],
+        "all_hosts": results,
+        "group_sections": [{"group_name": group_name, "hosts": results}],
+        "prometheus_extra_hosts": [],
+        "scope_note": summary["scope_note"],
+        "health_score": health_score,
+    }
+
+
+async def save_group_inspect_report(
+    results: list[dict],
+    group_id: str,
+    group_name: str,
+    ai_text: str,
+) -> dict:
+    report = build_inspect_meta(
+        _group_inspect_data(results, group_name),
+        group_id=group_id,
+        group_name=group_name,
+    )
+    report["ai_analysis"] = str(ai_text or "").strip()
+    report_path: Path = REPORTS_DIR / f"{report['id']}.json"
+    write_json_file(report_path, report, ensure_parent=True)
+    await save_report_meta(report)
+    return report
