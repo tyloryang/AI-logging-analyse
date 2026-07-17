@@ -29,6 +29,10 @@ from state import (
 from notifier import send_feishu, send_dingtalk, send_feishu_group_inspect
 from report_builder import collect_daily_data, collect_inspect_data, build_inspect_meta
 from report_store import save_report_meta, list_report_meta
+from services.inspect_report_delivery import (
+    build_public_inspect_pdf_url,
+    save_group_inspect_report,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -495,6 +499,7 @@ async def generate_inspect_report_all_groups():
             if existing:
                 host_results = existing.get("all_hosts", [])
                 ai_text      = existing.get("ai_analysis", "")
+                delivery_report = existing
                 source       = "cached"
             else:
                 # ② 重新采集 + 生成 AI + 保存报告
@@ -512,29 +517,29 @@ async def generate_inspect_report_all_groups():
                 except Exception as ai_exc:
                     logger.warning("分组 %s AI生成失败: %s", group_name, ai_exc)
                 ai_text = "".join(ai_parts)
-                meta_g = build_inspect_meta(inspect_data, group_id, group_name)
-                meta_g["ai_analysis"] = ai_text
-                meta_g["group_analyses"] = [{
-                    "group_id": group_id,
-                    "group_name": group_name,
-                    "host_summary": summary,
-                    "top_issues": inspect_data["top_issues"],
-                    "abnormal_hosts": inspect_data["abnormal_hosts"],
-                    "health_score": inspect_data["health_score"],
-                    "ai_analysis": ai_text,
-                }]
-                try:
-                    _write_report_json(REPORTS_DIR / f"{meta_g['id']}.json", meta_g)
-                    asyncio.create_task(save_report_meta(meta_g))
-                except Exception as save_exc:
-                    logger.warning("分组 %s 报告保存失败: %s", group_name, save_exc)
-
                 # 推送时使用完整巡检结果（含 checks 字段）
                 host_results = full_results
+                delivery_report = await save_group_inspect_report(
+                    results=host_results,
+                    group_id=group_id,
+                    group_name=group_name,
+                    ai_text=ai_text,
+                )
                 source = "generated"
 
+            report_url = build_public_inspect_pdf_url(delivery_report["id"], APP_URL)
+            if not report_url:
+                logger.warning(
+                    "分组 %s 巡检报告缺少公开地址：APP_URL 未配置",
+                    group_name,
+                )
             push_result = await send_feishu_group_inspect(
-                group_name, host_results, webhook, keyword=keyword, ai_text=ai_text
+                group_name,
+                host_results,
+                webhook,
+                keyword=keyword,
+                ai_text=ai_text,
+                report_url=report_url,
             )
             results.append({
                 "group_id":   group_id,
@@ -1139,7 +1144,10 @@ async def notify_report(report_id: str, body: NotifyRequest):
     report = _read_report_json(p)
     if not report:
         raise HTTPException(status_code=404, detail="报告内容不存在")
-    report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
+    if report.get("type") == "inspect":
+        report_url = build_public_inspect_pdf_url(report_id, APP_URL)
+    else:
+        report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
 
     results = {}
     for ch in body.channels:
@@ -1147,6 +1155,11 @@ async def notify_report(report_id: str, body: NotifyRequest):
             if not FEISHU_WEBHOOK:
                 results["feishu"] = {"ok": False, "msg": "未配置 FEISHU_WEBHOOK"}
             else:
+                if report.get("type") == "inspect" and not report_url:
+                    logger.warning(
+                        "巡检报告 %s 推送未附带 PDF：APP_URL 未配置",
+                        report_id,
+                    )
                 results["feishu"] = await send_feishu(
                     report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD, report_url=report_url
                 )
@@ -1173,8 +1186,6 @@ async def notify_report_groups(report_id: str, group_id: Optional[str] = Query(N
     report = _read_report_json(p)
     if not report:
         raise HTTPException(status_code=404, detail="报告内容不存在")
-    report_url = f"{APP_URL}/report/{report_id}" if APP_URL else ""
-
     all_groups = load_groups()
     group_reports = _split_inspect_report_by_group(report) if report.get("type") == "inspect" else {}
     # 若指定分组则只取该分组，否则取全部
@@ -1194,7 +1205,35 @@ async def notify_report_groups(report_id: str, group_id: Optional[str] = Query(N
         feishu_wh = group.get("feishu_webhook", "")
         if feishu_wh:
             keyword = group.get("feishu_keyword", FEISHU_KEYWORD)
-            pushed["feishu"] = await send_feishu(payload_report, feishu_wh, keyword=keyword, report_url=report_url)
+            delivery_report = payload_report
+            if payload_report.get("type") == "inspect":
+                if report.get("group_id") == gid:
+                    delivery_report = report
+                else:
+                    delivery_report = await save_group_inspect_report(
+                        results=payload_report.get("all_hosts", []),
+                        group_id=gid,
+                        group_name=group_name,
+                        ai_text=payload_report.get("ai_analysis", ""),
+                    )
+                feishu_report_url = build_public_inspect_pdf_url(
+                    delivery_report["id"], APP_URL
+                )
+                if not feishu_report_url:
+                    logger.warning(
+                        "分组 %s 巡检报告推送未附带 PDF：APP_URL 未配置",
+                        group_name,
+                    )
+            else:
+                feishu_report_url = (
+                    f"{APP_URL}/report/{report_id}" if APP_URL else ""
+                )
+            pushed["feishu"] = await send_feishu(
+                delivery_report,
+                feishu_wh,
+                keyword=keyword,
+                report_url=feishu_report_url,
+            )
 
         dingtalk_wh = group.get("dingtalk_webhook", "")
         if dingtalk_wh:

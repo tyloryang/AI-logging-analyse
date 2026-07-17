@@ -21,6 +21,10 @@ from report_builder import (
     build_slowlog_ai_prompt_short,
 )
 from report_store import save_report_meta, cleanup_old_reports
+from services.inspect_report_delivery import (
+    build_public_inspect_pdf_url,
+    save_group_inspect_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,12 +198,26 @@ async def _send_group_inspect_notifications(
                 f"正常 {normal_cnt} 台、警告 {warning_cnt} 台、严重 {critical_cnt} 台。"
             )
 
+        group_report = await save_group_inspect_report(
+            results=results,
+            group_id=gid,
+            group_name=group_name,
+            ai_text=ai_text,
+        )
+        report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
+        if not report_url:
+            logger.warning(
+                "[scheduler] APP_URL 未配置，分组 '%s' 巡检卡片不附带 PDF 链接",
+                group_name,
+            )
+
         res = await send_feishu_group_inspect(
             group_name=group_name,
             results=results,
             webhook_url=group["feishu_webhook"],
             keyword=group.get("feishu_keyword", ""),
             ai_text=ai_text,
+            report_url=report_url,
         )
         logger.info("[scheduler] 分组 '%s' 飞书巡检推送: %s", group_name, res)
         notify_results.append({
@@ -264,12 +282,26 @@ async def run_group_schedule_job() -> None:
             )
 
         if group.get("feishu_webhook"):
+            group_name = group.get("name", gid)
+            group_report = await save_group_inspect_report(
+                results=results,
+                group_id=gid,
+                group_name=group_name,
+                ai_text=ai_text,
+            )
+            report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
+            if not report_url:
+                logger.warning(
+                    "[group_schedule] APP_URL 未配置，分组 '%s' 巡检卡片不附带 PDF 链接",
+                    group_name,
+                )
             res = await send_feishu_group_inspect(
-                group_name=group["name"],
+                group_name=group_name,
                 results=results,
                 webhook_url=group["feishu_webhook"],
                 keyword=group.get("feishu_keyword", ""),
                 ai_text=ai_text,
+                report_url=report_url,
             )
             logger.info("[group_schedule] 分组 '%s' 飞书推送: %s", group["name"], res)
 
@@ -288,6 +320,7 @@ async def scheduled_report_job() -> None:
         logger.info("[scheduler] 开始生成主机巡检日报 ...")
         inspect_data = await collect_inspect_data()
         inspect_report = await _build_inspect_report(inspect_data)
+        inspect_report_url = build_public_inspect_pdf_url(inspect_report["id"], APP_URL)
         raw_inspect_results = inspect_data["results"]
 
         logger.info("[scheduler] 开始生成慢日志报告 ...")
@@ -302,9 +335,18 @@ async def scheduled_report_job() -> None:
                 if not FEISHU_WEBHOOK:
                     logger.warning("[scheduler] FEISHU_WEBHOOK 未配置，跳过飞书推送")
                     continue
+                if not inspect_report_url:
+                    logger.warning(
+                        "[scheduler] APP_URL 未配置，飞书巡检卡片不附带 PDF 链接"
+                    )
                 result = await send_feishu(report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD, report_url=report_url)
                 logger.info("[scheduler] 飞书日报推送: %s", result)
-                result2 = await send_feishu(inspect_report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
+                result2 = await send_feishu(
+                    inspect_report,
+                    FEISHU_WEBHOOK,
+                    keyword=FEISHU_KEYWORD,
+                    report_url=inspect_report_url,
+                )
                 logger.info("[scheduler] 飞书巡检推送: %s", result2)
                 if slowlog_report:
                     result3 = await send_feishu(slowlog_report, FEISHU_WEBHOOK, keyword=FEISHU_KEYWORD)
