@@ -435,6 +435,20 @@ async def run_group_schedule_job() -> list[dict]:
 
 async def scheduled_report_job() -> None:
     """定时任务入口：生成运维日报 + 主机巡检日报，推送到已配置的渠道。"""
+    # 报告清理独立于通知配置和本轮报告生成结果；任务一触发就先尝试清理。
+    from state import REPORT_RETENTION_DAYS
+    if REPORT_RETENTION_DAYS > 0:
+        try:
+            deleted = await cleanup_old_reports(REPORTS_DIR, REPORT_RETENTION_DAYS)
+            if deleted:
+                logger.info(
+                    "[scheduler] 已清理 %d 条超期报告（>%d天）",
+                    deleted,
+                    REPORT_RETENTION_DAYS,
+                )
+        except Exception:
+            logger.exception("[scheduler] 超期报告清理失败，不影响本轮报告任务")
+
     if not SCHEDULE_CHANNELS:
         logger.info("[scheduler] SCHEDULE_CHANNELS 未配置，跳过推送")
         return
@@ -493,13 +507,6 @@ async def scheduled_report_job() -> None:
                 logger.warning("[scheduler] 不支持的推送渠道: %s", ch)
 
         await _send_group_inspect_notifications(raw_inspect_results)
-
-        # 清理超期报告文件
-        from state import REPORT_RETENTION_DAYS
-        if REPORT_RETENTION_DAYS > 0:
-            deleted = await cleanup_old_reports(REPORTS_DIR, REPORT_RETENTION_DAYS)
-            if deleted:
-                logger.info("[scheduler] 已清理 %d 条超期报告（>%d天）", deleted, REPORT_RETENTION_DAYS)
 
         logger.info("[scheduler] 定时任务完成，report_id=%s", report["id"])
 

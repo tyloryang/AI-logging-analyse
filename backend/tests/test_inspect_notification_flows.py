@@ -87,6 +87,90 @@ class SchedulerInspectNotificationLinkTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(send_dingtalk.await_args_list), 2)
 
+    async def test_scheduled_cleanup_runs_when_notification_channels_are_empty(self):
+        cleanup = AsyncMock(return_value=2)
+        build_report = AsyncMock()
+        with (
+            patch.object(scheduler, "SCHEDULE_CHANNELS", []),
+            patch.object(scheduler, "cleanup_old_reports", cleanup),
+            patch.object(scheduler, "_build_and_save_report", build_report),
+            patch("state.REPORT_RETENTION_DAYS", 90),
+        ):
+            await scheduler.scheduled_report_job()
+
+        cleanup.assert_awaited_once_with(scheduler.REPORTS_DIR, 90)
+        build_report.assert_not_awaited()
+
+    async def test_scheduled_cleanup_runs_before_upstream_generation_failure(self):
+        cleanup = AsyncMock(return_value=0)
+        build_report = AsyncMock(side_effect=RuntimeError("collection failed"))
+        with (
+            patch.object(scheduler, "SCHEDULE_CHANNELS", ["feishu"]),
+            patch.object(scheduler, "FEISHU_WEBHOOK", ""),
+            patch.object(scheduler, "cleanup_old_reports", cleanup),
+            patch.object(scheduler, "_build_and_save_report", build_report),
+            patch("state.REPORT_RETENTION_DAYS", 90),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR"):
+                await scheduler.scheduled_report_job()
+
+        cleanup.assert_awaited_once_with(scheduler.REPORTS_DIR, 90)
+        build_report.assert_awaited_once()
+
+    async def test_cleanup_failure_is_logged_before_normal_report_work_continues(self):
+        events = []
+        send_dingtalk = AsyncMock(return_value={"ok": True})
+
+        async def cleanup(*args):
+            events.append("cleanup")
+            raise OSError("cleanup unavailable")
+
+        async def build_report():
+            events.append("build")
+            return {"id": "daily_1", "type": "daily"}
+
+        with (
+            patch.object(scheduler, "SCHEDULE_CHANNELS", ["dingtalk"]),
+            patch.object(scheduler, "DINGTALK_WEBHOOK", "https://ding.example/hook"),
+            patch.object(scheduler, "cleanup_old_reports", cleanup),
+            patch.object(scheduler, "_build_and_save_report", build_report),
+            patch.object(
+                scheduler,
+                "collect_inspect_data",
+                AsyncMock(return_value={"results": []}),
+            ),
+            patch.object(
+                scheduler,
+                "_build_inspect_report",
+                AsyncMock(return_value={"id": "inspect_1", "type": "inspect"}),
+            ),
+            patch.object(scheduler, "_build_slowlog_report", AsyncMock(return_value=None)),
+            patch.object(scheduler, "send_dingtalk", send_dingtalk),
+            patch.object(
+                scheduler,
+                "_send_group_inspect_notifications",
+                AsyncMock(return_value=[]),
+            ),
+            patch("state.REPORT_RETENTION_DAYS", 90),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR") as logs:
+                await scheduler.scheduled_report_job()
+
+        self.assertEqual(events, ["cleanup", "build"])
+        self.assertTrue(any("清理" in message for message in logs.output))
+        self.assertEqual(send_dingtalk.await_count, 2)
+
+    async def test_zero_retention_disables_scheduled_cleanup(self):
+        cleanup = AsyncMock()
+        with (
+            patch.object(scheduler, "SCHEDULE_CHANNELS", []),
+            patch.object(scheduler, "cleanup_old_reports", cleanup),
+            patch("state.REPORT_RETENTION_DAYS", 0),
+        ):
+            await scheduler.scheduled_report_job()
+
+        cleanup.assert_not_awaited()
+
     async def test_group_notification_saves_before_sending_link(self):
         events = []
 
