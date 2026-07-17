@@ -231,6 +231,9 @@ class SchedulerInspectNotificationLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["group_id"], "grp-1")
         self.assertEqual(result[0]["stage"], "persist")
         self.assertIn("disk full", result[0]["error"])
+        self.assertEqual(
+            result[0]["push"], {"ok": False, "msg": "disk full"}
+        )
         self.assertEqual(result[1]["group_id"], "grp-2")
         self.assertEqual(result[1]["push"], {"ok": True})
 
@@ -288,8 +291,139 @@ class SchedulerInspectNotificationLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["group_id"], "grp-1")
         self.assertEqual(result[0]["stage"], "persist")
         self.assertIn("read-only volume", result[0]["error"])
+        self.assertEqual(
+            result[0]["push"], {"ok": False, "msg": "read-only volume"}
+        )
         self.assertEqual(result[1]["group_id"], "grp-2")
         self.assertEqual(result[1]["push"], {"ok": True})
+
+    async def test_group_notification_raised_delivery_failure_has_push_contract(self):
+        with (
+            patch.object(scheduler, "APP_URL", "https://aiops.example"),
+            patch.object(
+                scheduler,
+                "load_groups",
+                return_value=[{
+                    "id": "grp-1",
+                    "name": "故障组",
+                    "schedule_enabled": True,
+                    "feishu_webhook": "https://feishu.example/one",
+                }],
+            ),
+            patch.object(scheduler, "load_hosts_list", return_value=[]),
+            patch.object(
+                scheduler.analyzer,
+                "generate_inspection_summary",
+                _empty_summary_stream,
+            ),
+            patch.object(
+                scheduler,
+                "save_group_inspect_report",
+                AsyncMock(return_value={"id": "inspect_grp_1"}),
+            ),
+            patch.object(
+                scheduler,
+                "send_feishu_group_inspect",
+                AsyncMock(side_effect=ConnectionError("network down")),
+            ),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR"):
+                result = await scheduler._send_group_inspect_notifications(
+                    [{"group": "grp-1", "overall": "normal", "checks": []}]
+                )
+
+        self.assertEqual(result[0]["stage"], "delivery")
+        self.assertEqual(
+            result[0]["push"], {"ok": False, "msg": "network down"}
+        )
+
+    async def test_per_group_schedule_raised_delivery_failure_has_push_contract(self):
+        with (
+            patch.object(scheduler, "APP_URL", "https://aiops.example"),
+            patch.object(
+                scheduler,
+                "load_groups",
+                return_value=[{
+                    "id": "grp-1",
+                    "name": "故障组",
+                    "schedule_enabled": True,
+                    "schedule_time": datetime.now().strftime("%H:%M"),
+                    "feishu_webhook": "https://feishu.example/one",
+                }],
+            ),
+            patch.object(
+                scheduler,
+                "load_hosts_list",
+                return_value=[{"ip": "10.0.0.1", "group": "grp-1"}],
+            ),
+            patch.object(
+                scheduler,
+                "collect_inspect_data",
+                AsyncMock(return_value={
+                    "results": [{"overall": "normal", "checks": []}],
+                    "summary": {
+                        "total": 1,
+                        "normal": 1,
+                        "warning": 0,
+                        "critical": 0,
+                    },
+                }),
+            ),
+            patch.object(
+                scheduler.analyzer,
+                "generate_inspection_summary",
+                _empty_summary_stream,
+            ),
+            patch.object(
+                scheduler,
+                "save_group_inspect_report",
+                AsyncMock(return_value={"id": "inspect_grp_1"}),
+            ),
+            patch.object(
+                scheduler,
+                "send_feishu_group_inspect",
+                AsyncMock(side_effect=ConnectionError("network down")),
+            ),
+        ):
+            with self.assertLogs(scheduler.logger, level="ERROR"):
+                result = await scheduler.run_group_schedule_job()
+
+        self.assertEqual(result[0]["stage"], "delivery")
+        self.assertEqual(
+            result[0]["push"], {"ok": False, "msg": "network down"}
+        )
+
+    async def test_manual_notify_groups_counts_failed_push_contract(self):
+        from routers import hosts as hosts_router
+
+        send_results = [
+            {
+                "group_id": "grp-1",
+                "group_name": "故障组",
+                "stage": "persist",
+                "error": "disk full",
+                "push": {"ok": False, "msg": "disk full"},
+            },
+            {
+                "group_id": "grp-2",
+                "group_name": "正常组",
+                "push": {"ok": True, "msg": "发送成功"},
+            },
+        ]
+        with patch.object(
+            scheduler,
+            "_send_group_inspect_notifications",
+            AsyncMock(return_value=send_results),
+        ):
+            result = await hosts_router.notify_groups_inspect(
+                hosts_router.NotifyGroupsRequest(results=[], summary={})
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            result["summary"], {"sent": 1, "failed": 1, "skipped": 0}
+        )
+        self.assertIn("1 个分组失败", result["message"])
 
     async def test_group_notification_delivery_failure_isolated_per_group(self):
         groups = [

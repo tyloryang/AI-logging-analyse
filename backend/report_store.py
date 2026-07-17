@@ -24,11 +24,11 @@ def _parse_created_at(value: object) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except (TypeError, ValueError):
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _safe_report_path(reports_dir: Path, report_id: str) -> Path | None:
@@ -191,7 +191,8 @@ async def cleanup_old_reports(reports_dir: Path, retention_days: int) -> int:
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     deleted = 0
-    expired_ids: set[str] = set()
+    expired_file_ids: set[str] = set()
+    expired_metadata_ids: set[str] = set()
 
     # JSON 是报告正文的事实来源；即使元数据注册失败，也必须能按保留期清理。
     reports_root = reports_dir.resolve()
@@ -207,7 +208,7 @@ async def cleanup_old_reports(reports_dir: Path, retention_days: int) -> int:
                 continue
             created_at = _parse_created_at(data.get("created_at"))
             if created_at is not None and created_at < cutoff:
-                expired_ids.add(path.stem)
+                expired_file_ids.add(path.stem)
         except (OSError, UnicodeError, json.JSONDecodeError):
             # 保守处理格式异常或无法安全读取的文件，避免误删无关 JSON。
             continue
@@ -224,12 +225,12 @@ async def cleanup_old_reports(reports_dir: Path, retention_days: int) -> int:
                     and created_at < cutoff
                     and _safe_report_path(reports_root, report_id) is not None
                 ):
-                    expired_ids.add(report_id)
+                    expired_metadata_ids.add(report_id)
     except Exception as exc:
         logger.warning("[report_store] 查询过期报告元数据失败: %s", exc)
 
-    metadata_ids_to_remove: list[str] = []
-    for report_id in sorted(expired_ids):
+    removed_file_ids: set[str] = set()
+    for report_id in sorted(expired_file_ids):
         report_path = _safe_report_path(reports_root, report_id)
         if report_path is None:
             continue
@@ -244,14 +245,22 @@ async def cleanup_old_reports(reports_dir: Path, retention_days: int) -> int:
                     exc,
                 )
                 continue
-        metadata_ids_to_remove.append(report_id)
+        removed_file_ids.add(report_id)
+
+    # DB 年龄只能清理已经不存在的正文元数据；存在的 JSON 必须由自身内容
+    # 独立证明已过期并先成功删除，防止陈旧元数据误删新鲜或异常文件。
+    metadata_ids_to_remove = set(removed_file_ids)
+    for report_id in expired_metadata_ids:
+        report_path = _safe_report_path(reports_root, report_id)
+        if report_path is not None and not report_path.exists():
+            metadata_ids_to_remove.add(report_id)
 
     if metadata_ids_to_remove:
         try:
             async with AsyncSessionLocal() as db:
                 await db.execute(
                     delete(ReportRecord).where(
-                        ReportRecord.id.in_(metadata_ids_to_remove)
+                        ReportRecord.id.in_(sorted(metadata_ids_to_remove))
                     )
                 )
                 await db.commit()

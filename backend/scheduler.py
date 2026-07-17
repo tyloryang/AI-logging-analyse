@@ -212,6 +212,7 @@ async def _send_group_inspect_notifications(
                 ai_text=ai_text,
             )
         except Exception as exc:
+            error_message = str(exc) or repr(exc)
             logger.exception(
                 "[scheduler] 分组 '%s' 巡检报告保存失败，跳过推送",
                 group_name,
@@ -221,7 +222,8 @@ async def _send_group_inspect_notifications(
                 "group_name": group_name,
                 "hosts": len(results),
                 "stage": "persist",
-                "error": str(exc),
+                "error": error_message,
+                "push": {"ok": False, "msg": error_message},
             })
             continue
         report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
@@ -241,13 +243,15 @@ async def _send_group_inspect_notifications(
                 report_url=report_url,
             )
         except Exception as exc:
+            error_message = str(exc) or repr(exc)
             logger.exception("[scheduler] 分组 '%s' 飞书巡检推送失败", group_name)
             notify_results.append({
                 "group_id": gid,
                 "group_name": group_name,
                 "hosts": len(results),
                 "stage": "delivery",
-                "error": str(exc),
+                "error": error_message,
+                "push": {"ok": False, "msg": error_message},
             })
             continue
         delivery_error = _delivery_error(res)
@@ -314,12 +318,14 @@ async def run_group_schedule_job() -> list[dict]:
             )
             results = inspect_data["results"]
         except Exception as exc:
+            error_message = str(exc) or repr(exc)
             logger.exception("[group_schedule] 分组 '%s' 巡检失败", group_name)
             job_results.append({
                 "group_id": gid,
                 "group_name": group_name,
                 "stage": "inspect",
-                "error": str(exc),
+                "error": error_message,
+                "push": {"ok": False, "msg": error_message},
             })
             continue
 
@@ -351,6 +357,7 @@ async def run_group_schedule_job() -> list[dict]:
                     ai_text=ai_text,
                 )
             except Exception as exc:
+                error_message = str(exc) or repr(exc)
                 logger.exception(
                     "[group_schedule] 分组 '%s' 巡检报告保存失败，跳过推送",
                     group_name,
@@ -360,7 +367,8 @@ async def run_group_schedule_job() -> list[dict]:
                     "group_name": group_name,
                     "hosts": len(results),
                     "stage": "persist",
-                    "error": str(exc),
+                    "error": error_message,
+                    "push": {"ok": False, "msg": error_message},
                 })
                 continue
             report_url = build_public_inspect_pdf_url(group_report["id"], APP_URL)
@@ -379,13 +387,15 @@ async def run_group_schedule_job() -> list[dict]:
                     report_url=report_url,
                 )
             except Exception as exc:
+                error_message = str(exc) or repr(exc)
                 logger.exception("[group_schedule] 分组 '%s' 飞书推送失败", group_name)
                 job_results.append({
                     "group_id": gid,
                     "group_name": group_name,
                     "hosts": len(results),
                     "stage": "delivery",
-                    "error": str(exc),
+                    "error": error_message,
+                    "push": {"ok": False, "msg": error_message},
                 })
                 continue
             delivery_error = _delivery_error(res)

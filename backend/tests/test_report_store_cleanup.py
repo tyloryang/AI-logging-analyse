@@ -149,6 +149,125 @@ class ReportRetentionCleanupTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(outside.exists())
             self.assertTrue(await self._record_exists(unsafe_id))
 
+    async def test_expired_metadata_does_not_delete_fresh_report_file(self):
+        report_id = "inspect_fresh_with_old_meta"
+        await self._add_record(report_id, _created_at(days_ago=91))
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp, f"{report_id}.json")
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "id": report_id,
+                        "type": "inspect",
+                        "created_at": _created_at(days_ago=1),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(report_store, "AsyncSessionLocal", self.sessions):
+                deleted = await report_store.cleanup_old_reports(Path(tmp), 90)
+
+            self.assertEqual(deleted, 0)
+            self.assertTrue(report_path.exists())
+            self.assertTrue(await self._record_exists(report_id))
+
+    async def test_expired_metadata_does_not_delete_malformed_report_file(self):
+        report_id = "inspect_malformed_with_old_meta"
+        await self._add_record(report_id, _created_at(days_ago=91))
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp, f"{report_id}.json")
+            report_path.write_text("{not-json", encoding="utf-8")
+            with patch.object(report_store, "AsyncSessionLocal", self.sessions):
+                deleted = await report_store.cleanup_old_reports(Path(tmp), 90)
+
+            self.assertEqual(deleted, 0)
+            self.assertTrue(report_path.exists())
+            self.assertTrue(await self._record_exists(report_id))
+
+    async def test_expired_metadata_does_not_delete_id_mismatched_report_file(self):
+        report_id = "inspect_mismatch_with_old_meta"
+        await self._add_record(report_id, _created_at(days_ago=91))
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp, f"{report_id}.json")
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "id": "inspect_different",
+                        "type": "inspect",
+                        "created_at": _created_at(days_ago=91),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(report_store, "AsyncSessionLocal", self.sessions):
+                deleted = await report_store.cleanup_old_reports(Path(tmp), 90)
+
+            self.assertEqual(deleted, 0)
+            self.assertTrue(report_path.exists())
+            self.assertTrue(await self._record_exists(report_id))
+
+    async def test_expired_metadata_without_report_file_is_removed(self):
+        report_id = "inspect_missing_with_old_meta"
+        await self._add_record(report_id, _created_at(days_ago=91))
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(report_store, "AsyncSessionLocal", self.sessions):
+                deleted = await report_store.cleanup_old_reports(Path(tmp), 90)
+
+            self.assertEqual(deleted, 0)
+            self.assertFalse(await self._record_exists(report_id))
+
+    async def test_validated_expired_file_is_deleted_before_its_metadata(self):
+        report_id = "inspect_validated_expired"
+        created_at = _created_at(days_ago=91)
+        await self._add_record(report_id, created_at)
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp, f"{report_id}.json")
+            report_path.write_text(
+                json.dumps(
+                    {"id": report_id, "type": "inspect", "created_at": created_at}
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(report_store, "AsyncSessionLocal", self.sessions):
+                deleted = await report_store.cleanup_old_reports(Path(tmp), 90)
+
+            self.assertEqual(deleted, 1)
+            self.assertFalse(report_path.exists())
+            self.assertFalse(await self._record_exists(report_id))
+
+    async def test_pathological_timezone_does_not_block_later_expired_orphan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp)
+            pathological = reports_dir / "inspect_pathological.json"
+            pathological.write_text(
+                json.dumps(
+                    {
+                        "id": pathological.stem,
+                        "type": "inspect",
+                        "created_at": "0001-01-01T00:00:00+23:59",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            expired = reports_dir / "inspect_valid_after_pathological.json"
+            expired.write_text(
+                json.dumps(
+                    {
+                        "id": expired.stem,
+                        "type": "inspect",
+                        "created_at": _created_at(days_ago=91),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(report_store, "AsyncSessionLocal", self.sessions):
+                deleted = await report_store.cleanup_old_reports(reports_dir, 90)
+
+            self.assertEqual(deleted, 1)
+            self.assertTrue(pathological.exists())
+            self.assertFalse(expired.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
