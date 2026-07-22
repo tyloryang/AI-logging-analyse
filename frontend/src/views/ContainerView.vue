@@ -331,34 +331,6 @@
           </div>
         </div>
 
-        <!-- 资源关键字搜索（取代原"kubeconfig 认证检测"卡片）-->
-        <div class="inspect-card">
-          <div class="inspect-title">🔍 资源关键字搜索</div>
-          <div class="inspect-row">
-            <input v-model="searchKeyword" class="form-input inspect-input"
-              placeholder="搜索当前集群所有资源 (Pod / Deployment / Service / Node ...) 的名称、镜像、命名空间..."
-              :disabled="!activeClusterId" />
-            <button v-if="searchKeyword" class="btn-ghost inspect-btn" @click="searchKeyword = ''">清空</button>
-          </div>
-          <div v-if="searchKeyword" class="inspect-result">
-            <div class="search-stats">
-              <button
-                v-for="item in searchMatchSummary"
-                :key="item.tab"
-                class="search-stat-chip"
-                :class="{ active: activeTab === item.tab, zero: item.count === 0 }"
-                @click="selectResourceTab(item.tab)"
-              >
-                <span class="search-stat-name">{{ item.label }}</span>
-                <span class="search-stat-count">{{ item.count }}</span>
-              </button>
-            </div>
-            <div v-if="searchTotalCount === 0" class="search-empty">
-              未在当前集群任何资源中匹配到 <em>{{ searchKeyword }}</em>
-            </div>
-          </div>
-        </div>
-
         <div v-if="error" class="error-banner">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10" />
@@ -4110,23 +4082,6 @@ const sortedFilteredPods = computed(() => {
   return [...list].sort((a, b) => Number(isPodAbnormal(b)) - Number(isPodAbnormal(a)))
 })
 
-// ── 资源关键字搜索统计（替代原 kubeconfig 认证检测）──────────────────────────
-// 按 tab 顺序汇总每类资源在 searchKeyword 下的匹配数；点击 chip 可直接跳到对应 tab
-const searchMatchSummary = computed(() => [
-  { tab: 'pods',         label: 'Pods',         count: filteredPods.value.length },
-  { tab: 'deployments',  label: 'Deployments',  count: filteredDeployments.value.length },
-  { tab: 'daemonSets',   label: 'DaemonSets',   count: filteredDaemonSets.value.length },
-  { tab: 'statefulSets', label: 'StatefulSets', count: filteredStatefulSets.value.length },
-  { tab: 'jobs',         label: 'Jobs',         count: filteredJobs.value.length },
-  { tab: 'cronJobs',     label: 'CronJobs',     count: filteredCronJobs.value.length },
-  { tab: 'services',     label: 'Services',     count: filteredServices.value.length },
-  { tab: 'nodes',        label: 'Nodes',        count: filteredNodes.value.length },
-  { tab: 'events',       label: 'Events',       count: filteredClusterEvents.value.length },
-])
-const searchTotalCount = computed(() =>
-  searchMatchSummary.value.reduce((s, i) => s + i.count, 0)
-)
-
 function _stopAutoRefresh() {
   if (_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null }
 }
@@ -4422,55 +4377,7 @@ onBeforeUnmount(() => { _destroyExec() })
   padding: 8px 16px;
 }
 
-.cluster-banner,
-/* 资源关键字搜索卡片（原 kubeconfig 检测卡片改造） */
-.inspect-card  { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
-.inspect-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
-.inspect-row   { display: flex; gap: 8px; align-items: center; }
-.inspect-input { flex: 1; font-family: inherit; font-size: 13px; }
-.inspect-btn   { flex-shrink: 0; white-space: nowrap; }
-.inspect-result { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-
-/* 资源匹配统计 chip 群 */
-.search-stats {
-  display: flex; flex-wrap: wrap; gap: 6px;
-}
-.search-stat-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 9999px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 11px; cursor: pointer;
-  transition: all .12s;
-}
-.search-stat-chip:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-.search-stat-chip.active {
-  background: var(--accent-dim);
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-.search-stat-chip.zero {
-  opacity: .45;
-}
-.search-stat-name  { font-weight: 500; }
-.search-stat-count {
-  background: var(--bg-card);
-  padding: 1px 6px; border-radius: 9999px;
-  font-weight: 700; font-size: 10px;
-}
-.search-stat-chip.active .search-stat-count {
-  background: var(--accent);
-  color: var(--bg-card);
-}
-.search-empty {
-  font-size: 12px; color: var(--text-muted); padding: 6px 2px;
-}
-.search-empty em { color: var(--text-primary); font-style: normal; font-family: monospace; }
+.cluster-banner { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
 
 .error-banner {
   margin: 12px 20px 0;

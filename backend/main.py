@@ -37,7 +37,7 @@ from auth.admin_router import router as admin_router
 from auth import service as auth_service
 from auth.middleware import AuthenticationMiddleware
 from cors_config import add_permissive_cors
-from state import SCHEDULE_CRON, SCHEDULE_CHANNELS, REPORTS_DIR
+from state import SCHEDULE_CRON, SCHEDULE_CHANNELS, REPORTS_DIR, migrate_cmdb_storage
 from scheduler import scheduled_report_job, run_group_schedule_job
 from routers.logs import router as logs_router
 from routers.reports import router as reports_router
@@ -204,6 +204,9 @@ async def lifespan(app: FastAPI):
         created = await auth_service.ensure_admin(db)
         if created:
             logger.info("[AUTH] 初始管理员账号已创建")
+
+    cmdb_stats = await asyncio.to_thread(migrate_cmdb_storage)
+    logger.info("[CMDB] 数据库存储已就绪: %s", cmdb_stats)
 
     # ── 历史报告元数据同步到 DB ────────────────────────────────────
     async def _sync_report_meta():

@@ -10,6 +10,7 @@
       </div>
 
       <div class="section-title">我的权限</div>
+      <p v-if="!auth.isAdmin && !Object.keys(auth.permissions).length" class="permission-empty">当前账号默认没有任何模块权限，请联系管理员分配。</p>
       <div class="perm-grid">
         <div v-for="(level, mod) in auth.permissions" :key="mod" class="perm-item" :class="'perm-' + level">
           <span class="mod-name">{{ modLabel(mod) }}</span>
@@ -52,6 +53,10 @@ const MOD_LABELS = {
   dashboard: '仪表盘', log: '日志分析', metrics: '指标监控',
   alert: '告警历史', report: '分析报告', cmdb: '主机CMDB',
   inspect: '主机巡检', ssh: 'SSH终端', admin: '用户管理',
+  host: '主机中心', ticket: '工单系统', container: '容器管理',
+  middleware: '中间件', cicd: 'CI/CD', events: '事件墙',
+  knowledge: '知识库', tools: '工具市场', agent: 'AI 智能体',
+  skywalking: 'APM 链路追踪', workflow: '工作流编排',
 }
 const LEVEL_LABELS = { none: '无权限', view: '只读', operate: '可操作' }
 
@@ -84,6 +89,7 @@ async function handleChangePassword() {
 .info-row .label { width: 60px; color: var(--text-muted, #8892a4); flex-shrink: 0; }
 .section-title { font-size: 13px; color: var(--text-muted, #8892a4); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; }
 .perm-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.permission-empty { color: var(--text-muted, #8892a4); font-size: 13px; margin: 0 0 12px; }
 .perm-item { display: flex; align-items: center; gap: 8px; background: var(--bg-base, #0f1117); border: 1px solid var(--border, #2a2d3e); border-radius: 6px; padding: 6px 12px; }
 .mod-name { font-size: 13px; color: var(--text-base, #e2e8f0); }
 .perm-badge { font-size: 11px; padding: 2px 7px; border-radius: 4px; }

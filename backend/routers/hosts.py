@@ -47,9 +47,8 @@ def _filter_hosts_by_user(hosts: list[dict], user: User) -> list[dict]:
     if user.is_superuser:
         return hosts
     allowed = get_user_allowed_groups(user.id)
-    if allowed is None:
-        return hosts  # 兜底：超管标记缺失时放行
-    # allowed 为空列表 → 只能看无分组主机；有值 → 只能看对应分组
+    if not allowed:
+        return []
     return [h for h in hosts if h.get("group", "") in allowed]
 
 

@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from auth.deps import websocket_has_permission
 from json_snapshot_store import read_json_file, write_json_file
 from state import loki, prom, analyzer, load_hosts_list
 from skywalking_client import sw_client, check_connectivity as sw_check
@@ -1909,6 +1910,10 @@ import re as _re
 async def grafana_ws_proxy(websocket: WebSocket, gpath: str):
     """WebSocket 代理：转发 Grafana Live (/api/live/ws) 连接"""
     import websockets as _ws
+
+    if not await websocket_has_permission(websocket, "metrics", "view"):
+        await websocket.close(code=4403, reason="Metrics permission required")
+        return
 
     base, api_key = _read_grafana_settings()
     if not base:

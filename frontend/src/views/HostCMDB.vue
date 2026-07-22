@@ -62,6 +62,13 @@
               <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
             </select>
           </div>
+          <div class="filter-group" title="负责人过滤">
+            <span class="filter-icon">👤</span>
+            <select v-model="ownerFilter" class="filter-select">
+              <option value="">全部负责人</option>
+              <option v-for="owner in ownerOptions" :key="owner" :value="owner">{{ owner }}</option>
+            </select>
+          </div>
           <button class="btn btn-primary" @click="openAdd">+ 添加主机</button>
           <button class="btn btn-outline" @click="downloadExport" title="导出 Excel">📥 导出</button>
           <button class="btn btn-outline" @click="showImportModal = true" title="从 Excel/CSV 导入">📤 导入</button>
@@ -148,7 +155,7 @@
               <th>运行状态</th>
               <th class="th-sort" @click="setSort('env')">环境<span class="sort-icon">{{ sortKey==='env'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
               <th>用途</th>
-              <th>负责人</th>
+              <th class="th-sort" @click="setSort('owner')">负责人<span class="sort-icon">{{ sortKey==='owner'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
               <th>机房</th>
               <th>分组</th>
               <th class="th-sort" @click="setSort('last_sync_at')">最新同步<span class="sort-icon">{{ sortKey==='last_sync_at'?(sortAsc?'↑':'↓'):'⇅'}}</span></th>
@@ -1078,6 +1085,7 @@
 import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { api } from '../api/index.js'
+import { filterHostsByOwner, getOwnerOptions, sortHosts } from '../utils/hostList.mjs'
 
 const router = useRouter()
 
@@ -1090,12 +1098,14 @@ const tab         = ref('cmdb')
 const search      = ref('')
 const envFilter   = ref('')
 const groupFilter = ref('')
+const ownerFilter = ref('')
 const sortKey     = ref('hostname')
 const sortAsc     = ref(true)
 const selectedHost = ref(null)
 
 const groupMap = computed(() => Object.fromEntries(groups.value.map(g => [g.id, g.name])))
 const credentialMap = computed(() => Object.fromEntries(credentials.value.map(c => [c.id, c])))
+const ownerOptions = computed(() => getOwnerOptions(hosts.value))
 
 const countByStatus = (s) => hosts.value.filter(h => h.status === s).length
 
@@ -1117,18 +1127,10 @@ const filteredHosts = computed(() => {
   }
   if (envFilter.value) list = list.filter(h => h.env === envFilter.value)
   if (groupFilter.value) list = list.filter(h => h.group === groupFilter.value)
-  return list
+  return filterHostsByOwner(list, ownerFilter.value)
 })
 
-const sortedHosts = computed(() => {
-  const list = [...filteredHosts.value]
-  list.sort((a, b) => {
-    const va = (a[sortKey.value] || '').toString().toLowerCase()
-    const vb = (b[sortKey.value] || '').toString().toLowerCase()
-    return sortAsc.value ? va.localeCompare(vb) : vb.localeCompare(va)
-  })
-  return list
-})
+const sortedHosts = computed(() => sortHosts(filteredHosts.value, sortKey.value, sortAsc.value))
 
 function refreshSelectedHostFromList() {
   if (!selectedHost.value) return
@@ -1173,6 +1175,7 @@ onMounted(() => {
   if (q.q) search.value = String(q.q)
   if (q.env) envFilter.value = String(q.env)
   if (q.group) groupFilter.value = String(q.group)
+  if (q.owner) ownerFilter.value = String(q.owner)
   loadHosts(); loadGroups(); loadCredentials()
 })
 
@@ -1183,9 +1186,10 @@ function syncQueryToUrl() {
   if (search.value) q.q = search.value
   if (envFilter.value) q.env = envFilter.value
   if (groupFilter.value) q.group = groupFilter.value
+  if (ownerFilter.value) q.owner = ownerFilter.value
   router.replace({ query: q }).catch(() => {})
 }
-watch([tab, search, envFilter, groupFilter], () => syncQueryToUrl(), { flush: 'post' })
+watch([tab, search, envFilter, groupFilter, ownerFilter], () => syncQueryToUrl(), { flush: 'post' })
 
 // ── 批量选择 + 浮动操作栏 ────────────────────────────────────────────────────
 const selectedHostIds = ref(new Set())

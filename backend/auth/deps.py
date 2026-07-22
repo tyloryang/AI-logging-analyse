@@ -1,6 +1,5 @@
 """FastAPI 依赖：current_user / require_permission"""
 import os
-import functools
 from fastapi import Request, WebSocket, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,6 +15,14 @@ LEVEL_RANK = {"none": 0, "view": 1, "operate": 2}
 
 # 用户权限 LRU 缓存（60s）
 _perm_cache: TTLCache = TTLCache(maxsize=256, ttl=60)
+
+
+def clear_permission_cache(user_id: str | None = None):
+    """清除权限缓存；管理员修改权限后立即生效。"""
+    if user_id:
+        _perm_cache.pop(user_id, None)
+    else:
+        _perm_cache.clear()
 
 
 async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
@@ -74,6 +81,15 @@ async def _get_permissions(user_id: str, db: AsyncSession) -> dict:
     return perms
 
 
+async def has_permission(user: User, db: AsyncSession, module: str, level: str = "view") -> bool:
+    """检查用户是否达到指定模块权限等级。"""
+    if user.is_superuser:
+        return True
+    permissions = await _get_permissions(user.id, db)
+    user_level = permissions.get(module, "none")
+    return LEVEL_RANK.get(user_level, 0) >= LEVEL_RANK.get(level, 0)
+
+
 def require_permission(module: str, level: str = "view"):
     """路由装饰器：检查用户对指定模块的权限"""
     def dependency(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
@@ -81,11 +97,7 @@ def require_permission(module: str, level: str = "view"):
 
     async def checker(ctx=Depends(dependency)):
         user, db, mod, lv = ctx
-        if user.is_superuser:
-            return user
-        perms = await _get_permissions(user.id, db)
-        user_level = perms.get(mod, "none")
-        if LEVEL_RANK.get(user_level, 0) < LEVEL_RANK.get(lv, 0):
+        if not await has_permission(user, db, mod, lv):
             raise HTTPException(status_code=403, detail=f"无权限：{mod}.{lv}")
         return user
 

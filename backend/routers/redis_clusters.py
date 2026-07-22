@@ -403,6 +403,7 @@ def _build_node_client(config: dict, host: str, port: int) -> aioredis.Redis:
         password=config.get("password") or None,
         ssl=bool(config.get("tls")),
         decode_responses=True,
+        protocol=2,
         socket_connect_timeout=4,
         socket_timeout=4,
         health_check_interval=15,
@@ -420,6 +421,7 @@ def _build_cluster_client(config: dict) -> RedisCluster:
         password=config.get("password") or None,
         ssl=bool(config.get("tls")),
         decode_responses=True,
+        protocol=2,
         require_full_coverage=False,
         socket_connect_timeout=5,
         socket_timeout=5,
@@ -796,6 +798,7 @@ async def _get_single_client(cluster: dict, db: int = 0) -> aioredis.Redis:
         ssl=bool(cluster.get("tls")),
         db=db,
         decode_responses=True,
+        protocol=2,
         socket_connect_timeout=5,
         socket_timeout=5,
     )

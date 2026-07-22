@@ -99,7 +99,11 @@ def _get_backend():
     if REDIS_URL:
         try:
             import redis.asyncio as aioredis
-            _backend = aioredis.from_url(REDIS_URL, decode_responses=True)
+            _backend = aioredis.from_url(
+                REDIS_URL,
+                decode_responses=True,
+                protocol=2,
+            )
         except Exception:
             if not ALLOW_MEMORY_FALLBACK:
                 raise

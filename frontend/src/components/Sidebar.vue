@@ -126,69 +126,69 @@ onMounted(async () => {
 
 // ── 菜单定义 ────────────────────────────────────────────────────
 const MENU = [
-  { id: 'dashboard', icon: 'dashboard', label: '仪表盘', to: '/' },
+  { id: 'dashboard', icon: 'dashboard', label: '仪表盘', to: '/', module: 'dashboard' },
   {
     id: 'host', icon: 'host', label: '主机中心',
     children: [
       { label: 'CMDB',     to: '/cmdb', module: 'cmdb' },
-      { label: '任务工作台', to: '/hosts/workbench' },
-      { label: '任务中心', to: '/hosts/tasks' },
-      { label: '定时任务', to: '/hosts/cron' },
-      { label: '主机申请', to: '/hosts/apply' },
+      { label: '任务工作台', to: '/hosts/workbench', module: 'host' },
+      { label: '任务中心', to: '/hosts/tasks', module: 'host' },
+      { label: '定时任务', to: '/hosts/cron', module: 'host' },
+      { label: '主机申请', to: '/hosts/apply', module: 'host' },
     ],
   },
   // { id: 'cloud', icon: 'cloud', label: '多云管理', to: '/cloud' },
   {
     id: 'ticket', icon: 'ticket', label: '工单系统',
     children: [
-      { label: '应用发布', to: '/tickets/deploy' },
-      { label: 'SQL 审计', to: '/tickets/sql' },
-      { label: '事务工单', to: '/tickets/incident' },
-      { label: '审批流',   to: '/tickets/approval' },
+      { label: '应用发布', to: '/tickets/deploy', module: 'ticket' },
+      { label: 'SQL 审计', to: '/tickets/sql', module: 'ticket' },
+      { label: '事务工单', to: '/tickets/incident', module: 'ticket' },
+      { label: '审批流',   to: '/tickets/approval', module: 'ticket' },
     ],
   },
   {
     id: 'container', icon: 'container', label: '容器管理',
     children: [
-      { label: '容器列表',      to: '/containers' },
-      { label: 'K8s 拓扑流图',  to: '/k8s/topology' },
-      { label: '知识拓扑图',    to: '/k8s/relations' },
+      { label: '容器列表',      to: '/containers', module: 'container' },
+      { label: 'K8s 拓扑流图',  to: '/k8s/topology', module: 'container' },
+      { label: '知识拓扑图',    to: '/k8s/relations', module: 'container' },
     ],
   },
   {
     id: 'middleware', icon: 'middleware', label: '中间件',
     children: [
-      { label: '中间件概览', to: '/middleware' },
-      { label: 'Redis Cluster', to: '/middleware/redis' },
-      { label: 'Kafka', to: '/middleware/kafka' },
-      { label: 'Elasticsearch', to: '/middleware/es' },
+      { label: '中间件概览', to: '/middleware', module: 'middleware' },
+      { label: 'Redis Cluster', to: '/middleware/redis', module: 'middleware' },
+      { label: 'Kafka', to: '/middleware/kafka', module: 'middleware' },
+      { label: 'Elasticsearch', to: '/middleware/es', module: 'middleware' },
     ],
   },
   { id: 'workflow', icon: 'workflow', label: '工作流', to: '/workflows', module: 'workflow' },
   {
     id: 'cicd', icon: 'cicd', label: 'CI/CD',
     children: [
-      { label: 'Jenkins', to: '/cicd/jenkins' },
+      { label: 'Jenkins', to: '/cicd/jenkins', module: 'cicd' },
     ],
   },
   {
     id: 'obs', icon: 'obs', label: '可观测性',
     children: [
-      { label: '监控大屏',   to: '/observability/bigscreen' },
+      { label: '监控大屏',   to: '/observability/bigscreen', module: 'dashboard' },
       { label: '指标图表',   to: '/observability/metric-charts', module: 'metrics' },
       { label: '监控看板',   to: '/observability/grafana', module: 'metrics' },
       { label: '日志分析',   to: '/observability/logs',    module: 'log' },
       { label: '链路追踪',   to: '/observability/trace',   module: 'skywalking' },
       { label: '接口 RED · SW', to: '/observability/api-red', module: 'skywalking' },
       { label: '分析报告',   to: '/tools/report',          module: 'report' },
-      { label: '知识库',     to: '/tools/knowledge' },
+      { label: '知识库',     to: '/tools/knowledge', module: 'knowledge' },
     ],
   },
-  { id: 'events', icon: 'event',  label: '事件墙',   to: '/events' },
+  { id: 'events', icon: 'event',  label: '事件墙',   to: '/events', module: 'events' },
   {
     id: 'tools', icon: 'tools', label: '工具市场',
     children: [
-      { label: '工具概览',   to: '/tools' },
+      { label: '工具概览',   to: '/tools', module: 'tools' },
       { label: 'Java 诊断', to: '/tools/java-diagnostics', module: 'ssh' },
       { label: '慢日志分析', to: '/tools/slowlog',  module: 'slowlog' },
     ],
@@ -196,13 +196,13 @@ const MENU = [
   {
     id: 'aiops', icon: 'aiops', label: 'AIOps 智能运维',
     children: [
-      { label: '🔔 告警中心', to: '/aiops/alerts' },
-      { label: '🧠 根因分析', to: '/aiops/rca' },
-      { label: '📊 异常检测', to: '/aiops/anomaly' },
-      { label: '🕸 知识图谱', to: '/aiops/knowledge-graph' },
+      { label: '🔔 告警中心', to: '/aiops/alerts', module: 'alert' },
+      { label: '🧠 根因分析', to: '/aiops/rca', module: 'agent' },
+      { label: '📊 异常检测', to: '/aiops/anomaly', module: 'agent' },
+      { label: '🕸 知识图谱', to: '/aiops/knowledge-graph', module: 'knowledge' },
       { label: '🧰 AI 工作台', to: '/aiops/workbench', module: 'agent' },
       { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
-      { label: '⚙ 智能配置',  to: '/aiops/config' },
+      { label: '⚙ 智能配置',  to: '/aiops/config', admin: true },
     ],
   },
   {

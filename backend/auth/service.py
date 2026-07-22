@@ -18,9 +18,17 @@ SYSTEM_MODULES = [
     {"id": "alert",     "name": "告警历史", "description": "告警记录"},
     {"id": "report",    "name": "分析报告", "description": "运维日报生成与推送"},
     {"id": "cmdb",      "name": "主机 CMDB","description": "主机管理与 CMDB 信息"},
+    {"id": "host",      "name": "主机中心", "description": "主机任务、申请与定时作业"},
     {"id": "inspect",   "name": "主机巡检", "description": "阈值巡检与 AI 分析"},
     {"id": "ssh",       "name": "SSH 终端", "description": "Web SSH 终端"},
     {"id": "slowlog",   "name": "慢日志分析","description": "MySQL 慢查询日志分析"},
+    {"id": "ticket",    "name": "工单系统", "description": "发布、审计、事务与审批工单"},
+    {"id": "container", "name": "容器管理", "description": "Kubernetes 资源、拓扑与集群"},
+    {"id": "middleware", "name": "中间件", "description": "Redis、Kafka、Elasticsearch 与中间件概览"},
+    {"id": "cicd",      "name": "CI/CD", "description": "Jenkins 与持续交付"},
+    {"id": "events",    "name": "事件墙", "description": "事件记录与历史"},
+    {"id": "knowledge", "name": "知识库", "description": "运维知识库与知识图谱"},
+    {"id": "tools",     "name": "工具市场", "description": "运维诊断工具"},
     {"id": "admin",     "name": "用户管理", "description": "用户、权限与审计"},
     {"id": "agent",      "name": "AI 智能体",  "description": "LangGraph 根因分析、自主巡检、智能对话"},
     {"id": "skywalking", "name": "APM 链路追踪","description": "SkyWalking 追踪、拓扑、性能指标"},
@@ -135,3 +143,5 @@ async def update_permissions(db: AsyncSession, user_id: str, perms: list[dict]):
         else:
             db.add(Permission(user_id=user_id, module_id=item["module_id"], level=item["level"]))
     await db.commit()
+    from auth.deps import clear_permission_cache
+    clear_permission_cache(user_id)

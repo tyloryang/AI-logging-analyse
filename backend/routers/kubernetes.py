@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, Depends, UploadF
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from auth.deps import current_user, require_admin
+from auth.deps import current_user, require_admin, websocket_has_permission
 from auth.models import User
 from services.kubeconfig_import import KubeconfigImportError, parse_and_store_kubeconfig
 from auth.session import get_session
@@ -64,7 +64,12 @@ def _redis():
         return None
     try:
         import redis.asyncio as aioredis
-        _REDIS_CLIENT = aioredis.from_url(url, decode_responses=True, socket_timeout=2)
+        _REDIS_CLIENT = aioredis.from_url(
+            url,
+            decode_responses=True,
+            protocol=2,
+            socket_timeout=2,
+        )
         logger.info("[k8s-cache] Redis 客户端就绪 url=%s ttl=%ds", url, _RES_TTL_SEC)
     except Exception as exc:
         logger.warning("[k8s-cache] Redis 不可用，降级到本地缓存: %s", exc)
@@ -605,6 +610,34 @@ def _get_batch_client(cluster_id: str | None = None):
     from kubernetes import client
 
     return client.BatchV1Api(_get_api_client(cluster_id))
+
+
+def _cronjobs_compat(batch, namespace: str = ""):
+    """列 CronJob，兼容 K8s <1.21：batch/v1 无 CronJob 时回退 batch/v1beta1。"""
+    from kubernetes import client
+    from kubernetes.client.rest import ApiException
+    try:
+        return (batch.list_namespaced_cron_job(namespace) if namespace
+                else batch.list_cron_job_for_all_namespaces())
+    except ApiException as exc:
+        if exc.status not in (404, 405):
+            raise
+        b1b = client.BatchV1beta1Api(batch.api_client)
+        return (b1b.list_namespaced_cron_job(namespace) if namespace
+                else b1b.list_cron_job_for_all_namespaces())
+
+
+def _read_cronjob_compat(batch, name: str, namespace: str):
+    """读单个 CronJob，兼容 K8s <1.21。"""
+    from kubernetes import client
+    from kubernetes.client.rest import ApiException
+    try:
+        return batch.read_namespaced_cron_job(name=name, namespace=namespace)
+    except ApiException as exc:
+        if exc.status not in (404, 405):
+            raise
+        b1b = client.BatchV1beta1Api(batch.api_client)
+        return b1b.read_namespaced_cron_job(name=name, namespace=namespace)
 
 
 def _get_all_clients(cluster_id: str | None = None):
@@ -4058,6 +4091,10 @@ async def ws_k8s_exec(
     import json as _json
     import threading
     from concurrent.futures import ThreadPoolExecutor
+
+    if not await websocket_has_permission(ws, "container", "operate"):
+        await ws.close(code=4403, reason="Container permission required")
+        return
 
     user = await _get_ws_user(ws)
     if not user:

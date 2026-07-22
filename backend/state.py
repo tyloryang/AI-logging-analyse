@@ -80,6 +80,19 @@ def _resolve_persistent_path(env_name: str, default_name: str) -> Path:
     return target
 
 
+def _resolve_legacy_source_path(env_name: str, default_name: str) -> Path:
+    """定位旧数据文件，不复制或创建文件。"""
+    env_value = os.getenv(env_name, "").strip()
+    if env_value:
+        return Path(env_value)
+
+    target = DATA_DIR / default_name
+    if target.exists():
+        return target
+    legacy = Path(f"./{default_name}")
+    return legacy if legacy.exists() else target
+
+
 def _load_settings() -> dict:
     """从 data/settings.json 读取运行时配置覆盖"""
     data = read_json_file(SETTINGS_FILE, default={})
@@ -101,8 +114,8 @@ PROMETHEUS_PASSWORD = _cfg(_s, "prometheus_password",   "PROMETHEUS_PASSWORD",  
 
 REPORTS_DIR      = Path(os.getenv("REPORTS_DIR", "./reports"))
 REPORTS_DIR.mkdir(exist_ok=True)
-CMDB_FILE        = _resolve_persistent_path("CMDB_FILE", "cmdb_hosts.json")
-CREDENTIALS_FILE = _resolve_persistent_path("CREDENTIALS_FILE", "ssh_credentials.json")
+CMDB_FILE        = _resolve_legacy_source_path("CMDB_FILE", "cmdb_hosts.json")
+CREDENTIALS_FILE = _resolve_legacy_source_path("CREDENTIALS_FILE", "ssh_credentials.json")
 
 FEISHU_WEBHOOK   = os.getenv("FEISHU_WEBHOOK", "")
 FEISHU_KEYWORD   = os.getenv("FEISHU_KEYWORD", "")
@@ -192,26 +205,16 @@ clusterer = LogClusterer()
 # ── CMDB / 凭证辅助函数 ───────────────────────────────────────────────────────
 
 def load_hosts_list() -> list[dict]:
-    """CMDB 主机列表。主存储 SQLite（services.cmdb_store），
-    JSON 文件仅作首次迁移来源与导出镜像；DB 异常时回退 JSON。"""
+    """CMDB 主机列表；JSON 仅作为首次迁移来源。"""
     from services import cmdb_store
 
-    try:
-        hosts = cmdb_store.load_hosts()
-    except Exception as exc:
-        logger.warning("[CMDB] SQLite 读取异常，回退 JSON: %s", exc)
-        return _load_hosts_from_json()
-
+    hosts = cmdb_store.load_hosts()
     if hosts is not None:
         return hosts
 
-    # 尚未迁移：从 JSON 读取并一次性导入 SQLite
     legacy = _load_hosts_from_json()
-    try:
-        cmdb_store.save_hosts(legacy)
-        logger.info("[CMDB] 已迁移 %d 台主机到 SQLite 主存储", len(legacy))
-    except Exception as exc:
-        logger.warning("[CMDB] 迁移到 SQLite 失败（继续用 JSON）: %s", exc)
+    cmdb_store.save_hosts(legacy)
+    logger.info("[CMDB] 已迁移 %d 台主机到数据库", len(legacy))
     return legacy
 
 
@@ -221,20 +224,12 @@ def _load_hosts_from_json() -> list[dict]:
         try:
             data = _read_cached_json(CMDB_FILE)
             if isinstance(data, list):
-                # 确保每条记录都有 id
-                changed = False
                 for h in data:
                     if not h.get("id"):
                         h["id"] = str(uuid.uuid4())
-                        changed = True
-                if changed:
-                    _write_cached_json(CMDB_FILE, data)
                 return data
-            # 兼容旧 dict 格式：自动迁移为列表并回写，确保 ID 稳定
             now = __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            # 用户主动录入的字段（与 Prometheus 自动发现区别）
             _user_fields = {"owner", "group", "role", "ssh_user", "ssh_password", "notes"}
-            # 先处理"命名主机"（key 不含冒号且不是 undefined），再处理 ip:port 条目
             items = list(data.items())
             named   = [(k, v) for k, v in items if ":" not in k and k not in ("undefined",)]
             ported  = [(k, v) for k, v in items if ":" in k]
@@ -248,10 +243,8 @@ def _load_hosts_from_json() -> list[dict]:
                 ip = host.get("ip") or instance.split(":")[0]
                 if not ip or ip == "undefined":
                     continue
-                # 跳过重复 IP（命名主机优先，port 条目排后，所以命名主机不会被覆盖）
                 if ip in seen_ips:
                     continue
-                # 过滤纯 Prometheus 发现节点（只有 ip 字段，无任何用户信息）
                 has_user_info = any(host.get(f) for f in _user_fields)
                 is_named = ":" not in instance
                 if not has_user_info and not is_named:
@@ -259,7 +252,6 @@ def _load_hosts_from_json() -> list[dict]:
                 seen_ips.add(ip)
                 host["ip"] = ip
                 host.setdefault("id", str(uuid.uuid4()))
-                # 使用 key 作为 hostname（如果 key 是有意义的名字）
                 if is_named and instance not in (ip, "undefined"):
                     host.setdefault("hostname", instance)
                 else:
@@ -270,9 +262,7 @@ def _load_hosts_from_json() -> list[dict]:
                 host.setdefault("created_at", now)
                 host.setdefault("updated_at", now)
                 result.append(host)
-            # 回写 list 格式，ID 固定下来
-            _write_cached_json(CMDB_FILE, result)
-            logger.info("[CMDB] 旧格式自动迁移完成，共 %d 台主机", len(result))
+            logger.info("[CMDB] 已转换旧格式主机，共 %d 台", len(result))
             return result
         except Exception as exc:
             logger.warning("[CMDB] load_hosts_list 异常: %s", exc)
@@ -280,16 +270,10 @@ def _load_hosts_from_json() -> list[dict]:
 
 
 def save_hosts_list(hosts: list[dict]) -> None:
-    """保存主机列表：SQLite 事务为主（失败抛给调用方），JSON 镜像为灾备/兼容。"""
+    """保存主机列表到数据库。"""
     from services import cmdb_store
 
     cmdb_store.save_hosts(hosts)
-    try:
-        # 导出镜像：兼容直接读 cmdb_hosts.json 的模块（agent 工具等），
-        # 且经 json_snapshot_store 再冗余一份到 sqlite 快照表
-        _write_cached_json(CMDB_FILE, hosts, ensure_parent=True)
-    except Exception as exc:
-        logger.warning("[CMDB] JSON 镜像写入失败（主存储已保存）: %s", exc)
 
 
 def load_cmdb() -> dict:
@@ -315,15 +299,25 @@ def save_cmdb(data: dict) -> None:
 
 
 def load_credentials() -> list[dict]:
+    from services import cmdb_store
+
+    credentials = cmdb_store.load_credentials()
+    if credentials is not None:
+        return credentials
     if CREDENTIALS_FILE.exists():
         data = _read_cached_json(CREDENTIALS_FILE)
         if isinstance(data, list):
+            cmdb_store.save_credentials(data)
+            logger.info("[CMDB] 已迁移 %d 条 SSH 凭证到数据库", len(data))
             return data
+    cmdb_store.save_credentials([])
     return []
 
 
 def save_credentials(data: list[dict]) -> None:
-    _write_cached_json(CREDENTIALS_FILE, data, ensure_parent=True)
+    from services import cmdb_store
+
+    cmdb_store.save_credentials(data)
 
 
 # ── 慢日志定时报告目标配置 ────────────────────────────────────────────────────
@@ -364,41 +358,74 @@ def _normalize_group(group: dict) -> dict:
 
 
 def load_groups() -> list[dict]:
+    from services import cmdb_store
+
+    groups = cmdb_store.load_groups()
+    if groups is not None:
+        return [_normalize_group(item) for item in groups if isinstance(item, dict)]
     if GROUPS_FILE.exists():
         try:
             data = _read_cached_json(GROUPS_FILE)
+        except Exception as exc:
+            logger.warning("[CMDB] 旧分组 JSON 读取失败: %s", exc)
+        else:
             if isinstance(data, list):
-                return [_normalize_group(item) for item in data if isinstance(item, dict)]
-        except Exception:
-            pass
+                normalized = [_normalize_group(item) for item in data if isinstance(item, dict)]
+                cmdb_store.save_groups(normalized)
+                logger.info("[CMDB] 已迁移 %d 个分组到数据库", len(normalized))
+                return normalized
+    cmdb_store.save_groups([])
     return []
 
 
 def save_groups(data: list[dict]) -> None:
+    from services import cmdb_store
+
     normalized = [_normalize_group(item) for item in data if isinstance(item, dict)]
-    _write_cached_json(GROUPS_FILE, normalized, ensure_parent=True)
+    cmdb_store.save_groups(normalized)
 
 
 def load_user_groups() -> dict[str, list[str]]:
     """返回 {user_id: [group_id, ...]}，表示每个普通用户可访问的 CMDB 分组。"""
+    from services import cmdb_store
+
+    mapping = cmdb_store.load_user_groups()
+    if mapping is not None:
+        return mapping
     if USER_GROUPS_FILE.exists():
         try:
             data = _read_cached_json(USER_GROUPS_FILE)
+        except Exception as exc:
+            logger.warning("[CMDB] 旧用户分组授权 JSON 读取失败: %s", exc)
+        else:
             if isinstance(data, dict):
+                cmdb_store.save_user_groups(data)
+                logger.info("[CMDB] 已迁移 %d 个用户的分组授权到数据库", len(data))
                 return data
-        except Exception:
-            pass
+    cmdb_store.save_user_groups({})
     return {}
 
 
 def save_user_groups(data: dict[str, list[str]]) -> None:
-    _write_cached_json(USER_GROUPS_FILE, data, ensure_parent=True)
+    from services import cmdb_store
+
+    cmdb_store.save_user_groups(data)
 
 
 def get_user_allowed_groups(user_id: str) -> list[str] | None:
     """返回用户允许访问的分组 ID 列表；None 表示超管（不限制）。"""
     ug = load_user_groups()
     return ug.get(user_id)  # 未配置的普通用户返回空列表
+
+
+def migrate_cmdb_storage() -> dict:
+    load_hosts_list()
+    load_groups()
+    load_credentials()
+    load_user_groups()
+    from services import cmdb_store
+
+    return cmdb_store.stats()
 
 
 def load_user_k8s_clusters() -> dict[str, list[str]]:

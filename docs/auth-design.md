@@ -287,8 +287,26 @@ LOGIN_FAIL_WINDOW=600
 | inspect | 主机巡检 |
 | ssh | SSH 终端 |
 | admin | 用户管理 |
+| host | 主机中心 |
+| ticket | 工单系统 |
+| container | 容器管理 |
+| middleware | 中间件 |
+| cicd | CI/CD |
+| events | 事件墙 |
+| knowledge | 知识库 |
+| tools | 工具市场 |
+| workflow | 工作流编排 |
+| agent | AI 智能体 |
+| skywalking | APM 链路追踪 |
 
 > 新增模块只需在代码中的 `MODULES` 列表追加一条记录，启动时自动注册，无需改表。
+
+### 默认角色策略
+
+- 管理员（`is_superuser=true`）跳过模块权限检查。
+- 普通用户没有任何默认模块权限；未显式分配时访问 API 返回 `403`。
+- `GET/HEAD` 请求需要 `view`，写入、删除、执行类请求需要 `operate`。
+- 未注册的 `/api/*` 路径对普通用户默认拒绝，避免新增接口遗漏鉴权。
 
 ---
 

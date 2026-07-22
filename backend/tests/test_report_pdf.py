@@ -13,7 +13,7 @@ class InspectReportPdfTests(unittest.TestCase):
                 "process_" + "x" * 100 if index == 0 else "normal_process"
             )
             hosts.append({
-                "overall": "normal",
+                "overall": "正常",
                 "ip": f"10.0.0.{index + 1}",
                 "role": "Linux",
                 "hostname": f"host-{index + 1}",
@@ -35,25 +35,22 @@ class InspectReportPdfTests(unittest.TestCase):
 
         report = {
             "type": "inspect",
-            "title": "Long inspection row pagination test",
+            "title": "超长巡检行分页测试",
             "health_score": 90,
-            "ai_analysis": "Overall operation is normal.",
+            "ai_analysis": "整体运行正常。",
             "host_summary": {
                 "total": 25,
                 "normal": 25,
                 "warning": 0,
                 "critical": 0,
             },
-            "group_sections": [{"group_name": "Test group", "hosts": hosts}],
+            "group_sections": [{"group_name": "测试分组", "hosts": hosts}],
         }
 
         try:
             pdf = build_report_pdf(report)
         except LayoutError as exc:
-            self.fail(
-                "An oversized host row should split across pages instead of "
-                f"failing PDF export: {exc}"
-            )
+            self.fail(f"超高主机行应跨页拆分，而不是导出失败: {exc}")
 
         self.assertTrue(pdf.startswith(b"%PDF"))
 
