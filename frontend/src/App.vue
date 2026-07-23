@@ -36,13 +36,17 @@ const canUseAgent = computed(() => authStore.can('agent', 'view'))
   width: 100%;
   height: 100vh;
   overflow: hidden;
+  background: var(--bg-base);
 }
 .main-content {
   flex: 1;
   min-width: 0;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-base);
+  background:
+    radial-gradient(1200px circle at 100% 0%, rgba(var(--accent-rgb), 0.05), transparent 32%),
+    radial-gradient(900px circle at 0% 0%, rgba(99, 130, 91, 0.04), transparent 30%),
+    var(--bg-base);
   position: relative;
   display: flex;
   flex-direction: column;

@@ -659,43 +659,51 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .obs-page {
-  padding: 20px 24px;
+  padding: 24px clamp(18px, 2.4vw, 30px);
   height: 100%;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
+  background:
+    radial-gradient(900px circle at 100% 0%, rgba(var(--accent-rgb), 0.05), transparent 34%),
+    radial-gradient(700px circle at 0% 0%, rgba(99, 130, 91, 0.04), transparent 30%);
 }
 
 .obs-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .obs-header-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
 }
 
 .obs-brand-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: var(--accent-dim);
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.18), rgba(var(--accent-rgb), 0.08));
   color: var(--accent);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.12);
 }
 
 .obs-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
   color: var(--text-primary);
   margin: 0;
+  letter-spacing: -0.015em;
 }
 
 .obs-sep {
@@ -706,30 +714,34 @@ onBeforeUnmount(() => {
 .obs-subtitle {
   font-size: 12px;
   color: var(--text-secondary);
-  margin: 3px 0 0;
+  margin: 4px 0 0;
+  max-width: 760px;
 }
 
 .obs-header-right {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .time-select {
-  padding: 5px 10px;
+  padding: 8px 12px;
   font-size: 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   background: var(--bg-input);
   color: var(--text-primary);
   cursor: pointer;
+  min-height: 34px;
 }
 
 .btn-refresh {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   background: var(--bg-card);
   color: var(--text-secondary);
   display: flex;
@@ -760,8 +772,8 @@ onBeforeUnmount(() => {
 
 .stats-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
 }
 
 .stat-card.drillable { cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s; }
@@ -769,18 +781,20 @@ onBeforeUnmount(() => {
 .drill-arrow { color: var(--accent); opacity: 0; margin-left: 4px; transition: opacity .15s, transform .15s; display: inline-block; }
 .stat-card.drillable:hover .drill-arrow { opacity: 1; transform: translateX(2px); }
 .stat-card {
-  background: var(--bg-card);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 253, 249, 0.98)),
+    var(--bg-card);
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
-  border-radius: var(--radius-card);
-  padding: 18px 16px 14px;
+  border-radius: 20px;
+  padding: 20px 18px 16px;
   position: relative;
   overflow: hidden;
-  transition: border-color .15s, box-shadow .15s;
+  transition: border-color .15s, box-shadow .15s, transform .15s;
 }
 
 .stat-card:hover {
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow);
 }
 
 .stat-card.stat-alert {
@@ -869,8 +883,9 @@ onBeforeUnmount(() => {
 }
 
 .ai-analyze-box {
-  padding: 14px 18px;
-  transition: padding .2s;
+  padding: 16px 18px;
+  transition: padding .2s, box-shadow .2s;
+  box-shadow: var(--shadow-sm);
 }
 
 .ai-analyze-box.collapsed {
@@ -886,7 +901,7 @@ onBeforeUnmount(() => {
 }
 
 .ai-analyze-body {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .ai-collapse-btn {
@@ -947,9 +962,9 @@ onBeforeUnmount(() => {
 
 .ai-analyze-input {
   flex: 1;
-  padding: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 13px;
@@ -970,8 +985,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
-  border-radius: var(--radius);
+  padding: 10px 16px;
+  border-radius: 12px;
   border: none;
   background: var(--accent);
   color: #fff;
@@ -993,10 +1008,10 @@ onBeforeUnmount(() => {
 
 .ai-analyze-result {
   margin-top: 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   background: var(--bg-surface);
   border: 1px solid var(--border-light);
-  border-radius: var(--radius);
+  border-radius: 14px;
   font-size: 13px;
   line-height: 1.75;
   color: var(--text-primary);
@@ -1063,8 +1078,8 @@ onBeforeUnmount(() => {
 
 .main-grid {
   display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 18px;
   align-items: start;
 }
 
@@ -1082,14 +1097,18 @@ onBeforeUnmount(() => {
 
 .section-card {
   padding: 0;
+  overflow: hidden;
+  border-radius: 20px;
+  box-shadow: var(--shadow-sm);
 }
 
 .section-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 16px 10px;
+  padding: 16px 18px 12px;
   border-bottom: 1px solid var(--border-light);
+  background: linear-gradient(180deg, rgba(255,255,255,0.58), transparent);
 }
 
 .section-dot {
@@ -1371,26 +1390,29 @@ onBeforeUnmount(() => {
 
 .topo-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 12px 16px 4px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px 18px 6px;
 }
 
 .topo-card {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 12px 13px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: 16px;
   text-decoration: none;
   cursor: pointer;
-  transition: border-color .12s, background .12s;
+  transition: border-color .12s, background .12s, transform .12s, box-shadow .12s;
+  background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,253,249,0.95));
 }
 
 .topo-card:hover {
   border-color: var(--accent);
   background: var(--accent-dim);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }
 
 .topo-icon {
@@ -1456,7 +1478,7 @@ onBeforeUnmount(() => {
 }
 
 .grafana-list {
-  padding: 4px 16px 12px;
+  padding: 4px 18px 14px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1497,5 +1519,44 @@ onBeforeUnmount(() => {
   border-top-color: #fff;
   border-radius: 50%;
   animation: spin .8s linear infinite;
+}
+
+@media (max-width: 1280px) {
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .right-col {
+    order: 2;
+  }
+}
+
+@media (max-width: 900px) {
+  .obs-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .obs-header-right {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .stats-row {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
+  .topo-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-analyze-input-row {
+    flex-direction: column;
+  }
+
+  .btn-analyze {
+    width: 100%;
+    justify-content: center;
+  }
 }
 </style>

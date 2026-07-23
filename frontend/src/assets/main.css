@@ -13,43 +13,43 @@
 }
 
 :root {
-  --accent-rgb: 217, 119, 87;       /* 陶土橙 Clay #D97757 */
+  --accent-rgb: 200, 108, 78;       /* 更沉稳的陶土橙 */
   --success-rgb: 99, 130, 91;       /* 苔藓绿 Moss */
   --warning-rgb: 197, 138, 70;      /* 琥珀 Amber */
   --error-rgb:   189, 86, 79;       /* 砖红 Brick */
 
   /* 背景：纸质米白系（亮色） */
-  --bg-base:    #FAF9F5;            /* Anthropic 主背景 */
-  --bg-card:    #FFFFFF;
-  --bg-panel:   rgba(255, 255, 255, 0.92);
-  --bg-surface: #F5F4ED;            /* 次级表面（米色更深一档） */
-  --bg-hover:   rgba(217, 119, 87, 0.06);
-  --bg-active:  rgba(217, 119, 87, 0.12);
-  --bg-input:   #FFFFFF;
-  --bg-sidebar: #1F1E1D;            /* Anthropic 炭黑 */
+  --bg-base:    #F7F3EC;
+  --bg-card:    #FFFDF9;
+  --bg-panel:   rgba(255, 253, 249, 0.94);
+  --bg-surface: #F0EBE1;
+  --bg-hover:   rgba(200, 108, 78, 0.07);
+  --bg-active:  rgba(200, 108, 78, 0.14);
+  --bg-input:   #FFFDF9;
+  --bg-sidebar: #171513;
   --bg-sidebar-elevated: rgba(255, 255, 255, 0.05);
-  --bg-sidebar-active:   rgba(217, 119, 87, 0.18);
-  --bg-sidebar-hover:    rgba(255, 255, 255, 0.06);
+  --bg-sidebar-active:   rgba(200, 108, 78, 0.20);
+  --bg-sidebar-hover:    rgba(255, 255, 255, 0.08);
 
   /* 边框：极淡暖灰 */
-  --border:        rgba(40, 32, 24, 0.10);
-  --border-light:  rgba(40, 32, 24, 0.06);
-  --border-strong: rgba(40, 32, 24, 0.16);
-  --border-accent: rgba(217, 119, 87, 0.32);
-  --shell-border:  rgba(40, 32, 24, 0.08);
+  --border:        rgba(45, 37, 31, 0.11);
+  --border-light:  rgba(45, 37, 31, 0.07);
+  --border-strong: rgba(45, 37, 31, 0.18);
+  --border-accent: rgba(200, 108, 78, 0.34);
+  --shell-border:  rgba(45, 37, 31, 0.08);
 
   /* 文字：暖炭黑 → 沙色灰 */
-  --text-primary:   #1F1E1D;        /* Anthropic 正文 */
-  --text-secondary: #57534E;        /* 暖灰 */
-  --text-muted:     #87827D;        /* 沙色 */
+  --text-primary:   #1B1815;
+  --text-secondary: #5F584F;
+  --text-muted:     #8A8278;
   --text-sidebar:        rgba(245, 244, 237, 0.65);
   --text-sidebar-strong: #FAF9F5;
 
   /* Accent: 陶土橙 */
-  --accent:       #D97757;
-  --accent-hover: #C6624A;
-  --accent-dim:   rgba(217, 119, 87, 0.10);
-  --accent-soft:  rgba(217, 119, 87, 0.16);
+  --accent:       #C86C4E;
+  --accent-hover: #B75E43;
+  --accent-dim:   rgba(200, 108, 78, 0.11);
+  --accent-soft:  rgba(200, 108, 78, 0.18);
 
   /* 语义色：低饱和泥土色调 */
   --success: #63825B;               /* 苔藓绿 */
@@ -58,20 +58,20 @@
   --info:    #D97757;
 
   /* 大圆角是 Anthropic 的标志 */
-  --radius:      10px;
-  --radius-card: 16px;
-  --radius-lg:   24px;
+  --radius:      12px;
+  --radius-card: 18px;
+  --radius-lg:   28px;
 
   /* 阴影：克制柔和 */
-  --shadow-sm:     0 1px 2px rgba(40, 32, 24, 0.04), 0 1px 3px rgba(40, 32, 24, 0.06);
-  --shadow:        0 4px 12px rgba(40, 32, 24, 0.06), 0 1px 3px rgba(40, 32, 24, 0.04);
-  --shadow-md:     0 12px 32px rgba(40, 32, 24, 0.08), 0 4px 12px rgba(40, 32, 24, 0.04);
-  --shadow-accent: 0 0 0 1px var(--border-accent), 0 8px 24px rgba(217, 119, 87, 0.14);
-  --shell-shadow:  0 12px 36px rgba(40, 32, 24, 0.08);
+  --shadow-sm:     0 1px 2px rgba(31, 25, 20, 0.05), 0 1px 4px rgba(31, 25, 20, 0.06);
+  --shadow:        0 10px 30px rgba(31, 25, 20, 0.08), 0 2px 6px rgba(31, 25, 20, 0.05);
+  --shadow-md:     0 18px 44px rgba(31, 25, 20, 0.10), 0 6px 16px rgba(31, 25, 20, 0.06);
+  --shadow-accent: 0 0 0 1px var(--border-accent), 0 10px 26px rgba(200, 108, 78, 0.16);
+  --shell-shadow:  0 16px 44px rgba(31, 25, 20, 0.08);
 
   /* 字体族 */
-  --font-sans:   "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
-  --font-serif:  "Source Serif Pro", "Tiempos Headline", "Noto Serif SC", Georgia, "Times New Roman", serif;
+  --font-sans:   "Inter", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-serif:  "Source Serif Pro", "Iowan Old Style", "Noto Serif SC", Georgia, "Times New Roman", serif;
   --font-mono:   "JetBrains Mono", "Cascadia Code", "Consolas", "Source Code Pro", monospace;
 
   color-scheme: light;
@@ -151,8 +151,24 @@ body::before {
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse at 0% 0%, rgba(var(--accent-rgb), 0.04), transparent 45%),
-    radial-gradient(ellipse at 100% 100%, rgba(var(--accent-rgb), 0.03), transparent 40%);
+    radial-gradient(ellipse at 0% 0%, rgba(var(--accent-rgb), 0.07), transparent 42%),
+    radial-gradient(ellipse at 100% 0%, rgba(99, 130, 91, 0.05), transparent 38%),
+    radial-gradient(ellipse at 100% 100%, rgba(var(--accent-rgb), 0.04), transparent 45%);
+  opacity: 0.95;
+  z-index: 0;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(45, 37, 31, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(45, 37, 31, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.18), transparent 85%);
+  opacity: 0.22;
   z-index: 0;
 }
 
@@ -205,23 +221,27 @@ h3 {
 }
 
 .card {
-  background: var(--bg-card);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 253, 249, 0.98)),
+    var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 24px;
   box-shadow: var(--shadow-sm);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .card:hover {
   border-color: var(--border-strong);
   box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
 
 .page {
   height: 100%;
-  padding: 28px 32px;
+  padding: 28px clamp(18px, 2.4vw, 32px);
   overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
 }
 
 .page-header {
@@ -274,7 +294,7 @@ h3 {
   gap: 8px;
   min-height: 38px;
   padding: 0 18px;
-  border-radius: 10px;
+  border-radius: 12px;
   border: 1px solid transparent;
   cursor: pointer;
   font-size: 13.5px;
@@ -282,7 +302,7 @@ h3 {
   font-family: inherit;
   line-height: 1;
   letter-spacing: -0.005em;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .btn-primary {
@@ -294,6 +314,8 @@ h3 {
 .btn-primary:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
+  box-shadow: var(--shadow-accent);
+  transform: translateY(-1px);
 }
 
 .btn-outline {
@@ -306,6 +328,7 @@ h3 {
   background: var(--bg-hover);
   border-color: var(--accent);
   color: var(--accent);
+  transform: translateY(-1px);
 }
 
 .btn-ghost {
@@ -390,7 +413,7 @@ input, select, textarea {
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text-primary);
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 9px 14px;
   font-size: 13.5px;
   line-height: 1.5;
@@ -405,7 +428,7 @@ input:hover, select:hover, textarea:hover {
 
 input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.12);
 }
 
 input::placeholder, textarea::placeholder {
@@ -446,4 +469,27 @@ tr:hover td {
   .page { padding: 20px 18px; }
   .page-header { flex-direction: column; align-items: flex-start; }
   .page-header h1 { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+
+  .card,
+  .btn,
+  input,
+  select,
+  textarea,
+  .fade-enter-active,
+  .fade-leave-active {
+    transition: none !important;
+  }
+
+  .spinner,
+  .spinner-sm {
+    animation: none !important;
+  }
 }
