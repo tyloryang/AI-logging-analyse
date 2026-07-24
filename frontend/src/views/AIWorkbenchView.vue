@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="workbench-page">
     <Transition name="toast">
       <div v-if="toast.text" class="toast-msg" :class="toast.type">
@@ -15,7 +15,8 @@
             <p>按 Claude 本地工作区标准组织项目、对话和设置。</p>
           </div>
           <button class="icon-btn" type="button" @click="openSettings('models')">
-            设置
+            <UiIcon name="settings2" :size="16" />
+            <span>设置</span>
           </button>
         </div>
 
@@ -53,7 +54,9 @@
 
         <div class="section-title-row">
           <span class="section-title">项目</span>
-          <button class="new-session-global" @click="newSessionGlobal" type="button" title="新建会话（无项目）">+</button>
+          <button class="new-session-global" @click="newSessionGlobal" type="button" title="新建会话（无项目）">
+            <UiIcon name="plus" :size="16" />
+          </button>
         </div>
 
         <div class="project-list">
@@ -69,8 +72,12 @@
               :class="{ active: selectedPath === project.path, expanded: expandedProjects.has(project.path) }"
               @click="toggleProject(project)"
             >
-              <span class="project-expand-arrow">{{ expandedProjects.has(project.path) ? '▾' : '▸' }}</span>
-              <span class="project-folder-icon">📁</span>
+              <UiIcon
+                class="project-expand-arrow"
+                :name="expandedProjects.has(project.path) ? 'chevrondown' : 'chevronright'"
+                :size="14"
+              />
+              <UiIcon class="project-folder-icon" name="folder" :size="16" />
               <div class="project-item-body">
                 <div class="project-name-row">
                   <strong class="project-name">{{ project.name }}</strong>
@@ -84,7 +91,9 @@
                 type="button"
                 title="在此项目新建对话"
                 @click.stop="newSessionForProject(project)"
-              >＋</button>
+              >
+                <UiIcon name="plus" :size="14" />
+              </button>
             </div>
 
             <!-- 展开：历史对话列表 -->
@@ -99,12 +108,14 @@
                 type="button"
                 @click="loadConversation(project, conv)"
               >
-                <span class="conv-icon">💬</span>
+                <UiIcon class="conv-icon" name="messagesquare" :size="16" />
                 <div class="conv-item-body">
                   <span class="conv-title">{{ conv.title || '未命名对话' }}</span>
                   <span class="conv-time">{{ formatTime(conv.updated_at) }}</span>
                 </div>
-                <button class="conv-del-btn" type="button" title="删除" @click.stop="deleteConv(conv)">×</button>
+                <button class="conv-del-btn" type="button" title="删除" @click.stop="deleteConv(conv)">
+                  <UiIcon name="x" :size="14" />
+                </button>
               </button>
             </div>
           </div>
@@ -141,17 +152,22 @@
             <h1>{{ selectedProject?.name || '选择一个本地项目' }}</h1>
             <div class="main-subline">
               <span class="mono">{{ selectedPath || '尚未设置工作目录' }}</span>
-              <span v-if="selectedProject?.git_branch" class="sub-pill mono">⎇ {{ selectedProject.git_branch }}</span>
+              <span v-if="selectedProject?.git_branch" class="sub-pill mono">
+                <UiIcon name="gitbranch" :size="14" />
+                {{ selectedProject.git_branch }}
+              </span>
               <span class="sub-pill">{{ selectedProject ? formatTime(selectedProject.last_active_at) : '等待项目选择' }}</span>
               <!-- CLAUDE.md 存在指示 -->
               <button v-if="selectedPath" class="claude-md-pill"
                 @click="openClaudeMdEditor" title="编辑 CLAUDE.md 项目指令">
-                📄 CLAUDE.md
+                <UiIcon name="filetext" :size="15" />
+                <span>CLAUDE.md</span>
               </button>
               <button v-if="selectedPath" class="ctx-preview-pill"
                 :class="{ active: showContextPreview }"
                 @click="loadContextPreview" title="预览发送给 AI 的上下文">
-                🔍 上下文
+                <UiIcon name="search" :size="15" />
+                <span>上下文</span>
               </button>
             </div>
           </div>
@@ -160,7 +176,9 @@
           <div v-if="showContextPreview && contextPreview" class="ctx-preview-panel">
             <div class="ctx-pv-header">
               <span>上下文预览（每次发消息时自动注入）</span>
-              <button @click="showContextPreview = false">✕</button>
+              <button @click="showContextPreview = false">
+                <UiIcon name="x" :size="14" />
+              </button>
             </div>
             <div class="ctx-pv-section" v-if="contextPreview.git?.branch">
               <div class="ctx-pv-label">Git</div>
@@ -186,7 +204,10 @@
                 type="button"
                 @click="wbExecutor = 'langgraph'"
                 title="使用项目内置 LangGraph ReAct Agent"
-              >⚙ LangGraph</button>
+              >
+                <UiIcon name="settings2" :size="14" />
+                <span>LangGraph</span>
+              </button>
               <button
                 class="exec-btn exec-claude-btn"
                 :class="{ active: wbExecutor === 'external_cli', disabled: !claudeAvailable && !detectingExecutors }"
@@ -194,10 +215,11 @@
                 @click="wbExecutor = 'external_cli'"
                 :title="claudeAvailable ? 'Claude Code 已安装，点击切换' : '未检测到 claude 命令，请先安装 Claude Code CLI'"
               >
-                <span>◈ Claude Code</span>
+                <UiIcon name="bot" :size="14" />
+                <span>Claude Code</span>
                 <span v-if="detectingExecutors" class="exec-detecting">检测中...</span>
-                <span v-else-if="claudeAvailable" class="exec-ok">●</span>
-                <span v-else class="exec-unavail">○</span>
+                <UiIcon v-else-if="claudeAvailable" class="exec-ok" name="circle" :size="10" />
+                <UiIcon v-else class="exec-unavail" name="circle" :size="10" />
               </button>
             </div>
 
@@ -209,7 +231,8 @@
             </button>
             <button class="ghost-btn plan-btn" type="button" :disabled="!selectedProject || streaming"
               @click="sendPlanMode" title="先规划后执行（Plan 模式，参考 Claude Code）">
-              📋 Plan 模式
+              <UiIcon name="clipboardlist" :size="15" />
+              <span>Plan 模式</span>
             </button>
             <button class="primary-btn" type="button" @click="openSettings('models')">
               工作台设置
@@ -233,7 +256,8 @@
             <button class="canvas-changes-btn" :class="{ active: showChangesPanel }"
               @click="toggleChangesPanel" type="button"
               :title="showChangesPanel ? '隐藏文件改动' : '显示文件改动'">
-              <span>⌥</span> 改动 {{ changedFiles.length || '' }}
+              <UiIcon name="panelrightopen" :size="15" />
+              <span>改动 {{ changedFiles.length || '' }}</span>
             </button>
           </div>
 
@@ -262,7 +286,7 @@
                   :disabled="streaming"
                   @click="fillComposer(card.prompt)"
                 >
-                  <span class="sc-icon">{{ card.icon }}</span>
+                  <UiIcon class="sc-icon" :name="card.icon" :size="18" />
                   <div class="sc-body">
                     <span class="sc-title">{{ card.title }}</span>
                     <span class="sc-tag">{{ card.tag }}</span>
@@ -336,7 +360,8 @@
                 @input="autoResize"
               ></textarea>
               <button v-if="streaming" class="stop-btn" type="button" @click="stopStreaming">
-                ⬛ 停止
+                <UiIcon name="square" :size="14" />
+                <span>停止</span>
               </button>
               <button v-else class="send-btn" type="button" :disabled="!inputText.trim()" @click="onSend">
                 发送
@@ -359,8 +384,13 @@
           <aside v-if="showChangesPanel && selectedPath" class="changes-panel">
             <div class="cp-header">
               <span class="cp-title">文件改动</span>
-              <span class="cp-branch mono" v-if="gitBranch">⎇ {{ gitBranch }}</span>
-              <button class="cp-refresh" @click="refreshGitStatus" :disabled="gitLoading">↻</button>
+              <span class="cp-branch mono" v-if="gitBranch">
+                <UiIcon name="gitbranch" :size="13" />
+                {{ gitBranch }}
+              </span>
+              <button class="cp-refresh" @click="refreshGitStatus" :disabled="gitLoading">
+                <UiIcon name="refreshcw" :size="14" />
+              </button>
             </div>
             <div v-if="gitLoading" class="cp-loading"><div class="spinner" style="width:12px;height:12px;border-width:2px"></div></div>
             <div v-else-if="!changedFiles.length" class="cp-empty">工作区干净，无改动文件</div>
@@ -376,7 +406,9 @@
             <div v-if="diffFile && diffContent" class="cp-diff-wrap">
               <div class="cp-diff-header">
                 <span class="mono">{{ diffFile }}</span>
-                <button class="cp-close-diff" @click="diffFile = ''; diffContent = ''">✕</button>
+                <button class="cp-close-diff" @click="diffFile = ''; diffContent = ''">
+                  <UiIcon name="x" :size="14" />
+                </button>
               </div>
               <pre class="cp-diff-pre" v-html="highlightDiff(diffContent)"></pre>
             </div>
@@ -392,7 +424,10 @@
           <div class="claude-md-dialog" @click.stop>
             <div class="cmd-header">
               <div>
-                <div class="cmd-title">📄 CLAUDE.md — 项目指令</div>
+                <div class="cmd-title">
+                  <UiIcon name="filetext" :size="16" />
+                  <span>CLAUDE.md — 项目指令</span>
+                </div>
                 <div class="cmd-sub">
                   Claude Code 每次启动时读取此文件注入系统提示词；我们的工作台也会在每次发消息时自动注入。
                 </div>
@@ -400,7 +435,9 @@
                   <span v-for="f in claudeMdFiles" :key="f.path" class="cmd-file-chip mono">{{ f.path }}</span>
                 </div>
               </div>
-              <button class="close-btn" @click="showClaudeMdEditor = false">×</button>
+              <button class="close-btn" @click="showClaudeMdEditor = false">
+                <UiIcon name="x" :size="14" />
+              </button>
             </div>
             <textarea v-model="claudeMdContent" class="cmd-editor"
               placeholder="# 项目指令
@@ -422,7 +459,10 @@
 - 数据库迁移使用 Alembic"
             ></textarea>
             <div class="cmd-footer">
-              <span class="cmd-hint">💡 参考 Claude Code 的 CLAUDE.md 格式，支持 Markdown。向上遍历目录树合并多层指令。</span>
+              <span class="cmd-hint">
+                <UiIcon name="sparkles" :size="15" />
+                <span>参考 Claude Code 的 CLAUDE.md 格式，支持 Markdown。向上遍历目录树合并多层指令。</span>
+              </span>
               <div class="cmd-actions">
                 <span v-if="claudeMdMsg" class="cmd-msg">{{ claudeMdMsg }}</span>
                 <button class="ghost-btn" @click="showClaudeMdEditor = false">取消</button>
@@ -449,7 +489,7 @@
                 type="button"
                 @click="settingsTab = tab.key"
               >
-                <span class="settings-nav-icon">{{ tab.icon }}</span>
+                <UiIcon class="settings-nav-icon" :name="tab.icon" :size="16" />
                 <span>{{ tab.label }}</span>
               </button>
             </aside>
@@ -461,7 +501,9 @@
                   <h3>{{ activeSettings.title }}</h3>
                   <p>{{ activeSettings.desc }}</p>
                 </div>
-                <button class="close-btn" type="button" @click="settingsOpen = false">×</button>
+                <button class="close-btn" type="button" @click="settingsOpen = false">
+                  <UiIcon name="x" :size="14" />
+                </button>
               </div>
 
               <div v-if="settingsTab === 'models'" class="settings-scroll">
@@ -477,11 +519,11 @@
                       :class="{ active: model.active }"
                     >
                       <div class="model-card-main" @click="!streaming && activateModel(model.id)">
-                        <div class="model-head">
-                          <strong>{{ model.name }}</strong>
-                          <span v-if="busyStates.modelId === model.id" class="pending-chip">切换中...</span>
-                          <span v-else-if="model.active" class="active-chip">已启用</span>
-                        </div>
+                      <div class="model-head">
+                        <strong>{{ model.name }}</strong>
+                        <span v-if="busyStates.modelId === model.id" class="pending-chip">切换中...</span>
+                        <span v-else-if="model.active" class="active-chip">已启用</span>
+                      </div>
                         <div class="model-subline">{{ model.provider }} · {{ model.runtime_provider || 'default' }}</div>
                         <div class="model-runtime mono">{{ model.runtime_model || model.name }}</div>
                         <div v-if="model.base_url" class="model-base mono">{{ model.base_url }}</div>
@@ -492,7 +534,9 @@
                         type="button"
                         title="编辑模型参数"
                         @click.stop="wbEditModelId === model.id ? (wbEditModelId = null) : openWbEditModel(model)"
-                      >✎</button>
+                      >
+                        <UiIcon name="pencil" :size="14" />
+                      </button>
                     </div>
 
                     <!-- 内联编辑面板 -->
@@ -731,6 +775,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api/index.js'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 import { safeRandomUUID } from '../utils/uuid.js'
+import UiIcon from '../components/UiIcon.vue'
 
 /** 与 AIAgent.vue 同款 fetch 封装，携带 Cookie、抛出带 detail 的错误 */
 async function apiFetch(url, options = {}) {
@@ -750,12 +795,12 @@ async function apiFetch(url, options = {}) {
 }
 
 const SETTINGS_TABS = [
-  { key: 'models',   label: '大模型',   icon: '◈', title: '大模型',   desc: '管理 API 配置以访问模型。' },
-  { key: 'general',  label: '通用',     icon: '≡', title: '通用',     desc: '工作台行为与对话参数。' },
-  { key: 'executor', label: '执行器',   icon: '⚙', title: '执行器',   desc: '配置 Agent 执行模式与超时策略。' },
-  { key: 'mcp',      label: 'MCP',     icon: '⇄', title: 'MCP 工具', desc: '控制工作台可用的 MCP 连接与在线状态。' },
-  { key: 'skills',   label: 'Skills',  icon: '✦', title: 'Skills',   desc: '启停当前工作台可调用的技能工具。' },
-  { key: 'workspace',label: '工作目录', icon: '⌂', title: '工作目录', desc: '自动发现 Claude 最近工作区，也支持手动切换目录。' },
+  { key: 'models',   label: '大模型',   icon: 'boxes',        title: '大模型',   desc: '管理 API 配置以访问模型。' },
+  { key: 'general',  label: '通用',     icon: 'menu',         title: '通用',     desc: '工作台行为与对话参数。' },
+  { key: 'executor', label: '执行器',   icon: 'settings2',    title: '执行器',   desc: '配置 Agent 执行模式与超时策略。' },
+  { key: 'mcp',      label: 'MCP',      icon: 'waypoints',    title: 'MCP 工具', desc: '控制工作台可用的 MCP 连接与在线状态。' },
+  { key: 'skills',   label: 'Skills',   icon: 'sparkles',     title: 'Skills',   desc: '启停当前工作台可调用的技能工具。' },
+  { key: 'workspace',label: '工作目录', icon: 'home',         title: '工作目录', desc: '自动发现 Claude 最近工作区，也支持手动切换目录。' },
 ]
 
 const loading = ref(true)
@@ -1300,12 +1345,12 @@ const starterCards = computed(() => {
   const name = p.name
   const stack = p.stack_labels?.join('、') || '未知技术栈'
   return [
-    { icon: '▦', title: '项目扫描',    tag: 'Onboarding',  prompt: `请全面扫描 ${name} 项目，梳理目录结构、技术栈（${stack}）、核心模块、关键配置文件，以及各目录的职责分工。` },
-    { icon: '⌘', title: '启动分析',    tag: 'DevFlow',     prompt: `请分析 ${name} 项目的启动方式、入口文件、构建命令、环境变量配置，以及本地开发的完整流程。` },
-    { icon: '◈', title: '接手计划',    tag: 'Takeover',    prompt: `请为 ${name} 制定一个最小可执行的开发接手计划：包括阅读顺序、高风险模块、关键依赖和建议的第一步改动。` },
-    { icon: '⚡', title: '问题诊断',    tag: 'Debug',       prompt: `当前 ${name} 项目遇到了问题，请帮我逐步排查。先列出可能的原因分类，再给出对应的诊断命令。` },
-    { icon: '✦', title: '代码审查',    tag: 'Review',      prompt: `请对 ${name} 项目的核心代码进行审查，重点关注：安全风险、性能瓶颈、代码质量问题和可以立即改进的点。` },
-    { icon: '◉', title: '文档生成',    tag: 'Docs',        prompt: `请为 ${name} 项目生成一份完整的技术文档，包括：架构说明、API 清单、部署指南和贡献者指南。` },
+    { icon: 'search',        title: '项目扫描',    tag: 'Onboarding',  prompt: `请全面扫描 ${name} 项目，梳理目录结构、技术栈（${stack}）、核心模块、关键配置文件，以及各目录的职责分工。` },
+    { icon: 'filesearch',    title: '启动分析',    tag: 'DevFlow',     prompt: `请分析 ${name} 项目的启动方式、入口文件、构建命令、环境变量配置，以及本地开发的完整流程。` },
+    { icon: 'clipboardlist', title: '接手计划',    tag: 'Takeover',    prompt: `请为 ${name} 制定一个最小可执行的开发接手计划：包括阅读顺序、高风险模块、关键依赖和建议的第一步改动。` },
+    { icon: 'trianglealert', title: '问题诊断',    tag: 'Debug',       prompt: `当前 ${name} 项目遇到了问题，请帮我逐步排查。先列出可能的原因分类，再给出对应的诊断命令。` },
+    { icon: 'sparkles',      title: '代码审查',    tag: 'Review',      prompt: `请对 ${name} 项目的核心代码进行审查，重点关注：安全风险、性能瓶颈、代码质量问题和可以立即改进的点。` },
+    { icon: 'notebooktext',  title: '文档生成',    tag: 'Docs',        prompt: `请为 ${name} 项目生成一份完整的技术文档，包括：架构说明、API 清单、部署指南和贡献者指南。` },
   ]
 })
 

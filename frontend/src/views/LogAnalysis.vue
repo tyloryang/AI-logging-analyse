@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="log-layout">
     <!-- 左侧标签过滤 -->
     <aside class="service-panel">
@@ -121,7 +121,7 @@
               >{{ item.name }}</button>
             </div>
             <!-- 已加标签条件（chip 列表，AND 组合） -->
-            <div v-if="activeLabelFilters.length" class="active-label-chips" title="所有条件 AND 组合，点 ✕ 单条移除">
+            <div v-if="activeLabelFilters.length" class="active-label-chips" title="所有条件 AND 组合，点删除按钮单条移除">
               <span
                 v-for="(item, idx) in activeLabelFilters"
                 :key="item.label + '=' + item.value"
@@ -130,7 +130,9 @@
                 <span class="chip-key">{{ item.label }}</span>
                 <span class="chip-eq">=</span>
                 <span class="chip-val">{{ item.value }}</span>
-                <span class="chip-remove" @click="removeActiveLabel(idx)" title="移除">✕</span>
+                <button class="chip-remove" type="button" @click="removeActiveLabel(idx)" title="移除">
+                  <UiIcon name="x" :size="12" />
+                </button>
               </span>
               <button class="active-label-clear" @click="clearAllActiveLabels">清空</button>
             </div>
@@ -155,8 +157,12 @@
                     class="combo-clear"
                     @mousedown.prevent="clearLabelName"
                     title="清空"
-                  >✕</span>
-                  <span class="combo-caret" @mousedown.prevent="showLabelNameDropdown = !showLabelNameDropdown">▾</span>
+                  >
+                    <UiIcon name="x" :size="12" />
+                  </span>
+                  <span class="combo-caret" @mousedown.prevent="showLabelNameDropdown = !showLabelNameDropdown">
+                    <UiIcon name="chevrondown" :size="12" />
+                  </span>
                   <div v-show="showLabelNameDropdown && filteredLabels.length" class="combo-dropdown">
                     <div
                       v-for="item in filteredLabels"
@@ -196,11 +202,18 @@
                     class="combo-clear"
                     @mousedown.prevent="clearLabelValue"
                     title="清空"
-                  >✕</span>
-                  <span class="combo-caret" @mousedown.prevent="showLabelValueDropdown = !showLabelValueDropdown">▾</span>
+                  >
+                    <UiIcon name="x" :size="12" />
+                  </span>
+                  <span class="combo-caret" @mousedown.prevent="showLabelValueDropdown = !showLabelValueDropdown">
+                    <UiIcon name="chevrondown" :size="12" />
+                  </span>
                   <div v-show="showLabelValueDropdown && filteredLabelValues.length" class="combo-dropdown">
                     <div class="combo-multi-hint quick-hint">
-                      <span>💡 点击立即添加芯片，下拉不关</span>
+                      <span>
+                        <UiIcon name="sparkles" :size="14" />
+                        <span>点击立即添加芯片，下拉不关</span>
+                      </span>
                     </div>
                     <div
                       v-for="value in filteredLabelValues"
@@ -223,7 +236,8 @@
               </div>
 
               <div v-if="selectedLabelName && !activeLabelFilters.length" class="label-flow-tip">
-                💡 直接点值即可，多选就连续点
+                <UiIcon name="sparkles" :size="14" />
+                <span>直接点值即可，多选就连续点</span>
               </div>
             </div>
             <div v-else class="label-empty">未发现 Loki 标签</div>
@@ -241,22 +255,25 @@
           <!-- Tab 切换 -->
           <div class="tab-group">
             <button class="tab-btn" :class="{ active: activeTab === 'logs' }" @click="switchTab('logs')">
-              📋 日志流
+              <UiIcon name="clipboardlist" :size="15" />
+              <span>日志流</span>
               <span class="tab-count">{{ logs.length }}</span>
             </button>
             <button class="tab-btn" :class="{ active: activeTab === 'templates' }" @click="switchTab('templates')">
-              🧩 模板聚合
+              <UiIcon name="layoutgrid" :size="15" />
+              <span>模板聚合</span>
               <span class="tab-count" v-if="templates.length">{{ templates.length }}</span>
             </button>
             <button class="tab-btn" :class="{ active: activeTab === 'trace' }" @click="switchTab('trace')">
-              ⏱ 耗时追踪
+              <UiIcon name="clock3" :size="15" />
+              <span>耗时追踪</span>
             </button>
           </div>
         </div>
         <div class="toolbar-right">
           <!-- 关键字搜索（日志流 / 模板聚合 tab 共用） -->
           <div v-if="activeTab !== 'trace'" class="keyword-wrap" title="服务端关键字（重新查询 Loki）">
-            <span class="kw-icon">🔍</span>
+            <UiIcon class="kw-icon" name="search" :size="14" />
             <input
               v-model="keyword"
               class="kw-input"
@@ -264,20 +281,24 @@
               @input="onKeywordInput"
               @keyup.enter="onParamChange"
             />
-            <button v-if="keyword" class="kw-clear" @click="clearKeyword">✕</button>
+            <button v-if="keyword" class="kw-clear" @click="clearKeyword">
+              <UiIcon name="x" :size="12" />
+            </button>
           </div>
           <!-- 多服务选择（可跨服务同时查，等价 Loki app=~"a|b|c"） -->
           <div v-if="activeTab !== 'trace'" class="multi-filter-wrap svc-multi" title="多服务筛选：输入服务名回车加入，可选多个跨服务查看总体调用">
-            <span class="kw-icon">≡</span>
+            <UiIcon class="kw-icon" name="listfilter" :size="14" />
             <span
               v-for="(svc, i) in selectedServices"
               :key="'svc-'+i"
               class="filter-chip include svc-chip"
               title="点击删除"
             >
-              <span class="chip-prefix">◈</span>
+              <UiIcon class="chip-prefix" name="circle" :size="10" />
               <span class="chip-text">{{ svc }}</span>
-              <span class="chip-remove" @click.stop="removeServiceChip(i)" title="删除服务">✕</span>
+              <button class="chip-remove" type="button" @click.stop="removeServiceChip(i)" title="删除服务">
+                <UiIcon name="x" :size="12" />
+              </button>
             </span>
             <input
               v-model="serviceChipInput"
@@ -290,12 +311,14 @@
             <datalist id="svc-datalist">
               <option v-for="s in allServicesList" :key="s" :value="s" />
             </datalist>
-            <button v-if="selectedServices.length" class="kw-clear" @click="selectedServices = []; selectedService = ''; onParamChange()" title="清空全部服务">✕</button>
+            <button v-if="selectedServices.length" class="kw-clear" @click="selectedServices = []; selectedService = ''; onParamChange()" title="清空全部服务">
+              <UiIcon name="x" :size="12" />
+            </button>
           </div>
 
           <!-- 多条件关键字过滤（服务端 Loki 查询：AND/OR 可切；- 前缀=排除） -->
           <div v-if="activeTab === 'logs'" class="multi-filter-wrap" title="多关键字：回车加入；- 前缀=排除；点 chip 切包含/排除；同时推到 Loki 服务端查询">
-            <span class="kw-icon">⊕</span>
+            <UiIcon class="kw-icon" name="filter" :size="14" />
             <!-- AND / OR 切换 -->
             <div class="kw-mode-switch" title="AND=同时命中所有关键字；OR=命中任一即可">
               <button
@@ -319,7 +342,9 @@
             >
               <span class="chip-prefix">{{ chip.exclude ? '−' : '+' }}</span>
               <span class="chip-text">{{ chip.text }}</span>
-              <span class="chip-remove" @click.stop="removeChip(i); onParamChange()" title="删除条件">✕</span>
+              <button class="chip-remove" type="button" @click.stop="removeChip(i); onParamChange()" title="删除条件">
+                <UiIcon name="x" :size="12" />
+              </button>
             </span>
             <input
               v-model="localKeywordInput"
@@ -328,7 +353,9 @@
               @keyup.enter="addChipFromInput"
               @keydown.backspace="onMultiInputBackspace"
             />
-            <button v-if="localKeywords.length" class="kw-clear" @click="localKeywords = []; onParamChange()" title="清空全部条件">✕</button>
+            <button v-if="localKeywords.length" class="kw-clear" @click="localKeywords = []; onParamChange()" title="清空全部条件">
+              <UiIcon name="x" :size="12" />
+            </button>
           </div>
 
           <!-- 日志流专有控件 -->
@@ -345,14 +372,19 @@
               :class="incidentOnly ? 'btn-incident-active' : 'btn-outline'"
               @click="toggleIncident"
               title="仅显示 ERROR/WARN 及含 error/exception/timeout 等关键字的日志"
-            >⚡ 仅事件</button>
+            >
+              <UiIcon name="trianglealert" :size="14" />
+              <span>仅事件</span>
+            </button>
             <button class="btn btn-outline" @click="loadLogs" :disabled="loadingLogs">
               <span v-if="loadingLogs" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-              <span v-else>🔄</span>查询
+              <UiIcon v-else name="refreshcw" :size="14" />
+              <span>查询</span>
             </button>
             <button class="btn btn-primary" @click="startAIAnalysis" :disabled="analyzingAI">
               <span v-if="analyzingAI" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-              <span v-else>🤖</span>AI 分析
+              <UiIcon v-else name="bot" :size="14" />
+              <span>AI 分析</span>
             </button>
           </template>
           <!-- 模板聚合专有控件 -->
@@ -367,11 +399,13 @@
             </select>
             <button class="btn btn-outline" @click="loadTemplates" :disabled="loadingTemplates">
               <span v-if="loadingTemplates" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-              <span v-else>🔄</span>重新聚类
+              <UiIcon v-else name="refreshcw" :size="14" />
+              <span>重新聚类</span>
             </button>
             <button class="btn btn-primary" @click="startTplAIAnalysis" :disabled="analyzingTplAI || loadingTemplates || !templates.length">
               <span v-if="analyzingTplAI" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-              <span v-else>🤖</span>AI 分析
+              <UiIcon v-else name="bot" :size="14" />
+              <span>AI 分析</span>
             </button>
           </template>
         </div>
@@ -381,7 +415,10 @@
       <transition name="fade">
         <div v-if="(aiContent || analyzingAI) && activeTab === 'logs'" class="ai-panel">
           <div class="ai-panel-header">
-            <span>🤖 AI 分析结果</span>
+            <span>
+              <UiIcon name="bot" :size="15" />
+              <span>AI 分析结果</span>
+            </span>
             <button class="btn btn-outline btn-xs" @click="aiContent = ''">关闭</button>
           </div>
           <div class="ai-content" v-html="renderedAI"></div>
@@ -394,7 +431,10 @@
       <transition name="fade">
         <div v-if="(tplAiContent || analyzingTplAI) && activeTab === 'templates'" class="ai-panel">
           <div class="ai-panel-header">
-            <span>🤖 模板聚类 AI 分析</span>
+            <span>
+              <UiIcon name="bot" :size="15" />
+              <span>模板聚类 AI 分析</span>
+            </span>
             <button class="btn btn-outline btn-xs" @click="tplAiContent = ''">关闭</button>
           </div>
           <div class="ai-content" v-html="renderedTplAI"></div>
@@ -410,7 +450,8 @@
           <div class="spinner"></div><p>加载日志中...</p>
         </div>
         <div v-else-if="!filteredLogs.length" class="empty-state">
-          <span class="icon">📭</span><p>暂无日志数据</p>
+          <UiIcon class="icon" name="inbox" :size="24" />
+          <p>暂无日志数据</p>
         </div>
         <template v-else>
           <div class="log-coverage-panel">
@@ -525,13 +566,15 @@
           <div class="drawer-panel log-detail-modal" @click.stop>
             <div class="drawer-header">
               <span>日志详情 · 上下文</span>
-              <button type="button" class="drawer-close" aria-label="关闭日志上下文" @click.stop="closeDetail">✕</button>
+              <button type="button" class="drawer-close" aria-label="关闭日志上下文" @click.stop="closeDetail">
+                <UiIcon name="x" :size="14" />
+              </button>
             </div>
             <div class="drawer-body">
               <!-- 元数据折叠区（默认收起，header 显示关键摘要，留更多空间给上下文） -->
               <div class="drawer-meta-section" :class="{ open: metaOpen }">
                 <div class="drawer-meta-header" @click="metaOpen = !metaOpen">
-                  <span class="meta-toggle">{{ metaOpen ? '▼' : '▶' }}</span>
+                  <UiIcon class="meta-toggle" :name="metaOpen ? 'chevrondown' : 'chevronright'" :size="14" />
                   <span class="meta-title">元数据</span>
                   <span class="meta-summary">
                     <span class="meta-summary-ts">{{ detailLog.timestamp }}</span>
@@ -572,7 +615,7 @@
                           :title="containerLogLinkTitle(detailLog.labels)"
                           @click.stop="goToContainerLogs(detailLog.labels, v)"
                         >
-                          {{ k }}=<em>{{ v }}</em><span class="drawer-tag-jump">↗</span>
+                          {{ k }}=<em>{{ v }}</em><UiIcon class="drawer-tag-jump" name="arrowupright" :size="12" />
                         </button>
                         <span v-else class="drawer-tag">{{ k }}=<em>{{ v }}</em></span>
                       </template>
@@ -608,7 +651,7 @@
                       :class="{ active: contextSearchTerms.length }"
                       title="可添加多个搜索条件；AND 条件需同时命中，OR 条件命中任一分组即可"
                     >
-                      <span class="context-search-icon">⌕</span>
+                      <UiIcon class="context-search-icon" name="search" :size="14" />
                       <template v-for="(kw, i) in contextSearchKeywords" :key="kw.id">
                         <button
                           v-if="i > 0"
@@ -620,7 +663,9 @@
                         >{{ kw.join.toUpperCase() }}</button>
                         <span class="filter-chip include context-search-chip">
                           <span class="chip-text">{{ kw.text }}</span>
-                          <span class="chip-remove" @click.stop="removeContextSearchKeyword(i)" title="删除条件">✕</span>
+                          <button class="chip-remove" type="button" @click.stop="removeContextSearchKeyword(i)" title="删除条件">
+                            <UiIcon name="x" :size="12" />
+                          </button>
                         </span>
                       </template>
                       <button
@@ -643,14 +688,19 @@
                         :disabled="!contextSearchInput.trim()"
                         title="添加搜索条件（也可按 Enter）"
                         @click.stop="addContextSearchKeywords"
-                      >＋ 条件</button>
+                      >
+                        <UiIcon name="plus" :size="12" />
+                        <span>条件</span>
+                      </button>
                       <button
                         v-if="contextSearchTerms.length || contextSearchInput"
                         type="button"
                         class="kw-clear"
                         @click="clearContextSearch"
                         title="清空搜索"
-                      >✕</button>
+                      >
+                        <UiIcon name="x" :size="12" />
+                      </button>
                     </div>
                     <button
                       v-if="detailServiceDrilldown(detailLog.labels)"
@@ -659,15 +709,20 @@
                       :title="serviceLogLinkTitle(detailLog.labels)"
                       @click.stop="goToMicroserviceLogs(detailLog.labels)"
                     >
-                      跳转微服务日志 ↗
+                      <span>跳转微服务日志</span>
+                      <UiIcon name="arrowupright" :size="12" />
                     </button>
                   </div>
                   <div v-if="contextSearchTerms.length" class="context-search-actions">
                     <span class="context-search-count">
                       {{ contextSearchMatchCount ? `${activeContextSearchMatch + 1}/${contextSearchMatchCount}` : '0/0' }}
                     </span>
-                    <button class="btn btn-outline btn-xs context-search-nav" :disabled="!contextSearchMatchCount" @click="jumpContextSearch(-1)">↑</button>
-                    <button class="btn btn-outline btn-xs context-search-nav" :disabled="!contextSearchMatchCount" @click="jumpContextSearch(1)">↓</button>
+                    <button class="btn btn-outline btn-xs context-search-nav" :disabled="!contextSearchMatchCount" @click="jumpContextSearch(-1)">
+                      <UiIcon name="chevronup" :size="12" />
+                    </button>
+                    <button class="btn btn-outline btn-xs context-search-nav" :disabled="!contextSearchMatchCount" @click="jumpContextSearch(1)">
+                      <UiIcon name="chevrondown" :size="12" />
+                    </button>
                   </div>
                 </div>
                 <div v-if="detailContextError" class="drawer-context-state drawer-context-state-error">
@@ -696,7 +751,7 @@
                       logClass(item.line),
                     ]"
                   >
-                    <span v-if="idx === detailContextAnchorIndex" class="anchor-marker" title="当前查询的记录">▶</span>
+                    <UiIcon v-if="idx === detailContextAnchorIndex" class="anchor-marker" name="arrowright" :size="12" />
                     <span class="drawer-context-ts">{{ item.timestamp }}</span>
                     <span class="drawer-context-svc">{{ logServiceName(item) }}</span>
                     <span class="drawer-context-text">
@@ -712,8 +767,9 @@
                       :title="copiedContextLineKey === contextLineCopyKey(item, idx) ? '已复制本行' : '复制本行'"
                       @click.stop="copyContextLine(item, idx)"
                     >
-                      {{ copiedContextLineKey === contextLineCopyKey(item, idx) ? '已复制' : '复制' }}
-                    </button>
+                        <UiIcon name="copy" :size="12" />
+                        <span>{{ copiedContextLineKey === contextLineCopyKey(item, idx) ? '已复制' : '复制' }}</span>
+                      </button>
                   </div>
                   <div v-if="loadingContextAfter" class="drawer-context-loading-more">
                     <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
@@ -738,11 +794,11 @@
           <div class="spinner"></div><p>Drain3 聚类中...</p>
         </div>
         <div v-else-if="tplError" class="empty-state">
-          <span class="icon">⚠️</span>
+          <UiIcon class="icon" name="trianglealert" :size="24" />
           <p style="color:var(--error)">{{ tplError }}</p>
         </div>
         <div v-else-if="!templates.length" class="empty-state">
-          <span class="icon">🧩</span>
+          <UiIcon class="icon" name="layoutgrid" :size="24" />
           <p>当前条件下暂无日志可聚类<br><small style="color:var(--text-muted)">尝试切换「全量日志」或扩大时间范围</small></p>
         </div>
         <div v-else class="template-list">
@@ -783,14 +839,16 @@
         <div class="trace-form-bar">
           <!-- 追踪值输入 -->
           <div class="trace-input-wrap trace-input-grow">
-            <span class="trace-input-icon">🔍</span>
+            <UiIcon class="trace-input-icon" name="search" :size="14" />
             <input
               v-model="traceValue"
               class="trace-input"
               placeholder="追踪值：traceId、requestId、关键字..."
               @keyup.enter="runTrace"
             />
-            <button v-if="traceValue" class="kw-clear" @click="traceValue = ''">✕</button>
+            <button v-if="traceValue" class="kw-clear" @click="traceValue = ''">
+              <UiIcon name="x" :size="12" />
+            </button>
           </div>
           <!-- 时间模式 -->
           <div class="time-mode-tabs" style="width:fit-content;flex-shrink:0">
@@ -821,7 +879,7 @@
             style="flex-shrink:0"
           >
             <span v-if="tracingKeyword" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-            <span v-else>⏱</span>
+            <UiIcon v-else name="clock3" :size="14" />
             开始分析
           </button>
         </div>
@@ -835,7 +893,7 @@
         <div v-else-if="traceResult" class="trace-result">
           <!-- 未找到 / 请求失败 -->
           <div v-if="!traceResult.found" class="trace-not-found">
-            <span class="icon" style="font-size:28px">{{ traceResult._error ? '⚠️' : '🔍' }}</span>
+            <UiIcon class="icon" :name="traceResult._error ? 'trianglealert' : 'search'" :size="28" />
             <p v-if="traceResult._error" style="color:var(--error);font-size:13px">
               请求失败：{{ traceResult._error }}
             </p>
@@ -855,14 +913,16 @@
                 :class="{ active: traceResultTab === 'overview' }"
                 @click="traceResultTab = 'overview'"
               >
-                ⏱ 耗时概览
+                <UiIcon name="clock3" :size="14" />
+                <span>耗时概览</span>
               </button>
               <button
                 class="trace-sub-btn"
                 :class="{ active: traceResultTab === 'logs' }"
                 @click="traceResultTab = 'logs'"
               >
-                📋 匹配日志
+                <UiIcon name="clipboardlist" :size="14" />
+                <span>匹配日志</span>
                 <span class="trace-sub-badge">
                   <span v-if="loadingTraceLogs" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
                   <span v-else>{{ traceLogs.length }}</span>
@@ -974,7 +1034,7 @@
         </div>
         <!-- 初始提示 -->
         <div v-else class="empty-state" style="flex:1">
-          <span class="icon" style="font-size:36px">⏱</span>
+          <UiIcon class="icon" name="clock3" :size="36" />
           <p>输入追踪值并选择时间范围，分析关键字首次到末次出现的耗时</p>
           <small style="color:var(--text-muted)">支持 traceId、requestId、订单号等任意字符串</small>
         </div>
@@ -1002,6 +1062,7 @@ import {
   resolveDefaultLabelNames,
   toggleDefaultLabelName,
 } from '../utils/logLabelPreferences.mjs'
+import UiIcon from '../components/UiIcon.vue'
 
 const router = useRouter()
 
@@ -4524,7 +4585,7 @@ onBeforeUnmount(() => {
 .drawer-context-list {
   display: flex; flex-direction: column; gap: 6px;
   max-height: 76vh; overflow-y: auto;
-  padding: 4px 4px 4px 28px;   /* 左侧 28px 给锚点 ▶ 标记预留 */
+  padding: 4px 4px 4px 28px;   /* 左侧 28px 给锚点标记预留 */
 }
 .drawer-context-loading-more {
   display: flex; align-items: center; justify-content: center;
