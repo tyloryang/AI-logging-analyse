@@ -3,10 +3,7 @@
     <!-- Logo -->
     <div class="logo">
       <span class="logo-mark">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-          <rect x="3" y="14" width="7" height="7"/><path d="M14 17h3m0 0h3m-3 0v-3m0 3v3"/>
-        </svg>
+        <UiIcon name="boxes" :size="16" />
       </span>
       <div class="logo-texts">
         <span class="logo-text">AI<span class="logo-accent">Ops</span></span>
@@ -24,7 +21,7 @@
           class="nav-item"
           :class="{ active: isActive(item) }"
         >
-          <span class="nav-icon" v-html="ICONS[item.icon]"></span>
+          <UiIcon class="nav-icon" :name="item.icon" :size="14" />
           <span class="nav-label">{{ item.label }}</span>
           <span v-if="item.badge" class="nav-badge">{{ item.badge }}</span>
         </RouterLink>
@@ -36,10 +33,10 @@
             :class="{ active: isGroupActive(item) }"
             @click="toggleGroup(item.id)"
           >
-            <span class="nav-icon" v-html="ICONS[item.icon]"></span>
+            <UiIcon class="nav-icon" :name="item.icon" :size="14" />
             <span class="nav-label">{{ item.label }}</span>
             <span class="toggle-arrow" :class="{ rotated: openGroups[item.id] }">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+              <UiIcon name="chevrondown" :size="11" />
             </span>
           </button>
           <div class="nav-sub" v-show="openGroups[item.id]">
@@ -61,7 +58,16 @@
     <!-- Footer -->
     <div class="sidebar-footer">
       <div class="theme-row">
-        <button v-for="t in THEMES" :key="t.id" class="theme-btn" :class="{ active: currentTheme === t.id }" :title="t.label" @click="setTheme(t.id)">{{ t.icon }}</button>
+        <button
+          v-for="t in THEMES"
+          :key="t.id"
+          class="theme-btn"
+          :class="{ active: currentTheme === t.id }"
+          :title="t.label"
+          @click="setTheme(t.id)"
+        >
+          <UiIcon :name="t.icon" :size="13" />
+        </button>
       </div>
       <div class="divider"></div>
       <div class="status-grid">
@@ -77,7 +83,7 @@
           <span class="user-name">{{ auth.user?.displayName || auth.user?.username }}</span>
         </RouterLink>
         <button class="logout-btn" @click="handleLogout" title="退出登录">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <UiIcon name="logout" :size="13" />
         </button>
       </div>
     </div>
@@ -87,6 +93,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, RouterLink, useRouter } from 'vue-router'
+import UiIcon from './UiIcon.vue'
 import { fetchHealthStatus, getAiModelShort } from '../composables/useHealthStatus.js'
 import { useTheme, THEMES } from '../composables/useTheme.js'
 import { useAuthStore } from '../stores/auth.js'
@@ -126,9 +133,9 @@ onMounted(async () => {
 
 // ── 菜单定义 ────────────────────────────────────────────────────
 const MENU = [
-  { id: 'dashboard', icon: 'dashboard', label: '仪表盘', to: '/', module: 'dashboard' },
+  { id: 'dashboard', icon: 'gauge', label: '仪表盘', to: '/', module: 'dashboard' },
   {
-    id: 'host', icon: 'host', label: '主机中心',
+    id: 'host', icon: 'server', label: '主机中心',
     children: [
       { label: 'CMDB',     to: '/cmdb', module: 'cmdb' },
       { label: '任务工作台', to: '/hosts/workbench', module: 'host' },
@@ -139,7 +146,7 @@ const MENU = [
   },
   // { id: 'cloud', icon: 'cloud', label: '多云管理', to: '/cloud' },
   {
-    id: 'ticket', icon: 'ticket', label: '工单系统',
+    id: 'ticket', icon: 'clipboardlist', label: '工单系统',
     children: [
       { label: '应用发布', to: '/tickets/deploy', module: 'ticket' },
       { label: 'SQL 审计', to: '/tickets/sql', module: 'ticket' },
@@ -148,7 +155,7 @@ const MENU = [
     ],
   },
   {
-    id: 'container', icon: 'container', label: '容器管理',
+    id: 'container', icon: 'boxes', label: '容器管理',
     children: [
       { label: '容器列表',      to: '/containers', module: 'container' },
       { label: 'K8s 拓扑流图',  to: '/k8s/topology', module: 'container' },
@@ -156,7 +163,7 @@ const MENU = [
     ],
   },
   {
-    id: 'middleware', icon: 'middleware', label: '中间件',
+    id: 'middleware', icon: 'database', label: '中间件',
     children: [
       { label: '中间件概览', to: '/middleware', module: 'middleware' },
       { label: 'Redis Cluster', to: '/middleware/redis', module: 'middleware' },
@@ -166,13 +173,13 @@ const MENU = [
   },
   { id: 'workflow', icon: 'workflow', label: '工作流', to: '/workflows', module: 'workflow' },
   {
-    id: 'cicd', icon: 'cicd', label: 'CI/CD',
+    id: 'cicd', icon: 'gitbranch', label: 'CI/CD',
     children: [
       { label: 'Jenkins', to: '/cicd/jenkins', module: 'cicd' },
     ],
   },
   {
-    id: 'obs', icon: 'obs', label: '可观测性',
+    id: 'obs', icon: 'monitor', label: '可观测性',
     children: [
       { label: '监控大屏',   to: '/observability/bigscreen', module: 'dashboard' },
       { label: '指标图表',   to: '/observability/metric-charts', module: 'metrics' },
@@ -184,9 +191,9 @@ const MENU = [
       { label: '知识库',     to: '/tools/knowledge', module: 'knowledge' },
     ],
   },
-  { id: 'events', icon: 'event',  label: '事件墙',   to: '/events', module: 'events' },
+  { id: 'events', icon: 'history',  label: '事件墙',   to: '/events', module: 'events' },
   {
-    id: 'tools', icon: 'tools', label: '工具市场',
+    id: 'tools', icon: 'squaredashedmousepointer', label: '工具市场',
     children: [
       { label: '工具概览',   to: '/tools', module: 'tools' },
       { label: 'Java 诊断', to: '/tools/java-diagnostics', module: 'ssh' },
@@ -194,19 +201,19 @@ const MENU = [
     ],
   },
   {
-    id: 'aiops', icon: 'aiops', label: 'AIOps 智能运维',
+    id: 'aiops', icon: 'sparkles', label: 'AIOps 智能运维',
     children: [
-      { label: '🔔 告警中心', to: '/aiops/alerts', module: 'alert' },
-      { label: '🧠 根因分析', to: '/aiops/rca', module: 'agent' },
-      { label: '📊 异常检测', to: '/aiops/anomaly', module: 'agent' },
-      { label: '🕸 知识图谱', to: '/aiops/knowledge-graph', module: 'knowledge' },
-      { label: '🧰 AI 工作台', to: '/aiops/workbench', module: 'agent' },
-      { label: '💬 智能助手', to: '/aiops/assistant', module: 'agent' },
-      { label: '⚙ 智能配置',  to: '/aiops/config', admin: true },
+      { label: '告警中心', to: '/aiops/alerts', module: 'alert' },
+      { label: '根因分析', to: '/aiops/rca', module: 'agent' },
+      { label: '异常检测', to: '/aiops/anomaly', module: 'agent' },
+      { label: '知识图谱', to: '/aiops/knowledge-graph', module: 'knowledge' },
+      { label: 'AI 工作台', to: '/aiops/workbench', module: 'agent' },
+      { label: '智能助手', to: '/aiops/assistant', module: 'agent' },
+      { label: '智能配置',  to: '/aiops/config', admin: true },
     ],
   },
   {
-    id: 'system', icon: 'system', label: '系统管理', admin: true,
+    id: 'system', icon: 'settings2', label: '系统管理', admin: true,
     children: [
       { label: '用户管理', to: '/admin/users', admin: true },
       { label: '系统配置', to: '/settings',    admin: true },
@@ -261,23 +268,6 @@ function visibleChildren(item) {
   return (item.children || []).filter(canShow)
 }
 
-// ── 图标库 ──────────────────────────────────────────────────────
-const ICONS = {
-  dashboard:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>`,
-  cmdb:       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`,
-  host:       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
-  cloud:      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/></svg>`,
-  ticket:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/></svg>`,
-  container:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
-  middleware: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
-  workflow:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 7.8l2.8 7.4"/><path d="M15.4 7.8l-2.8 7.4"/><path d="M9 6h6"/></svg>`,
-  cicd:       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg>`,
-  system:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,
-  obs:        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
-  event:      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>`,
-  tools:      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>`,
-  aiops:      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M9 11V7a3 3 0 016 0v4"/><circle cx="9" cy="16" r="1" fill="currentColor"/><circle cx="15" cy="16" r="1" fill="currentColor"/><path d="M12 3v2"/></svg>`,
-}
 </script>
 
 <style scoped>

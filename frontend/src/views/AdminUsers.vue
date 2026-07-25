@@ -1,7 +1,7 @@
 <template>
   <div class="admin-page">
     <div class="page-header">
-      <h2>👥 用户管理</h2>
+      <h2><UiIcon name="users" :size="18" /> 用户管理</h2>
       <button class="btn btn-primary" @click="showCreateModal = true">+ 新建用户</button>
     </div>
 
@@ -53,7 +53,7 @@
     <transition name="fade">
       <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
         <div class="modal-box">
-          <div class="modal-header"><span>新建用户</span><button class="btn btn-xs btn-outline" @click="showCreateModal = false">✕</button></div>
+          <div class="modal-header"><span>新建用户</span><button class="btn btn-xs btn-outline" @click="showCreateModal = false"><UiIcon name="x" :size="13" /></button></div>
           <div class="modal-body">
             <div class="form-grid">
               <div class="form-group"><label>用户名</label><input v-model="createForm.username" placeholder="username" /></div>
@@ -77,7 +77,7 @@
         <div class="modal-box modal-wide">
           <div class="modal-header">
             <span>权限设置 · {{ permUser?.username }}</span>
-            <button class="btn btn-xs btn-outline" @click="showPermsModal = false">✕</button>
+            <button class="btn btn-xs btn-outline" @click="showPermsModal = false"><UiIcon name="x" :size="13" /></button>
           </div>
           <div class="modal-body">
             <div v-if="permsLoading" class="empty-state"><div class="spinner"></div></div>
@@ -109,7 +109,7 @@
         <div class="modal-box modal-wide">
           <div class="modal-header">
             <span>CMDB 分组权限 · {{ groupUser?.username }}</span>
-            <button class="btn btn-xs btn-outline" @click="showGroupModal = false">✕</button>
+            <button class="btn btn-xs btn-outline" @click="showGroupModal = false"><UiIcon name="x" :size="13" /></button>
           </div>
           <div class="modal-body">
             <p class="group-hint">
@@ -151,7 +151,7 @@
         <div class="modal-box modal-wide">
           <div class="modal-header">
             <span>K8s 集群权限 · {{ k8sUser?.username }}</span>
-            <button class="btn btn-xs btn-outline" @click="showK8sModal = false">✕</button>
+            <button class="btn btn-xs btn-outline" @click="showK8sModal = false"><UiIcon name="x" :size="13" /></button>
           </div>
           <div class="modal-body">
             <p class="group-hint">
@@ -192,8 +192,8 @@
       <div v-if="deleteTarget" class="modal-overlay" @click.self="deleteTarget = null">
         <div class="modal-box" style="width:380px">
           <div class="modal-header">
-            <span style="color:var(--error)">⚠ 确认删除用户</span>
-            <button class="btn btn-xs btn-outline" @click="deleteTarget = null">✕</button>
+            <span style="color:var(--error);display:flex;align-items:center;gap:6px"><UiIcon name="trianglealert" :size="14" /> 确认删除用户</span>
+            <button class="btn btn-xs btn-outline" @click="deleteTarget = null"><UiIcon name="x" :size="13" /></button>
           </div>
           <div class="modal-body">
             <p style="color:var(--text-primary);margin:0 0 8px">
@@ -220,6 +220,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { api } from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
+import UiIcon from '../components/UiIcon.vue'
 
 const authStore = useAuthStore()
 const users = ref([])

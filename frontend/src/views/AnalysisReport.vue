@@ -7,14 +7,14 @@
     <!-- Toast -->
     <transition name="fade">
       <div v-if="errorMsg" class="error-toast">
-        ❌ {{ errorMsg }}
-        <button class="toast-close" @click="errorMsg = ''">✕</button>
+        <UiIcon name="circlex" :size="14" /> {{ errorMsg }}
+        <button class="toast-close" @click="errorMsg = ''"><UiIcon name="x" :size="13" /></button>
       </div>
     </transition>
     <transition name="fade">
       <div v-if="successMsg" class="success-toast">
-        ✅ {{ successMsg }}
-        <button class="toast-close" @click="successMsg = ''">✕</button>
+        <UiIcon name="check" :size="14" /> {{ successMsg }}
+        <button class="toast-close" @click="successMsg = ''"><UiIcon name="x" :size="13" /></button>
       </div>
     </transition>
 
@@ -33,7 +33,7 @@
           </select>
           <button class="btn btn-primary btn-full" @click="generateReport" :disabled="generating">
             <span v-if="generating" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-            <span v-else>▶</span>
+            <UiIcon v-else name="filetext" :size="13" />
             {{ generating ? 'AI 分析中...' : genBtnLabel }}
           </button>
           <button
@@ -44,7 +44,7 @@
             title="为每个配置了飞书 webhook 的分组分别生成巡检报告并推送"
           >
             <span v-if="groupGenerating" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
-            <span v-else>📤</span>
+            <UiIcon v-else name="send" :size="13" />
             {{ groupGenerating ? '推送中...' : '按分组生成并推送' }}
           </button>
         </div>
@@ -66,7 +66,7 @@
             </div>
           </div>
           <div v-if="!loadingList && !filteredList.length" class="empty-state" style="padding:30px">
-            <span class="icon" style="font-size:28px">📋</span>
+            <span class="icon" style="font-size:28px"><UiIcon name="filetext" :size="28" /></span>
             <p>暂无历史报告</p>
           </div>
         </div>
@@ -75,8 +75,8 @@
       <!-- 右侧：慢日志目标配置面板（仅 slowlog 类型时显示） -->
       <div v-if="reportType === 'slowlog'" class="slowlog-config-panel" :class="{ expanded: slcOpen }">
         <div class="slc-header" @click="slcOpen = !slcOpen">
-          <span>⚙️ 慢日志报告目标配置</span>
-          <span class="slc-saved" v-if="slcSaved">已保存 ✓</span>
+          <span style="display:flex;align-items:center;gap:6px"><UiIcon name="settings2" :size="14" /> 慢日志报告目标配置</span>
+          <span class="slc-saved" v-if="slcSaved"><UiIcon name="check" :size="12" /> 已保存</span>
           <svg class="chevron" :class="{ open: slcOpen }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
 
@@ -116,7 +116,7 @@
             <input v-model="t.ssh_user"     placeholder="用户名" class="inp-xs" />
             <input v-model="t.ssh_password" placeholder="密码"   class="inp-xs" type="password" />
             <input v-model.number="t.ssh_port" placeholder="22"  class="inp-port" type="number" />
-            <button class="btn-remove-xs" @click="slcConfig.targets.splice(i, 1)" title="删除">✕</button>
+            <button class="btn-remove-xs" @click="slcConfig.targets.splice(i, 1)" title="删除"><UiIcon name="x" :size="12" /></button>
           </div>
 
           <div v-if="!slcConfig.targets.length" class="slc-empty">暂无目标主机，点击「+ 添加主机」</div>
@@ -140,7 +140,7 @@
 
         <!-- 无报告 -->
         <div v-else-if="!currentReport" class="empty-state" style="height:100%">
-          <span class="icon">📋</span>
+          <span class="icon"><UiIcon name="filetext" :size="22" /></span>
           <p>
             <template v-if="reportType === 'slowlog'">请先配置目标主机，然后点击「立即生成慢日志报告」</template>
             <template v-else>请点击「立即生成日报」或选择历史报告</template>
@@ -188,7 +188,7 @@
                   @click="exportPdf"
                   :disabled="pdfExporting"
                   title="直接下载 PDF 格式报告"
-                >{{ pdfExporting ? '生成中…' : '📄 PDF' }}</button>
+                ><UiIcon v-if="!pdfExporting" name="filedown" :size="13" />{{ pdfExporting ? '生成中…' : 'PDF' }}</button>
                 <button
                   class="btn-export-r"
                   @click="exportPrintHtml"
@@ -196,7 +196,7 @@
                 >打印</button>
               </div>
               <button v-if="!generating" class="btn btn-outline" @click="generateReport" title="重新生成">
-                🔄 重新生成
+                <UiIcon name="refreshcw" :size="13" /> 重新生成
               </button>
               <button
                 v-if="currentReport?.id && !generating"
@@ -205,7 +205,7 @@
                 @click="sendNotify('feishu')"
               >
                 <span v-if="notifying.feishu" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
-                <span v-else>🔔</span> 飞书
+                <UiIcon v-else name="bell" :size="13" /> 飞书
               </button>
               <button
                 v-if="currentReport?.id && !generating"
@@ -214,7 +214,7 @@
                 @click="sendNotify('dingtalk')"
               >
                 <span v-if="notifying.dingtalk" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
-                <span v-else>🔔</span> 钉钉
+                <UiIcon v-else name="bell" :size="13" /> 钉钉
               </button>
               <button
                 v-if="currentReport?.id && !generating && groups.length"
@@ -224,7 +224,7 @@
                 title="推送到所有已配置飞书/钉钉的分组"
               >
                 <span v-if="notifying.groups" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
-                <span v-else>📢</span> 按分组推送
+                <UiIcon v-else name="megaphone" :size="13" /> 按分组推送
               </button>
               <div class="health-circle" :class="healthClass(currentReport.health_score)">
                 <div class="health-num">{{ currentReport.health_score }}</div>
@@ -236,7 +236,7 @@
           <!-- 第一部分：直接给出 AI 结论 -->
           <div class="section ai-conclusion-section">
             <div class="section-title-row">
-              <h3 class="section-title">🤖 第一部分 · AI 结论</h3>
+              <h3 class="section-title" style="display:flex;align-items:center;gap:8px"><UiIcon name="bot" :size="16" /> 第一部分 · AI 结论</h3>
               <span v-if="generating" class="analyzing-badge">
                 <span class="dot1">·</span><span class="dot2">·</span><span class="dot3">·</span>
                 分析中
@@ -277,12 +277,12 @@
           <template v-if="!currentReport.type || currentReport.type === 'daily'">
             <div class="metrics-row">
               <div class="metric-card">
-                <div class="metric-icon">🔧</div>
+                <div class="metric-icon"><UiIcon name="workflow" :size="18" /></div>
                 <div class="metric-val">{{ currentReport.service_count }}</div>
                 <div class="metric-label">覆盖微服务</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">🖥️</div>
+                <div class="metric-icon"><UiIcon name="server" :size="18" /></div>
                 <div class="metric-val" style="font-size:15px">
                   <span style="color:var(--success)">{{ currentReport.node_status?.normal ?? 0 }} 正常</span>
                   <span style="color:var(--text-muted);font-size:11px;margin:0 4px">/</span>
@@ -291,7 +291,7 @@
                 <div class="metric-label">节点状态</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">🌐</div>
+                <div class="metric-icon"><UiIcon name="globe" :size="18" /></div>
                 <div class="metric-val" :class="'status-' + (currentReport.interface_status?.status || 'unknown')">
                   {{ interfaceStatusLabel(currentReport.interface_status?.status) }}
                 </div>
@@ -361,22 +361,22 @@
           <template v-else-if="currentReport.type === 'inspect'">
             <div class="metrics-row">
               <div class="metric-card">
-                <div class="metric-icon">🖥️</div>
+                <div class="metric-icon"><UiIcon name="server" :size="18" /></div>
                 <div class="metric-val">{{ currentReport.host_summary?.total ?? 0 }}</div>
                 <div class="metric-label">巡检主机总数</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">✅</div>
+                <div class="metric-icon"><UiIcon name="check" :size="18" /></div>
                 <div class="metric-val" style="color:var(--success)">{{ currentReport.host_summary?.normal ?? 0 }}</div>
                 <div class="metric-label">正常主机</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">⚠️</div>
+                <div class="metric-icon"><UiIcon name="trianglealert" :size="18" /></div>
                 <div class="metric-val" style="color:var(--warning)">{{ currentReport.host_summary?.warning ?? 0 }}</div>
                 <div class="metric-label">警告主机</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">🔴</div>
+                <div class="metric-icon"><UiIcon name="circlex" :size="18" /></div>
                 <div class="metric-val" style="color:var(--error)">{{ currentReport.host_summary?.critical ?? 0 }}</div>
                 <div class="metric-label">严重主机</div>
               </div>
@@ -440,7 +440,7 @@
               </div>
             </div>
             <div class="section" v-if="currentReport.prometheus_extra_hosts?.length">
-              <h3 class="section-title">🧩 Prometheus 额外发现的非 CMDB 实例</h3>
+              <h3 class="section-title" style="display:flex;align-items:center;gap:8px"><UiIcon name="boxes" :size="16" /> Prometheus 额外发现的非 CMDB 实例</h3>
               <div class="extra-prom-list">
                 <div
                   v-for="h in currentReport.prometheus_extra_hosts"
@@ -462,35 +462,35 @@
           <template v-else-if="currentReport.type === 'slowlog'">
             <!-- 时间段 -->
             <div class="slowlog-date-range">
-              📅 分析时段：<strong>{{ currentReport.date_from }}</strong> ~ <strong>{{ currentReport.date_to }}</strong>
+              <UiIcon name="calendar" :size="14" /> 分析时段：<strong>{{ currentReport.date_from }}</strong> ~ <strong>{{ currentReport.date_to }}</strong>
               <span class="slowlog-threshold">慢查询 ≥ {{ currentReport.threshold_sec ?? 1 }}s · 告警 ≥ {{ currentReport.alert_sec ?? 10 }}s</span>
             </div>
             <!-- 指标卡 -->
             <div class="metrics-row">
               <div class="metric-card">
-                <div class="metric-icon">🖥️</div>
+                <div class="metric-icon"><UiIcon name="server" :size="18" /></div>
                 <div class="metric-val">{{ currentReport.hosts_count ?? 0 }}</div>
                 <div class="metric-label">分析主机数</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">🐌</div>
+                <div class="metric-icon"><UiIcon name="clock3" :size="18" /></div>
                 <div class="metric-val">{{ fmtNum(currentReport.total_queries) }}</div>
                 <div class="metric-label">慢查询总数</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">🔔</div>
+                <div class="metric-icon"><UiIcon name="bell" :size="18" /></div>
                 <div class="metric-val" :style="{ color: currentReport.alert_queries > 0 ? 'var(--error)' : 'var(--success)' }">
                   {{ fmtNum(currentReport.alert_queries) }}
                 </div>
                 <div class="metric-label">告警数（高耗时）</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">⏱️</div>
+                <div class="metric-icon"><UiIcon name="clock3" :size="18" /></div>
                 <div class="metric-val" style="color:var(--warning)">{{ currentReport.avg_query_time }}s</div>
                 <div class="metric-label">平均耗时</div>
               </div>
               <div class="metric-card">
-                <div class="metric-icon">🚨</div>
+                <div class="metric-icon"><UiIcon name="trianglealert" :size="18" /></div>
                 <div class="metric-val" style="color:var(--error)">{{ currentReport.max_query_time }}s</div>
                 <div class="metric-label">最大耗时</div>
               </div>
@@ -498,7 +498,7 @@
 
             <!-- Top 慢查询：报告结果优先展示 -->
             <div class="section" v-if="currentReport.top_slow?.length">
-              <h3 class="section-title">🐌 核心结果 · Top 10 最慢查询</h3>
+              <h3 class="section-title" style="display:flex;align-items:center;gap:8px"><UiIcon name="clock3" :size="16" /> 核心结果 · Top 10 最慢查询</h3>
               <div class="slowlog-list">
                 <div v-for="(s, i) in currentReport.top_slow" :key="i" class="slowlog-row">
                   <span class="rank" :class="i < 3 ? 'rank-top' : ''">{{ i + 1 }}</span>
@@ -512,7 +512,7 @@
 
             <!-- 各主机明细 -->
             <div class="section" v-if="currentReport.host_results?.length">
-              <h3 class="section-title">🖥️ 主机级分析结果（告警优先）</h3>
+              <h3 class="section-title" style="display:flex;align-items:center;gap:8px"><UiIcon name="server" :size="16" /> 主机级分析结果（告警优先）</h3>
               <table class="sl-table">
                 <thead>
                   <tr>
@@ -541,7 +541,7 @@
 
             <!-- SSH 错误提示 -->
             <div v-if="currentReport.errors?.length" class="section">
-              <h3 class="section-title" style="color:var(--error)">⚠️ 采集失败的主机</h3>
+              <h3 class="section-title" style="color:var(--error);display:flex;align-items:center;gap:8px"><UiIcon name="trianglealert" :size="16" /> 采集失败的主机</h3>
               <div v-for="e in currentReport.errors" :key="e.host_ip" class="err-row">
                 <span class="mono">{{ e.host_ip }}</span>：{{ e.error }}
               </div>
@@ -557,6 +557,7 @@
 <script setup>
 import { ref, computed, reactive, onMounted } from 'vue'
 import { api, streamSSE } from '../api/index.js'
+import UiIcon from '../components/UiIcon.vue'
 
 const reportType    = ref('daily')
 const reportList    = ref([])
@@ -638,8 +639,8 @@ function renderText(t) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/⚠️/g, '<span class="ai-warn">⚠️</span>')
-    .replace(/✅/g, '<span class="ai-ok">✅</span>')
+    .replace(/\u26a0\ufe0f/g, '<span class="ai-warn">WARN</span>')
+    .replace(/\u2705/g, '<span class="ai-ok">OK</span>')
     .replace(/\n/g, '<br>')
 }
 

@@ -18,7 +18,7 @@
       </div>
       <button class="btn btn-primary save-btn" @click="saveConfig" :disabled="saving">
         <span v-if="saving" class="spinner-sm-dark"></span>
-        <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        <UiIcon v-else name="save" :size="13" />
         {{ saving ? '保存中...' : '保存配置' }}
       </button>
     </div>
@@ -149,12 +149,12 @@
           <div class="behavior-title" style="margin-top:20px;">当前模型</div>
           <div class="model-card" v-for="m in configModels" :key="m.id"
                :class="{ 'model-active': m.active }" @click="selectModel(m)">
-            <div class="model-icon">🤖</div>
+            <div class="model-icon"><UiIcon name="bot" :size="18" /></div>
             <div class="model-info">
               <div class="model-name">{{ m.name }}</div>
               <div class="model-tag">{{ m.provider }}</div>
             </div>
-            <span v-if="m.active" class="model-check">✓</span>
+            <span v-if="m.active" class="model-check"><UiIcon name="check" :size="12" /></span>
           </div>
         </div>
       </div>
@@ -240,8 +240,8 @@
           <span class="section-count">
             已启用 {{ skillList.filter(s=>s.enabled).length }} / {{ skillList.length }} 个 Skill
             <span v-if="installedSkillCount" class="installed-count">已安装 {{ installedSkillCount }}</span>
-            <span v-if="superpowersSkillCount" class="superpowers-count">⚡ Superpowers {{ superpowersSkillCount }}</span>
-            <span v-if="githubHighStarSkillCount" class="github-count">★ GitHub 高星 {{ githubHighStarSkillCount }}</span>
+            <span v-if="superpowersSkillCount" class="superpowers-count"><UiIcon name="sparkles" :size="11" /> Superpowers {{ superpowersSkillCount }}</span>
+            <span v-if="githubHighStarSkillCount" class="github-count"><UiIcon name="star" :size="11" /> GitHub 高星 {{ githubHighStarSkillCount }}</span>
           </span>
           <div class="section-toolbar-actions">
             <button class="btn btn-outline btn-sm" @click="showAddSkill = !showAddSkill" title="手动新增 Skill">
@@ -263,13 +263,13 @@
         <!-- 导入结果汇总 -->
         <div v-if="importResult" class="import-result" :class="importResult.kind">
           <span>{{ importResult.text }}</span>
-          <button class="import-result-close" @click="importResult = null">✕</button>
+          <button class="import-result-close" @click="importResult = null"><UiIcon name="x" :size="12" /></button>
         </div>
 
         <!-- 新增 Skill 表单 -->
         <div v-if="showAddSkill" class="add-form add-form-edit">
           <span class="form-chip">新增 Skill</span>
-          <input v-model="newSkill.icon" class="form-input" placeholder="图标" style="width:60px" maxlength="4" />
+          <input v-model="newSkill.icon" class="form-input" placeholder="Lucide 图标名" style="width:100px" maxlength="32" />
           <input v-model="newSkill.name" class="form-input" placeholder="Skill 名称，如：主机巡检" style="flex:1" />
           <input v-model="newSkill.desc" class="form-input" placeholder="说明，如：自动巡检所有主机 CPU/内存/磁盘" style="flex:2" />
           <select v-model="newSkill.tool_name" class="form-input" style="width:200px" :title="selectedToolHint">
@@ -286,9 +286,9 @@
         <div class="skill-grid">
           <div class="skill-card card" v-for="s in skillList" :key="s.id" :class="{ 'skill-on': s.enabled }">
             <div class="skill-header">
-              <span class="skill-icon">{{ s.icon }}</span>
+              <span class="skill-icon"><UiIcon :name="s.icon" :size="14" /></span>
               <span class="skill-name">{{ s.name }}</span>
-              <button v-if="!s.installed" class="skill-delete" @click.stop="removeSkill(s)" title="删除该 Skill">✕</button>
+              <button v-if="!s.installed" class="skill-delete" @click.stop="removeSkill(s)" title="删除该 Skill"><UiIcon name="x" :size="12" /></button>
               <button class="toggle-switch sm" :class="{ on: s.enabled }" @click="s.enabled = !s.enabled; toggleSkill(s)">
                 <span class="toggle-thumb"></span>
               </button>
@@ -296,17 +296,19 @@
             <div class="skill-desc">{{ s.desc }}</div>
             <div v-if="s.installed" class="skill-source-row">
               <span class="skill-source" :class="{ superpowers: s.source === 'Superpowers', github: s.source_kind === 'github-high-star' }">
-                {{ s.source_kind === 'github-high-star' ? `★ ${s.source}` : (s.source === 'Superpowers' ? '⚡ Superpowers' : '📦 项目技能') }}
+                <template v-if="s.source_kind === 'github-high-star'"><UiIcon name="star" :size="11" /> {{ s.source }}</template>
+                <template v-else-if="s.source === 'Superpowers'"><UiIcon name="sparkles" :size="11" /> Superpowers</template>
+                <template v-else><UiIcon name="boxes" :size="11" /> 项目技能</template>
               </span>
-              <span v-if="s.source_stars" class="skill-stars" :title="`Star 快照日期：${s.source_checked_at || '未知'}`">★ {{ formatStars(s.source_stars) }}</span>
+              <span v-if="s.source_stars" class="skill-stars" :title="`Star 快照日期：${s.source_checked_at || '未知'}`"><UiIcon name="star" :size="11" /> {{ formatStars(s.source_stars) }}</span>
               <code class="skill-path" :title="s.installed_path">{{ s.installed_path }}</code>
             </div>
             <div class="skill-meta-row">
               <span v-if="s.tool_name" class="skill-tool" :title="`绑定工具：${s.tool_name}`">
-                🔗 {{ s.tool_name }}
+                <UiIcon name="link2" :size="11" /> {{ s.tool_name }}
               </span>
-              <span v-else-if="s.installed" class="skill-tool installed" title="由 SKILL.md 在编码智能体中按需加载">📄 文件型 Skill</span>
-              <span v-else class="skill-tool warn" title="未绑定工具，启用后 LLM 无法实际调用">⚠ 未绑定工具</span>
+              <span v-else-if="s.installed" class="skill-tool installed" title="由 SKILL.md 在编码智能体中按需加载"><UiIcon name="filetext" :size="11" /> 文件型 Skill</span>
+              <span v-else class="skill-tool warn" title="未绑定工具，启用后 LLM 无法实际调用"><UiIcon name="trianglealert" :size="11" /> 未绑定工具</span>
             </div>
             <div class="skill-tags">
               <span class="skill-tag" v-for="t in s.tags" :key="t">{{ t }}</span>
@@ -500,6 +502,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import UiIcon from '../components/UiIcon.vue'
 
 const TABS = [
   { key: 'basic',  label: '基础配置' },
@@ -629,7 +632,12 @@ async function apiFetch(url, opts = {}) {
 }
 
 function showToast(msg, ms = 2000) {
-  toast.value = msg
+  const text = String(msg || '')
+    .replace(/^[✓✅]\s*/, '')
+    .replace(/^[❌✗]\s*/, '')
+    .replace(/^[⚠]\s*/, '')
+    .replace(/^[⚡★📦🔗📄🛠️]\s*/, '')
+  toast.value = text
   setTimeout(() => { toast.value = '' }, ms)
 }
 
@@ -896,7 +904,7 @@ async function toggleMcp(m) {
 const skillList = ref([])
 const availableTools = ref([])
 const showAddSkill = ref(false)
-const newSkill = reactive({ icon: '🛠️', name: '', desc: '', tool_name: '', enabled: true })
+const newSkill = reactive({ icon: 'wrench', name: '', desc: '', tool_name: '', enabled: true })
 const newSkillTagsInput = ref('')
 const importSkillsInput = ref(null)
 const importResult = ref(null)
@@ -946,7 +954,7 @@ async function toggleSkill(s) {
 
 function cancelAddSkill() {
   showAddSkill.value = false
-  newSkill.icon = '🛠️'
+  newSkill.icon = 'wrench'
   newSkill.name = ''
   newSkill.desc = ''
   newSkill.tool_name = ''
@@ -965,7 +973,7 @@ async function addSkill() {
       body: JSON.stringify({
         name,
         desc: newSkill.desc.trim(),
-        icon: (newSkill.icon || '🛠️').trim(),
+        icon: (newSkill.icon || 'wrench').trim(),
         tool_name: newSkill.tool_name.trim(),
         tags,
         enabled: !!newSkill.enabled,
@@ -1007,7 +1015,7 @@ async function onImportSkillsFile(ev) {
     const text = await file.text()
     let parsed
     try { parsed = JSON.parse(text) } catch (e) {
-      importResult.value = { kind: 'err', text: `❌ JSON 解析失败：${e.message}` }
+      importResult.value = { kind: 'err', text: `JSON 解析失败：${e.message}` }
       return
     }
     // 兼容两种格式：直接数组 / {skills: [...]} 包装
@@ -1015,7 +1023,7 @@ async function onImportSkillsFile(ev) {
                 : Array.isArray(parsed?.skills) ? parsed.skills
                 : null
     if (!items) {
-      importResult.value = { kind: 'err', text: '❌ 文件结构错误：根需为 Skill 数组，或形如 {"skills": [...]}' }
+      importResult.value = { kind: 'err', text: '文件结构错误：根需为 Skill 数组，或形如 {"skills": [...]}' }
       return
     }
 
@@ -1032,10 +1040,10 @@ async function onImportSkillsFile(ev) {
     const errSuffix = res.errors && res.errors.length ? `，${res.errors.length} 条错误（行号：${res.errors.map(e=>e.index).join(',')}）` : ''
     importResult.value = {
       kind: res.errors && res.errors.length ? 'warn' : 'ok',
-      text: `✓ 导入完成：新增 ${res.imported}，${strategy==='overwrite'?'覆盖':'跳过'} ${strategy==='overwrite'?res.overwritten:res.skipped}${errSuffix}`,
+      text: `导入完成：新增 ${res.imported}，${strategy==='overwrite'?'覆盖':'跳过'} ${strategy==='overwrite'?res.overwritten:res.skipped}${errSuffix}`,
     }
   } catch (e) {
-    importResult.value = { kind: 'err', text: `❌ 导入失败：${e.message}` }
+    importResult.value = { kind: 'err', text: `导入失败：${e.message}` }
   }
 }
 

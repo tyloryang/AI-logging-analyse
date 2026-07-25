@@ -7,11 +7,11 @@
       </div>
       <div class="header-right">
         <button class="btn-primary" @click="openCreate">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <UiIcon name="plus" :size="12" />
           新建工单
         </button>
         <button class="btn-ghost" @click="fetchTickets">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+          <UiIcon name="refreshcw" :size="13" />
         </button>
       </div>
     </div>
@@ -41,11 +41,11 @@
             <td class="muted small">{{ t.assignee || '—' }}</td>
             <td class="muted small">{{ fmtTime(t.created_at) }}</td>
             <td class="action-cell" @click.stop>
-              <button v-if="t.status==='pending'" class="btn-icon ok" title="批准" @click="approve(t)">✓</button>
-              <button v-if="t.status==='pending'" class="btn-icon err" title="拒绝" @click="reject(t)">✗</button>
-              <button v-if="['approved','in_progress'].includes(t.status)" class="btn-icon done" title="完成" @click="done(t)">⚑</button>
+              <button v-if="t.status==='pending'" class="btn-icon ok" title="批准" @click="approve(t)"><UiIcon name="check" :size="13" /></button>
+              <button v-if="t.status==='pending'" class="btn-icon err" title="拒绝" @click="reject(t)"><UiIcon name="x" :size="13" /></button>
+              <button v-if="['approved','in_progress'].includes(t.status)" class="btn-icon done" title="完成" @click="done(t)"><UiIcon name="flag" :size="13" /></button>
               <button class="btn-icon del" title="删除" @click="del(t)">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
+                <UiIcon name="trash2" :size="12" />
               </button>
             </td>
           </tr>
@@ -58,7 +58,7 @@
       <div class="modal">
         <div class="modal-header">
           <span>新建{{ config.title }}</span>
-          <button class="close-btn" @click="showCreate = false">✕</button>
+          <button class="close-btn" @click="showCreate = false"><UiIcon name="x" :size="14" /></button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -122,7 +122,7 @@
           <span class="mono accent">{{ activeTicket.no }}</span>
           <span style="flex:1;margin-left:10px;font-size:14px;font-weight:600">{{ activeTicket.title }}</span>
           <span class="status-badge" :class="activeTicket.status">{{ ST_LABEL[activeTicket.status] }}</span>
-          <button class="close-btn" @click="activeTicket = null">✕</button>
+          <button class="close-btn" @click="activeTicket = null"><UiIcon name="x" :size="14" /></button>
         </div>
         <div class="modal-body">
           <p class="desc-text">{{ activeTicket.description || '（无描述）' }}</p>
@@ -158,6 +158,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { api } from '../api/index.js'
+import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
   ticketType: { type: String, required: true },
